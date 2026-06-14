@@ -170,10 +170,11 @@ pub trait TokenUsageRepository {
         record_id: AgentThreadRecordId,
     ) -> Result<u64, DbError>;
 
-    /// Sums a thread's ledger-side spend: every request the gateway
-    /// actually made for the thread, all token classes, including
-    /// requests whose records never committed. The admission check's
-    /// number.
+    /// Sums a thread's ledger-side spend: input, output, and cache-write
+    /// tokens across every request the gateway made for the thread,
+    /// including requests whose records never committed. Cache-read is
+    /// excluded, since on some providers it is a subset of the input
+    /// count. The admission check's number.
     ///
     /// # Errors
     ///
@@ -301,7 +302,8 @@ impl TokenUsageRepository for PgTokenUsageRepository {
         thread_id: AgentThreadId,
     ) -> Result<u64, DbError> {
         let total: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(tokens_total), 0) FROM token_usage WHERE agent_thread_id = $1",
+            "SELECT COALESCE(SUM(tokens_input + tokens_output + tokens_cache_write), 0) \
+             FROM token_usage WHERE agent_thread_id = $1",
         )
         .bind(thread_id.inner())
         .fetch_one(&mut *conn)
