@@ -102,8 +102,8 @@ mod usage;
 
 pub use agent_binding::{
     AgentBinding, AgentBindingBuilder, AgentDefinition, AgentDefinitionBuilder, ExecutionBudgets,
-    ExecutionSpend, StageExecutorKind, ToolDescriptor, ToolDescriptorBuilder, ToolExecutionMode,
-    ToolSafetyTier,
+    ExecutionSpend, ProjectScope, StageExecutorKind, ToolBinding, ToolBindingBuilder,
+    ToolDescriptor, ToolDescriptorBuilder, ToolExecutionMode, ToolSafetyTier,
 };
 pub use agent_driver_task::{
     AgentDriverTask, AgentDriverTaskBuilder, AgentDriverTaskKind, AgentDriverTaskState,

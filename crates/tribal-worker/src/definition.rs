@@ -15,7 +15,7 @@ use tribal_config::{
 use tribal_domain::{AgentDefinition, ExecutionBudgets, StageExecutorKind, TaskType};
 use tribal_inference::CompletionStageSpec;
 
-use crate::tools::triage_tool_descriptors;
+use crate::tools::stage_tool_bindings;
 
 /// A stage's prompt content hashes: the launched pair always, the loop
 /// pair when the agentic executor needs it.
@@ -76,7 +76,7 @@ pub fn derive_stage_definition(
                 parameters: spec.parameters.clone(),
                 prompt_hashes: vec![loop_system, loop_user],
                 budgets: loop_budgets(stage_config),
-                tools: triage_tool_descriptors(),
+                tools: stage_tool_bindings(stage),
             })
         }
         stage_config => {
@@ -266,7 +266,7 @@ mod tests {
             derived
                 .tools
                 .iter()
-                .any(|tool| tool.name == tribal_agent_runtime::SUBMIT_RESULT_TOOL),
+                .any(|tool| tool.descriptor.name == tribal_agent_runtime::SUBMIT_RESULT_TOOL),
             "the completion tool is part of the surface",
         );
     }

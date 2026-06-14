@@ -36,10 +36,7 @@ use crate::{
     prompt::{LoopSimilarItemContext, assemble_loop_opening},
     stages::{TriageSubmissionPipeline, VerifierContext},
     tag_resolution,
-    tools::{
-        ListTagRegistryTool, ReadItemNeighbourhoodTool, ReadJobContextTool, ReadKnowledgeItemTool,
-        ReadSiblingThreadsTool, SearchSimilarItemsTool, submit_result_descriptor,
-    },
+    tools::{TriageToolset, build_triage_registry, submit_result_descriptor},
     worker::{Worker, heartbeat::WorkerHeartbeatPump, map_runtime_error},
 };
 
@@ -459,7 +456,8 @@ impl Worker {
     }
 
     /// The triage stage's tool registry: the six reads, scope captured
-    /// at construction.
+    /// at construction. Delegates to the shared builder the lockstep test
+    /// pins against the hashed surface.
     fn triage_tool_registry(
         &self,
         ctx: &TriageContext<'_>,
@@ -468,50 +466,21 @@ impl Worker {
         deadline: tokio::time::Instant,
         stage_thread: &StageThread,
     ) -> Result<ToolRegistry, StageError> {
-        let project_id = ctx.job.project_id();
-        let mut registry = ToolRegistry::new();
-        let register = |registry: &mut ToolRegistry,
-                        tool: Arc<dyn tribal_agent_runtime::StageTool>|
-         -> Result<(), StageError> {
-            registry
-                .register(tool)
-                .map_err(|source| StageError::BindingDerivation {
-                    stage: STAGE_TRIAGE.into(),
-                    context: source.to_string(),
-                })
-        };
-        register(
-            &mut registry,
-            Arc::new(SearchSimilarItemsTool::new(
-                project_id,
-                active_profile.clone(),
-                Arc::clone(self.gateway()),
-                attribution,
-                self.config().triage_search_limit,
-                deadline,
-            )),
-        )?;
-        register(
-            &mut registry,
-            Arc::new(ReadKnowledgeItemTool::new(project_id)),
-        )?;
-        register(
-            &mut registry,
-            Arc::new(ReadItemNeighbourhoodTool::new(project_id)),
-        )?;
-        register(&mut registry, Arc::new(ListTagRegistryTool::new()))?;
-        register(
-            &mut registry,
-            Arc::new(ReadJobContextTool::new(ctx.job.id(), ctx.batch_index)),
-        )?;
-        register(
-            &mut registry,
-            Arc::new(ReadSiblingThreadsTool::new(
-                ctx.job.id(),
-                stage_thread.thread.id(),
-            )),
-        )?;
-        Ok(registry)
+        build_triage_registry(&TriageToolset {
+            project_id: ctx.job.project_id(),
+            profile: active_profile.clone(),
+            gateway: Arc::clone(self.gateway()),
+            attribution,
+            search_limit: self.config().triage_search_limit,
+            deadline,
+            job_id: ctx.job.id(),
+            batch_index: ctx.batch_index,
+            thread_id: stage_thread.thread.id(),
+        })
+        .map_err(|source| StageError::BindingDerivation {
+            stage: STAGE_TRIAGE.into(),
+            context: source.to_string(),
+        })
     }
 
     /// Resolves the loop templates the binding's recorded hashes pin —
@@ -565,7 +534,7 @@ impl Worker {
     ) -> Result<Option<VerifierContext>, StageError> {
         // Unset enables the verifier: it is the loop's default safety net,
         // disabled only by an explicit `verifier: false`.
-        if !self.agents().triage.verifier.unwrap_or(true) {
+        if !self.agents().triage.verifier_enabled(true) {
             return Ok(None);
         }
 
