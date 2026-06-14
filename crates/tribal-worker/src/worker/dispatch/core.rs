@@ -30,7 +30,7 @@ use crate::{
         backoff::BACKOFF_CAP_SECS,
         heartbeat::{
             HEARTBEAT_EXPIRED_MESSAGE, STARTUP_RECLAIM_LIMIT, STARTUP_RECLAIM_MESSAGE,
-            THREAD_RECOVERY_CAP, run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat,
+            run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat,
         },
         reindex::{drive_reindex_cycle, reconcile_orphan_building_profile},
     },
@@ -186,7 +186,6 @@ impl Worker {
         let thread_stats = self
             .run_thread_aware_reclaim(
                 STARTUP_RECLAIM_LIMIT,
-                THREAD_RECOVERY_CAP,
                 TaskErrorKind::StartupReclaim,
                 STARTUP_RECLAIM_MESSAGE,
                 Some(1),
@@ -725,7 +724,6 @@ impl Worker {
             match self
                 .run_thread_aware_reclaim(
                     limit,
-                    THREAD_RECOVERY_CAP,
                     TaskErrorKind::HeartbeatExpired,
                     HEARTBEAT_EXPIRED_MESSAGE,
                     None,
@@ -781,10 +779,14 @@ impl Worker {
 
                     self.heal_stuck_triaging_jobs().await;
                     let thread_stats = self.run_thread_sweep().await;
-                    if thread_stats.timer_wakes > 0 || thread_stats.cancelled > 0 {
+                    if thread_stats.timer_wakes > 0
+                        || thread_stats.cancelled > 0
+                        || thread_stats.stuck_relating > 0
+                    {
                         tracing::info!(
                             timer_wakes = thread_stats.timer_wakes,
                             cancelled = thread_stats.cancelled,
+                            stuck_relating = thread_stats.stuck_relating,
                             "availability sweep converged threads",
                         );
                     }

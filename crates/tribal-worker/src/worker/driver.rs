@@ -12,6 +12,8 @@
 //! re-queued within its attempt budget, and the final attempt drives the
 //! deferred-death transaction so the child never strands its lineage.
 
+use std::sync::Arc;
+
 use tribal_agent_runtime::{
     AgentRuntimeError, ChildTerminalOutcome, ParentResolution, RenderedConversation,
     adopt_conversation, commit_child_terminal, commit_deferred_death,
@@ -47,7 +49,7 @@ impl Worker {
     /// stale leases, then claims and executes a batch of pending tasks.
     /// Sibling to the reclaim and reindex loops; [`Worker::run`] spawns
     /// it, and it is a standalone entry point for tests and tooling.
-    pub async fn run_driver_loop(&self) {
+    pub async fn run_driver_loop(self: &Arc<Self>) {
         let mut ticker = tokio::time::interval(self.config().poll_interval());
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ticker.tick().await; // skip the immediate first tick
@@ -63,8 +65,16 @@ impl Worker {
         }
     }
 
-    /// Claims and executes one batch of pending driver tasks.
-    async fn drive_pending_tasks(&self) {
+    /// Claims one batch of pending driver tasks and drives them with
+    /// bounded concurrency.
+    ///
+    /// The batch runs concurrently, not in series: a single lane would
+    /// funnel every stage's verifier child through one model call at a
+    /// time, and relation's terminal hand-back, on the job-completion
+    /// critical path, would wait behind all of them. The claim count is
+    /// the concurrency bound; the gateway's per-provider permits bound the
+    /// real inference parallelism beneath it.
+    async fn drive_pending_tasks(self: &Arc<Self>) {
         let claimed = {
             let Ok(mut conn) = self.pool().acquire().await else {
                 tracing::warn!("driver loop pool acquire failed");
@@ -82,23 +92,29 @@ impl Worker {
             }
         };
 
+        let mut batch = tokio::task::JoinSet::new();
         for task in claimed {
-            match task.kind() {
-                AgentDriverTaskKind::Drive => self.drive_child(&task).await,
-                // No v1 producer enqueues a deferred tool; matching it
-                // exhaustively and dead-lettering loudly means an
-                // unmodelled enqueue surfaces, never sits unexecuted.
-                AgentDriverTaskKind::DeferredTool => {
-                    tracing::error!(
-                        driver_task_id = %task.id(),
-                        "claimed a deferred-tool driver task, which no producer creates in this \
-                         release; dead-lettering it",
-                    );
-                    self.dispose_driver_task(&task, "deferred-tool execution is unsupported")
-                        .await;
+            let worker = Arc::clone(self);
+            batch.spawn(async move {
+                match task.kind() {
+                    AgentDriverTaskKind::Drive => worker.drive_child(&task).await,
+                    // No v1 producer enqueues a deferred tool; matching it
+                    // exhaustively and dead-lettering loudly means an
+                    // unmodelled enqueue surfaces, never sits unexecuted.
+                    AgentDriverTaskKind::DeferredTool => {
+                        tracing::error!(
+                            driver_task_id = %task.id(),
+                            "claimed a deferred-tool driver task, which no producer creates in \
+                             this release; dead-lettering it",
+                        );
+                        worker
+                            .dispose_driver_task(&task, "deferred-tool execution is unsupported")
+                            .await;
+                    }
                 }
-            }
+            });
         }
+        while batch.join_next().await.is_some() {}
     }
 
     /// Executes one `Drive` task's child as a one-shot and hands the

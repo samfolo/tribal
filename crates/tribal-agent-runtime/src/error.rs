@@ -106,4 +106,13 @@ impl AgentRuntimeError {
             source,
         }
     }
+
+    /// Whether a transient serialisation or deadlock abort caused this,
+    /// so re-running the whole transaction can clear it. Only the database
+    /// variant can carry one; a CAS miss is not retryable, it is a genuine
+    /// ownership or convergence signal the caller handles distinctly.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::Database { source, .. } if source.is_retryable())
+    }
 }

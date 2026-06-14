@@ -287,6 +287,54 @@ pub async fn commit_child_terminal(
     child_response: &CompletionResponse,
     parent: &ParentResolution,
 ) -> Result<ChildTerminalOutcome, AgentRuntimeError> {
+    // `hand_back` locks the parent thread before its task, the sanctioned
+    // inversion of the global lock order it needs to read the parent's
+    // suspended status as the orphan guard. Correctness rests on bounded
+    // retry: a deadlock abort against an opposing-order writer retries the
+    // whole transaction in place rather than re-driving the child (a fresh
+    // verifier model call) or, on the final attempt, discarding a good
+    // verdict into a deferred-death error. The loop is inline because each
+    // attempt reborrows the connection, which a closure cannot hold across
+    // calls.
+    let mut remaining = CHILD_TERMINAL_CONFLICT_RETRIES;
+    loop {
+        match commit_child_terminal_once(
+            conn,
+            child,
+            driver_task_id,
+            driver_claim_token,
+            attempt,
+            child_response,
+            parent,
+        )
+        .await
+        {
+            Err(e) if remaining > 0 && e.is_retryable() => {
+                remaining -= 1;
+                tracing::warn!(
+                    child_thread_id = %child.id(),
+                    "child-terminal commit hit a transient conflict; retrying in place",
+                );
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+/// Attempts at the child-terminal commit before a persistent conflict
+/// surfaces, matching the shared [`retry_on_conflict`] budget.
+const CHILD_TERMINAL_CONFLICT_RETRIES: u32 = 5;
+
+#[allow(clippy::too_many_arguments)]
+async fn commit_child_terminal_once(
+    conn: &mut PgConnection,
+    child: &AgentThread,
+    driver_task_id: AgentDriverTaskId,
+    driver_claim_token: uuid::Uuid,
+    attempt: i32,
+    child_response: &CompletionResponse,
+    parent: &ParentResolution,
+) -> Result<ChildTerminalOutcome, AgentRuntimeError> {
     let mut txn = begin(conn, "beginning the child-terminal transaction").await?;
 
     complete_driver_task(&mut txn, driver_task_id, driver_claim_token).await?;

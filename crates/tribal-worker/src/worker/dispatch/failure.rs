@@ -18,7 +18,7 @@ use crate::{
     worker::{
         backoff::backoff_duration,
         coupling,
-        heartbeat::{THREAD_RECOVERY_CAP, recovery_backoff_seconds},
+        heartbeat::{recovery_backoff_seconds, recovery_cap_for_thread},
     },
 };
 
@@ -151,7 +151,7 @@ impl Worker {
                 retry_count: task.retry_count(),
                 max_retries: self.config().task_max_retries,
                 recovery_attempts: thread.recovery_attempts(),
-                max_recovery_attempts: THREAD_RECOVERY_CAP,
+                max_recovery_attempts: recovery_cap_for_thread(&mut txn, thread).await,
             };
             let disposition = decide_disposition(turn_outcome, counters);
             let applied = self

@@ -31,12 +31,15 @@ pub(crate) struct ThreadSweepStats {
     pub(crate) timer_wakes: u32,
     /// Threads cancelled through the fallback (unclaimed, intent pending).
     pub(crate) cancelled: u32,
+    /// Stranded relation threads failed: their job had no live resolver.
+    pub(crate) stuck_relating: u32,
 }
 
 impl Worker {
-    /// Runs one availability-sweep cycle: the timer-wake predicate, then
-    /// the cancel-fallback predicate. Best-effort like every sweep — a
-    /// failing predicate warns and leaves convergence to the next cycle.
+    /// Runs one availability-sweep cycle: the timer-wake predicate, the
+    /// cancel-fallback predicate, then the stuck-relating predicate.
+    /// Best-effort like every sweep — a failing predicate warns and leaves
+    /// convergence to the next cycle.
     pub(crate) async fn run_thread_sweep(&self) -> ThreadSweepStats {
         let mut stats = ThreadSweepStats::default();
         let Ok(mut conn) = self.pool().acquire().await else {
@@ -46,6 +49,7 @@ impl Worker {
 
         stats.timer_wakes = sweep_timer_wakes(self.agents(), &mut conn).await;
         stats.cancelled = sweep_cancel_fallback(self, &mut conn).await;
+        stats.stuck_relating = sweep_stuck_relating(self, &mut conn).await;
         stats
     }
 }
@@ -166,6 +170,53 @@ async fn sweep_cancel_fallback(worker: &Worker, conn: &mut sqlx::PgConnection) -
         }
     }
     cancelled
+}
+
+/// The stuck-relating predicate: a suspended relation thread whose job is
+/// still relating but whose resolver has died (no live child thread, no
+/// live descendant driver task) gets the disposal seam, failing its
+/// stranded job. Relation is job-terminal with no fan-in, so this is the
+/// one suspension that cannot otherwise converge.
+///
+/// Convergence is normally the driver family reclaiming the verifier
+/// child; this sweep is the authority only when the driver loop itself is
+/// gone, which the liveness predicate is what detects. It shares the same
+/// transaction-composable seam as the cancel fallback, so the job
+/// coupling and its owed notification ride the one disposal.
+async fn sweep_stuck_relating(worker: &Worker, conn: &mut sqlx::PgConnection) -> u32 {
+    let stuck = match PgAgentThreadRepository
+        .find_stuck_relating_threads(conn, SWEEP_BATCH)
+        .await
+    {
+        Ok(stuck) => stuck,
+        Err(e) => {
+            tracing::warn!(error = %e, "stuck-relating scan failed");
+            return 0;
+        }
+    };
+
+    let mut failed = 0;
+    for thread in stuck {
+        match coupling::cancel_thread(conn, &thread).await {
+            Ok(coupling::CancelThreadOutcome::Cancelled { notification }) => {
+                failed += 1;
+                if let Some(notice) = notification {
+                    worker.notify_job_state(notice.job_id, notice.state);
+                }
+                tracing::warn!(
+                    thread_id = %thread.id(),
+                    "stuck-relating sweep failed a stranded job",
+                );
+            }
+            Ok(coupling::CancelThreadOutcome::Skipped) => {
+                tracing::debug!(thread_id = %thread.id(), "stuck-relating sweep skipped");
+            }
+            Err(e) => {
+                tracing::warn!(thread_id = %thread.id(), error = %e, "stuck-relating sweep failed");
+            }
+        }
+    }
+    failed
 }
 
 #[cfg(test)]
