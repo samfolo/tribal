@@ -609,7 +609,12 @@ pub(crate) fn submit_result_descriptor() -> ToolDescriptor {
     ToolDescriptor::builder()
         .name(tribal_agent_runtime::SUBMIT_RESULT_TOOL.to_owned())
         .description(
-            "Submit your final triage decision. This is the only way to complete the task:              the decision, an assessment of each existing claim you examined (referenced by              the exact item ids you were shown), and optional short notes for the downstream              relation stage. A rejected submission comes back with diagnostics; correct it              and resubmit."
+            "Submit your final triage decision. This is the only way to \
+             complete the task: the decision, an assessment of each \
+             existing claim you examined (referenced by the exact item ids \
+             you were shown), and optional short notes for the downstream \
+             relation stage. A rejected submission comes back with \
+             diagnostics; correct it and resubmit."
                 .to_owned(),
         )
         .input_schema(triage_submission_schema())
