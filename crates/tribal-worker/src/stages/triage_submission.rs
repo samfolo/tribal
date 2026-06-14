@@ -246,18 +246,21 @@ impl SubmissionPipeline for TriageSubmissionPipeline {
             }
 
             // 5. Contradiction implies novel: a candidate that contradicts
-            //    the claim it supposedly duplicates cannot be a duplicate —
-            //    the graph needs both perspectives.
-            let contradicts_match = submission.considered_items.iter().any(|item| {
-                item.item_id == *matched_item_id
-                    && item.suggested_relation == RelationSuggestion::Contradicts
-            });
-            if contradicts_match {
+            //    any examined claim cannot be a duplicate — the graph needs
+            //    both perspectives. The disqualifying contradiction need not
+            //    be against the matched claim; a duplicate that conflicts
+            //    with some other claim would silently discard that conflict.
+            let contradicted = submission
+                .considered_items
+                .iter()
+                .find(|item| item.suggested_relation == RelationSuggestion::Contradicts);
+            if let Some(item) = contradicted {
                 return Ok(SubmissionOutcome::Bounced {
                     diagnostics: format!(
-                        "the submission marks {matched_item_id} as both the duplicated claim \
-                         and a contradiction; a candidate that contradicts a claim is novel, so \
-                         re-decide"
+                        "the submission classifies the candidate as a duplicate of \
+                         {matched_item_id} while marking {} as a contradiction; a candidate that \
+                         contradicts a claim is novel, not a duplicate, so re-decide",
+                        item.item_id
                     ),
                 });
             }
@@ -599,11 +602,11 @@ mod tests {
         ));
     }
 
-    /// A duplicate decision whose matched claim is itself assessed as a
-    /// contradiction bounces: the rule is scoped to the matched item, so
-    /// contradicting some *other* examined claim stays legal.
+    /// A duplicate decision bounces whenever any examined claim is assessed
+    /// as a contradiction, whether or not it is the matched item: a
+    /// candidate that contradicts a claim is novel, never a duplicate.
     #[tokio::test]
-    async fn test_contradicting_the_matched_item_bounces_but_others_do_not() {
+    async fn test_contradicting_any_examined_claim_bounces_a_duplicate() {
         let _guard = serial_lock().await;
         let ctx = test_context().await;
         let mut txn = ctx.begin_test().await.expect("begin_test");
@@ -690,7 +693,11 @@ mod tests {
             )
             .await
             .expect("evaluates");
-        assert!(matches!(outcome, SubmissionOutcome::Accepted { .. }));
+        assert!(matches!(
+            outcome,
+            SubmissionOutcome::Bounced { ref diagnostics }
+                if diagnostics.contains("contradicts") || diagnostics.contains("contradiction")
+        ));
     }
 
     /// The verifier launch renders a fresh-context child: the rubric
