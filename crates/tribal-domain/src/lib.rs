@@ -75,6 +75,7 @@ mod oauth_client;
 mod pipeline_stage;
 mod principal;
 mod project;
+mod prompt_class;
 mod prompt_role;
 mod prompt_stage;
 mod prompt_version;
@@ -95,6 +96,7 @@ mod tag_registry;
 mod tag_similarity_result;
 mod task;
 mod token_usage;
+mod tool_failure;
 mod triage;
 mod usage;
 
@@ -115,7 +117,7 @@ pub use api_key::{ApiKey, ApiKeyParseError};
 pub use auth_token::{AuthToken, AuthTokenBuilder};
 pub use bearer_token::{BearerToken, BearerTokenParseError};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
-pub use completion_response::CompletionResponse;
+pub use completion_response::{CompletionResponse, ToolCall};
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use disposition::{
     Disposition, DispositionCounters, RETRY_COUNT_AFTER_PROGRESS, TurnOutcome, decide_disposition,
@@ -150,6 +152,7 @@ pub use oauth_client::{ApplicationType, OauthClient, OauthClientBuilder, TokenEn
 pub use pipeline_stage::PipelineStage;
 pub use principal::{LOCAL_PRINCIPAL_KEY, Principal, PrincipalBuilder};
 pub use project::{Project, ProjectBuilder};
+pub use prompt_class::PromptClass;
 pub use prompt_role::PromptRole;
 pub use prompt_stage::PromptStage;
 pub use prompt_version::{PromptVersion, PromptVersionBuilder};
@@ -177,6 +180,7 @@ pub use tag_registry::{TagRegistryEntry, TagRegistryEntryBuilder};
 pub use tag_similarity_result::TagSimilarityResult;
 pub use task::{ErrorOutcome, Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};
 pub use token_usage::{TokenUsage, TokenUsageBuilder, TokenUsageStage, UsageOwner};
+pub use tool_failure::{RecoverableToolFailure, ToolFailure};
 pub use triage::{
     SimilarItem, SimilarItemBuilder, TriageOutcome, TriageResult, TriageResultBuilder,
     TriageSimilarItemDecision, TriageSimilarItemDecisionBuilder,

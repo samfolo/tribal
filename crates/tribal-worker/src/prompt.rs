@@ -17,6 +17,10 @@ pub(crate) use relation::{
     CandidateOutcome, RelationPromptContext, SimilarItemDecisionContext, assemble_relation_prompt,
     relation_user_context,
 };
-pub(crate) use triage::{SimilarItemContext, assemble_triage_prompt, triage_user_context};
+pub(crate) use triage::{
+    LoopSimilarItemContext, SimilarItemContext, VerifierConsideredItem, VerifierSubmissionContext,
+    assemble_loop_opening, assemble_triage_prompt, assemble_verifier_input, loop_user_context,
+    triage_user_context, verifier_user_context,
+};
 pub use validation::synthetic_validation_context;
 pub use variables::reserved_keys;

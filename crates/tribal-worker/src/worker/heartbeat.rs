@@ -6,18 +6,24 @@
 //! bulk reclaim for rows with no thread, and a startup reclaim pass for
 //! crash recovery.
 
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use sqlx::PgPool;
 use tokio::{sync::oneshot, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tribal_db::{
-    AgentThreadRepository, PgAgentThreadRepository, PgTaskRepository, ReclaimOutcome,
-    TaskRepository,
+    AgentDriverTaskRepository, AgentThreadRepository, PgAgentDriverTaskRepository,
+    PgAgentThreadRepository, PgTaskRepository, ReclaimOutcome, TaskRepository,
 };
 use tribal_domain::{
-    AgentThreadTerminal, Disposition, DispositionCounters, JobOutcome, JobState, TaskErrorKind,
-    TaskId, TurnOutcome, decide_disposition,
+    AgentDriverTaskId, AgentThreadTerminal, Disposition, DispositionCounters, JobOutcome, JobState,
+    TaskErrorKind, TaskId, TurnOutcome, decide_disposition,
 };
 
 use crate::{
@@ -170,7 +176,7 @@ impl Worker {
                 break;
             };
             let Some(thread) = PgAgentThreadRepository
-                .find_by_stage_task(&mut txn, task.id())
+                .find_by_stage_task_id(&mut txn, task.id())
                 .await
                 .map_err(reclaim_db)?
             else {
@@ -357,11 +363,86 @@ pub(crate) struct HeartbeatHandle {
     /// Fires when heartbeat detects ownership loss (0 rows affected).
     pub(crate) ownership_lost_rx: oneshot::Receiver<()>,
     abort_handle: tokio::task::AbortHandle,
+    /// While set, the timer skips its beats: a streamed inference call's
+    /// deltas carry liveness instead.
+    suppressed: Arc<AtomicBool>,
+    pool: PgPool,
+    task_id: TaskId,
+    claim_token: uuid::Uuid,
+    interval: Duration,
 }
 
 impl HeartbeatHandle {
     /// Aborts the heartbeat background task.
     pub(crate) fn abort(&self) {
+        self.abort_handle.abort();
+    }
+
+    /// Builds the loop's phase-aware liveness seam over this heartbeat:
+    /// streamed deltas beat (debounced) with the timer suppressed, and
+    /// the pump's abort stops the timer before a suspension commits.
+    pub(crate) fn pump(&self) -> WorkerHeartbeatPump {
+        WorkerHeartbeatPump {
+            suppressed: Arc::clone(&self.suppressed),
+            pool: self.pool.clone(),
+            task_id: self.task_id,
+            claim_token: self.claim_token,
+            interval: self.interval,
+            last_delta_beat: Mutex::new(std::time::Instant::now()),
+            abort_handle: self.abort_handle.clone(),
+        }
+    }
+}
+
+/// The worker's [`HeartbeatPump`] implementation: phase-aware liveness
+/// over the per-task heartbeat row.
+pub(crate) struct WorkerHeartbeatPump {
+    suppressed: Arc<AtomicBool>,
+    pool: PgPool,
+    task_id: TaskId,
+    claim_token: uuid::Uuid,
+    interval: Duration,
+    last_delta_beat: Mutex<std::time::Instant>,
+    abort_handle: tokio::task::AbortHandle,
+}
+
+impl tribal_agent_runtime::HeartbeatPump for WorkerHeartbeatPump {
+    fn inference_started(&self) {
+        self.suppressed.store(true, Ordering::SeqCst);
+    }
+
+    fn stream_delta(&self) {
+        {
+            let mut last = self
+                .last_delta_beat
+                .lock()
+                .expect("the delta-beat clock is never poisoned");
+            if last.elapsed() < self.interval {
+                return;
+            }
+            *last = std::time::Instant::now();
+        }
+        let pool = self.pool.clone();
+        let task_id = self.task_id;
+        let claim_token = self.claim_token;
+        // Fire-and-forget: a delta beat is pure liveness. Ownership loss
+        // is not signalled from here — the next claim-guarded commit
+        // refuses deterministically, and the timer resumes after the
+        // call.
+        tokio::spawn(async move {
+            if let Ok(mut conn) = pool.acquire().await {
+                let _ = PgTaskRepository
+                    .heartbeat(&mut conn, task_id, claim_token)
+                    .await;
+            }
+        });
+    }
+
+    fn inference_finished(&self) {
+        self.suppressed.store(false, Ordering::SeqCst);
+    }
+
+    fn abort(&self) {
         self.abort_handle.abort();
     }
 }
@@ -385,7 +466,10 @@ pub(crate) fn spawn_heartbeat(
     cancellation_token: CancellationToken,
 ) -> HeartbeatHandle {
     let (ownership_lost_tx, ownership_lost_rx) = oneshot::channel();
+    let suppressed = Arc::new(AtomicBool::new(false));
 
+    let timer_suppressed = Arc::clone(&suppressed);
+    let timer_pool = pool.clone();
     let handle = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -401,7 +485,13 @@ pub(crate) fn spawn_heartbeat(
                 _ = ticker.tick() => {}
             }
 
-            let mut conn = match pool.acquire().await {
+            // A streamed call's deltas carry liveness; the timer stands
+            // down rather than doubling the writes.
+            if timer_suppressed.load(Ordering::SeqCst) {
+                continue;
+            }
+
+            let mut conn = match timer_pool.acquire().await {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::warn!(
@@ -440,6 +530,72 @@ pub(crate) fn spawn_heartbeat(
 
     HeartbeatHandle {
         ownership_lost_rx,
+        abort_handle: handle.abort_handle(),
+        suppressed,
+        pool,
+        task_id,
+        claim_token,
+        interval,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Driver-task heartbeat
+// ---------------------------------------------------------------------------
+
+/// A running driver-task heartbeat, aborted when its execution ends.
+pub(crate) struct DriverHeartbeatHandle {
+    abort_handle: tokio::task::AbortHandle,
+}
+
+impl DriverHeartbeatHandle {
+    /// Stops the heartbeat.
+    pub(crate) fn abort(&self) {
+        self.abort_handle.abort();
+    }
+}
+
+/// Spawns a background heartbeat for a claimed driver task while the
+/// driver loop executes its child.
+///
+/// A driver child is a single bounded one-shot, so this beats on the
+/// timer alone — no phase-aware suppression and no ownership-lost
+/// channel: the child-terminal's claim-guarded driver-task completion is
+/// the deterministic ownership check, and a stale beat is harmless.
+pub(crate) fn spawn_driver_heartbeat(
+    pool: PgPool,
+    driver_task_id: AgentDriverTaskId,
+    claim_token: uuid::Uuid,
+    interval: Duration,
+    cancellation_token: CancellationToken,
+) -> DriverHeartbeatHandle {
+    let handle = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        ticker.tick().await; // skip first immediate tick
+
+        loop {
+            tokio::select! {
+                () = cancellation_token.cancelled() => return,
+                _ = ticker.tick() => {}
+            }
+            let Ok(mut conn) = pool.acquire().await else {
+                continue;
+            };
+            if let Err(e) = PgAgentDriverTaskRepository
+                .heartbeat(&mut conn, driver_task_id, claim_token)
+                .await
+            {
+                tracing::warn!(
+                    driver_task_id = %driver_task_id,
+                    error = %e,
+                    "driver heartbeat update failed",
+                );
+            }
+        }
+    });
+
+    DriverHeartbeatHandle {
         abort_handle: handle.abort_handle(),
     }
 }

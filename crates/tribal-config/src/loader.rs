@@ -31,6 +31,7 @@ const KNOWN_SCALARS: &[&str] = &["version"];
 /// with one of these sections are accepted.  Stray env vars like
 /// `TRIBAL_CONFIG_PATH` or `TRIBAL_PROJECT_ID` are silently ignored.
 const KNOWN_SECTIONS: &[&str] = &[
+    "agents.",
     "server.",
     "database.",
     "auth.",

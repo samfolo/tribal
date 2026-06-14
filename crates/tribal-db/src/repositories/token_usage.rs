@@ -153,6 +153,39 @@ pub trait TokenUsageRepository {
         record_id: AgentThreadRecordId,
     ) -> Result<u64, DbError>;
 
+    /// Links the single most-recent unlinked completion-class row at
+    /// `(thread, attempt)` to the given record — the driver-driven
+    /// thread's analogue of [`Self::link_completion_to_record`], for
+    /// executions with no stage task to scope by. Returns the affected
+    /// row count; zero stays best-effort.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn link_thread_completion_to_record(
+        &self,
+        conn: &mut PgConnection,
+        thread_id: AgentThreadId,
+        attempt: i32,
+        record_id: AgentThreadRecordId,
+    ) -> Result<u64, DbError>;
+
+    /// Sums a thread's ledger-side spend: input, output, and cache-write
+    /// tokens across every request the gateway made for the thread,
+    /// including requests whose records never committed. Cache-read is not
+    /// counted; no provider populates it today, so the exclusion is a no-op
+    /// pending a provider-independent cache-accounting reconciliation. This
+    /// is the admission check's number.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn sum_thread_spend(
+        &self,
+        conn: &mut PgConnection,
+        thread_id: AgentThreadId,
+    ) -> Result<u64, DbError>;
+
     /// Finds all token usage records for a given job, ordered by
     /// `created_at ASC`.
     ///
@@ -193,13 +226,27 @@ impl TokenUsageRepository for PgTokenUsageRepository {
             .map(|t| TokenUsageStage::from(t).pipeline_stage().as_str())
             .collect();
 
+        // Constrained to the single most-recent matching row: attempt
+        // values repeat once mid-thread progress resets the retry count,
+        // and a bulk sweep would attach an earlier claim's orphaned row
+        // to the wrong record. The outer `IS NULL` guard repeats the
+        // subquery's so the update only ever claims a still-unlinked row:
+        // callers already serialise on the claim CAS and the thread lock,
+        // but this keeps the statement correct in isolation rather than by
+        // caller convention. A zero-row result stays best-effort.
         let result = sqlx::query(
             "UPDATE token_usage \
              SET agent_thread_record_id = $5 \
-             WHERE agent_thread_id = $1 \
-               AND task_id = $2 \
-               AND attempt = $3 \
-               AND stage = ANY($4::text[]) \
+             WHERE id = ( \
+                 SELECT id FROM token_usage \
+                 WHERE agent_thread_id = $1 \
+                   AND task_id = $2 \
+                   AND attempt = $3 \
+                   AND stage = ANY($4::text[]) \
+                   AND agent_thread_record_id IS NULL \
+                 ORDER BY created_at DESC, id DESC \
+                 LIMIT 1 \
+             ) \
                AND agent_thread_record_id IS NULL",
         )
         .bind(thread_id.inner())
@@ -215,6 +262,68 @@ impl TokenUsageRepository for PgTokenUsageRepository {
         })?;
 
         Ok(result.rows_affected())
+    }
+
+    async fn link_thread_completion_to_record(
+        &self,
+        conn: &mut PgConnection,
+        thread_id: AgentThreadId,
+        attempt: i32,
+        record_id: AgentThreadRecordId,
+    ) -> Result<u64, DbError> {
+        let completion_stages: Vec<&str> = TaskType::iter()
+            .map(|t| TokenUsageStage::from(t).pipeline_stage().as_str())
+            .collect();
+
+        // The outer `IS NULL` guard mirrors the subquery's so the update
+        // only ever claims a still-unlinked row, keeping the statement
+        // correct in isolation rather than by the caller's serialisation.
+        let result = sqlx::query(
+            "UPDATE token_usage \
+             SET agent_thread_record_id = $4 \
+             WHERE id = ( \
+                 SELECT id FROM token_usage \
+                 WHERE agent_thread_id = $1 \
+                   AND attempt = $2 \
+                   AND stage = ANY($3::text[]) \
+                   AND agent_thread_record_id IS NULL \
+                 ORDER BY created_at DESC, id DESC \
+                 LIMIT 1 \
+             ) \
+               AND agent_thread_record_id IS NULL",
+        )
+        .bind(thread_id.inner())
+        .bind(attempt)
+        .bind(&completion_stages)
+        .bind(record_id.inner())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("linking thread completion spend to record {record_id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn sum_thread_spend(
+        &self,
+        conn: &mut PgConnection,
+        thread_id: AgentThreadId,
+    ) -> Result<u64, DbError> {
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(tokens_input + tokens_output + tokens_cache_write), 0) \
+             FROM token_usage WHERE agent_thread_id = $1",
+        )
+        .bind(thread_id.inner())
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("summing thread {thread_id} spend"),
+            source: e,
+        })?;
+
+        Ok(u64::try_from(total).unwrap_or(0))
     }
 
     async fn insert(

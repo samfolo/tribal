@@ -20,7 +20,7 @@ use tribal_common::JobStateTxs;
 use tribal_config::{PromptSource, TribalConfig};
 use tribal_domain::PipelineParameters;
 use tribal_inference::{InferenceGateway, ProviderIdentity};
-use tribal_mcp::AppState;
+use tribal_mcp::{AppState, SharedActivePrompts};
 use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
 use tribal_worker::{Worker, WorkerError};
 
@@ -373,6 +373,9 @@ async fn bootstrap(
             load_prompts(&pool_mcp, &prompts_dir).await?
         }
     };
+    // Hoisted ahead of the worker: the claim-time loop-prompt resolution
+    // and the hot-reload watcher share this one set.
+    let active_prompt_versions = Arc::new(RwLock::new(active_prompt_versions));
 
     // -- Providers -----------------------------------------------------------
 
@@ -420,6 +423,8 @@ async fn bootstrap(
         pool_worker.clone(),
         Arc::clone(&gateway),
         completion_stage_specs(config),
+        config.agents.clone(),
+        Arc::new(SharedActivePrompts(Arc::clone(&active_prompt_versions))),
         cancellation_token.clone(),
         config.worker.clone(),
         config.logging.include_llm_content,
@@ -444,7 +449,8 @@ async fn bootstrap(
         .stage_specs(completion_stage_specs(config))
         .embedding_dimensions(active_profile.dimensions())
         .pipeline_parameters(pipeline_parameters)
-        .active_prompt_versions(Arc::new(RwLock::new(active_prompt_versions)))
+        .agents_config(config.agents.clone())
+        .active_prompt_versions(active_prompt_versions)
         .gateway(gateway)
         .embedding_identity(embedding_identity)
         .worker_config(config.worker.clone())

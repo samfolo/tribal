@@ -18,6 +18,8 @@ mock_repository! {
             (limit: u32, claimed_by: &str) { (limit, claimed_by.to_owned()) };
         heartbeat((TaskId, uuid::Uuid) => u64)
             (id: TaskId, claim_token: uuid::Uuid) { (id, claim_token) };
+        reset_retry_count((TaskId, uuid::Uuid) => u64)
+            (id: TaskId, claim_token: uuid::Uuid) { (id, claim_token) };
         complete((TaskId, uuid::Uuid) => u64)
             (id: TaskId, claim_token: uuid::Uuid) { (id, claim_token) };
         fail((TaskId, uuid::Uuid, u32, DateTime<Utc>, TaskErrorKind, String) => u64)

@@ -117,6 +117,7 @@ impl From<TestHandler> for TribalServerHandler {
                 .build_version(Arc::from("test-build"))
                 .stage_specs(test_stage_specs())
                 .embedding_dimensions(768)
+                .agents_config(tribal_config::AgentsConfig::default())
                 .pipeline_parameters(tribal_domain::PipelineParameters::default())
                 .active_prompt_versions(th.active_prompt_versions)
                 .gateway(test_gateway())
@@ -279,6 +280,7 @@ pub(crate) fn test_active_prompt_versions() -> ActivePromptVersions {
         triage_user_prompt_version_id: PromptVersionId::new(),
         relation_system_prompt_version_id: PromptVersionId::new(),
         relation_user_prompt_version_id: PromptVersionId::new(),
+        agentic: std::collections::HashMap::new(),
     }
 }
 
@@ -304,6 +306,7 @@ pub(crate) fn test_stage_specs() -> CompletionStageSpecs {
 /// Default [`FingerprintInputs`] for handler tests.
 pub(crate) fn test_fingerprint_inputs() -> FingerprintInputs {
     FingerprintInputs {
+        agents: tribal_config::AgentsConfig::default(),
         specs: test_stage_specs(),
         embedding: ProviderIdentity {
             name: "ollama".into(),

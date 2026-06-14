@@ -4,10 +4,12 @@
 //! identity, budgets, and tool descriptors. The version hash covers the
 //! serialised tool descriptors as well as the definition, so a tool-surface
 //! change is a new version even when the definition text is unchanged.
-//! Threads record the version they were admitted under. Budgets are
-//! recorded, not yet enforced: no admission check reads them in this
-//! release. Hash derivation is [`AgentDefinition::canonical_json`];
-//! binding resolution lives in the runtime.
+//! Threads record the version they were admitted under, and the
+//! pre-call admission check enforces the budgets for both executors:
+//! the token cap against the ledger, the turn cap and deadline at the
+//! loop's boundaries. Hash derivation is
+//! [`AgentDefinition::canonical_json`]; binding resolution lives in the
+//! runtime.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -105,12 +107,22 @@ pub struct ToolDescriptor {
 /// the ledger-side number, which counts every request actually made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TypedBuilder)]
 pub struct ExecutionBudgets {
-    /// Cap on total tokens across the thread, all classes counted.
+    /// Cap on a thread's token spend: input, output, and cache-write
+    /// tokens. Cache-read is not counted; it is zero across providers today,
+    /// so the exclusion is a no-op pending a provider-independent
+    /// cache-accounting reconciliation.
     #[builder(default)]
     pub max_total_tokens: Option<u64>,
     /// Cap on the number of turns.
     #[builder(default)]
     pub max_turns: Option<u32>,
+    /// Cap on child executions launched by the thread.
+    #[builder(default)]
+    pub max_child_launches: Option<u32>,
+    /// Wall-clock bound on the thread's whole execution, in seconds,
+    /// measured from its creation.
+    #[builder(default)]
+    pub execution_deadline_seconds: Option<u32>,
 }
 
 /// The committed-record projection of one thread's spend.
@@ -298,6 +310,8 @@ mod tests {
             ExecutionBudgets {
                 max_total_tokens: None,
                 max_turns: None,
+                max_child_launches: None,
+                execution_deadline_seconds: None,
             }
         ));
     }
@@ -330,7 +344,7 @@ mod tests {
                 "\"base_url\":\"http://localhost:11434\",",
                 "\"parameters\":{{\"temperature\":0.2,\"max_tokens\":4096}},",
                 "\"prompt_hashes\":[\"{a}\",\"{b}\"],",
-                "\"budgets\":{{\"max_total_tokens\":null,\"max_turns\":null}},",
+                "\"budgets\":{{\"max_total_tokens\":null,\"max_turns\":null,\"max_child_launches\":null,\"execution_deadline_seconds\":null}},",
                 "\"tools\":[]}}"
             ),
             a = "a".repeat(64),

@@ -175,6 +175,24 @@ pub trait TaskRepository {
         claim_token: uuid::Uuid,
     ) -> Result<u64, DbError>;
 
+    /// Resets a claimed task's retry count to zero — the progress reset
+    /// a record-committing transaction applies, so consecutive-failure
+    /// accounting restarts from durable progress rather than spanning
+    /// it.
+    ///
+    /// Guarded by `claim_token`. Returns the number of rows affected
+    /// (0 if the token does not match or the task is no longer claimed).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn reset_retry_count(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<u64, DbError>;
+
     /// Marks a task as completed, guarded by `claim_token`.
     ///
     /// Clears the `claim_token` but retains `claimed_by`, `claimed_at`,
@@ -580,6 +598,29 @@ impl TaskRepository for PgTaskRepository {
         .await
         .map_err(|e| DbError::QueryFailed {
             context: format!("heartbeat for task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn reset_retry_count(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks \
+             SET retry_count = 0, updated_at = now() \
+             WHERE id = $1 AND claim_token = $2 AND status = 'claimed'",
+        )
+        .bind(id.inner())
+        .bind(claim_token)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("resetting the retry count of task {id}"),
             source: e,
         })?;
 

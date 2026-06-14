@@ -9,14 +9,14 @@ use tribal_db::{
 };
 use tribal_domain::{
     Candidate, CompletionResponse, Confidence, EmbeddingProfile, EmbeddingPurpose, Job, JobId,
-    KnowledgeItemId, SourceType, TagRegistryEntry, Task, TaskType, span_attrs,
+    KnowledgeItemId, SourceType, StageExecutorKind, TagRegistryEntry, Task, TaskType, span_attrs,
 };
 use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, EmbeddingTarget, PermitWait, UsageAttribution,
 };
 
 use super::{
-    StageCommit, TriageCommitDecision, map_gateway_error, record_prompt_version_ids,
+    StageCommit, StageTerminal, TriageCommitDecision, map_gateway_error, record_prompt_version_ids,
     stage_attribution,
 };
 use crate::{
@@ -50,9 +50,19 @@ pub(crate) struct TriageContext<'a> {
 /// The candidate's pre-embedded vector and the active profile it was produced
 /// against, carried together into the novel commit decision so the profile id
 /// reaches the commit's flip-check.
-struct CandidateEmbedding<'a> {
-    vector: Vec<f32>,
-    profile: &'a EmbeddingProfile,
+pub(super) struct CandidateEmbedding<'a> {
+    pub(super) vector: Vec<f32>,
+    pub(super) profile: &'a EmbeddingProfile,
+}
+
+/// The embedding a loop submission commits with: the opening search's vector
+/// when the submitting turn produced one (a fresh claim), or `None` on a
+/// resume, which defers the embed to the commit that consumes it. Paired with
+/// the active profile the commit embeds against and labels the stored vector
+/// with.
+pub(super) struct CommitEmbedding<'a> {
+    pub(super) vector: Option<Vec<f32>>,
+    pub(super) profile: &'a EmbeddingProfile,
 }
 
 // ---------------------------------------------------------------------------
@@ -60,7 +70,41 @@ struct CandidateEmbedding<'a> {
 // ---------------------------------------------------------------------------
 
 impl Worker {
-    /// Runs the triage stage for a single candidate.
+    /// Runs the triage stage for a single candidate, routed by the
+    /// thread's recorded binding: the executor follows the binding, not
+    /// the current configuration, so a resumed thread continues the way
+    /// it started.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the routed executor's [`StageError`]s; an external
+    /// executor on the recorded binding is a derivation fault — nothing
+    /// can produce one in this release.
+    pub(crate) async fn run_triage(
+        &self,
+        job: &Job,
+        task: &Task,
+        deadline: tokio::time::Instant,
+        stage_thread: &StageThread,
+        pump: &crate::worker::heartbeat::WorkerHeartbeatPump,
+    ) -> Result<Option<(StageCommit, StageTerminal)>, StageError> {
+        match stage_thread.binding.definition().executor {
+            StageExecutorKind::OneShot => {
+                self.run_triage_one_shot(job, task, deadline, stage_thread)
+                    .await
+            }
+            StageExecutorKind::BuiltInLoop => {
+                self.run_triage_loop(job, task, deadline, stage_thread, pump)
+                    .await
+            }
+            StageExecutorKind::ExternalAgent => Err(StageError::BindingDerivation {
+                stage: STAGE_TRIAGE.into(),
+                context: "the external-agent executor has no runner in this release".into(),
+            }),
+        }
+    }
+
+    /// Runs the one-shot triage turn for a single candidate.
     ///
     /// Loads the candidate from extraction results, generates an embedding,
     /// runs semantic search for similar items, calls the triage LLM for
@@ -84,13 +128,13 @@ impl Worker {
     /// Panics if triage provider keys are not registered in the provider
     /// registry, if a semaphore is unexpectedly closed, or if the task
     /// has no batch index.
-    pub(crate) async fn run_triage(
+    async fn run_triage_one_shot(
         &self,
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
         stage_thread: &StageThread,
-    ) -> Result<(StageCommit, Option<CompletionResponse>), StageError> {
+    ) -> Result<Option<(StageCommit, StageTerminal)>, StageError> {
         let batch_index = task.batch_index().expect(EXPECT_BATCH_INDEX);
 
         let span = tracing::info_span!(
@@ -105,14 +149,14 @@ impl Worker {
 
         async {
             if self.check_triage_idempotency(job.id(), batch_index).await? {
-                return Ok((
+                return Ok(Some((
                     StageCommit::Triage {
                         project_id: job.project_id(),
                         decision: TriageCommitDecision::NoOp,
                         similar_item_decisions: vec![],
                     },
-                    None,
-                ));
+                    StageTerminal::Completion(None),
+                )));
             }
 
             let candidate = self.load_triage_candidate(job.id(), batch_index).await?;
@@ -180,7 +224,7 @@ impl Worker {
             let fresh_slots: Vec<SimilarItemSlot> =
                 search_results.iter().map(SimilarItemSlot::from).collect();
 
-            let (mut classification, response, slots) = self
+            let Some((mut classification, response, slots)) = self
                 .classify_candidate(
                     &ctx,
                     task,
@@ -192,7 +236,10 @@ impl Worker {
                     deadline,
                     &attribution,
                 )
-                .await?;
+                .await?
+            else {
+                return Ok(None);
+            };
 
             classification.reconcile();
 
@@ -238,7 +285,7 @@ impl Worker {
                 resolved_tags,
             );
 
-            Ok((commit, Some(response)))
+            Ok(Some((commit, StageTerminal::Completion(Some(response)))))
         }
         .instrument(span)
         .await
@@ -252,7 +299,7 @@ impl Worker {
 impl Worker {
     /// Checks whether a triage result already exists for the given
     /// `(job_id, batch_index)` pair.
-    async fn check_triage_idempotency(
+    pub(super) async fn check_triage_idempotency(
         &self,
         job_id: JobId,
         batch_index: u32,
@@ -272,7 +319,7 @@ impl Worker {
     }
 
     /// Loads the candidate at `batch_index` from the extraction result.
-    async fn load_triage_candidate(
+    pub(super) async fn load_triage_candidate(
         &self,
         job_id: JobId,
         batch_index: u32,
@@ -327,7 +374,7 @@ impl Worker {
     }
 
     /// Generates an embedding for the candidate content.
-    async fn embed_candidate(
+    pub(super) async fn embed_candidate(
         &self,
         content: &str,
         target: &EmbeddingTarget,
@@ -352,7 +399,7 @@ impl Worker {
 
     /// Runs semantic search against existing knowledge items using the
     /// candidate's embedding vector.
-    async fn search_similar_items(
+    pub(super) async fn search_similar_items(
         &self,
         embedding: &[f32],
         profile: &EmbeddingProfile,
@@ -407,11 +454,11 @@ impl Worker {
         deadline: tokio::time::Instant,
         attribution: &UsageAttribution,
     ) -> Result<
-        (
+        Option<(
             TriageClassification,
             CompletionResponse,
             Vec<SimilarItemSlot>,
-        ),
+        )>,
         StageError,
     > {
         let include_llm_content = self.include_llm_content();
@@ -428,7 +475,7 @@ impl Worker {
         if include_llm_content {
             tracing::debug!(
                 system_prompt = %request.system.as_deref().unwrap_or(""),
-                user_prompt = %request.messages.first().map_or("", |m| m.content.as_str()),
+                user_prompt = %request.messages.first().map_or("", |m| m.content()),
                 "triage prompt assembled",
             );
         }
@@ -443,7 +490,7 @@ impl Worker {
                 },
             )
         })?;
-        let bracketed = self
+        let Some(bracketed) = self
             .bracket_one_shot(
                 STAGE_TRIAGE,
                 stage_thread,
@@ -452,7 +499,10 @@ impl Worker {
                 request,
                 Some(recorded_context),
             )
-            .await?;
+            .await?
+        else {
+            return Ok(None);
+        };
 
         // The model's context indices address the list its conversation
         // rendered: on resume that is the recorded one, never this
@@ -507,7 +557,7 @@ impl Worker {
             })?
         };
 
-        Ok((classification, response, slots))
+        Ok(Some((classification, response, slots)))
     }
 
     /// Builds the `StageCommit::Triage` variant from the resolved outcome,
@@ -536,47 +586,10 @@ impl Worker {
             ResolvedTriageOutcome::Novel => {
                 let tag_data =
                     resolved_tags.expect("resolved tags required for Novel classification");
-
-                let mut all_tags = tag_data.resolved.clone();
-                all_tags.extend(tag_data.new_tags.iter().map(|t| t.tag.clone()));
-
-                let extraction_identity = self.gateway().completion_identity(TaskType::Extraction);
-                let source_context = serde_json::json!({
-                    "provider": extraction_identity.name,
-                    "model": extraction_identity.model,
-                });
-
-                let knowledge_item = Box::new(
-                    NewKnowledgeItem::builder()
-                        .project_id(ctx.job.project_id())
-                        .principal_id(ctx.job.principal_id())
-                        .kind(ctx.candidate.kind())
-                        .content(ctx.candidate.content().to_owned())
-                        .tags(all_tags)
-                        .confidence(Confidence::Inferred)
-                        .source_context(source_context)
-                        .episode_id(ctx.job.correlation_id())
-                        .build(),
-                );
-
-                TriageCommitDecision::Novel {
-                    knowledge_item,
-                    embedding_vector: embedding.vector,
-                    embedding_model: embedding.profile.model().to_owned(),
-                    embedding_profile_id: embedding.profile.id(),
-                    suggested_references: ctx.candidate.suggested_references().to_vec(),
-                    new_tags: tag_data.new_tags,
-                    resolved_tags: tag_data.resolved,
-                }
+                self.novel_decision(ctx.job, &ctx.candidate, embedding, tag_data)
             }
             ResolvedTriageOutcome::Duplicate { matched_item_id } => {
-                let observation = NewItemObservation::builder()
-                    .knowledge_item_id(*matched_item_id)
-                    .principal_id(ctx.job.principal_id())
-                    .source_type(SourceType::AgentMediated)
-                    .build();
-
-                TriageCommitDecision::Duplicate { observation }
+                duplicate_decision(ctx.job, *matched_item_id)
             }
         };
 
@@ -586,6 +599,64 @@ impl Worker {
             similar_item_decisions,
         }
     }
+
+    /// Builds the novel-item commit decision: the new knowledge item
+    /// with its resolved tags and pre-embedded vector. Shared by both
+    /// executors, so the committed shape cannot drift between them.
+    pub(super) fn novel_decision(
+        &self,
+        job: &Job,
+        candidate: &Candidate,
+        embedding: CandidateEmbedding<'_>,
+        tag_data: ResolvedTags,
+    ) -> TriageCommitDecision {
+        let mut all_tags = tag_data.resolved.clone();
+        all_tags.extend(tag_data.new_tags.iter().map(|t| t.tag.clone()));
+
+        let extraction_identity = self.gateway().completion_identity(TaskType::Extraction);
+        let source_context = serde_json::json!({
+            "provider": extraction_identity.name,
+            "model": extraction_identity.model,
+        });
+
+        let knowledge_item = Box::new(
+            NewKnowledgeItem::builder()
+                .project_id(job.project_id())
+                .principal_id(job.principal_id())
+                .kind(candidate.kind())
+                .content(candidate.content().to_owned())
+                .tags(all_tags)
+                .confidence(Confidence::Inferred)
+                .source_context(source_context)
+                .episode_id(job.correlation_id())
+                .build(),
+        );
+
+        TriageCommitDecision::Novel {
+            knowledge_item,
+            embedding_vector: embedding.vector,
+            embedding_model: embedding.profile.model().to_owned(),
+            embedding_profile_id: embedding.profile.id(),
+            suggested_references: candidate.suggested_references().to_vec(),
+            new_tags: tag_data.new_tags,
+            resolved_tags: tag_data.resolved,
+        }
+    }
+}
+
+/// Builds the duplicate commit decision: an observation against the
+/// matched item. Shared by both executors.
+pub(super) fn duplicate_decision(
+    job: &Job,
+    matched_item_id: KnowledgeItemId,
+) -> TriageCommitDecision {
+    let observation = NewItemObservation::builder()
+        .knowledge_item_id(matched_item_id)
+        .principal_id(job.principal_id())
+        .source_type(SourceType::AgentMediated)
+        .build();
+
+    TriageCommitDecision::Duplicate { observation }
 }
 
 // ---------------------------------------------------------------------------

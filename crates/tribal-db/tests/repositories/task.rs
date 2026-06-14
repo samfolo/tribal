@@ -472,6 +472,51 @@ async fn test_heartbeat_wrong_token_returns_zero() {
 }
 
 // ---------------------------------------------------------------------------
+// reset_retry_count
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_reset_retry_count_is_claim_guarded() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgTaskRepository;
+
+    let job_id = setup_task_prerequisites(&mut txn, "progress-reset").await;
+    let inserted = repo
+        .insert(&mut txn, &a_new_task().job_id(job_id).build())
+        .await
+        .expect("insert");
+    tribal_test_utils::set_retry_count(&mut txn, inserted.id(), 3).await;
+
+    let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
+    let task = &claimed[0];
+    assert_eq!(task.retry_count(), 3);
+
+    let refused = repo
+        .reset_retry_count(&mut txn, task.id(), uuid::Uuid::new_v4())
+        .await
+        .expect("reset with wrong token");
+    assert_eq!(refused, 0, "a stale token must not reset progress");
+
+    let rows = repo
+        .reset_retry_count(&mut txn, task.id(), task.claim_token().unwrap())
+        .await
+        .expect("reset");
+    assert_eq!(rows, 1);
+
+    let found = repo
+        .find_by_id(&mut txn, task.id())
+        .await
+        .expect("find_by_id");
+    assert_eq!(found.retry_count(), 0);
+    assert_eq!(
+        found.status(),
+        TaskStatus::Claimed,
+        "the reset touches progress accounting only",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // complete
 // ---------------------------------------------------------------------------
 

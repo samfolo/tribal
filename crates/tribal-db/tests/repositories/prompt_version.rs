@@ -1,5 +1,5 @@
 use tribal_db::{DbError, PgPromptVersionRepository, PromptVersionRepository};
-use tribal_domain::{PromptRole, PromptStage, PromptVersionId};
+use tribal_domain::{PromptClass, PromptRole, PromptStage, PromptVersionId};
 use tribal_test_utils::{a_new_prompt_version, test_context};
 
 // ---------------------------------------------------------------------------
@@ -108,11 +108,11 @@ async fn test_find_by_id_not_found() {
 }
 
 // ---------------------------------------------------------------------------
-// find_by_stage_role_and_hash
+// find_by_slot_and_hash
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_find_by_stage_role_and_hash_returns_prompt_version() {
+async fn test_find_by_slot_and_hash_returns_prompt_version() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
@@ -125,9 +125,10 @@ async fn test_find_by_stage_role_and_hash_returns_prompt_version() {
     let pv = repo.upsert(&mut txn, &new).await.expect("upsert");
 
     let found = repo
-        .find_by_stage_role_and_hash(
+        .find_by_slot_and_hash(
             &mut txn,
             PromptStage::Relation,
+            PromptClass::OneShot,
             PromptRole::System,
             &"d".repeat(64),
         )
@@ -138,15 +139,16 @@ async fn test_find_by_stage_role_and_hash_returns_prompt_version() {
 }
 
 #[tokio::test]
-async fn test_find_by_stage_role_and_hash_returns_none() {
+async fn test_find_by_slot_and_hash_returns_none() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
 
     let found = repo
-        .find_by_stage_role_and_hash(
+        .find_by_slot_and_hash(
             &mut txn,
             PromptStage::Extraction,
+            PromptClass::OneShot,
             PromptRole::System,
             &"f".repeat(64),
         )
@@ -195,7 +197,7 @@ async fn test_upsert_same_stage_hash_different_role_creates_separate_record() {
 }
 
 #[tokio::test]
-async fn test_find_by_stage_role_and_hash_distinguishes_roles() {
+async fn test_find_by_slot_and_hash_distinguishes_roles() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
@@ -227,13 +229,25 @@ async fn test_find_by_stage_role_and_hash_distinguishes_roles() {
         .expect("user upsert");
 
     let found_system = repo
-        .find_by_stage_role_and_hash(&mut txn, PromptStage::Extraction, PromptRole::System, &hash)
+        .find_by_slot_and_hash(
+            &mut txn,
+            PromptStage::Extraction,
+            PromptClass::OneShot,
+            PromptRole::System,
+            &hash,
+        )
         .await
         .expect("find system")
         .expect("system should exist");
 
     let found_user = repo
-        .find_by_stage_role_and_hash(&mut txn, PromptStage::Extraction, PromptRole::User, &hash)
+        .find_by_slot_and_hash(
+            &mut txn,
+            PromptStage::Extraction,
+            PromptClass::OneShot,
+            PromptRole::User,
+            &hash,
+        )
         .await
         .expect("find user")
         .expect("user should exist");

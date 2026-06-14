@@ -13,7 +13,7 @@ use std::{
 use sqlx::PgPool;
 use tribal_common::sha256_hex;
 use tribal_db::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
-use tribal_domain::{PromptRole, PromptStage, PromptVersionId};
+use tribal_domain::{PromptClass, PromptRole, PromptStage, PromptVersionId};
 use tribal_mcp::ActivePromptVersions;
 
 use super::POOL_NAME_MCP;
@@ -29,16 +29,46 @@ const TRIAGE_SYSTEM: &str = include_str!("../../../../prompts/triage/system.tera
 const TRIAGE_USER: &str = include_str!("../../../../prompts/triage/user.tera");
 const RELATION_SYSTEM: &str = include_str!("../../../../prompts/relation/system.tera");
 const RELATION_USER: &str = include_str!("../../../../prompts/relation/user.tera");
+const TRIAGE_LOOP_SYSTEM: &str = include_str!("../../../../prompts/triage/loop_system.tera");
+const TRIAGE_LOOP_USER: &str = include_str!("../../../../prompts/triage/loop_user.tera");
+const TRIAGE_VERIFIER_SYSTEM: &str =
+    include_str!("../../../../prompts/triage/verifier_system.tera");
+const TRIAGE_VERIFIER_USER: &str = include_str!("../../../../prompts/triage/verifier_user.tera");
 
 /// Returns the embedded default content for a given location.
-fn embedded_default(location: PromptTemplateLocation) -> &'static str {
-    match (location.stage, location.role) {
-        (PromptStage::Extraction, PromptRole::System) => EXTRACTION_SYSTEM,
-        (PromptStage::Extraction, PromptRole::User) => EXTRACTION_USER,
-        (PromptStage::Triage, PromptRole::System) => TRIAGE_SYSTEM,
-        (PromptStage::Triage, PromptRole::User) => TRIAGE_USER,
-        (PromptStage::Relation, PromptRole::System) => RELATION_SYSTEM,
-        (PromptStage::Relation, PromptRole::User) => RELATION_USER,
+///
+/// Nested per axis: the class arm owns which stages it serves, so a
+/// class that gains a stage extends one arm here and the vocabulary in
+/// [`PromptTemplateLocation::ALL`]. A pairing outside the vocabulary
+/// (constructible from a raw tuple) is a clean error, never a panic.
+fn embedded_default(location: PromptTemplateLocation) -> Result<&'static str, AppError> {
+    let slot_error = || AppError::PromptValidation {
+        context: format!(
+            "no embedded default exists for {}/{}/{}",
+            location.stage.as_str(),
+            location.class.as_str(),
+            location.role.as_str(),
+        ),
+    };
+    match location.class {
+        PromptClass::OneShot => Ok(match (location.stage, location.role) {
+            (PromptStage::Extraction, PromptRole::System) => EXTRACTION_SYSTEM,
+            (PromptStage::Extraction, PromptRole::User) => EXTRACTION_USER,
+            (PromptStage::Triage, PromptRole::System) => TRIAGE_SYSTEM,
+            (PromptStage::Triage, PromptRole::User) => TRIAGE_USER,
+            (PromptStage::Relation, PromptRole::System) => RELATION_SYSTEM,
+            (PromptStage::Relation, PromptRole::User) => RELATION_USER,
+        }),
+        PromptClass::Loop => match (location.stage, location.role) {
+            (PromptStage::Triage, PromptRole::System) => Ok(TRIAGE_LOOP_SYSTEM),
+            (PromptStage::Triage, PromptRole::User) => Ok(TRIAGE_LOOP_USER),
+            (PromptStage::Extraction | PromptStage::Relation, _) => Err(slot_error()),
+        },
+        PromptClass::Verifier => match (location.stage, location.role) {
+            (PromptStage::Triage, PromptRole::System) => Ok(TRIAGE_VERIFIER_SYSTEM),
+            (PromptStage::Triage, PromptRole::User) => Ok(TRIAGE_VERIFIER_USER),
+            (PromptStage::Extraction | PromptStage::Relation, _) => Err(slot_error()),
+        },
     }
 }
 
@@ -59,41 +89,50 @@ const EXPECT_VERSION: &str = "all prompt pairs must be loaded";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct PromptTemplateLocation {
     stage: PromptStage,
+    class: PromptClass,
     role: PromptRole,
 }
 
 impl PromptTemplateLocation {
-    /// All (stage, role) pairs in canonical order.
-    pub(crate) const ALL: [Self; 6] = [
-        Self {
-            stage: PromptStage::Extraction,
-            role: PromptRole::System,
-        },
-        Self {
-            stage: PromptStage::Extraction,
-            role: PromptRole::User,
-        },
-        Self {
-            stage: PromptStage::Triage,
-            role: PromptRole::System,
-        },
-        Self {
-            stage: PromptStage::Triage,
-            role: PromptRole::User,
-        },
-        Self {
-            stage: PromptStage::Relation,
-            role: PromptRole::System,
-        },
-        Self {
-            stage: PromptStage::Relation,
-            role: PromptRole::User,
-        },
+    /// Every template slot in canonical order: the single authority on
+    /// which (stage, class) pairings exist. The loop and verifier
+    /// classes serve triage only in this release; admitting another
+    /// stage is an addition here, never a new match arm elsewhere.
+    pub(crate) const ALL: [Self; 10] = [
+        Self::one_shot(PromptStage::Extraction, PromptRole::System),
+        Self::one_shot(PromptStage::Extraction, PromptRole::User),
+        Self::one_shot(PromptStage::Triage, PromptRole::System),
+        Self::one_shot(PromptStage::Triage, PromptRole::User),
+        Self::one_shot(PromptStage::Relation, PromptRole::System),
+        Self::one_shot(PromptStage::Relation, PromptRole::User),
+        Self::new(PromptStage::Triage, PromptClass::Loop, PromptRole::System),
+        Self::new(PromptStage::Triage, PromptClass::Loop, PromptRole::User),
+        Self::new(
+            PromptStage::Triage,
+            PromptClass::Verifier,
+            PromptRole::System,
+        ),
+        Self::new(PromptStage::Triage, PromptClass::Verifier, PromptRole::User),
     ];
+
+    /// Builds a location.
+    pub(crate) const fn new(stage: PromptStage, class: PromptClass, role: PromptRole) -> Self {
+        Self { stage, class, role }
+    }
+
+    /// Builds a launched one-shot location.
+    pub(crate) const fn one_shot(stage: PromptStage, role: PromptRole) -> Self {
+        Self::new(stage, PromptClass::OneShot, role)
+    }
 
     /// Returns the pipeline stage.
     pub(crate) fn stage(self) -> PromptStage {
         self.stage
+    }
+
+    /// Returns the executor class.
+    pub(crate) fn class(self) -> PromptClass {
+        self.class
     }
 
     /// Returns the prompt role.
@@ -101,11 +140,24 @@ impl PromptTemplateLocation {
         self.role
     }
 
+    /// Returns the file stem encoding this slot: the launched one-shot
+    /// pair keeps its bare role names, other classes prefix theirs.
+    /// [`Self::from_path`] is the inverse; the stem grammar lives only
+    /// in these two functions.
+    fn file_stem(self) -> String {
+        match self.class {
+            PromptClass::OneShot => self.role.as_str().to_owned(),
+            PromptClass::Loop | PromptClass::Verifier => {
+                format!("{}_{}", self.class.as_str(), self.role.as_str())
+            }
+        }
+    }
+
     /// Resolves the full file path under the given prompts directory.
     pub(crate) fn resolve(self, prompts_dir: &Path) -> PathBuf {
         prompts_dir
             .join(self.stage.as_str())
-            .join(format!("{}.{PROMPT_FILE_EXTENSION}", self.role.as_str()))
+            .join(format!("{}.{PROMPT_FILE_EXTENSION}", self.file_stem()))
     }
 
     /// Attempts to parse a file path back into a location.
@@ -129,15 +181,25 @@ impl PromptTemplateLocation {
         }
 
         let stage = PromptStage::from_str(stage_str).ok()?;
-        let role = PromptRole::from_str(role_str).ok()?;
+        let (class, role) = match role_str.split_once('_') {
+            None => (PromptClass::OneShot, PromptRole::from_str(role_str).ok()?),
+            Some((class_str, rest)) => (
+                PromptClass::from_str(class_str).ok()?,
+                PromptRole::from_str(rest).ok()?,
+            ),
+        };
 
-        Some(Self { stage, role })
+        // Membership in the vocabulary is the guard: a stray file pairing
+        // a stage with a class it does not serve parses but is not a
+        // recognised template.
+        let location = Self { stage, class, role };
+        Self::ALL.contains(&location).then_some(location)
     }
 }
 
-impl From<(PromptStage, PromptRole)> for PromptTemplateLocation {
-    fn from((stage, role): (PromptStage, PromptRole)) -> Self {
-        Self { stage, role }
+impl From<(PromptStage, PromptClass, PromptRole)> for PromptTemplateLocation {
+    fn from((stage, class, role): (PromptStage, PromptClass, PromptRole)) -> Self {
+        Self { stage, class, role }
     }
 }
 
@@ -171,7 +233,7 @@ pub(crate) async fn ensure_prompt_files(prompts_dir: &Path) -> Result<(), AppErr
                     source,
                 })?;
         if !exists {
-            let content = embedded_default(*location);
+            let content = embedded_default(*location)?;
             tokio::fs::write(&file_path, content)
                 .await
                 .map_err(|source| AppError::PromptIo {
@@ -208,7 +270,7 @@ pub(crate) async fn load_prompts(
     upsert_prompt_versions(pool, contents).await
 }
 
-/// Hashes and upserts the six prompts compiled into the binary.
+/// Hashes and upserts the embedded prompts compiled into the binary.
 ///
 /// Used when [`PromptSource::Embedded`](tribal_config::PromptSource::Embedded)
 /// is in effect: no filesystem IO, no user-editable files. The on-disk
@@ -216,8 +278,20 @@ pub(crate) async fn load_prompts(
 pub(crate) async fn load_prompts_embedded(pool: &PgPool) -> Result<ActivePromptVersions, AppError> {
     let contents = PromptTemplateLocation::ALL
         .into_iter()
-        .map(|location| (location, embedded_default(location).to_owned()));
+        .map(|location| Ok((location, embedded_default(location)?.to_owned())))
+        .collect::<Result<Vec<_>, AppError>>()?;
     upsert_prompt_versions(pool, contents).await
+}
+
+/// Removes a launched one-shot slot's version from the loaded map.
+fn take_launched(
+    versions: &mut HashMap<PromptTemplateLocation, PromptVersionId>,
+    stage: PromptStage,
+    role: PromptRole,
+) -> PromptVersionId {
+    versions
+        .remove(&PromptTemplateLocation::one_shot(stage, role))
+        .expect(EXPECT_VERSION)
 }
 
 /// Hashes each `(location, content)` pair and upserts via the prompt-version
@@ -236,7 +310,7 @@ async fn upsert_prompt_versions(
         .await
         .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "prompt loading", e))?;
 
-    let mut versions: HashMap<(PromptStage, PromptRole), PromptVersionId> =
+    let mut versions: HashMap<PromptTemplateLocation, PromptVersionId> =
         HashMap::with_capacity(PromptTemplateLocation::ALL.len());
 
     for (location, content) in contents {
@@ -246,6 +320,7 @@ async fn upsert_prompt_versions(
 
         let new = NewPromptVersion::builder()
             .stage(stage)
+            .class(location.class())
             .role(role)
             .content_hash(content_hash)
             .content(content)
@@ -261,34 +336,27 @@ async fn upsert_prompt_versions(
 
         tracing::info!(
             stage = stage.as_str(),
+            class = location.class().as_str(),
             role = role.as_str(),
             version_id = %version.id(),
             "loaded prompt version",
         );
 
-        versions.insert((stage, role), version.id());
+        versions.insert(location, version.id());
     }
 
-    Ok(ActivePromptVersions::new(
-        versions
-            .remove(&(PromptStage::Extraction, PromptRole::System))
-            .expect(EXPECT_VERSION),
-        versions
-            .remove(&(PromptStage::Extraction, PromptRole::User))
-            .expect(EXPECT_VERSION),
-        versions
-            .remove(&(PromptStage::Triage, PromptRole::System))
-            .expect(EXPECT_VERSION),
-        versions
-            .remove(&(PromptStage::Triage, PromptRole::User))
-            .expect(EXPECT_VERSION),
-        versions
-            .remove(&(PromptStage::Relation, PromptRole::System))
-            .expect(EXPECT_VERSION),
-        versions
-            .remove(&(PromptStage::Relation, PromptRole::User))
-            .expect(EXPECT_VERSION),
-    ))
+    let mut active = ActivePromptVersions::new(
+        take_launched(&mut versions, PromptStage::Extraction, PromptRole::System),
+        take_launched(&mut versions, PromptStage::Extraction, PromptRole::User),
+        take_launched(&mut versions, PromptStage::Triage, PromptRole::System),
+        take_launched(&mut versions, PromptStage::Triage, PromptRole::User),
+        take_launched(&mut versions, PromptStage::Relation, PromptRole::System),
+        take_launched(&mut versions, PromptStage::Relation, PromptRole::User),
+    );
+    for (location, id) in versions {
+        active.set_version(location.stage(), location.class(), location.role(), id);
+    }
+    Ok(active)
 }
 
 // ---------------------------------------------------------------------------
@@ -304,11 +372,12 @@ mod tests {
     #[test]
     fn test_embedded_defaults_are_non_empty() {
         for location in &PromptTemplateLocation::ALL {
-            let content = embedded_default(*location);
+            let content = embedded_default(*location).expect("every vocabulary slot has a default");
             assert!(
                 !content.is_empty(),
-                "embedded default for {}/{} is empty",
+                "embedded default for {}/{}/{} is empty",
                 location.stage(),
+                location.class(),
                 location.role(),
             );
         }
@@ -328,19 +397,35 @@ mod tests {
             .flat_map(|s| all_roles.iter().map(move |r| (*s, *r)))
             .collect();
 
-        let actual: HashSet<(PromptStage, PromptRole)> = PromptTemplateLocation::ALL
+        let one_shot: HashSet<(PromptStage, PromptRole)> = PromptTemplateLocation::ALL
             .iter()
+            .filter(|l| l.class() == PromptClass::OneShot)
             .map(|l| (l.stage(), l.role()))
             .collect();
 
         assert_eq!(
-            actual, expected,
-            "ALL must cover all stage×role combinations"
+            one_shot, expected,
+            "the one-shot class must cover all stage×role combinations"
         );
+        for class in [PromptClass::Loop, PromptClass::Verifier] {
+            let roles: HashSet<(PromptStage, PromptRole)> = PromptTemplateLocation::ALL
+                .iter()
+                .filter(|l| l.class() == class)
+                .map(|l| (l.stage(), l.role()))
+                .collect();
+            assert_eq!(
+                roles,
+                HashSet::from([
+                    (PromptStage::Triage, PromptRole::System),
+                    (PromptStage::Triage, PromptRole::User),
+                ]),
+                "the {class} class serves the triage pair in this release"
+            );
+        }
         assert_eq!(
             PromptTemplateLocation::ALL.len(),
-            6,
-            "ALL must contain exactly 6 entries"
+            10,
+            "ALL must contain exactly 10 entries"
         );
     }
 
@@ -353,8 +438,9 @@ mod tests {
             assert_eq!(
                 parsed,
                 Some(*location),
-                "from_path should invert resolve for {}/{}",
+                "from_path should invert resolve for {}/{}/{}",
                 location.stage(),
+                location.class(),
                 location.role(),
             );
         }
@@ -422,16 +508,18 @@ mod tests {
                 file_path.exists(),
                 "expected {}/{}.tera to exist",
                 location.stage(),
-                location.role(),
+                location.file_stem(),
             );
 
             let content = std::fs::read_to_string(&file_path).expect("should read file");
-            let expected = embedded_default(*location);
+            let expected =
+                embedded_default(*location).expect("every vocabulary slot has a default");
             assert_eq!(
                 content,
                 expected,
-                "content mismatch for {}/{}",
+                "content mismatch for {}/{}/{}",
                 location.stage(),
+                location.class(),
                 location.role(),
             );
         }
@@ -447,7 +535,7 @@ mod tests {
             .expect("initial write");
 
         let custom = "custom content";
-        let target = PromptTemplateLocation::from((PromptStage::Extraction, PromptRole::System));
+        let target = PromptTemplateLocation::one_shot(PromptStage::Extraction, PromptRole::System);
         let custom_path = target.resolve(prompts_dir);
         std::fs::write(&custom_path, custom).expect("should overwrite");
 
@@ -486,11 +574,13 @@ mod tests {
 
         for location in &PromptTemplateLocation::ALL {
             let stage = location.stage();
+            let class = location.class();
             let role = location.role();
             assert_eq!(
-                embedded.get_version(stage, role),
-                disk.get_version(stage, role),
-                "embedded and disk paths must produce equal version IDs for {stage}/{role}",
+                embedded.get_version(stage, class, role),
+                disk.get_version(stage, class, role),
+                "embedded and disk paths must produce equal version IDs for \
+                 {stage}/{class}/{role}",
             );
         }
     }

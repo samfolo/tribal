@@ -9,7 +9,9 @@ use tribal_domain::{
 };
 use tribal_inference::PermitWait;
 
-use super::{StageCommit, map_gateway_error, record_prompt_version_ids, stage_attribution};
+use super::{
+    StageCommit, StageTerminal, map_gateway_error, record_prompt_version_ids, stage_attribution,
+};
 use crate::{
     common::PARSE_PREVIEW_LENGTH,
     error::{STAGE_EXTRACTION, StageError},
@@ -76,7 +78,7 @@ impl Worker {
         task: &Task,
         deadline: tokio::time::Instant,
         stage_thread: &StageThread,
-    ) -> Result<(StageCommit, Option<CompletionResponse>), StageError> {
+    ) -> Result<Option<(StageCommit, StageTerminal)>, StageError> {
         let span = tracing::info_span!(
             "tribal.task.extraction",
             { span_attrs::TASK_ID } = %task.id(),
@@ -123,14 +125,14 @@ impl Worker {
             if include_llm_content {
                 tracing::debug!(
                     system_prompt = %request.system.as_deref().unwrap_or(""),
-                    user_prompt = %request.messages.first().map_or("", |m| m.content.as_str()),
+                    user_prompt = %request.messages.first().map_or("", |m| m.content()),
                     "extraction prompt assembled",
                 );
             }
 
             // Extraction output stands alone (no positional references
             // into rendered context), so no resolution context is recorded.
-            let request = self
+            let Some(bracketed) = self
                 .bracket_one_shot(
                     STAGE_EXTRACTION,
                     stage_thread,
@@ -140,7 +142,10 @@ impl Worker {
                     None,
                 )
                 .await?
-                .request;
+            else {
+                return Ok(None);
+            };
+            let request = bracketed.request;
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = self
                 .gateway()
@@ -192,15 +197,15 @@ impl Worker {
                 .relation_hints(serde_json::to_value(&capped_hints).expect(HINTS_SERIALISE))
                 .build();
 
-            Ok((
+            Ok(Some((
                 StageCommit::Extraction {
                     extraction_result,
                     triage_tasks,
                     batch_size,
                     original_count,
                 },
-                Some(response),
-            ))
+                StageTerminal::Completion(Some(response)),
+            )))
         }
         .instrument(span)
         .await

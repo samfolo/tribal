@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
-use tribal_config::{ServerConfig, WorkerConfig};
+use tribal_config::{AgentsConfig, ServerConfig, WorkerConfig};
 use tribal_domain::{GitRemote, PipelineParameters, ProjectId};
 use tribal_inference::{CompletionStageSpecs, InferenceGateway, ProviderIdentity};
 use tribal_telemetry::MetricsRecorder;
@@ -123,6 +123,10 @@ pub struct AppState {
 
     /// Job-level pipeline parameters for fingerprint computation.
     pub(crate) pipeline_parameters: PipelineParameters,
+
+    /// The agentic execution configuration the stage binding hashes
+    /// derive from.
+    pub(crate) agents_config: AgentsConfig,
 
     // -- Config --------------------------------------------------------------
     /// Worker configuration (concurrency, timeouts, thresholds).

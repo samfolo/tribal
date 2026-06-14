@@ -39,26 +39,29 @@ pub use paths::{
 pub use redact::redact_secrets;
 pub use render::{ConfigPersistence, render_minimal_config, render_persisted_config};
 pub use sections::{
-    Auth, AuthConfig, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX,
+    AgentsConfig, Auth, AuthConfig, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX,
     CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX, CREDENTIALS_WRITE_FAILED_PREFIX,
     CREDENTIALS_WRITE_FAILED_SUFFIX, CredentialCatalogue, CredentialEntry, Credentials,
     CredentialsPermissions, CredentialsReadError, CredentialsWriteError,
-    DEFAULT_ACCESS_TOKEN_TTL_HOURS, DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS, DEFAULT_BIND_ADDRESS,
-    DEFAULT_DISCOVERY_LIMIT, DEFAULT_DISCOVERY_MAX_LIMIT, DEFAULT_EMBEDDING_DIMENSIONS,
-    DEFAULT_EMBEDDING_MODEL, DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT,
-    DEFAULT_EXPLORATION_MAX_DEPTH, DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OVERFETCH_MULTIPLIER,
-    DEFAULT_SIMILARITY_THRESHOLD, DatabaseConfig, DiscoveryConfig, ExplorationConfig, FileRotation,
+    DEFAULT_ACCESS_TOKEN_TTL_HOURS, DEFAULT_AGENTIC_EXECUTION_DEADLINE_SECONDS,
+    DEFAULT_AGENTIC_MAX_TOTAL_TOKENS, DEFAULT_AGENTIC_MAX_TURNS, DEFAULT_AGENTIC_RECHECK_BOUND,
+    DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS, DEFAULT_AGENTIC_VERIFY_ROUNDS,
+    DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS, DEFAULT_BIND_ADDRESS, DEFAULT_DISCOVERY_LIMIT,
+    DEFAULT_DISCOVERY_MAX_LIMIT, DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT, DEFAULT_EXPLORATION_MAX_DEPTH,
+    DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD,
+    DatabaseConfig, DiscoveryConfig, ExecutorChoice, ExplorationConfig, FileRotation,
     InferenceConfig, InitConfig, InitEmbeddingConfig, LimitsConfig, LoadedCredentials, LogFormat,
     LogOutput, LoggingConfig, MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_LIFECYCLE_DURATION_MS,
     MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS, MIN_AUTHORIZATION_CODE_TTL_SECONDS, MissingApiKey,
     MissingApiKeyKind, OAuthConfig, PromptSource, PromptsConfig, ProviderLimitsConfig,
-    ServerConfig, SseConfig, StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig,
-    VERSION, WorkerConfig, advertised_oauth_host, oauth_onboarding_is_url_only,
-    oauth_surface_is_routable, read_credentials, write_credentials,
+    ServerConfig, SseConfig, StageAgentConfig, StageInferenceConfig, TelemetryConfig,
+    TransportKind, TribalConfig, VERSION, WorkerConfig, advertised_oauth_host,
+    oauth_onboarding_is_url_only, oauth_surface_is_routable, read_credentials, write_credentials,
 };
 pub use validation::{
     ComputedFloor, ConfigPath, Diagnostics, Endpoint, FieldValue, Inclusion, NumericRange,
-    OrderRelation, PUBLIC_MCP_URL_REQUIREMENT, ProviderStage, ValidationError,
+    OrderRelation, PUBLIC_MCP_URL_REQUIREMENT, ProviderStage, ValidationError, config_warnings,
     is_valid_public_mcp_url, validate,
 };
 

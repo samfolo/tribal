@@ -137,7 +137,7 @@ impl Worker {
         // paths. A task with no thread predates the runtime and keeps the
         // legacy SQL CASE.
         let thread = PgAgentThreadRepository
-            .find_by_stage_task(&mut txn, task.id())
+            .find_by_stage_task_id(&mut txn, task.id())
             .await?;
 
         let task_dead_lettered = if let Some(thread) = &thread {

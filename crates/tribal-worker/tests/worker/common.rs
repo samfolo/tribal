@@ -136,6 +136,29 @@ pub(super) async fn build_test_worker_with_watch(
     inference: Option<Arc<dyn InferenceProvider>>,
     embedding: Option<Arc<dyn EmbeddingProvider>>,
 ) -> (Arc<Worker>, JobStateTxs) {
+    build_agentic_test_worker(
+        pool,
+        cancellation_token,
+        config,
+        inference,
+        embedding,
+        tribal_config::AgentsConfig::default(),
+        Arc::new(tribal_worker::NoAgenticPrompts),
+    )
+    .await
+}
+
+/// Like [`build_test_worker_with_watch`] with an agentic configuration
+/// and prompt source, for tests that select the loop executor.
+pub(super) async fn build_agentic_test_worker(
+    pool: sqlx::PgPool,
+    cancellation_token: CancellationToken,
+    config: WorkerConfig,
+    inference: Option<Arc<dyn InferenceProvider>>,
+    embedding: Option<Arc<dyn EmbeddingProvider>>,
+    agents: tribal_config::AgentsConfig,
+    active_prompts: Arc<dyn tribal_worker::ActiveAgenticPrompts>,
+) -> (Arc<Worker>, JobStateTxs) {
     let inference: Arc<dyn InferenceProvider> = inference.unwrap_or_else(|| {
         Arc::new(
             MockInferenceProvider::builder()
@@ -217,6 +240,8 @@ pub(super) async fn build_test_worker_with_watch(
         pool,
         gateway,
         test_stage_specs(),
+        agents,
+        active_prompts,
         cancellation_token,
         config,
         false,

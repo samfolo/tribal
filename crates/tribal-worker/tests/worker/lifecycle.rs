@@ -559,12 +559,12 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
     // of its turn persisted: the thread stays running with the lone
     // adopted input record and no assistant message.
     let thread = PgAgentThreadRepository
-        .find_by_stage_task(&mut conn, task_id)
+        .find_by_stage_task_id(&mut conn, task_id)
         .await
         .expect("find thread")
         .expect("the executed task drives a thread");
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, thread.id())
+        .find_by_thread_id(&mut conn, thread.id())
         .await
         .expect("read the log");
     assert!(

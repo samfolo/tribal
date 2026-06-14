@@ -9,16 +9,18 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::{CompletionResponse, CompletionUsage, ProviderKind, gen_ai, span_attrs};
+use tribal_domain::{
+    CompletionResponse, CompletionUsage, ProviderKind, ToolCall, gen_ai, span_attrs,
+};
 
 use super::streaming::OpenAiStreamTranslator;
 use crate::{
-    CompletionRequest, InferenceError, InferenceProvider, ProviderIdentity, ResponseFormat,
-    apply_dialect,
+    CompletionRequest, InferenceError, InferenceProvider, Message, ProviderIdentity,
+    ResponseFormat, apply_dialect,
     capabilities::{MaxOutputTokensParam, StructuredOutputMode, reconcile_temperature, resolve},
     error::{map_body_read_error, map_json_parse_error, map_send_error},
     http::{ensure_success, normalise_base_url, record_completion_usage},
-    stream::{InferenceEventStream, WireMode, drive_event_stream},
+    stream::{InferenceEventStream, WireMode, drive_event_stream, parse_tool_arguments},
 };
 
 // ---------------------------------------------------------------------------
@@ -49,6 +51,8 @@ const TOKEN_CAP_RENAMED: &str =
 struct OpenAiChatRequest<'a> {
     model: &'a str,
     messages: Vec<OpenAiChatMessage<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<OpenAiTool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -68,10 +72,50 @@ struct OpenAiStreamOptions {
     include_usage: bool,
 }
 
+/// A chat message on the wire. A plain message serialises exactly as it
+/// always has (`role` + `content`); the tool fields appear only on the
+/// turns that carry them, so a tools-free request body is byte-identical
+/// to its pre-tools form.
 #[derive(serde::Serialize)]
 struct OpenAiChatMessage<'a> {
     role: &'a str,
-    content: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<OpenAiToolCallOut<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<&'a str>,
+}
+
+#[derive(serde::Serialize)]
+struct OpenAiToolCallOut<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: OpenAiFunctionCallOut<'a>,
+}
+
+/// The wire encodes function arguments as a JSON-encoded string, not an
+/// object.
+#[derive(serde::Serialize)]
+struct OpenAiFunctionCallOut<'a> {
+    name: &'a str,
+    arguments: String,
+}
+
+#[derive(serde::Serialize)]
+struct OpenAiTool {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: OpenAiToolFunction,
+}
+
+#[derive(serde::Serialize)]
+struct OpenAiToolFunction {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+    strict: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -88,6 +132,20 @@ struct OpenAiChoice {
 #[derive(serde::Deserialize)]
 struct OpenAiChoiceMessage {
     content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<OpenAiToolCallIn>,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiToolCallIn {
+    id: String,
+    function: OpenAiFunctionCallIn,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiFunctionCallIn {
+    name: String,
+    arguments: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -230,12 +288,31 @@ impl InferenceProvider for OpenAiInferenceProvider {
                         actual: "choices array is empty".to_owned(),
                     })?;
 
-            let text = choice.message.content.clone().ok_or_else(|| {
-                InferenceError::ResponseParseFailed {
-                    expected_shape: "choices[0].message.content present".to_owned(),
-                    actual: "choices[0].message.content is null".to_owned(),
+            let tool_calls = choice
+                .message
+                .tool_calls
+                .iter()
+                .map(|call| {
+                    Ok(ToolCall {
+                        id: call.id.clone(),
+                        name: call.function.name.clone(),
+                        arguments: parse_tool_arguments(&call.function.arguments)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, InferenceError>>()?;
+            // A tool-call turn legitimately carries no text; a response
+            // with neither is the empty response it always was.
+            let text = match choice.message.content.clone() {
+                Some(text) => text,
+                None if !tool_calls.is_empty() => String::new(),
+                None => {
+                    return Err(InferenceError::ResponseParseFailed {
+                        expected_shape: "choices[0].message.content or tool_calls present"
+                            .to_owned(),
+                        actual: "content is null and tool_calls is empty".to_owned(),
+                    });
                 }
-            })?;
+            };
 
             let usage = CompletionUsage {
                 provider: PROVIDER_NAME.to_owned(),
@@ -249,7 +326,11 @@ impl InferenceProvider for OpenAiInferenceProvider {
             };
             record_completion_usage(&usage);
 
-            Ok(CompletionResponse { text, usage })
+            Ok(CompletionResponse {
+                text,
+                tool_calls,
+                usage,
+            })
         }
         .instrument(span)
         .await
@@ -288,14 +369,48 @@ fn build_request<'a>(
     if let Some(ref system) = request.system {
         messages.push(OpenAiChatMessage {
             role: "system",
-            content: system,
+            content: Some(system),
+            tool_calls: vec![],
+            tool_call_id: None,
         });
     }
 
     for msg in &request.messages {
-        messages.push(OpenAiChatMessage {
-            role: msg.role.as_str(),
-            content: &msg.content,
+        messages.push(match msg {
+            Message::User { content } => OpenAiChatMessage {
+                role: "user",
+                content: Some(content),
+                tool_calls: vec![],
+                tool_call_id: None,
+            },
+            Message::Assistant {
+                content,
+                tool_calls,
+            } => OpenAiChatMessage {
+                role: "assistant",
+                content: (!content.is_empty()).then_some(content.as_str()),
+                tool_calls: tool_calls
+                    .iter()
+                    .map(|call| OpenAiToolCallOut {
+                        id: &call.id,
+                        kind: "function",
+                        function: OpenAiFunctionCallOut {
+                            name: &call.name,
+                            arguments: call.arguments.to_string(),
+                        },
+                    })
+                    .collect(),
+                tool_call_id: None,
+            },
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => OpenAiChatMessage {
+                role: "tool",
+                content: Some(content),
+                tool_calls: vec![],
+                tool_call_id: Some(tool_call_id),
+            },
         });
     }
 
@@ -316,10 +431,25 @@ fn build_request<'a>(
         }
     };
 
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| OpenAiTool {
+            kind: "function",
+            function: OpenAiToolFunction {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                parameters: apply_dialect(ProviderKind::OpenAi, tool.input_schema.clone()),
+                strict: caps.structured_output_mode.requires_strict(),
+            },
+        })
+        .collect();
+
     let streaming = mode == WireMode::Streaming;
     OpenAiChatRequest {
         model,
         messages,
+        tools,
         temperature,
         max_tokens,
         max_completion_tokens,
@@ -366,17 +496,17 @@ mod tests {
 
     use super::*;
     use crate::{
-        Message, Role,
+        Message,
         http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS},
     };
 
     fn a_request(content: &str) -> CompletionRequest {
         CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: content.to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,
@@ -501,15 +631,171 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: Some("You are helpful.".to_owned()),
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "hi".to_owned(),
+            }],
+            tools: vec![],
+            temperature: None,
+            max_tokens: None,
+            response_format: None,
+        };
+        let _ = provider.complete(request).await.unwrap();
+    }
+
+    // -- Tools -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_chat_sends_tools_and_tool_turns() {
+        let server = MockServer::start().await;
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": false,
+        });
+
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .and(body_json(serde_json::json!({
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "user", "content": "find duplicates"},
+                    // An assistant tool-call turn carries no content key;
+                    // the wire encodes arguments as a JSON string.
+                    {"role": "assistant", "tool_calls": [{
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{\"query\":\"indexing\"}"},
+                    }]},
+                    {"role": "tool", "content": "[]", "tool_call_id": "call_a"},
+                ],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "description": "Project-scoped similarity search.",
+                        "parameters": apply_dialect(ProviderKind::OpenAi, schema.clone()),
+                        "strict": true,
+                    },
+                }],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let request = CompletionRequest {
+            system: None,
+            messages: vec![
+                Message::User {
+                    content: "find duplicates".to_owned(),
+                },
+                Message::Assistant {
+                    content: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "call_a".to_owned(),
+                        name: "search".to_owned(),
+                        arguments: serde_json::json!({"query": "indexing"}),
+                    }],
+                },
+                Message::Tool {
+                    tool_call_id: "call_a".to_owned(),
+                    content: "[]".to_owned(),
+                },
+            ],
+            tools: vec![crate::ToolWireDefinition {
+                name: "search".to_owned(),
+                description: "Project-scoped similarity search.".to_owned(),
+                input_schema: schema,
             }],
             temperature: None,
             max_tokens: None,
             response_format: None,
         };
         let _ = provider.complete(request).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_chat_parses_a_tool_call_only_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{\"query\": \"indexing\"}"},
+                    }],
+                }}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let response = provider.complete(a_request("test")).await.unwrap();
+        assert_eq!(response.text, "");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "call_a");
+        assert_eq!(response.tool_calls[0].name, "search");
+        assert_eq!(
+            response.tool_calls[0].arguments,
+            serde_json::json!({"query": "indexing"})
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chat_unparseable_tool_arguments_fail() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{not json"},
+                    }],
+                }}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let err = provider.complete(a_request("test")).await.unwrap_err();
+        assert!(
+            matches!(err, InferenceError::ResponseParseFailed { .. }),
+            "expected ResponseParseFailed for unparseable arguments, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chat_neither_content_nor_tool_calls_fails() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": null}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let err = provider.complete(a_request("test")).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                InferenceError::ResponseParseFailed { ref expected_shape, .. }
+                if expected_shape == "choices[0].message.content or tool_calls present"
+            ),
+            "expected ResponseParseFailed for an empty message, got {err:?}"
+        );
     }
 
     // -- Auth headers --------------------------------------------------------
@@ -551,10 +837,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: Some(ResponseFormat::Json),
@@ -601,10 +887,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: Some(ResponseFormat::JsonSchema { schema }),
@@ -683,10 +969,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: Some(0.7),
             max_tokens: Some(100),
             response_format: None,
@@ -719,10 +1005,10 @@ mod tests {
             OpenAiInferenceProvider::new(reqwest::Client::new(), server.uri(), "o3", "test-key");
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: Some(0.7),
             max_tokens: Some(100),
             response_format: None,
@@ -736,20 +1022,20 @@ mod tests {
         // yields the same admissible field set regardless of caller.
         let probe = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: INFERENCE_PROBE_INPUT.to_owned(),
             }],
+            tools: vec![],
             temperature: Some(0.0),
             max_tokens: Some(PROBE_MAX_TOKENS),
             response_format: None,
         };
         let ingest = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "real input".to_owned(),
             }],
+            tools: vec![],
             temperature: Some(0.5),
             max_tokens: Some(512),
             response_format: None,
@@ -778,6 +1064,7 @@ mod tests {
         let request = CompletionRequest {
             system: None,
             messages: vec![],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,
@@ -1033,49 +1320,6 @@ mod tests {
                     && actual.starts_with("invalid JSON:")
             ),
             "expected ResponseParseFailed with shape and JSON error, got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_chat_null_content_returns_response_parse_failed() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path(CHAT_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": "chatcmpl-test",
-                "object": "chat.completion",
-                "model": "gpt-4o-mini",
-                "choices": [{
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": null,
-                    },
-                    "finish_reason": "stop",
-                }],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 0,
-                    "total_tokens": 10,
-                },
-            })))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server);
-        let err = provider.complete(a_request("test")).await.unwrap_err();
-
-        assert!(
-            matches!(
-                err,
-                InferenceError::ResponseParseFailed {
-                    ref expected_shape,
-                    ref actual,
-                }
-                if expected_shape == "choices[0].message.content present"
-                    && actual == "choices[0].message.content is null"
-            ),
-            "expected ResponseParseFailed for null content, got {err:?}"
         );
     }
 

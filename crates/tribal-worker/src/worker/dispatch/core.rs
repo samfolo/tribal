@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tribal_common::{JobStateTxs, POOL_NAME_WORKER, clamp_to_u32};
-use tribal_config::WorkerConfig;
+use tribal_config::{AgentsConfig, WorkerConfig};
 use tribal_db::{
     JobRepository, JobStatusTransition, NewTask, PgJobRepository, PgPrincipalRepository,
     PgTaskRepository, PrincipalRepository, TaskRepository,
@@ -57,6 +57,10 @@ pub struct Worker {
     gateway: Arc<InferenceGateway>,
     /// The boot-time stage endpoints the default bindings derive from.
     stage_specs: CompletionStageSpecs,
+    /// The agentic execution configuration the bindings derive from.
+    agents: AgentsConfig,
+    /// The hot-reload-coherent agentic prompt slots, read at claim.
+    active_prompts: Arc<dyn crate::ActiveAgenticPrompts>,
     cancellation_token: CancellationToken,
     config: WorkerConfig,
     include_llm_content: bool,
@@ -79,6 +83,8 @@ impl Worker {
         pool: PgPool,
         gateway: Arc<InferenceGateway>,
         stage_specs: CompletionStageSpecs,
+        agents: AgentsConfig,
+        active_prompts: Arc<dyn crate::ActiveAgenticPrompts>,
         cancellation_token: CancellationToken,
         config: WorkerConfig,
         include_llm_content: bool,
@@ -90,6 +96,8 @@ impl Worker {
             pool,
             gateway,
             stage_specs,
+            agents,
+            active_prompts,
             cancellation_token,
             config,
             include_llm_content,
@@ -125,6 +133,21 @@ impl Worker {
     /// Returns the boot-time stage endpoint specs.
     pub(crate) fn stage_specs(&self) -> &CompletionStageSpecs {
         &self.stage_specs
+    }
+
+    /// Returns the agentic execution configuration.
+    pub(crate) fn agents(&self) -> &AgentsConfig {
+        &self.agents
+    }
+
+    /// Returns the agentic prompt slots, hot-reload-coherent.
+    pub(crate) fn active_prompts(&self) -> &Arc<dyn crate::ActiveAgenticPrompts> {
+        &self.active_prompts
+    }
+
+    /// Returns the shutdown cancellation token shared across the loops.
+    pub(crate) fn cancellation_token(&self) -> &CancellationToken {
+        &self.cancellation_token
     }
 
     /// Returns a reference to the telemetry metric instruments.
@@ -258,11 +281,17 @@ impl Worker {
             reindex_worker.run_reindex_loop().await;
         });
 
+        let driver_worker = Arc::clone(self);
+        let driver_handle = tokio::spawn(async move {
+            driver_worker.run_driver_loop().await;
+        });
+
         loop {
             tokio::select! {
                 () = self.cancellation_token.cancelled() => {
                     reclaim_handle.abort();
                     reindex_handle.abort();
+                    driver_handle.abort();
                     tracing::info!(instance_id = %self.instance_id, "worker cancelled, draining in-flight tasks");
                     while in_flight.join_next().await.is_some() {}
                     return Err(WorkerError::Cancelled);
@@ -470,6 +499,7 @@ impl Worker {
             );
 
             let deadline = tokio::time::Instant::now() + self.config.task_timeout();
+            let pump = heartbeat.pump();
 
             let stage_result = tokio::select! {
                 () = self.cancellation_token.cancelled() => {
@@ -485,15 +515,16 @@ impl Worker {
                 Ok(()) = &mut heartbeat.ownership_lost_rx => {
                     Err(StageError::OwnershipLost)
                 }
-                result = self.dispatch_stage(&job, &task, deadline) => {
+                result = self.dispatch_stage(&job, &task, deadline, &pump) => {
                     result
                 }
             };
 
             match stage_result {
                 Ok(None) => {
-                    // Claim-time disposal: the thread's state decided the
-                    // task's fate without a turn; nothing to commit.
+                    // No terminal this claim: a claim-time disposal, a
+                    // budget suspension, or an intervened cancellation
+                    // decided the task's fate without a commit here.
                 }
                 Ok(Some(output)) => {
                     if self.cancellation_token.is_cancelled() {
@@ -526,6 +557,7 @@ impl Worker {
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
+        pump: &crate::worker::heartbeat::WorkerHeartbeatPump,
     ) -> Result<Option<StageRun>, StageError> {
         let stage_thread = self.establish_stage_thread(job, task).await?;
         if self
@@ -534,21 +566,30 @@ impl Worker {
         {
             return Ok(None);
         }
-        let (commit, response) = match task.task_type() {
+        let run = match task.task_type() {
             TaskType::Extraction => {
                 self.run_extraction(job, task, deadline, &stage_thread)
                     .await?
             }
-            TaskType::Triage => self.run_triage(job, task, deadline, &stage_thread).await?,
+            TaskType::Triage => {
+                self.run_triage(job, task, deadline, &stage_thread, pump)
+                    .await?
+            }
             TaskType::Relation => {
                 self.run_relation(job, task, deadline, &stage_thread)
                     .await?
             }
         };
+        // A stage that produced no turn this claim (a budget suspension,
+        // an intervened cancellation) widens the claim-time-disposal
+        // contract: no terminal this claim, nothing to commit.
+        let Some((commit, terminal)) = run else {
+            return Ok(None);
+        };
         Ok(Some(StageRun {
             thread: stage_thread.thread,
             commit,
-            response,
+            terminal,
         }))
     }
 
