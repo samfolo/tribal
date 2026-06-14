@@ -176,7 +176,7 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
 
     let binding = tribal_agent_runtime::resolve_binding(
         &mut conn,
-        &tribal_test_utils::an_agent_definition().build(),
+        &a_routed_definition(tribal_domain::TaskType::Extraction),
     )
     .await
     .expect("binding");
@@ -1018,7 +1018,7 @@ async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
         .expect("job");
     let binding = tribal_agent_runtime::resolve_binding(
         &mut conn,
-        &tribal_test_utils::an_agent_definition().build(),
+        &a_routed_definition(tribal_domain::TaskType::Extraction),
     )
     .await
     .expect("binding");
@@ -1260,7 +1260,7 @@ async fn test_claim_time_disposal_reblocks_a_task_with_a_suspended_thread() {
         .expect("job");
     let binding = tribal_agent_runtime::resolve_binding(
         &mut conn,
-        &tribal_test_utils::an_agent_definition().build(),
+        &a_routed_definition(tribal_domain::TaskType::Extraction),
     )
     .await
     .expect("binding");

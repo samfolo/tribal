@@ -102,6 +102,12 @@ pub enum TaskErrorKind {
     /// turn cap, the execution deadline, or the bounded budget
     /// re-checks running dry.
     BudgetExhausted,
+    /// A durable thread resumed under a binding whose recorded route no
+    /// longer matches the current stage configuration. The gateway routes
+    /// by the current stage, so executing would run the thread under an
+    /// endpoint its recorded binding and attribution do not name; no retry
+    /// reconciles a configuration change, so the thread fails explicitly.
+    RouteDivergence,
 }
 
 /// Whether a failure class can succeed on retry.
@@ -122,7 +128,9 @@ impl TaskErrorKind {
     #[must_use]
     pub fn outcome(self) -> ErrorOutcome {
         match self {
-            Self::ContextOverflow | Self::BudgetExhausted => ErrorOutcome::Terminal,
+            Self::ContextOverflow | Self::BudgetExhausted | Self::RouteDivergence => {
+                ErrorOutcome::Terminal
+            }
             Self::ProviderError
             | Self::SemaphoreTimeout
             | Self::ParseError
@@ -162,6 +170,7 @@ enum_text_conversions!(TaskErrorKind {
     TaskErrorKind::InternalError => "internal_error",
     TaskErrorKind::ContextOverflow => "context_overflow",
     TaskErrorKind::BudgetExhausted => "budget_exhausted",
+    TaskErrorKind::RouteDivergence => "route_divergence",
 });
 
 /// A task in the ingest pipeline.
@@ -324,6 +333,7 @@ mod tests {
         TaskErrorKind::InternalError => "internal_error",
         TaskErrorKind::ContextOverflow => "context_overflow",
         TaskErrorKind::BudgetExhausted => "budget_exhausted",
+        TaskErrorKind::RouteDivergence => "route_divergence",
     });
 
     enum_text_tests!(test_task_type_text_roundtrip, TaskType {
@@ -352,6 +362,7 @@ mod tests {
         TaskErrorKind::InternalError => "internal_error",
         TaskErrorKind::ContextOverflow => "context_overflow",
         TaskErrorKind::BudgetExhausted => "budget_exhausted",
+        TaskErrorKind::RouteDivergence => "route_divergence",
     });
 
     #[test]
