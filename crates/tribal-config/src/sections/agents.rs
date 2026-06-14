@@ -19,8 +19,9 @@ use crate::validation::{ConfigPath, Diagnostics, ValidationError};
 pub const DEFAULT_AGENTIC_MAX_TURNS: u32 = 8;
 
 /// Default cap on an agentic thread's token spend: input, output, and
-/// cache-write tokens. Cache-read is excluded, since on some providers it
-/// is a subset of the input count and counting it would double up.
+/// cache-write tokens. Cache-read is excluded because the ledger schema
+/// enforces it as a subset of the input count, so it is already accounted
+/// for there.
 pub const DEFAULT_AGENTIC_MAX_TOTAL_TOKENS: u64 = 200_000;
 
 /// Default cap on verifier rounds per submission, doubling as the
@@ -42,10 +43,13 @@ pub const DEFAULT_AGENTIC_RECHECK_BOUND: u32 = 3;
 pub const DEFAULT_AGENTIC_EXECUTION_DEADLINE_SECONDS: u32 =
     DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS * DEFAULT_AGENTIC_RECHECK_BOUND + 300;
 
-// The deadline must outlast the recheck window, or a thread suspended on
-// spend exhaustion is pre-empted before its bounded re-checks complete.
-// Enforced at compile time so a future drift in either constant fails the
-// build rather than silently reopening the unreachable-recheck defect.
+// The deadline must exceed the recheck window, or a thread that suspends on
+// spend exhaustion early in its life is pre-empted before its bounded
+// re-checks complete. Enforced at compile time so a future drift in either
+// constant fails the build. (A thread that has already spent more than the
+// surplus on active execution before it suspends can still reach the
+// deadline first; that is a clean termination on a different cause, not the
+// recheck window failing to fit.)
 const _: () = assert!(
     DEFAULT_AGENTIC_EXECUTION_DEADLINE_SECONDS
         > DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS * DEFAULT_AGENTIC_RECHECK_BOUND,

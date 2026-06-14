@@ -340,7 +340,8 @@ pub async fn adopt_conversation(
 }
 
 /// Returns the thread's recorded rendered conversation, or `None` when the
-/// thread has no committed input yet (a fresh claim).
+/// thread has no recorded rendered conversation yet (a fresh claim, whose
+/// first turn has not committed one).
 ///
 /// A resuming caller reuses the recorded conversation, and the
 /// stage-opaque resolution context it carries, rather than re-deriving it.
