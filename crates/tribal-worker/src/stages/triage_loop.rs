@@ -27,7 +27,7 @@ use tribal_inference::{EmbeddingTarget, UsageAttribution};
 use super::{
     StageCommit, StageTerminal, TriageCommitDecision,
     common::attribution_with_prompts,
-    triage::{CandidateEmbedding, TriageContext, duplicate_decision},
+    triage::{CandidateEmbedding, CommitEmbedding, TriageContext, duplicate_decision},
 };
 use crate::{
     common::{EXPECT_BATCH_INDEX, PARSE_PREVIEW_LENGTH},
@@ -215,7 +215,7 @@ impl Worker {
                         .submission_commit(
                             &ctx,
                             &submission,
-                            CandidateEmbedding {
+                            CommitEmbedding {
                                 vector: embedding_vector,
                                 profile: &active_profile,
                             },
@@ -301,14 +301,18 @@ impl Worker {
         })
     }
 
-    /// The rendered opening, the candidate embedding, and the opening
-    /// scores. On a fresh claim the opening is built and its scores recorded
-    /// into the conversation's resolution context; a resume replays those
-    /// scores and re-derives only the embedding, against the current active
-    /// profile, skipping the costly search. So a resumed commit carries the
-    /// scores the model reasoned over, while the vector stays consistent
-    /// with the active profile rather than being scored against a graph that
-    /// has since moved or labelled with a profile it was not built under.
+    /// The rendered opening, the candidate embedding if one was produced
+    /// here, and the opening scores. On a fresh claim the opening is built,
+    /// its scores recorded into the conversation's resolution context, and
+    /// its search embedding returned. A resume replays those scores and
+    /// embeds nothing: the costly search is skipped, and the candidate
+    /// embedding is deferred to the novel commit (its only consumer), so a
+    /// budget-recheck wake re-suspends without an inference call and a
+    /// resume that commits a duplicate never embeds at all. So a resumed
+    /// commit carries the scores the model reasoned over, while the vector,
+    /// when a novel commit needs one, is derived against the active profile
+    /// rather than scored against a graph that has since moved or labelled
+    /// with a profile it was not built under.
     async fn loop_opening_or_replay(
         &self,
         thread: &tribal_domain::AgentThread,
@@ -317,7 +321,7 @@ impl Worker {
         active_profile: &tribal_domain::EmbeddingProfile,
         attribution: &UsageAttribution,
         deadline: tokio::time::Instant,
-    ) -> Result<(RenderedConversation, Vec<f32>, HashMap<String, f64>), StageError> {
+    ) -> Result<(RenderedConversation, Option<Vec<f32>>, HashMap<String, f64>), StageError> {
         let mut conn = self
             .pool()
             .acquire()
@@ -355,15 +359,10 @@ impl Worker {
                     })?,
             };
             drop(conn);
-            let embedding = self
-                .embed_candidate(
-                    ctx.candidate.content(),
-                    &EmbeddingTarget::from(active_profile),
-                    deadline,
-                    attribution,
-                )
-                .await?;
-            return Ok((rendered, embedding.vector, scores));
+            // The resume embeds nothing: scores are replayed, and the
+            // candidate embedding is deferred to the novel commit that
+            // alone consumes it.
+            return Ok((rendered, None, scores));
         }
         drop(conn);
 
@@ -380,7 +379,7 @@ impl Worker {
                 raw_response: None,
             })?,
         );
-        Ok((rendered, opening.embedding_vector, opening.scores))
+        Ok((rendered, Some(opening.embedding_vector), opening.scores))
     }
 
     /// Maps an accepted submission onto the existing commit machinery:
@@ -390,7 +389,7 @@ impl Worker {
         &self,
         ctx: &TriageContext<'_>,
         submission: &TriageSubmission,
-        embedding: CandidateEmbedding<'_>,
+        embedding: CommitEmbedding<'_>,
         opening_scores: &HashMap<String, f64>,
         deadline: tokio::time::Instant,
         attribution: &UsageAttribution,
@@ -409,7 +408,33 @@ impl Worker {
                     attribution,
                 )
                 .await?;
-                self.novel_decision(ctx.job, &ctx.candidate, embedding, tag_data)
+                // The fresh-claim opening already embedded for its search,
+                // so its vector is reused here; a resume carried none and
+                // embeds only now, where the novel commit finally consumes
+                // it, against the active profile under the commit's
+                // flip-check.
+                let vector = match embedding.vector {
+                    Some(vector) => vector,
+                    None => {
+                        self.embed_candidate(
+                            ctx.candidate.content(),
+                            &embedding_target,
+                            deadline,
+                            attribution,
+                        )
+                        .await?
+                        .vector
+                    }
+                };
+                self.novel_decision(
+                    ctx.job,
+                    &ctx.candidate,
+                    CandidateEmbedding {
+                        vector,
+                        profile: embedding.profile,
+                    },
+                    tag_data,
+                )
             }
             TriageSubmissionDecision::Duplicate { matched_item_id } => {
                 let matched: KnowledgeItemId =

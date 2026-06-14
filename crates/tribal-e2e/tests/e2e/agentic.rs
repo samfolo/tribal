@@ -243,16 +243,18 @@ async fn test_agentic_triage_loop_end_to_end() {
         "the prior turn's conversation is an exact prefix of the next request",
     );
 
-    // -- The resume re-embeds the candidate, but does not re-search ----------
+    // -- The candidate is embedded at its two consumption points only --------
     //
-    // The verifier resume re-derives the candidate embedding against the
-    // current active profile, so the committed vector and its profile id
-    // stay consistent rather than a recorded vector being replayed under a
-    // profile it was not built under. It does not re-run the opening
-    // search: those scores are replayed from the recorded opening. So the
-    // embedding endpoint sees the candidate exactly twice, the fresh claim
-    // and the resume, not the search-driven work the old path re-ran on
-    // every resume.
+    // The fresh claim embeds the candidate for its opening similarity
+    // search; the resume itself embeds nothing and re-runs no search, it
+    // replays the recorded opening scores. The second embedding is deferred
+    // to the novel commit, where the vector is finally consumed, derived
+    // against the then-active profile so the committed vector and its
+    // profile id stay consistent rather than a recorded vector being
+    // replayed under a profile it was not built under. So for this verified
+    // novel fact the embedding endpoint sees the candidate exactly twice,
+    // the opening search and the novel commit, not the search-driven work
+    // the old path re-ran on every resume.
     let candidate_embeds = harness
         .embedding_server()
         .received_requests()
@@ -263,8 +265,8 @@ async fn test_agentic_triage_loop_end_to_end() {
         .count();
     assert_eq!(
         candidate_embeds, 2,
-        "the candidate is embedded on the fresh claim and re-embedded on the resume, \
-         never replayed from a recorded vector",
+        "the candidate is embedded for the opening search and again at the novel commit, \
+         never on the resume itself and never replayed from a recorded vector",
     );
 
     harness.shutdown().await;
