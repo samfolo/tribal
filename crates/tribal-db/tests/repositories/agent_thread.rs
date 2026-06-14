@@ -1,7 +1,8 @@
 use tribal_db::{
     AgentBindingVersionRepository, AgentDriverTaskRepository, AgentThreadRecordRepository,
-    AgentThreadRepository, DbError, DrivingTaskRef, JobRepository, NewAgentBindingVersion,
-    NewAgentDriverTask, NewAgentThread, NewAgentThreadRecord, PgAgentBindingVersionRepository,
+    AgentThreadRepository, DbError, DrivingTaskRef, JobRepository, JobStatusTransition,
+    NewAgentBindingVersion, NewAgentDriverTask, NewAgentThread, NewAgentThreadRecord,
+    PgAgentBindingVersionRepository,
     PgAgentDriverTaskRepository, PgAgentThreadRecordRepository, PgAgentThreadRepository,
     PgJobRepository, PgPrincipalRepository, PgProjectRepository, PgTaskRepository,
     PgTokenUsageRepository, PrincipalRepository, ProjectRepository, TaskRepository,
@@ -10,8 +11,8 @@ use tribal_db::{
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentDriverTaskId, AgentDriverTaskKind, AgentDriverTaskState,
     AgentThread, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus,
-    AgentThreadSuspension, AgentThreadTerminal, GitRemote, JobId, PrincipalId, TaskId, TaskType,
-    TokenUsageStage,
+    AgentThreadSuspension, AgentThreadTerminal, GitRemote, JobId, JobStatus, PrincipalId, TaskId,
+    TaskType, TokenUsageStage,
 };
 use tribal_test_utils::{
     a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_system_fingerprint,
@@ -1522,4 +1523,124 @@ async fn test_prune_cascade_collects_a_terminal_subtree() {
         .await
         .expect("prune");
     assert_eq!(pruned, 2, "parent and terminal child delete together");
+}
+
+// ---------------------------------------------------------------------------
+// Stuck-relating convergence scan
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_stuck_relating_scan_keys_on_resolver_liveness() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    let prereq = setup_thread_prerequisites(&mut txn, "stuck-relating").await;
+
+    // The job advances to relating, the status the scan's join requires.
+    PgJobRepository
+        .update_status_if_live(
+            &mut txn,
+            prereq.job_id,
+            &JobStatusTransition::builder()
+                .status(JobStatus::Relating)
+                .build(),
+        )
+        .await
+        .expect("relating");
+
+    // A relation stage thread, suspended on a verifier child.
+    let binding = PgAgentBindingVersionRepository
+        .record(
+            &mut txn,
+            &NewAgentBindingVersion::builder()
+                .hash(HASH_B.to_owned())
+                .pipeline_stage(TaskType::Relation)
+                .definition(
+                    an_agent_definition()
+                        .pipeline_stage(TaskType::Relation)
+                        .build(),
+                )
+                .build(),
+        )
+        .await
+        .expect("relation binding");
+    let thread = PgAgentThreadRepository
+        .insert(
+            &mut txn,
+            &NewAgentThread::builder()
+                .pipeline_stage(TaskType::Relation)
+                .binding_version_id(binding.id())
+                .driving_task(DrivingTaskRef::Stage(prereq.stage_task_id))
+                .principal_id(prereq.principal_id)
+                .format_version(AGENT_THREAD_FORMAT_VERSION)
+                .build(),
+        )
+        .await
+        .expect("relation thread");
+    PgAgentThreadRepository
+        .mark_running(&mut txn, thread.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("run");
+    PgAgentThreadRepository
+        .suspend(
+            &mut txn,
+            thread.id(),
+            &AgentThreadSuspension::DeferredToolResults {
+                requesting_seq: AgentThreadRecordSeq::new(2),
+                pending_tool_call_ids: vec!["verify".to_owned()],
+            },
+            None,
+        )
+        .await
+        .expect("suspend");
+
+    // No live descendant: the resolver is gone, so the thread is stranded
+    // and the scan selects it.
+    let stranded = PgAgentThreadRepository
+        .find_stuck_relating_threads(&mut txn, 16)
+        .await
+        .expect("scan");
+    assert!(
+        stranded.iter().any(|t| t.id() == thread.id()),
+        "a relation thread with no live resolver is selected",
+    );
+
+    // A live verifier child (driver-driven, non-terminal) and its pending
+    // driver task restore a live resolver: the in-flight verifier state the
+    // scan must leave alone, lest it fail a healthy job.
+    let driver_task_id = AgentDriverTaskId::from(uuid::Uuid::new_v4());
+    let child = PgAgentThreadRepository
+        .insert(
+            &mut txn,
+            &NewAgentThread::builder()
+                .parent_thread_id(Some(thread.id()))
+                .pipeline_stage(TaskType::Relation)
+                .binding_version_id(binding.id())
+                .driving_task(DrivingTaskRef::Driver(driver_task_id))
+                .principal_id(prereq.principal_id)
+                .format_version(AGENT_THREAD_FORMAT_VERSION)
+                .build(),
+        )
+        .await
+        .expect("child thread");
+    PgAgentDriverTaskRepository
+        .insert(
+            &mut txn,
+            &NewAgentDriverTask::builder()
+                .id(Some(driver_task_id))
+                .thread_id(child.id())
+                .kind(AgentDriverTaskKind::Drive)
+                .build(),
+        )
+        .await
+        .expect("child driver task");
+
+    let healthy = PgAgentThreadRepository
+        .find_stuck_relating_threads(&mut txn, 16)
+        .await
+        .expect("scan");
+    assert!(
+        !healthy.iter().any(|t| t.id() == thread.id()),
+        "a relation thread with a live verifier child is left alone",
+    );
 }

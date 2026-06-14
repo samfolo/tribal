@@ -737,7 +737,6 @@ async fn test_thread_aware_reclaim_requeues_without_touching_the_thread() {
     let stats = worker
         .run_thread_aware_reclaim(
             10,
-            0,
             tribal_domain::TaskErrorKind::HeartbeatExpired,
             "heartbeat_expired",
             None,
@@ -830,7 +829,6 @@ async fn test_reclaim_exhaustion_dead_letters_thread_and_task_and_fails_the_job(
     let stats = worker
         .run_thread_aware_reclaim(
             10,
-            0,
             tribal_domain::TaskErrorKind::HeartbeatExpired,
             "heartbeat_expired",
             None,
@@ -909,9 +907,13 @@ async fn test_reclaim_opens_a_recovery_cycle_with_reset_retry_counter() {
         .find_by_id(&mut conn, task.job_id())
         .await
         .expect("job");
+    // A loop binding earns recovery cycles; one-shot would fail fast, so
+    // the recovery path is only reachable under the loop executor.
     let binding = tribal_agent_runtime::resolve_binding(
         &mut conn,
-        &tribal_test_utils::an_agent_definition().build(),
+        &tribal_test_utils::an_agent_definition()
+            .executor(tribal_domain::StageExecutorKind::BuiltInLoop)
+            .build(),
     )
     .await
     .expect("binding");
@@ -933,7 +935,6 @@ async fn test_reclaim_opens_a_recovery_cycle_with_reset_retry_counter() {
     let stats = worker
         .run_thread_aware_reclaim(
             10,
-            2,
             tribal_domain::TaskErrorKind::HeartbeatExpired,
             "heartbeat_expired",
             None,
@@ -1514,7 +1515,6 @@ async fn test_reclaim_scans_partition_threaded_and_legacy_rows() {
     let stats = worker
         .run_thread_aware_reclaim(
             10,
-            0,
             tribal_domain::TaskErrorKind::HeartbeatExpired,
             "heartbeat_expired",
             None,
@@ -1801,7 +1801,6 @@ async fn test_reclaim_exhaustion_dead_letters_a_thread_that_never_started() {
     let stats = worker
         .run_thread_aware_reclaim(
             10,
-            0,
             tribal_domain::TaskErrorKind::HeartbeatExpired,
             "heartbeat_expired",
             None,
@@ -2065,7 +2064,9 @@ async fn test_inline_failure_exhaustion_dead_letters_the_thread() {
             user_pv_id,
         )
         .await;
-        // The next failure is the budget-exhausting one.
+        // Extraction is one-shot, so the next failure exhausts the retry
+        // budget straight into dead-letter: a one-shot has no committed
+        // progress to recover to, so the recovery cap is zero for it.
         set_retry_count(&mut conn, ids.1, config.task_max_retries).await;
         ids
     };

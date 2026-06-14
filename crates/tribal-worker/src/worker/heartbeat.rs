@@ -18,12 +18,13 @@ use sqlx::PgPool;
 use tokio::{sync::oneshot, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tribal_db::{
-    AgentDriverTaskRepository, AgentThreadRepository, PgAgentDriverTaskRepository,
-    PgAgentThreadRepository, PgTaskRepository, ReclaimOutcome, TaskRepository,
+    AgentBindingVersionRepository, AgentDriverTaskRepository, AgentThreadRepository,
+    PgAgentBindingVersionRepository, PgAgentDriverTaskRepository, PgAgentThreadRepository,
+    PgTaskRepository, ReclaimOutcome, TaskRepository,
 };
 use tribal_domain::{
-    AgentDriverTaskId, AgentThreadTerminal, Disposition, DispositionCounters, JobOutcome, JobState,
-    TaskErrorKind, TaskId, TurnOutcome, decide_disposition,
+    AgentDriverTaskId, AgentThread, AgentThreadTerminal, Disposition, DispositionCounters,
+    JobOutcome, JobState, StageExecutorKind, TaskErrorKind, TaskId, TurnOutcome, decide_disposition,
 };
 
 use crate::{
@@ -44,13 +45,44 @@ pub(crate) const STARTUP_RECLAIM_MESSAGE: &str = "startup_reclaim";
 /// Error message written to tasks reclaimed by the periodic sweep.
 pub(crate) const HEARTBEAT_EXPIRED_MESSAGE: &str = "heartbeat_expired";
 
-/// The thread recovery-cycle budget. Zero reproduces launched behaviour
-/// exactly: a stage task whose retry budget exhausts under reclaim
-/// dead-letters at the same moment it always did, with its thread and
-/// job coupled in the same commit. Raising the cap opens fresh cycles
-/// (reset retry budget, escalating per-cycle backoff) before the thread
-/// fails.
-pub(crate) const THREAD_RECOVERY_CAP: u32 = 0;
+/// The thread recovery-cycle budget. Positive is a hard precondition for
+/// the job-terminal relation loop: at zero, the first reclaim of a stale
+/// running stage thread dead-letters its task and fails the job, discarding
+/// every upstream extraction and triage turn the job already paid for. A
+/// positive cap opens fresh cycles instead (retry budget reset, escalating
+/// per-cycle backoff, re-driven from the committed record-log tail) before
+/// the thread fails, so a transient worker death mid-loop costs a retry,
+/// not the job.
+pub(crate) const THREAD_RECOVERY_CAP: u32 = 2;
+
+// A hard precondition for the job-terminal relation loop: at zero, a
+// transient worker death mid loop fails the whole job and discards its
+// upstream spend, with no fan-in to recover it. Enforced at compile time
+// so a future reset to zero fails the build.
+const _: () = assert!(THREAD_RECOVERY_CAP > 0);
+
+/// The recovery-cycle cap a thread's disposition runs under, resolved from
+/// its binding's executor: a loop earns recovery cycles (the relation-loop
+/// precondition, re-driven from the committed record-log tail), while a
+/// one-shot keeps its launched fail-fast exhaustion, which has no
+/// mid-thread progress to recover to. A binding that cannot be read
+/// defaults to the one-shot cap, the conservative fail-fast choice.
+pub(crate) async fn recovery_cap_for_thread(
+    conn: &mut sqlx::PgConnection,
+    thread: &AgentThread,
+) -> u32 {
+    let executor = match PgAgentBindingVersionRepository
+        .find_by_id(conn, thread.binding_version_id())
+        .await
+    {
+        Ok(Some(binding)) => binding.definition().executor,
+        Ok(None) | Err(_) => StageExecutorKind::OneShot,
+    };
+    match executor {
+        StageExecutorKind::BuiltInLoop => THREAD_RECOVERY_CAP,
+        StageExecutorKind::OneShot | StageExecutorKind::ExternalAgent => 0,
+    }
+}
 
 /// Ceiling on the per-cycle backoff ladder (`2^recovery_attempts`
 /// seconds), so the never-resetting cycle counter cannot push a task's
@@ -136,7 +168,6 @@ impl Worker {
     pub async fn run_thread_aware_reclaim(
         &self,
         limit: u32,
-        recovery_cap: u32,
         error_kind: TaskErrorKind,
         error_message: &str,
         flat_backoff_seconds: Option<u32>,
@@ -193,7 +224,7 @@ impl Worker {
                 retry_count: task.retry_count(),
                 max_retries: self.config().task_max_retries,
                 recovery_attempts: thread.recovery_attempts(),
-                max_recovery_attempts: recovery_cap,
+                max_recovery_attempts: recovery_cap_for_thread(&mut txn, &thread).await,
             };
 
             let mut owed = None;

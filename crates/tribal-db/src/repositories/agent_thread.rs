@@ -14,9 +14,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
-    AgentBindingVersionId, AgentDriverTaskId, AgentThread, AgentThreadId, AgentThreadStatus,
-    AgentThreadSuspension, AgentThreadTerminal, ExecutionSpend, JobId, PrincipalId, TaskId,
-    TaskType,
+    AgentBindingVersionId, AgentDriverTaskId, AgentDriverTaskState, AgentThread, AgentThreadId,
+    AgentThreadStatus, AgentThreadSuspension, AgentThreadTerminal, ExecutionSpend, JobId,
+    PrincipalId, TaskId, TaskType,
 };
 use typed_builder::TypedBuilder;
 
@@ -298,6 +298,28 @@ pub trait AgentThreadRepository {
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
     async fn find_cancel_intents(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+    ) -> Result<Vec<AgentThread>, DbError>;
+
+    /// Finds suspended relation threads of still-relating jobs whose
+    /// resolver has died: no live descendant child thread and no live
+    /// descendant driver task remain to wake them. Rows are locked with
+    /// `SKIP LOCKED`.
+    ///
+    /// The liveness keys make this safe to run beside a healthy
+    /// verifier-suspended relation thread, whose in-flight state (blocked,
+    /// no wake instant, a live child the driver loop is re-driving) the
+    /// predicate excludes by construction. Relation is the job-terminal
+    /// stage with no fan-in, so a stranded suspension is the one
+    /// suspension that cannot otherwise converge; this sweep is its
+    /// backstop when the driver loop itself is gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_stuck_relating_threads(
         &self,
         conn: &mut PgConnection,
         limit: u32,
@@ -648,11 +670,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         // the planner can only match the partial cancel-intent index's
         // hard-coded predicate against literals, and the derivation from
         // ALL keeps the single-source contract either way.
-        let terminal: Vec<String> = AgentThreadStatus::ALL
-            .iter()
-            .filter(|status| status.is_terminal())
-            .map(|status| format!("'{}'", status.as_str()))
-            .collect();
+        let terminal = terminal_status_literals();
         let sql = format!(
             "SELECT {COLUMNS} FROM agent_threads \
              WHERE cancel_requested_at IS NOT NULL \
@@ -668,6 +686,65 @@ impl AgentThreadRepository for PgAgentThreadRepository {
             .await
             .map_err(|e| DbError::QueryFailed {
                 context: "scanning for pending cancel intents".to_owned(),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_agent_thread_row).collect())
+    }
+
+    async fn find_stuck_relating_threads(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+    ) -> Result<Vec<AgentThread>, DbError> {
+        // Terminal sets as interpolated literals: a live descendant is one
+        // whose status sits outside its family's terminal set, and the
+        // derivations from ALL keep the single-source contract. A relation
+        // thread is stranded only when neither a live child thread nor a
+        // live descendant driver task remains, so a healthy
+        // verifier-suspended thread (which has both) is never selected. The
+        // cancel-intent guard leaves intent-carrying threads to the cancel
+        // fallback. The job-relating check rides the driving task rather
+        // than the thread row, which carries no job id.
+        let thread_terminal = terminal_status_literals();
+        let driver_terminal: Vec<String> = AgentDriverTaskState::ALL
+            .iter()
+            .filter(|state| state.is_terminal())
+            .map(|state| format!("'{}'", state.as_str()))
+            .collect();
+        let sql = format!(
+            "SELECT {COLUMNS} FROM agent_threads \
+             WHERE pipeline_stage = 'relation' \
+               AND status = 'suspended' \
+               AND cancel_requested_at IS NULL \
+               AND stage_task_id IN ( \
+                   SELECT t.id FROM tasks t \
+                   JOIN jobs j ON j.id = t.job_id \
+                   WHERE j.status = 'relating' \
+               ) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM agent_threads child \
+                   WHERE child.parent_thread_id = agent_threads.id \
+                     AND child.status NOT IN ({thread_terminal}) \
+               ) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM agent_driver_tasks dt \
+                   JOIN agent_threads child ON child.driver_task_id = dt.id \
+                   WHERE child.parent_thread_id = agent_threads.id \
+                     AND dt.state NOT IN ({driver_terminal}) \
+               ) \
+             ORDER BY updated_at \
+             LIMIT $1 \
+             FOR UPDATE SKIP LOCKED",
+            thread_terminal = thread_terminal.join(", "),
+            driver_terminal = driver_terminal.join(", "),
+        );
+        let rows = sqlx::query(&sql)
+            .bind(i64::from(limit))
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "scanning for stranded relation threads".to_owned(),
                 source: e,
             })?;
 
@@ -794,6 +871,17 @@ impl AgentThreadRepository for PgAgentThreadRepository {
 // ---------------------------------------------------------------------------
 // Row mapping
 // ---------------------------------------------------------------------------
+
+/// The quoted SQL literals for the terminal thread statuses, derived from
+/// `ALL` so a new status joins the set by construction. Interpolated, not
+/// bound, so the planner can match a partial index's literal predicate.
+fn terminal_status_literals() -> Vec<String> {
+    AgentThreadStatus::ALL
+        .iter()
+        .filter(|status| status.is_terminal())
+        .map(|status| format!("'{}'", status.as_str()))
+        .collect()
+}
 
 fn map_agent_thread_row(r: &sqlx::postgres::PgRow) -> AgentThread {
     AgentThread::builder()
