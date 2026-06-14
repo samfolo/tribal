@@ -173,8 +173,9 @@ pub trait TokenUsageRepository {
     /// Sums a thread's ledger-side spend: input, output, and cache-write
     /// tokens across every request the gateway made for the thread,
     /// including requests whose records never committed. Cache-read is
-    /// excluded, since on some providers it is a subset of the input
-    /// count. The admission check's number.
+    /// excluded because the schema enforces it as a subset of the input
+    /// count, so it is already accounted for there. The admission check's
+    /// number.
     ///
     /// # Errors
     ///
