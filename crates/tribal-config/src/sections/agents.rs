@@ -18,21 +18,38 @@ use crate::validation::{ConfigPath, Diagnostics, ValidationError};
 /// Default cap on an agentic thread's turns.
 pub const DEFAULT_AGENTIC_MAX_TURNS: u32 = 8;
 
-/// Default cap on an agentic thread's total tokens, all classes counted.
+/// Default cap on an agentic thread's token spend: input, output, and
+/// cache-write tokens. Cache-read is excluded, since on some providers it
+/// is a subset of the input count and counting it would double up.
 pub const DEFAULT_AGENTIC_MAX_TOTAL_TOKENS: u64 = 200_000;
 
 /// Default cap on verifier rounds per submission, doubling as the
 /// thread's child-launch cap.
 pub const DEFAULT_AGENTIC_VERIFY_ROUNDS: u32 = 2;
 
-/// Default wall-clock bound on an agentic thread's whole execution.
-pub const DEFAULT_AGENTIC_EXECUTION_DEADLINE_SECONDS: u32 = 240;
-
 /// Default seconds between budget-exhaustion re-checks while suspended.
 pub const DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS: u32 = 300;
 
 /// Default bound on unchanged budget re-checks before the thread fails.
 pub const DEFAULT_AGENTIC_RECHECK_BOUND: u32 = 3;
+
+/// Default wall-clock bound on an agentic thread's whole execution,
+/// measured from creation and so inclusive of suspended time. It must
+/// exceed the budget-recheck window (the delay times the bound) so a
+/// thread suspended on spend exhaustion completes its bounded re-checks
+/// before the deadline pre-empts them; the surplus is headroom for the
+/// active execution a rescued thread resumes into.
+pub const DEFAULT_AGENTIC_EXECUTION_DEADLINE_SECONDS: u32 =
+    DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS * DEFAULT_AGENTIC_RECHECK_BOUND + 300;
+
+// The deadline must outlast the recheck window, or a thread suspended on
+// spend exhaustion is pre-empted before its bounded re-checks complete.
+// Enforced at compile time so a future drift in either constant fails the
+// build rather than silently reopening the unreachable-recheck defect.
+const _: () = assert!(
+    DEFAULT_AGENTIC_EXECUTION_DEADLINE_SECONDS
+        > DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS * DEFAULT_AGENTIC_RECHECK_BOUND,
+);
 
 /// Advisory raised when the verifier is enabled under the one-shot
 /// executor, where there is no submission loop for it to check, so the
