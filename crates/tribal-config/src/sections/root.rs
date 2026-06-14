@@ -3,10 +3,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    auth::AuthConfig, credential_catalogue::CredentialCatalogue, database::DatabaseConfig,
-    discovery::DiscoveryConfig, exploration::ExplorationConfig, inference::InferenceConfig,
-    init::InitConfig, limits::LimitsConfig, logging::LoggingConfig, oauth::OAuthConfig,
-    prompts::PromptsConfig, server::ServerConfig, telemetry::TelemetryConfig, worker::WorkerConfig,
+    AgentsConfig, auth::AuthConfig, credential_catalogue::CredentialCatalogue,
+    database::DatabaseConfig, discovery::DiscoveryConfig, exploration::ExplorationConfig,
+    inference::InferenceConfig, init::InitConfig, limits::LimitsConfig, logging::LoggingConfig,
+    oauth::OAuthConfig, prompts::PromptsConfig, server::ServerConfig, telemetry::TelemetryConfig,
+    worker::WorkerConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -55,6 +56,9 @@ pub struct TribalConfig {
     /// Worker loop settings.
     #[serde(default)]
     pub worker: WorkerConfig,
+    /// Agentic execution configuration.
+    #[serde(default)]
+    pub agents: AgentsConfig,
 
     /// Fresh-system genesis seed values (applied only when first creating a
     /// corpus).
@@ -131,6 +135,7 @@ impl Default for TribalConfig {
             auth: AuthConfig::default(),
             oauth: OAuthConfig::default(),
             worker: WorkerConfig::default(),
+            agents: AgentsConfig::default(),
             init: InitConfig::default(),
             credentials: CredentialCatalogue::default(),
             inference: InferenceConfig::default(),

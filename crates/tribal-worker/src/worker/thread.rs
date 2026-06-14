@@ -1,24 +1,27 @@
 //! Stage assembly for the thread runtime: bindings and thread setup.
 //!
 //! The worker derives each stage's agent definition from the boot-time
-//! stage specs and the job's prompt versions — bindings are populated
-//! from the existing configuration, never replacing it — then hands
-//! execution to the runtime. The default binding is one-shot with no
-//! tools and no budget caps, reproducing launched behaviour exactly.
+//! stage specs, the job's prompt versions, and the agentic
+//! configuration — through the same derivation the ingest-time
+//! fingerprint uses, so the recorded composite names exactly the binding
+//! execution resolves. The default binding is one-shot with no tools and
+//! no budget caps, reproducing launched behaviour exactly.
 
 use tribal_agent_runtime::{
     AgentRuntimeError, StageThread, cancel_thread_in_txn, ensure_stage_thread, resolve_binding,
 };
+use tribal_config::ExecutorChoice;
 use tribal_db::{
     PgPromptVersionRepository, PgTaskRepository, PromptVersionRepository, TaskRepository as _,
 };
 use tribal_domain::{
-    AgentDefinition, AgentThread, AgentThreadStatus, Job, JobOutcome, JobState, PromptVersionId,
-    Task, TaskErrorKind, TaskType,
+    AgentDefinition, AgentThread, AgentThreadStatus, Job, JobOutcome, JobState, PromptClass,
+    PromptRole, PromptStage, PromptVersionId, Task, TaskErrorKind, TaskType,
 };
 use tribal_inference::{CompletionStageSpec, CompletionStageSpecs};
 
 use crate::{
+    definition::{StagePromptHashes, derive_stage_definition},
     error::StageError,
     stages::prompt_version_ids_for_task,
     worker::{Worker, coupling},
@@ -53,10 +56,7 @@ impl Worker {
                 },
             })?;
 
-        let definition = self
-            .stage_definition(&mut conn, job, task)
-            .await
-            .map_err(|source| map_runtime_error(stage, "deriving the stage binding", source))?;
+        let definition = self.stage_definition(&mut conn, job, task).await?;
         let binding = resolve_binding(&mut conn, &definition)
             .await
             .map_err(|source| map_runtime_error(stage, "resolving the binding version", source))?;
@@ -234,30 +234,78 @@ impl Worker {
         Ok(true)
     }
 
-    /// Builds the stage's definition from its boot-time endpoint spec and
-    /// the job's prompt versions' content hashes, so a prompt, model,
-    /// endpoint, or sampling-parameter edit is a new binding version.
+    /// Builds the stage's definition from its boot-time endpoint spec,
+    /// the job's prompt versions' content hashes, and the agentic
+    /// configuration, so a prompt, model, endpoint, sampling-parameter,
+    /// executor, budget, or tool-surface edit is a new binding version.
     async fn stage_definition(
         &self,
         conn: &mut sqlx::PgConnection,
         job: &Job,
         task: &Task,
-    ) -> Result<AgentDefinition, AgentRuntimeError> {
+    ) -> Result<AgentDefinition, StageError> {
+        let stage = task.task_type().as_str();
         let spec = stage_spec(self.stage_specs(), task);
         let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
 
-        let system_hash = prompt_hash(conn, system_pv_id).await?;
-        let user_hash = prompt_hash(conn, user_pv_id).await?;
+        let system_hash = prompt_hash(conn, system_pv_id)
+            .await
+            .map_err(|source| map_runtime_error(stage, "deriving the stage binding", source))?;
+        let user_hash = prompt_hash(conn, user_pv_id)
+            .await
+            .map_err(|source| map_runtime_error(stage, "deriving the stage binding", source))?;
 
-        Ok(AgentDefinition::one_shot(
-            task.task_type(),
-            spec.provider,
-            spec.model.clone(),
-            spec.base_url.clone(),
-            spec.parameters.clone(),
-            system_hash,
-            user_hash,
-        ))
+        let prompts = StagePromptHashes {
+            system: system_hash,
+            user: user_hash,
+            loop_pair: self.active_loop_hashes(conn, task).await?,
+        };
+        derive_stage_definition(task.task_type(), spec, &prompts, self.agents()).map_err(|source| {
+            StageError::BindingDerivation {
+                stage: stage.into(),
+                context: source.to_string(),
+            }
+        })
+    }
+
+    /// Resolves the active loop templates' content hashes for a stage
+    /// whose configuration selects the loop executor — the binding-hash
+    /// half of claim-time prompt resolution. `None` everywhere else, so
+    /// the default path reads nothing.
+    async fn active_loop_hashes(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        task: &Task,
+    ) -> Result<Option<(String, String)>, StageError> {
+        if task.task_type() != TaskType::Triage
+            || self.agents().triage.executor != ExecutorChoice::Loop
+        {
+            return Ok(None);
+        }
+        let stage = task.task_type().as_str();
+        let mut hashes = Vec::with_capacity(2);
+        for role in [PromptRole::System, PromptRole::User] {
+            let id = self
+                .active_prompts()
+                .version_id(PromptStage::Triage, PromptClass::Loop, role)
+                .await
+                .ok_or_else(|| StageError::BindingDerivation {
+                    stage: stage.into(),
+                    context: format!("no active triage loop {} prompt", role.as_str()),
+                })?;
+            let version = PgPromptVersionRepository
+                .find_by_id(conn, id)
+                .await
+                .map_err(|source| StageError::Database {
+                    stage: stage.into(),
+                    context: "loading an active loop prompt".into(),
+                    source,
+                })?;
+            hashes.push(version.content_hash().to_owned());
+        }
+        let user = hashes.pop().expect("two roles were pushed");
+        let system = hashes.pop().expect("two roles were pushed");
+        Ok(Some((system, user)))
     }
 }
 
@@ -294,9 +342,9 @@ pub(crate) fn map_runtime_error(
     source: AgentRuntimeError,
 ) -> StageError {
     match source {
-        AgentRuntimeError::StatusCasMissed { .. } | AgentRuntimeError::LeaseLost { .. } => {
-            StageError::OwnershipLost
-        }
+        AgentRuntimeError::StatusCasMissed { .. }
+        | AgentRuntimeError::LeaseLost { .. }
+        | AgentRuntimeError::DrivingTaskNotBlocked { .. } => StageError::OwnershipLost,
         AgentRuntimeError::Database {
             context: inner,
             source,
@@ -305,8 +353,17 @@ pub(crate) fn map_runtime_error(
             context: inner,
             source,
         },
+        AgentRuntimeError::Inference {
+            context: inner,
+            source,
+        } => StageError::Provider {
+            context: inner,
+            source: *source,
+        },
         source @ (AgentRuntimeError::ThreadMissing { .. }
-        | AgentRuntimeError::ContentSerialisation { .. }) => StageError::Runtime {
+        | AgentRuntimeError::ContentSerialisation { .. }
+        | AgentRuntimeError::ToolExecution { .. }
+        | AgentRuntimeError::LogProjection { .. }) => StageError::Runtime {
             context: context.to_owned(),
             source,
         },

@@ -76,7 +76,7 @@ pub async fn ensure_stage_thread(
     binding: &AgentBinding,
 ) -> Result<StageThread, AgentRuntimeError> {
     let existing = PgAgentThreadRepository
-        .find_by_stage_task(conn, task.id())
+        .find_by_stage_task_id(conn, task.id())
         .await
         .map_err(|source| AgentRuntimeError::database("finding the stage task's thread", source))?;
 
@@ -114,7 +114,7 @@ pub async fn ensure_stage_thread(
     };
 
     let input = PgAgentThreadRecordRepository
-        .find_by_thread(conn, thread.id())
+        .find_by_thread_id(conn, thread.id())
         .await
         .map_err(|source| AgentRuntimeError::database("reading the thread's log", source))?
         .into_iter()
@@ -150,7 +150,9 @@ async fn create_stage_thread(
 
     let mut txn = begin(conn, "beginning the thread-creation transaction").await?;
     if !holds_claim(&mut txn, task, claim_token).await? {
-        return Err(AgentRuntimeError::LeaseLost { task_id: task.id() });
+        return Err(AgentRuntimeError::LeaseLost {
+            driving_task: DrivingTaskRef::Stage(task.id()),
+        });
     }
     let inserted = PgAgentThreadRepository.insert(&mut txn, &new).await;
     match inserted {
@@ -163,7 +165,7 @@ async fn create_stage_thread(
             // runs on the clean connection.
             drop(txn);
             PgAgentThreadRepository
-                .find_by_stage_task(conn, task.id())
+                .find_by_stage_task_id(conn, task.id())
                 .await
                 .map_err(|source| {
                     AgentRuntimeError::database("re-reading the race winner's thread", source)
@@ -185,7 +187,9 @@ async fn mark_running_guarded(
 ) -> Result<u64, AgentRuntimeError> {
     let mut txn = begin(conn, "beginning the mark-running transaction").await?;
     if !holds_claim(&mut txn, task, claim_token).await? {
-        return Err(AgentRuntimeError::LeaseLost { task_id: task.id() });
+        return Err(AgentRuntimeError::LeaseLost {
+            driving_task: DrivingTaskRef::Stage(task.id()),
+        });
     }
     let moved = PgAgentThreadRepository
         .mark_running(&mut txn, thread.id(), AgentThreadStatus::Queued)

@@ -53,11 +53,17 @@ const MAX_ATTEMPTS_OVERFLOW: &str = "negative max_attempts in database: data cor
 
 /// Input for enrolling a driver task.
 ///
-/// `id`, `state`, `attempt`, `max_attempts`, `available_at`, and the
+/// `state`, `attempt`, `max_attempts`, `available_at`, and the
 /// timestamps are server-defaulted: a new row is pending and immediately
-/// available with the standard retry budget.
+/// available with the standard retry budget. The id is server-defaulted
+/// too unless the caller supplies one — the thread/driver pair writer
+/// must, because the thread row names the driver task's id under the
+/// deferred foreign key before the task exists.
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct NewAgentDriverTask {
+    /// A client-generated id, for the pair writer's deferred reference.
+    #[builder(default)]
+    pub id: Option<AgentDriverTaskId>,
     /// The thread this row drives or works for.
     pub thread_id: AgentThreadId,
     /// What this row executes.
@@ -98,7 +104,7 @@ pub trait AgentDriverTaskRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_by_thread(
+    async fn find_by_thread_id(
         &self,
         conn: &mut PgConnection,
         thread_id: AgentThreadId,
@@ -160,6 +166,48 @@ pub trait AgentDriverTaskRepository {
         error_message: &str,
     ) -> Result<u64, DbError>;
 
+    /// Verifies the caller still holds the claim, taking a shared lock
+    /// that pins the lease for the calling transaction: the claim-token
+    /// guard for transactions that write no driver-task column. Returns
+    /// `true` while the lease holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn holds_claim(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentDriverTaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<bool, DbError>;
+
+    /// Pumps the heartbeat under the claim guard. Returns the affected
+    /// row count (zero means the lease was lost).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn heartbeat(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentDriverTaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<u64, DbError>;
+
+    /// Locks one stale claimed row (`FOR UPDATE SKIP LOCKED`) whose
+    /// heartbeat lapsed beyond `timeout_seconds`, for the reclaim pass.
+    /// Returns the row with its claim token intact, so the reclaimer's
+    /// guarded disposition targets exactly the lease it judged stale.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn lock_stale(
+        &self,
+        conn: &mut PgConnection,
+        timeout_seconds: u32,
+    ) -> Result<Option<AgentDriverTask>, DbError>;
+
     /// Terminally dispositions an unclaimed live row under a row lock —
     /// the cancel transaction's disposal of pending deferred work. The
     /// `claim_token IS NULL` requirement is the locked-unclaimed guard:
@@ -192,10 +240,11 @@ impl AgentDriverTaskRepository for PgAgentDriverTaskRepository {
         new: &NewAgentDriverTask,
     ) -> Result<AgentDriverTask, DbError> {
         let sql = format!(
-            "INSERT INTO agent_driver_tasks (thread_id, kind) \
-             VALUES ($1, $2) RETURNING {COLUMNS}"
+            "INSERT INTO agent_driver_tasks (id, thread_id, kind) \
+             VALUES (COALESCE($1, gen_random_uuid()), $2, $3) RETURNING {COLUMNS}"
         );
         let row = sqlx::query(&sql)
+            .bind(new.id.map(|id| *id.inner()))
             .bind(new.thread_id.inner())
             .bind(new.kind.as_str())
             .fetch_one(&mut *conn)
@@ -226,7 +275,7 @@ impl AgentDriverTaskRepository for PgAgentDriverTaskRepository {
         Ok(row.as_ref().map(map_agent_driver_task_row))
     }
 
-    async fn find_by_thread(
+    async fn find_by_thread_id(
         &self,
         conn: &mut PgConnection,
         thread_id: AgentThreadId,
@@ -366,6 +415,75 @@ impl AgentDriverTaskRepository for PgAgentDriverTaskRepository {
         })?;
 
         Ok(result.rows_affected())
+    }
+
+    async fn holds_claim(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentDriverTaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<bool, DbError> {
+        let held: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM agent_driver_tasks WHERE id = $1 AND claim_token = $2 FOR SHARE",
+        )
+        .bind(id.inner())
+        .bind(claim_token)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("verifying the lease on driver task {id}"),
+            source: e,
+        })?;
+
+        Ok(held.is_some())
+    }
+
+    async fn heartbeat(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentDriverTaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE agent_driver_tasks \
+             SET heartbeat_at = now(), updated_at = now() \
+             WHERE id = $1 AND claim_token = $2 AND state = 'claimed'",
+        )
+        .bind(id.inner())
+        .bind(claim_token)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("heartbeat for driver task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn lock_stale(
+        &self,
+        conn: &mut PgConnection,
+        timeout_seconds: u32,
+    ) -> Result<Option<AgentDriverTask>, DbError> {
+        let sql = format!(
+            "SELECT {COLUMNS} FROM agent_driver_tasks \
+             WHERE state = 'claimed' \
+               AND heartbeat_at < now() - make_interval(secs => $1) \
+             ORDER BY heartbeat_at \
+             LIMIT 1 \
+             FOR UPDATE SKIP LOCKED"
+        );
+        let row = sqlx::query(&sql)
+            .bind(f64::from(timeout_seconds))
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "locking a stale driver task".to_owned(),
+                source: e,
+            })?;
+
+        Ok(row.as_ref().map(map_agent_driver_task_row))
     }
 
     async fn dispose_unclaimed(

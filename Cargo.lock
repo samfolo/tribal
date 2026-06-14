@@ -5412,6 +5412,8 @@ version = "0.3.1"
 dependencies = [
  "async-trait",
  "chrono",
+ "futures-util",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sqlx",
@@ -5573,6 +5575,7 @@ dependencies = [
 name = "tribal-mcp"
 version = "0.3.1"
 dependencies = [
+ "async-trait",
  "axum",
  "chrono",
  "dashmap",

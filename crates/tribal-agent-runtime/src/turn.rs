@@ -15,16 +15,84 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{Connection, PgConnection};
 use tribal_db::{
-    AgentThreadRecordRepository, AgentThreadRepository, NewAgentThreadRecord,
-    PgAgentThreadRecordRepository, PgAgentThreadRepository, PgTaskRepository, TaskRepository,
+    AgentDriverTaskRepository, AgentThreadRecordRepository, AgentThreadRepository, DrivingTaskRef,
+    NewAgentThreadRecord, PgAgentDriverTaskRepository, PgAgentThreadRecordRepository,
+    PgAgentThreadRepository, PgTaskRepository, TaskRepository,
 };
 use tribal_domain::{
     AgentThread, AgentThreadRecord, AgentThreadRecordKind, AgentThreadStatus, AgentThreadTerminal,
-    CompletionResponse, ExecutionSpend, PromptVersionId, TaskId,
+    CompletionResponse, ExecutionSpend, PromptVersionId,
 };
 use tribal_telemetry::{current_span_id, current_trace_id};
 
 use crate::AgentRuntimeError;
+
+/// A driving task's lease, verified before a guarded write.
+///
+/// Pairs the driving task — a launched stage task or a driver-family
+/// row — with the claim token the holder presents. Both families verify
+/// through their repository's shared-lock check, so the turn machinery
+/// guards a stage thread and a driver-driven child through one type.
+#[derive(Debug, Clone, Copy)]
+pub struct DrivingClaim {
+    /// Which driving task holds the lease.
+    pub driving_task: DrivingTaskRef,
+    /// The token the holder presents.
+    pub claim_token: uuid::Uuid,
+}
+
+impl DrivingClaim {
+    /// A stage task's claim.
+    #[must_use]
+    pub fn stage(task_id: tribal_domain::TaskId, claim_token: uuid::Uuid) -> Self {
+        Self {
+            driving_task: DrivingTaskRef::Stage(task_id),
+            claim_token,
+        }
+    }
+
+    /// A driver-family task's claim.
+    #[must_use]
+    pub fn driver(
+        driver_task_id: tribal_domain::AgentDriverTaskId,
+        claim_token: uuid::Uuid,
+    ) -> Self {
+        Self {
+            driving_task: DrivingTaskRef::Driver(driver_task_id),
+            claim_token,
+        }
+    }
+
+    /// Verifies the lease with a shared row lock, holding it for the rest
+    /// of the enclosing transaction. The `Err` arm is a database fault;
+    /// the `Ok(false)` arm is the deterministic lost-ownership signal.
+    async fn holds(&self, conn: &mut PgConnection) -> Result<bool, AgentRuntimeError> {
+        match self.driving_task {
+            DrivingTaskRef::Stage(task_id) => PgTaskRepository
+                .holds_claim(conn, task_id, self.claim_token)
+                .await
+                .map_err(|source| AgentRuntimeError::database("verifying the stage lease", source)),
+            DrivingTaskRef::Driver(driver_task_id) => PgAgentDriverTaskRepository
+                .holds_claim(conn, driver_task_id, self.claim_token)
+                .await
+                .map_err(|source| {
+                    AgentRuntimeError::database("verifying the driver lease", source)
+                }),
+        }
+    }
+
+    /// Verifies the lease, returning [`AgentRuntimeError::LeaseLost`] on a
+    /// miss — the guarded-write helper.
+    pub(crate) async fn require(&self, conn: &mut PgConnection) -> Result<(), AgentRuntimeError> {
+        if self.holds(conn).await? {
+            Ok(())
+        } else {
+            Err(AgentRuntimeError::LeaseLost {
+                driving_task: self.driving_task,
+            })
+        }
+    }
+}
 
 /// The `content_kind` tag value identifying a rendered-conversation
 /// input record.
@@ -79,26 +147,65 @@ pub struct RenderedConversation {
     /// on read so records written before the field existed deserialise.
     #[serde(default)]
     pub resolution_context: Option<serde_json::Value>,
+    /// The JSON Schema this turn's response is constrained to, when it
+    /// is — a driver child's structured output (a verifier's verdict).
+    /// Held as the schema value, not a wire type, so the record stays
+    /// provider-independent; the executor builds the response format from
+    /// it. Defaulted on read for records written before the field
+    /// existed.
+    #[serde(default)]
+    pub response_schema: Option<serde_json::Value>,
 }
 
-/// The assistant message's content: the response text. Usage rides the
-/// record's dedicated column, not the content.
+/// One tool call as the assistant message requested it, in the thread's
+/// serialisation format (independent of the wire type, so provider-layer
+/// changes never reshape committed records).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct AssistantContent {
-    text: String,
+pub struct RecordedToolCall {
+    /// The call identifier its result must answer.
+    pub id: String,
+    /// The tool the model called.
+    pub name: String,
+    /// The call's JSON arguments.
+    pub arguments: serde_json::Value,
+}
+
+/// The assistant message's content: the response text and any tool
+/// calls it carries. Usage rides the record's dedicated column, not the
+/// content. The `tool_calls` field is additive: one-shot records omit
+/// it (empty serialises to nothing), so their bytes are unchanged and
+/// old records deserialise with the default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AssistantContent {
+    pub(crate) text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) tool_calls: Vec<RecordedToolCall>,
 }
 
 /// The usage column's shape: token counts and wire latency, independent
 /// of the inference layer's in-memory type so committed records never
 /// reshape with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct RecordedUsage {
-    input_tokens: u32,
-    output_tokens: u32,
-    cache_read_tokens: u32,
-    cache_write_tokens: u32,
-    total_tokens: u32,
-    latency_ms: u64,
+pub(crate) struct RecordedUsage {
+    pub(crate) input_tokens: u32,
+    pub(crate) output_tokens: u32,
+    pub(crate) cache_read_tokens: u32,
+    pub(crate) cache_write_tokens: u32,
+    pub(crate) total_tokens: u32,
+    pub(crate) latency_ms: u64,
+}
+
+impl From<&CompletionResponse> for RecordedUsage {
+    fn from(response: &CompletionResponse) -> Self {
+        Self {
+            input_tokens: response.usage.input_tokens,
+            output_tokens: response.usage.output_tokens,
+            cache_read_tokens: response.usage.cache_read_tokens,
+            cache_write_tokens: response.usage.cache_write_tokens,
+            total_tokens: response.usage.total_tokens,
+            latency_ms: u64::try_from(response.usage.latency.as_millis()).unwrap_or(u64::MAX),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +221,9 @@ pub struct BegunTurn {
 }
 
 /// Commits the input record (first attempt) or adopts the committed one
-/// (resume), and returns the conversation the call must send.
+/// (resume), and returns the conversation the call must send. Both
+/// executors begin here: the one-shot bracket and the turn loop share
+/// this entry, so the byte-stable opening rides one mechanism.
 ///
 /// The input commits in its own transaction before any wire call: what
 /// was sent is durable even if the process dies mid-call, and at-least-
@@ -130,11 +239,10 @@ pub struct BegunTurn {
 /// Returns [`AgentRuntimeError::LeaseLost`] when the claim guard misses
 /// (nothing committed), [`AgentRuntimeError::ContentSerialisation`] on a
 /// format fault, and [`AgentRuntimeError::Database`] on database errors.
-pub async fn begin_one_shot(
+pub async fn begin_turn(
     conn: &mut PgConnection,
     thread: &AgentThread,
-    task_id: TaskId,
-    claim_token: uuid::Uuid,
+    claim: DrivingClaim,
     committed_input: Option<&AgentThreadRecord>,
     rendered: RenderedConversation,
 ) -> Result<BegunTurn, AgentRuntimeError> {
@@ -166,13 +274,7 @@ pub async fn begin_one_shot(
 
     // Lock order: the driving task's lease first (the guard), then the
     // thread row for the seq derivation.
-    let held = PgTaskRepository
-        .holds_claim(&mut txn, task_id, claim_token)
-        .await
-        .map_err(|source| AgentRuntimeError::database("verifying the lease", source))?;
-    if !held {
-        return Err(AgentRuntimeError::LeaseLost { task_id });
-    }
+    claim.require(&mut txn).await?;
 
     PgAgentThreadRepository
         .lock(&mut txn, thread.id())
@@ -203,6 +305,75 @@ pub async fn begin_one_shot(
     Ok(BegunTurn {
         conversation: rendered,
     })
+}
+
+/// Reads a thread's committed rendered conversation for re-sending
+/// verbatim.
+///
+/// A driver-family child is born with its input record (a verifier's
+/// rubric and the submission, committed in the suspend-with-child
+/// transaction), so the driver adopts that conversation rather than
+/// rendering its own — the one-shot bracket's no-re-render contract. The
+/// child has not begun a turn, so the rendered conversation is the only
+/// input record; its absence is a consistency fault, never a first-claim
+/// case.
+///
+/// # Errors
+///
+/// Returns [`AgentRuntimeError::Database`] on read failure,
+/// [`AgentRuntimeError::ContentSerialisation`] when the record will not
+/// deserialise, and a database not-found fault when no rendered
+/// conversation is committed.
+pub async fn adopt_conversation(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+) -> Result<RenderedConversation, AgentRuntimeError> {
+    recorded_conversation(conn, thread).await?.ok_or_else(|| {
+        AgentRuntimeError::database(
+            "adopting the thread's conversation",
+            tribal_db::DbError::NotFound {
+                entity: "agent_thread_record",
+                id: format!("rendered conversation for thread {}", thread.id()),
+            },
+        )
+    })
+}
+
+/// Returns the thread's recorded rendered conversation, or `None` when the
+/// thread has no recorded rendered conversation yet (a fresh claim, whose
+/// first turn has not committed one).
+///
+/// A resuming caller reuses the recorded conversation, and the
+/// stage-opaque resolution context it carries, rather than re-deriving it.
+///
+/// # Errors
+///
+/// Returns [`AgentRuntimeError::Database`] on read failure and
+/// [`AgentRuntimeError::ContentSerialisation`] when a present input record
+/// will not deserialise.
+pub async fn recorded_conversation(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+) -> Result<Option<RenderedConversation>, AgentRuntimeError> {
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread_id(conn, thread.id())
+        .await
+        .map_err(|source| AgentRuntimeError::database("reading the thread's input", source))?;
+    let Some(input) = records.iter().find(|record| {
+        record.kind() == AgentThreadRecordKind::Input && is_rendered_conversation(record.content())
+    }) else {
+        return Ok(None);
+    };
+    serde_json::from_value(input.content().clone())
+        .map(Some)
+        .map_err(|source| AgentRuntimeError::ContentSerialisation {
+            context: format!(
+                "adopting the conversation of thread {} (format_version {})",
+                thread.id(),
+                thread.format_version(),
+            ),
+            source,
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -238,22 +409,17 @@ pub async fn commit_one_shot_terminal(
 ) -> Result<OneShotOutcome, AgentRuntimeError> {
     let content = serde_json::to_value(AssistantContent {
         text: response.text.clone(),
+        tool_calls: vec![],
     })
     .map_err(|source| AgentRuntimeError::ContentSerialisation {
         context: format!("serialising the assistant record of thread {}", thread.id()),
         source,
     })?;
-    let usage = serde_json::to_value(RecordedUsage {
-        input_tokens: response.usage.input_tokens,
-        output_tokens: response.usage.output_tokens,
-        cache_read_tokens: response.usage.cache_read_tokens,
-        cache_write_tokens: response.usage.cache_write_tokens,
-        total_tokens: response.usage.total_tokens,
-        latency_ms: u64::try_from(response.usage.latency.as_millis()).unwrap_or(u64::MAX),
-    })
-    .map_err(|source| AgentRuntimeError::ContentSerialisation {
-        context: format!("serialising usage for thread {}", thread.id()),
-        source,
+    let usage = serde_json::to_value(RecordedUsage::from(response)).map_err(|source| {
+        AgentRuntimeError::ContentSerialisation {
+            context: format!("serialising usage for thread {}", thread.id()),
+            source,
+        }
     })?;
 
     PgAgentThreadRepository
@@ -368,6 +534,7 @@ mod tests {
             system_prompt_version_id: None,
             user_prompt_version_id: None,
             resolution_context: None,
+            response_schema: None,
         };
         let value = serde_json::to_value(&rendered).expect("serialises");
         assert_eq!(

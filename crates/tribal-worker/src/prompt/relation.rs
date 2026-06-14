@@ -5,7 +5,7 @@ use serde::Serialize;
 use tribal_domain::{
     Candidate, KnowledgeItemId, RelationHint, RelationSuggestion, StageParameters,
 };
-use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
+use tribal_inference::{CompletionRequest, Message, ResponseFormat};
 
 use super::renderer::PromptRenderer;
 use crate::{
@@ -52,6 +52,11 @@ pub(crate) struct CandidateOutcome<'a> {
     /// The resolved `KnowledgeItemId` for created or duplicate
     /// outcomes. `None` for failed.
     pub item_id: Option<KnowledgeItemId>,
+    /// The notes the candidate's agentic triage handed downstream, when
+    /// it ran the loop and left any. Absent for the one-shot path, so the
+    /// rendered context stays byte-identical there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<String>,
 }
 
 /// A triage similar item decision for prompt inclusion.
@@ -132,10 +137,10 @@ pub(crate) fn assemble_relation_prompt(
 
     Ok(CompletionRequest {
         system: Some(rendered_system),
-        messages: vec![Message {
-            role: Role::User,
+        messages: vec![Message::User {
             content: rendered_user,
         }],
+        tools: vec![],
         temperature: narrow_temperature(params.temperature),
         max_tokens: params.max_tokens,
         response_format: Some(ResponseFormat::JsonSchema {
@@ -151,6 +156,7 @@ pub(crate) fn assemble_relation_prompt(
 #[cfg(test)]
 mod tests {
     use tribal_domain::TaskErrorKind;
+    use tribal_inference::Role;
 
     use super::*;
     use crate::prompt::SimilarityBand;
@@ -215,18 +221,21 @@ mod tests {
                     candidate: &data.candidates[0],
                     outcome: "created".into(),
                     item_id: Some(data.ki_a),
+                    handoff: None,
                 },
                 CandidateOutcome {
                     batch_index: 1,
                     candidate: &data.candidates[1],
                     outcome: "duplicate".into(),
                     item_id: Some(data.ki_b),
+                    handoff: Some("the candidate links auth and billing".to_owned()),
                 },
                 CandidateOutcome {
                     batch_index: 2,
                     candidate: &data.candidates[2],
                     outcome: "failed".into(),
                     item_id: None,
+                    handoff: None,
                 },
             ],
             relation_hints: &data.relation_hints,
@@ -283,7 +292,7 @@ mod tests {
             &StageParameters::default(),
         )
         .unwrap();
-        let user_content = &request.messages[0].content;
+        let user_content = request.messages[0].content();
 
         assert!(
             user_content.contains("0: created"),
@@ -307,6 +316,39 @@ mod tests {
         );
     }
 
+    /// The agentic triage handoff reaches the relation model through the
+    /// launched template: a candidate that carried notes renders them in a
+    /// fenced line, and a candidate with none renders nothing — so the
+    /// one-shot path (no handoffs) is byte-identical, which the golden
+    /// snapshot pins.
+    #[test]
+    fn test_the_handoff_renders_into_the_relation_template() {
+        let data = rich_test_data();
+        let ctx = rich_context(&data);
+        let request = assemble_relation_prompt(
+            "system",
+            include_str!("../../../../prompts/relation/user.tera"),
+            &ctx,
+            &StageParameters::default(),
+        )
+        .unwrap();
+        let user_content = request.messages[0].content();
+
+        assert!(
+            user_content.contains("Notes from triage:"),
+            "the handoff is surfaced under a label: {user_content}",
+        );
+        assert!(
+            user_content.contains("the candidate links auth and billing"),
+            "the handoff text reaches the relation prompt: {user_content}",
+        );
+        assert_eq!(
+            user_content.matches("Notes from triage:").count(),
+            1,
+            "only the one candidate that carried a handoff renders the line",
+        );
+    }
+
     #[test]
     fn test_renders_relation_hints_into_user_prompt() {
         let data = rich_test_data();
@@ -319,7 +361,7 @@ mod tests {
         let request =
             assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default())
                 .unwrap();
-        let user_content = &request.messages[0].content;
+        let user_content = request.messages[0].content();
 
         assert!(
             user_content.contains("0 -> 1: derived_from"),
@@ -340,7 +382,7 @@ mod tests {
         let request =
             assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default())
                 .unwrap();
-        let user_content = &request.messages[0].content;
+        let user_content = request.messages[0].content();
 
         assert!(
             user_content.contains("batch 0:"),
@@ -414,9 +456,9 @@ mod tests {
             assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default())
                 .unwrap();
         assert_eq!(request.messages.len(), 1);
-        assert_eq!(request.messages[0].role, Role::User);
+        assert_eq!(request.messages[0].role(), Role::User);
 
-        let content = &request.messages[0].content;
+        let content = request.messages[0].content();
         assert!(
             content.contains("Rust has zero-cost abstractions"),
             "should contain candidate content: {content}",

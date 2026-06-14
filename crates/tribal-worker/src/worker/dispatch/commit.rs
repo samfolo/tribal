@@ -17,9 +17,9 @@ use tribal_db::{
     TriageResultRepository, TriageSimilarItemDecisionRepository, advisory_locks,
 };
 use tribal_domain::{
-    AgentThread, CompletionResponse, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, Job,
-    JobId, JobOutcome, JobState, JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task,
-    TriageOutcome, span_attrs,
+    AgentThread, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, Job, JobId, JobOutcome,
+    JobState, JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task, TriageOutcome,
+    span_attrs,
 };
 use tribal_inference::{
     EmbedGroupError, EmbeddingRequest, EmbeddingTarget, InferenceError, InferenceGateway,
@@ -31,8 +31,8 @@ use crate::{
     common::{EXPECT_BATCH_INDEX, EXPECT_CLAIMED_AT},
     error::{STAGE_EXTRACTION, STAGE_RELATION, STAGE_TRIAGE, StageError},
     stages::{
-        RelationCommitDecision, StageCommit, StageRun, TriageCommitDecision, finish_thread,
-        load_active_embedding_profile, stage_attribution,
+        RelationCommitDecision, StageCommit, StageRun, StageTerminal, TriageCommitDecision,
+        finish_thread, load_active_embedding_profile, stage_attribution,
     },
     tag_resolution::NewTagWithEmbedding,
     worker::coupling,
@@ -53,9 +53,9 @@ impl Worker {
         let StageRun {
             thread,
             commit,
-            response,
+            terminal,
         } = run;
-        let response = response.as_ref();
+        let terminal = &terminal;
         match commit {
             StageCommit::Extraction {
                 extraction_result,
@@ -71,7 +71,7 @@ impl Worker {
                     batch_size,
                     original_count,
                     &thread,
-                    response,
+                    terminal,
                 )
                 .await
             }
@@ -87,12 +87,12 @@ impl Worker {
                     decision,
                     similar_item_decisions,
                     &thread,
-                    response,
+                    terminal,
                 )
                 .await
             }
             StageCommit::Relation { decision } => {
-                self.commit_relation(task, job, decision, &thread, response)
+                self.commit_relation(task, job, decision, &thread, terminal)
                     .await
             }
         }
@@ -116,7 +116,7 @@ impl Worker {
         batch_size: u32,
         original_count: u32,
         thread: &AgentThread,
-        response: Option<&CompletionResponse>,
+        terminal: &StageTerminal,
     ) -> Result<(), StageError> {
         let span = tracing::info_span!(
             "tribal.extraction.commit",
@@ -192,7 +192,7 @@ impl Worker {
                 return Err(StageError::OwnershipLost);
             }
 
-            finish_thread(&mut txn, STAGE_EXTRACTION, thread, task, response).await?;
+            finish_thread(&mut txn, STAGE_EXTRACTION, thread, task, terminal).await?;
 
             txn.commit()
                 .await
@@ -259,7 +259,7 @@ impl Worker {
         decision: TriageCommitDecision,
         similar_item_decisions: Vec<tribal_db::NewTriageSimilarItemDecision>,
         thread: &AgentThread,
-        response: Option<&CompletionResponse>,
+        terminal: &StageTerminal,
     ) -> Result<(), StageError> {
         let job_id = task.job_id();
         let batch_index = task.batch_index().expect(EXPECT_BATCH_INDEX);
@@ -327,7 +327,7 @@ impl Worker {
                                         claim_token,
                                         job_id,
                                         thread,
-                                        response,
+                                        terminal,
                                     )
                                     .await?;
                                 txn.commit().await.map_err(|e| {
@@ -381,7 +381,7 @@ impl Worker {
                             claim_token,
                             job_id,
                             thread,
-                            response,
+                            terminal,
                         )
                         .await?;
                     txn.commit()
@@ -402,7 +402,7 @@ impl Worker {
                             claim_token,
                             job_id,
                             thread,
-                            response,
+                            terminal,
                         )
                         .await?;
                     txn.commit()
@@ -460,7 +460,7 @@ impl Worker {
         claim_token: uuid::Uuid,
         job_id: JobId,
         thread: &AgentThread,
-        response: Option<&CompletionResponse>,
+        terminal: &StageTerminal,
     ) -> Result<bool, StageError> {
         if !similar_item_decisions.is_empty() {
             PgTriageSimilarItemDecisionRepository
@@ -477,7 +477,7 @@ impl Worker {
             return Err(StageError::OwnershipLost);
         }
 
-        finish_thread(txn, STAGE_TRIAGE, thread, task, response).await?;
+        finish_thread(txn, STAGE_TRIAGE, thread, task, terminal).await?;
 
         coupling::triage_fan_in(txn, job_id, task.id())
             .await
@@ -498,7 +498,7 @@ impl Worker {
         job: &Job,
         decision: RelationCommitDecision,
         thread: &AgentThread,
-        response: Option<&CompletionResponse>,
+        terminal: &StageTerminal,
     ) -> Result<(), StageError> {
         let job_id = task.job_id();
         let span = tracing::info_span!(
@@ -535,7 +535,7 @@ impl Worker {
                     let won_commit = self
                         .commit_relation_relate(
                             thread,
-                            response,
+                            terminal,
                             &mut txn,
                             task,
                             job_id,
@@ -565,7 +565,7 @@ impl Worker {
                     if rows == 0 {
                         return Err(StageError::OwnershipLost);
                     }
-                    finish_thread(&mut txn, STAGE_RELATION, thread, task, response).await?;
+                    finish_thread(&mut txn, STAGE_RELATION, thread, task, terminal).await?;
                     // NoOp does not record job metrics; the job was
                     // already completed by a prior commit attempt.
                     (false, None)
@@ -627,7 +627,7 @@ impl Worker {
     async fn commit_relation_relate(
         &self,
         thread: &AgentThread,
-        response: Option<&CompletionResponse>,
+        terminal: &StageTerminal,
         txn: &mut sqlx::PgConnection,
         task: &Task,
         job_id: JobId,
@@ -655,7 +655,7 @@ impl Worker {
             if rows == 0 {
                 return Err(StageError::OwnershipLost);
             }
-            finish_thread(txn, STAGE_RELATION, thread, task, response).await?;
+            finish_thread(txn, STAGE_RELATION, thread, task, terminal).await?;
 
             return Ok(false);
         }
@@ -689,7 +689,7 @@ impl Worker {
         if rows == 0 {
             return Err(StageError::OwnershipLost);
         }
-        finish_thread(txn, STAGE_RELATION, thread, task, response).await?;
+        finish_thread(txn, STAGE_RELATION, thread, task, terminal).await?;
 
         tracing::Span::current().record(span_attrs::JOB_OUTCOME, outcome.as_str());
         tracing::Span::current().record(

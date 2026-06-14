@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
     AgentThreadId, AgentThreadRecord, AgentThreadRecordId, AgentThreadRecordKind,
-    AgentThreadRecordSeq,
+    AgentThreadRecordSeq, JobId, TaskType,
 };
 use typed_builder::TypedBuilder;
 
@@ -40,6 +40,7 @@ const COLUMNS: Columns = Columns(&[
 
 const UNKNOWN_KIND_IN_DB: &str = "unrecognised record kind in database: schema mismatch";
 const NEGATIVE_COUNT: &str = "negative count in database: data corruption";
+const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database: data corruption";
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -75,6 +76,18 @@ pub struct NewAgentThreadRecord {
     /// The observing span id.
     #[builder(default)]
     pub span_id: Option<String>,
+}
+
+/// One agentic triage thread's submission, keyed by the candidate's batch
+/// index — the relation stage's handoff lookup. Only agentic threads
+/// commit submission records, so a one-shot job yields none.
+#[derive(Debug, Clone)]
+pub struct JobTriageSubmission {
+    /// The candidate's position in the extraction batch.
+    pub batch_index: u32,
+    /// The submission record's content (the validated payload and its
+    /// provenance).
+    pub content: serde_json::Value,
 }
 
 // ---------------------------------------------------------------------------
@@ -114,10 +127,26 @@ pub trait AgentThreadRecordRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_by_thread(
+    async fn find_by_thread_id(
         &self,
         conn: &mut PgConnection,
         thread_id: AgentThreadId,
+    ) -> Result<Vec<AgentThreadRecord>, DbError>;
+
+    /// Lists a thread's records in log order from `from_seq` (inclusive),
+    /// at most `limit` of them — the keyset page behind paged reads.
+    /// The first page starts at [`AgentThreadRecordSeq::FIRST`]; each
+    /// further page starts at the previous page's last seq's `next()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_by_thread_id_from(
+        &self,
+        conn: &mut PgConnection,
+        thread_id: AgentThreadId,
+        from_seq: AgentThreadRecordSeq,
+        limit: u32,
     ) -> Result<Vec<AgentThreadRecord>, DbError>;
 
     /// Returns a thread's last committed record, if any.
@@ -143,6 +172,21 @@ pub trait AgentThreadRecordRepository {
         thread_id: AgentThreadId,
         requesting_seq: AgentThreadRecordSeq,
     ) -> Result<u64, DbError>;
+
+    /// Lists the submission records of a job's triage threads, each with
+    /// its candidate's batch index — the relation stage's handoff lookup.
+    /// Only agentic threads commit submission records, so a one-shot job
+    /// yields an empty list and the caller gates the call on the
+    /// configured executor so the default path issues no query at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_triage_submissions_by_job_id(
+        &self,
+        conn: &mut PgConnection,
+        job_id: JobId,
+    ) -> Result<Vec<JobTriageSubmission>, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +256,7 @@ impl AgentThreadRecordRepository for PgAgentThreadRecordRepository {
         Ok(map_agent_thread_record_row(&row))
     }
 
-    async fn find_by_thread(
+    async fn find_by_thread_id(
         &self,
         conn: &mut PgConnection,
         thread_id: AgentThreadId,
@@ -225,6 +269,31 @@ impl AgentThreadRecordRepository for PgAgentThreadRecordRepository {
             .await
             .map_err(|e| DbError::QueryFailed {
                 context: format!("listing records for thread {thread_id}"),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_agent_thread_record_row).collect())
+    }
+
+    async fn find_by_thread_id_from(
+        &self,
+        conn: &mut PgConnection,
+        thread_id: AgentThreadId,
+        from_seq: AgentThreadRecordSeq,
+        limit: u32,
+    ) -> Result<Vec<AgentThreadRecord>, DbError> {
+        let sql = format!(
+            "SELECT {COLUMNS} FROM agent_thread_records \
+             WHERE thread_id = $1 AND seq >= $2 ORDER BY seq LIMIT $3"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(thread_id.inner())
+            .bind(from_seq.inner())
+            .bind(i64::from(limit))
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("listing a record page for thread {thread_id}"),
                 source: e,
             })?;
 
@@ -274,6 +343,38 @@ impl AgentThreadRecordRepository for PgAgentThreadRecordRepository {
         })?;
 
         Ok(u64::try_from(row.get::<i64, _>("count")).expect(NEGATIVE_COUNT))
+    }
+
+    async fn find_triage_submissions_by_job_id(
+        &self,
+        conn: &mut PgConnection,
+        job_id: JobId,
+    ) -> Result<Vec<JobTriageSubmission>, DbError> {
+        let rows = sqlx::query(
+            "SELECT tasks.batch_index, r.content FROM agent_thread_records r \
+             JOIN agent_threads t ON t.id = r.thread_id \
+             JOIN tasks ON tasks.id = t.stage_task_id \
+             WHERE tasks.job_id = $1 AND t.pipeline_stage = $2 AND r.kind = $3 \
+             ORDER BY tasks.batch_index",
+        )
+        .bind(job_id.inner())
+        .bind(TaskType::Triage.as_str())
+        .bind(AgentThreadRecordKind::Submission.as_str())
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("listing the triage submissions of job {job_id}"),
+            source: e,
+        })?;
+
+        Ok(rows
+            .iter()
+            .map(|r| JobTriageSubmission {
+                batch_index: u32::try_from(r.get::<i32, _>("batch_index"))
+                    .expect(BATCH_INDEX_OVERFLOW),
+                content: r.get::<serde_json::Value, _>("content"),
+            })
+            .collect())
     }
 }
 

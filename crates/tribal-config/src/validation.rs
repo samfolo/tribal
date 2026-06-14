@@ -76,6 +76,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_auth(config, &mut diags);
     validate_oauth(config, &mut diags);
     validate_worker(config, &mut diags);
+    validate_agents(config, &mut diags);
     validate_pool_sizing(config, &mut diags);
     validate_init(config, &mut diags);
     validate_inference(config, &mut diags);
@@ -91,6 +92,17 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     } else {
         Err(ConfigError::ValidationFailed { diagnostics: diags })
     }
+}
+
+/// Collects non-fatal configuration advisories.
+///
+/// Unlike [`validate`], these never block startup. They surface inert or
+/// surprising combinations that validation admits but the operator may not
+/// have intended (for example a verifier configured under the one-shot
+/// executor, where it never runs). A caller logs each as a warning.
+#[must_use]
+pub fn config_warnings(config: &TribalConfig) -> Vec<&'static str> {
+    config.agents.advisories()
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +471,10 @@ fn validate_credentials(config: &TribalConfig, diags: &mut Diagnostics) {
 
 fn validate_worker(config: &TribalConfig, diags: &mut Diagnostics) {
     config.worker.validate(diags);
+}
+
+fn validate_agents(config: &TribalConfig, diags: &mut Diagnostics) {
+    config.agents.validate(diags);
 }
 
 fn validate_pool_sizing(config: &TribalConfig, diags: &mut Diagnostics) {

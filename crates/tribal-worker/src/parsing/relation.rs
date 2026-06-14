@@ -184,6 +184,7 @@ mod tests {
     fn mock_response(text: &str) -> CompletionResponse {
         CompletionResponse {
             text: text.to_owned(),
+            tool_calls: vec![],
             usage: CompletionUsage {
                 provider: "test".into(),
                 model: "test-model".into(),

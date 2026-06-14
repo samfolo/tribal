@@ -279,6 +279,20 @@ pub enum UsageOwner {
         /// The run the embedding belongs to.
         run_id: ReindexRunId,
     },
+    /// A driver-driven thread's execution (a child run): no stage task or
+    /// job to reference, so the thread alone carries the attribution.
+    Thread {
+        /// The thread the execution runs under.
+        thread_id: AgentThreadId,
+        /// The committed record the request produced, attributed after
+        /// the fact by sinks that learn it; callers issuing the request
+        /// leave it unset.
+        record_id: Option<AgentThreadRecordId>,
+        /// The driving driver task's attempt number (starts at 0); scopes
+        /// after-the-fact record links so a reclaimed attempt's orphaned
+        /// rows stay thread-attributed.
+        attempt: i32,
+    },
 }
 
 impl UsageOwner {
@@ -287,7 +301,7 @@ impl UsageOwner {
     pub fn job_id(&self) -> Option<JobId> {
         match self {
             Self::Pipeline { job_id, .. } => Some(*job_id),
-            Self::Unowned | Self::Reindex { .. } => None,
+            Self::Unowned | Self::Reindex { .. } | Self::Thread { .. } => None,
         }
     }
 
@@ -296,7 +310,7 @@ impl UsageOwner {
     pub fn task_id(&self) -> Option<TaskId> {
         match self {
             Self::Pipeline { task_id, .. } => Some(*task_id),
-            Self::Unowned | Self::Reindex { .. } => None,
+            Self::Unowned | Self::Reindex { .. } | Self::Thread { .. } => None,
         }
     }
 
@@ -305,7 +319,7 @@ impl UsageOwner {
     pub fn reindex_run_id(&self) -> Option<ReindexRunId> {
         match self {
             Self::Reindex { run_id } => Some(*run_id),
-            Self::Unowned | Self::Pipeline { .. } => None,
+            Self::Unowned | Self::Pipeline { .. } | Self::Thread { .. } => None,
         }
     }
 
@@ -313,7 +327,7 @@ impl UsageOwner {
     #[must_use]
     pub fn agent_thread_id(&self) -> Option<AgentThreadId> {
         match self {
-            Self::Pipeline { thread_id, .. } => Some(*thread_id),
+            Self::Pipeline { thread_id, .. } | Self::Thread { thread_id, .. } => Some(*thread_id),
             Self::Unowned | Self::Reindex { .. } => None,
         }
     }
@@ -322,7 +336,7 @@ impl UsageOwner {
     #[must_use]
     pub fn agent_thread_record_id(&self) -> Option<AgentThreadRecordId> {
         match self {
-            Self::Pipeline { record_id, .. } => *record_id,
+            Self::Pipeline { record_id, .. } | Self::Thread { record_id, .. } => *record_id,
             Self::Unowned | Self::Reindex { .. } => None,
         }
     }
@@ -331,7 +345,7 @@ impl UsageOwner {
     #[must_use]
     pub fn attempt(&self) -> i32 {
         match self {
-            Self::Pipeline { attempt, .. } => *attempt,
+            Self::Pipeline { attempt, .. } | Self::Thread { attempt, .. } => *attempt,
             Self::Unowned | Self::Reindex { .. } => 0,
         }
     }
@@ -340,6 +354,23 @@ impl UsageOwner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_thread_owner_maps_thread_columns_only() {
+        let thread_id = AgentThreadId::new();
+        let owner = UsageOwner::Thread {
+            thread_id,
+            record_id: None,
+            attempt: 2,
+        };
+
+        assert_eq!(owner.job_id(), None);
+        assert_eq!(owner.task_id(), None);
+        assert_eq!(owner.reindex_run_id(), None);
+        assert_eq!(owner.agent_thread_id(), Some(thread_id));
+        assert_eq!(owner.agent_thread_record_id(), None);
+        assert_eq!(owner.attempt(), 2);
+    }
 
     #[test]
     fn test_unowned_maps_to_no_columns() {

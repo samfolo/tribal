@@ -21,7 +21,9 @@ mod tools;
 pub use app_state::{AppState, ResolvedProject};
 pub use config::{HandlerConfig, HandlerDiscoveryConfig, HandlerExplorationConfig};
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
-pub use server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler};
+pub use server_handler::{
+    ActivePromptVersions, ConnectionRepositories, SharedActivePrompts, TribalServerHandler,
+};
 pub use session::{SessionActor, SessionContext, SessionProject};
 #[cfg(feature = "test-helpers")]
 pub use tools::tool_scope_registry;

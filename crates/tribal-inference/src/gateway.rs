@@ -33,7 +33,7 @@ use tribal_domain::{
 use crate::{
     BatchEmbeddingResult, CompletionRequest, EmbeddingProvider, EmbeddingRequest, InferenceError,
     InferenceProvider, Message, ProviderIdentity, ProviderKey, ProviderLimits, ProviderRegistry,
-    ProviderRegistryError, RequestClass, Role,
+    ProviderRegistryError, RequestClass,
     anthropic::AnthropicInferenceProvider,
     embedding_factory::{ensure_embedding_support, make_embedding_provider},
     http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, latency_ms},
@@ -379,10 +379,10 @@ impl InferenceGateway {
 
             let request = CompletionRequest {
                 system: None,
-                messages: vec![Message {
-                    role: Role::User,
+                messages: vec![Message::User {
                     content: INFERENCE_PROBE_INPUT.to_owned(),
                 }],
+                tools: vec![],
                 temperature: Some(0.0),
                 max_tokens: Some(PROBE_MAX_TOKENS),
                 response_format: None,
@@ -1042,6 +1042,7 @@ mod tests {
         fn canned_response(&self) -> CompletionResponse {
             CompletionResponse {
                 text: "canned".to_owned(),
+                tool_calls: vec![],
                 usage: CompletionUsage {
                     provider: self.identity.name.clone(),
                     model: self.identity.model.clone(),
@@ -1217,10 +1218,10 @@ mod tests {
     fn a_request() -> CompletionRequest {
         CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "input".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,

@@ -72,7 +72,7 @@ async fn test_stage_execution_commits_a_completed_thread_with_its_log() {
 
     let mut conn = raw_conn(ctx).await;
     let thread = PgAgentThreadRepository
-        .find_by_stage_task(&mut conn, task_id)
+        .find_by_stage_task_id(&mut conn, task_id)
         .await
         .expect("find thread")
         .expect("the executed task drives a thread");
@@ -86,7 +86,7 @@ async fn test_stage_execution_commits_a_completed_thread_with_its_log() {
     );
 
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, thread.id())
+        .find_by_thread_id(&mut conn, thread.id())
         .await
         .expect("read the log");
     assert_eq!(records.len(), 2, "a one-shot turn commits two records");
@@ -261,7 +261,7 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
         }
         if tokio::time::Instant::now() > deadline {
             let thread_now = PgAgentThreadRepository
-                .find_by_stage_task(&mut probe, task_id)
+                .find_by_stage_task_id(&mut probe, task_id)
                 .await;
             token.cancel();
             let _ = handle.await;
@@ -274,14 +274,14 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
 
     let mut conn = raw_conn(ctx).await;
     let thread = PgAgentThreadRepository
-        .find_by_stage_task(&mut conn, task_id)
+        .find_by_stage_task_id(&mut conn, task_id)
         .await
         .expect("find thread")
         .expect("present");
     assert_eq!(thread.status(), AgentThreadStatus::Completed);
 
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, thread.id())
+        .find_by_thread_id(&mut conn, thread.id())
         .await
         .expect("log");
     let kinds: Vec<_> = records.iter().map(|r| r.kind()).collect();
@@ -584,7 +584,7 @@ async fn test_concurrent_resolutions_wake_the_thread_exactly_once() {
     assert_eq!(task_after.status(), TaskStatus::Queued);
 
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, thread_id)
+        .find_by_thread_id(&mut conn, thread_id)
         .await
         .expect("read the log");
     assert_eq!(
@@ -651,12 +651,12 @@ async fn test_a_stale_lease_cannot_commit_an_input_record() {
         system_prompt_version_id: Some(system_pv_id),
         user_prompt_version_id: Some(user_pv_id),
         resolution_context: None,
+        response_schema: None,
     };
-    let err = tribal_agent_runtime::begin_one_shot(
+    let err = tribal_agent_runtime::begin_turn(
         &mut conn,
         &stage_thread.thread,
-        task.id(),
-        uuid::Uuid::new_v4(),
+        tribal_agent_runtime::DrivingClaim::stage(task.id(), uuid::Uuid::new_v4()),
         None,
         rendered,
     )
@@ -668,7 +668,7 @@ async fn test_a_stale_lease_cannot_commit_an_input_record() {
     ));
 
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, stage_thread.thread.id())
+        .find_by_thread_id(&mut conn, stage_thread.thread.id())
         .await
         .expect("log");
     assert!(records.is_empty(), "the rejected commit left no record");
@@ -1629,12 +1629,12 @@ async fn test_resume_adopts_the_committed_input_record() {
 
     let mut conn = raw_conn(ctx).await;
     let thread = PgAgentThreadRepository
-        .find_by_stage_task(&mut conn, task_id)
+        .find_by_stage_task_id(&mut conn, task_id)
         .await
         .expect("find thread")
         .expect("the executed task drives a thread");
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, thread.id())
+        .find_by_thread_id(&mut conn, thread.id())
         .await
         .expect("read the log");
 
@@ -1811,7 +1811,7 @@ async fn test_reclaim_exhaustion_dead_letters_a_thread_that_never_started() {
     assert_eq!(stats.exhausted, 1);
 
     let thread = PgAgentThreadRepository
-        .find_by_stage_task(&mut conn, task_id)
+        .find_by_stage_task_id(&mut conn, task_id)
         .await
         .expect("find")
         .expect("present");
@@ -2033,7 +2033,7 @@ async fn test_ensure_stage_thread_refuses_a_stale_claim() {
 
     assert!(
         PgAgentThreadRepository
-            .find_by_stage_task(&mut conn, task.id())
+            .find_by_stage_task_id(&mut conn, task.id())
             .await
             .expect("find")
             .is_none(),
@@ -2085,7 +2085,7 @@ async fn test_inline_failure_exhaustion_dead_letters_the_thread() {
 
     let mut conn = raw_conn(ctx).await;
     let thread = PgAgentThreadRepository
-        .find_by_stage_task(&mut conn, task_id)
+        .find_by_stage_task_id(&mut conn, task_id)
         .await
         .expect("find")
         .expect("the executed task drives a thread");
@@ -2158,7 +2158,7 @@ async fn test_resolution_at_a_terminal_thread_is_recorded_and_discarded() {
     assert_eq!(moved, 1);
 
     let before = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, stage_thread.thread.id())
+        .find_by_thread_id(&mut conn, stage_thread.thread.id())
         .await
         .expect("log")
         .len();
@@ -2176,7 +2176,7 @@ async fn test_resolution_at_a_terminal_thread_is_recorded_and_discarded() {
         tribal_agent_runtime::ResolveOutcome::RecordedAtTerminal
     ));
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, stage_thread.thread.id())
+        .find_by_thread_id(&mut conn, stage_thread.thread.id())
         .await
         .expect("log");
     assert_eq!(
@@ -2258,7 +2258,7 @@ async fn test_resolution_at_a_running_thread_commits_nothing() {
         tribal_agent_runtime::ResolveOutcome::NotSuspended
     ));
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, stage_thread.thread.id())
+        .find_by_thread_id(&mut conn, stage_thread.thread.id())
         .await
         .expect("log");
     assert!(

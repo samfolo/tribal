@@ -12,8 +12,10 @@
 //! rather than pool connections to avoid the `PoolConnection::drop`
 //! spawn issue that leaks connections across serialised tests.
 
+mod agentic;
 mod common;
 mod coupling;
+mod driver;
 mod extraction;
 mod fixtures;
 mod lifecycle;
@@ -21,3 +23,4 @@ mod relation;
 mod threads;
 mod token_usage;
 mod triage;
+mod turn_loop;

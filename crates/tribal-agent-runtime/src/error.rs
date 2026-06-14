@@ -1,6 +1,7 @@
 //! Crate-level error type for the agent runtime.
 
 use thiserror::Error;
+use tribal_db::DrivingTaskRef;
 use tribal_domain::{AgentThreadId, AgentThreadStatus, TaskId};
 
 /// Errors from the runtime's thread-store and turn operations.
@@ -27,12 +28,24 @@ pub enum AgentRuntimeError {
         expected: AgentThreadStatus,
     },
 
-    /// The claim-guarded task write affected zero rows: the lease was
-    /// lost and the whole commit must roll back.
-    #[error("task {task_id} lease lost during a thread-runtime commit")]
-    LeaseLost {
-        /// The task whose claim token no longer matches.
+    /// Waking a suspended thread found its driving task not blocked, so
+    /// re-queueing it affected zero rows. Committing the wake would leave
+    /// the thread running with an unclaimable task, so the whole wake
+    /// rolls back and a sweep or retry re-attempts it.
+    #[error("stage task {task_id} was not blocked when its thread woke")]
+    DrivingTaskNotBlocked {
+        /// The stage task the wake expected to find blocked.
         task_id: TaskId,
+    },
+
+    /// The claim-guarded driving-task write affected zero rows: the
+    /// lease was lost and the whole commit must roll back. Carries the
+    /// driving task — stage or driver — so both families' guards report
+    /// the same way.
+    #[error("{driving_task} lease lost during a thread-runtime commit")]
+    LeaseLost {
+        /// The driving task whose claim token no longer matches.
+        driving_task: DrivingTaskRef,
     },
 
     /// A stage task's thread vanished between operations — a consistency
@@ -52,6 +65,35 @@ pub enum AgentRuntimeError {
         /// The underlying serde error.
         #[source]
         source: serde_json::Error,
+    },
+
+    /// A loop inference call failed — a provider fault that routes to
+    /// the stage-error path, never the conversation. Boxed so the
+    /// provider error's width never inflates every runtime result.
+    #[error("loop inference call failed: {context}")]
+    Inference {
+        /// What the loop was doing.
+        context: String,
+        /// The underlying provider error.
+        #[source]
+        source: Box<tribal_inference::InferenceError>,
+    },
+
+    /// A tool's system half failed — routed to the stage-error path,
+    /// never the conversation; the recoverable half returns in-band by
+    /// construction and can never reach this variant.
+    #[error("tool execution failed: {context}")]
+    ToolExecution {
+        /// The tool's operator-facing context.
+        context: String,
+    },
+
+    /// The committed log violated a structural expectation of the
+    /// projection — a consistency fault, not an operational one.
+    #[error("thread log projection failed: {context}")]
+    LogProjection {
+        /// What the projection found.
+        context: String,
     },
 }
 

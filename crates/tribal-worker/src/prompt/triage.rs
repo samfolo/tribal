@@ -4,7 +4,7 @@ use schemars::schema_for;
 use serde::Serialize;
 use tribal_db::SemanticSearchResult;
 use tribal_domain::{Candidate, KnowledgeItemId, KnowledgeKind, StageParameters, TagRegistryEntry};
-use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
+use tribal_inference::{CompletionRequest, Message, ResponseFormat};
 
 use super::{legends::SimilarityBand, renderer::PromptRenderer};
 use crate::{
@@ -12,7 +12,10 @@ use crate::{
     parsing::TriageClassification,
     prompt::{
         narrow_temperature,
-        variables::{VAR_CANDIDATE, VAR_SIMILAR_ITEMS, VAR_TAGS, triage_system_context},
+        variables::{
+            VAR_CANDIDATE, VAR_CONSIDERED_ITEMS, VAR_SIMILAR_ITEMS, VAR_SUBMISSION, VAR_TAGS,
+            triage_system_context,
+        },
     },
 };
 
@@ -77,9 +80,178 @@ pub(crate) fn triage_user_context(
     ctx
 }
 
+/// A similar item as the agentic loop's opening prompt presents it.
+///
+/// The inversion of [`SimilarItemContext`]'s id-hiding is deliberate:
+/// the loop's submissions reference items by id, copied from rendered
+/// context or tool results, so the id is exactly what the model must
+/// see. The validator later checks references against these recorded
+/// renderings.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct LoopSimilarItemContext {
+    /// The existing knowledge item identifier, as the model copies it.
+    pub item_id: String,
+    /// Classification of the existing item.
+    pub kind: KnowledgeKind,
+    /// The existing item's content.
+    pub content: String,
+    /// Cosine similarity score.
+    pub similarity_score: f64,
+    /// Human-readable similarity band for the score.
+    pub similarity_label: String,
+    /// The existing item's tags.
+    pub tags: Vec<String>,
+}
+
+impl From<&SemanticSearchResult> for LoopSimilarItemContext {
+    fn from(result: &SemanticSearchResult) -> Self {
+        Self {
+            item_id: result.item.id().to_string(),
+            kind: result.item.kind(),
+            content: result.item.content().to_owned(),
+            similarity_score: result.similarity,
+            similarity_label: SimilarityBand::from(result.similarity).to_string(),
+            tags: result.item.tags().to_vec(),
+        }
+    }
+}
+
+/// Builds the agentic loop's opening user prompt context.
+///
+/// Both the production assembly and the validation tests call this,
+/// so adding a variable here is automatically reflected in both paths.
+pub(crate) fn loop_user_context(
+    candidate: &Candidate,
+    similar_items: &[LoopSimilarItemContext],
+    tags: &[&str],
+) -> tera::Context {
+    let mut ctx = tera::Context::new();
+    ctx.insert(VAR_CANDIDATE, candidate);
+    ctx.insert(VAR_SIMILAR_ITEMS, similar_items);
+    ctx.insert(VAR_TAGS, tags);
+    ctx
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/// Renders the agentic loop's opening: the system prompt and the
+/// initial user message, under one renderer so both share the turn's
+/// pinned nonce.
+///
+/// # Errors
+///
+/// Returns [`StageError::TemplateRender`] if either template cannot be
+/// rendered.
+pub(crate) fn assemble_loop_opening(
+    system_template: &str,
+    user_template: &str,
+    candidate: &Candidate,
+    similar_items: &[LoopSimilarItemContext],
+    tag_registry: &[TagRegistryEntry],
+) -> Result<(String, String), StageError> {
+    let renderer = PromptRenderer::new();
+
+    let rendered_system = renderer.render(
+        system_template,
+        tera::Context::new(),
+        "rendering the triage loop system prompt",
+    )?;
+
+    let tags: Vec<&str> = tag_registry.iter().map(TagRegistryEntry::tag).collect();
+    let user_ctx = loop_user_context(candidate, similar_items, &tags);
+    let rendered_user = renderer.render(
+        user_template,
+        user_ctx,
+        "rendering the triage loop user prompt",
+    )?;
+
+    Ok((rendered_system, rendered_user))
+}
+
+// ---------------------------------------------------------------------------
+// Verifier context
+// ---------------------------------------------------------------------------
+
+/// The submission a verifier reviews, as its prompt presents it: the
+/// classification and the references it turns on, never the submitting
+/// thread's reasoning.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct VerifierSubmissionContext {
+    /// The classification — `novel` or `duplicate`.
+    pub decision: String,
+    /// The duplicated claim's id, present only for a duplicate decision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_item_id: Option<String>,
+    /// The bounded notes the submission carried for the relation stage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<String>,
+}
+
+/// One claim the submission assessed, with its content resolved so the
+/// verifier judges against the same text the submitting thread saw.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct VerifierConsideredItem {
+    /// The claim's item id.
+    pub item_id: String,
+    /// The claim's classification.
+    pub kind: KnowledgeKind,
+    /// The submission's assessment of this claim's relationship to the
+    /// candidate.
+    pub assessment: String,
+    /// The claim's content.
+    pub content: String,
+}
+
+/// Builds the verifier's user prompt context.
+///
+/// Both the production assembly and the validation tests call this, so a
+/// variable added here is reflected in both paths.
+pub(crate) fn verifier_user_context(
+    candidate: &Candidate,
+    submission: &VerifierSubmissionContext,
+    considered_items: &[VerifierConsideredItem],
+) -> tera::Context {
+    let mut ctx = tera::Context::new();
+    ctx.insert(VAR_CANDIDATE, candidate);
+    ctx.insert(VAR_SUBMISSION, submission);
+    ctx.insert(VAR_CONSIDERED_ITEMS, considered_items);
+    ctx
+}
+
+/// Renders the verifier child's opening: the rubric system prompt and the
+/// submission-under-review user message, under one renderer so both share
+/// the turn's pinned nonce.
+///
+/// # Errors
+///
+/// Returns [`StageError::TemplateRender`] if either template cannot be
+/// rendered.
+pub(crate) fn assemble_verifier_input(
+    system_template: &str,
+    user_template: &str,
+    candidate: &Candidate,
+    submission: &VerifierSubmissionContext,
+    considered_items: &[VerifierConsideredItem],
+) -> Result<(String, String), StageError> {
+    let renderer = PromptRenderer::new();
+
+    let rendered_system = renderer.render(
+        system_template,
+        tera::Context::new(),
+        "rendering the triage verifier system prompt",
+    )?;
+
+    let user_ctx = verifier_user_context(candidate, submission, considered_items);
+    let rendered_user = renderer.render(
+        user_template,
+        user_ctx,
+        "rendering the triage verifier user prompt",
+    )?;
+
+    Ok((rendered_system, rendered_user))
+}
 
 /// Assembles a [`CompletionRequest`] for the triage stage.
 ///
@@ -114,10 +286,10 @@ pub(crate) fn assemble_triage_prompt(
 
     Ok(CompletionRequest {
         system: Some(rendered_system),
-        messages: vec![Message {
-            role: Role::User,
+        messages: vec![Message::User {
             content: rendered_user,
         }],
+        tools: vec![],
         temperature: narrow_temperature(params.temperature),
         max_tokens: params.max_tokens,
         response_format: Some(ResponseFormat::JsonSchema {
@@ -133,6 +305,7 @@ pub(crate) fn assemble_triage_prompt(
 #[cfg(test)]
 mod tests {
     use tribal_domain::TaskErrorKind;
+    use tribal_inference::Role;
     use tribal_test_utils::a_tag_registry_entry;
 
     use super::*;
@@ -192,7 +365,7 @@ mod tests {
         );
         assert!(result.is_ok());
         let request = result.unwrap();
-        let user_content = &request.messages[0].content;
+        let user_content = request.messages[0].content();
         assert!(user_content.contains("rust"), "user prompt: {user_content}");
         assert!(
             user_content.contains("testing"),
@@ -265,10 +438,10 @@ mod tests {
         assert!(result.is_ok());
         let request = result.unwrap();
         assert_eq!(request.messages.len(), 1);
-        assert_eq!(request.messages[0].role, Role::User);
+        assert_eq!(request.messages[0].role(), Role::User);
         assert!(
             request.messages[0]
-                .content
+                .content()
                 .contains("Rust has zero-cost abstractions"),
         );
     }
@@ -293,9 +466,9 @@ mod tests {
         );
         let request = result.unwrap();
         assert!(
-            request.messages[0].content.contains("high"),
+            request.messages[0].content().contains("high"),
             "should contain label: {}",
-            request.messages[0].content,
+            request.messages[0].content(),
         );
     }
 

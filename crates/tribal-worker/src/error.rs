@@ -121,6 +121,29 @@ pub(crate) enum StageError {
         source: tribal_agent_runtime::AgentRuntimeError,
     },
 
+    /// The stage's binding could not be derived at claim: a configured
+    /// shape the supplied inputs cannot produce (a missing active loop
+    /// prompt). Retryable — a prompt reload or configuration fix
+    /// restores it.
+    #[error("binding derivation failed in {stage}: {context}")]
+    BindingDerivation {
+        /// The stage whose derivation failed.
+        stage: String,
+        /// What was missing.
+        context: String,
+    },
+
+    /// An execution budget exhausted in a way no retry can change: the
+    /// turn cap, the execution deadline, or the bounded budget
+    /// re-checks running dry. Terminal — the thread fails with its task.
+    #[error("execution budget exhausted in {stage}: {context}")]
+    BudgetExhausted {
+        /// The stage whose thread exhausted its budget.
+        stage: String,
+        /// Which budget, with its numbers.
+        context: String,
+    },
+
     /// A database operation failed during stage execution.
     #[error("database error in {stage}: {context}")]
     Database {
@@ -144,7 +167,10 @@ impl StageError {
             Self::Parse { .. } => TaskErrorKind::ParseError,
             Self::OwnershipLost => TaskErrorKind::OwnershipLost,
             Self::Timeout { .. } => TaskErrorKind::Timeout,
-            Self::TemplateRender { .. } | Self::Runtime { .. } => TaskErrorKind::InternalError,
+            Self::TemplateRender { .. } | Self::Runtime { .. } | Self::BindingDerivation { .. } => {
+                TaskErrorKind::InternalError
+            }
+            Self::BudgetExhausted { .. } => TaskErrorKind::BudgetExhausted,
             Self::Database { .. } => TaskErrorKind::DatabaseError,
         }
     }
