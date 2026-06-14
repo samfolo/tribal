@@ -375,11 +375,21 @@ impl Worker {
         if let Err(e) =
             commit_deferred_death(&mut conn, &child, task.id(), claim_token, &parent, message).await
         {
-            tracing::warn!(
-                driver_task_id = %task.id(),
-                error = %e,
-                "deferred-death transaction failed; leaving the task for reclaim",
-            );
+            if matches!(e, AgentRuntimeError::DrivingTaskNotBlocked { .. }) {
+                // The parent is in an unmodelled non-blocked state, so the
+                // hand-back cannot wake it and a reclaim would re-drive the
+                // dead child forever, each cycle a fresh model call.
+                // Dead-letter the driver task to terminate the loop; the
+                // orphaned child is left for a sweep, but no further spend
+                // accrues.
+                self.dispose_driver_task(task, message).await;
+            } else {
+                tracing::warn!(
+                    driver_task_id = %task.id(),
+                    error = %e,
+                    "deferred-death transaction failed; leaving the task for reclaim",
+                );
+            }
         }
     }
 

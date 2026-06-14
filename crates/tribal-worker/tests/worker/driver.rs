@@ -357,6 +357,61 @@ async fn test_a_stale_driver_token_rolls_the_whole_terminal_back() {
 }
 
 #[tokio::test]
+async fn test_a_hand_back_rolls_back_when_the_parent_task_is_not_blocked() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let (mut conn, sp) = seed_suspended_parent(ctx, "not-blocked").await;
+    let token = claim_and_run_child(&mut conn, &sp).await;
+
+    // The unmodelled pairing the hand-back guards against: a suspended
+    // parent whose stage task is not blocked. Moving the task out of
+    // blocked makes the hand-back's requeue find zero rows.
+    PgTaskRepository
+        .requeue_from_blocked(&mut conn, sp.stage_task.id())
+        .await
+        .expect("un-block the parent task");
+
+    let response = a_completion_response(r#"{"accepted": true}"#);
+    let child_thread = child(&mut conn, sp.child_thread_id).await;
+    let err = commit_child_terminal(
+        &mut conn,
+        &child_thread,
+        sp.driver_task_id,
+        token,
+        0,
+        &response,
+        &a_parent_resolution(&sp),
+    )
+    .await
+    .expect_err("a non-blocked parent task rolls the hand-back back");
+    assert!(matches!(
+        err,
+        tribal_agent_runtime::AgentRuntimeError::DrivingTaskNotBlocked { .. }
+    ));
+
+    // The whole wake rolled back: the parent stays suspended, no hand-back
+    // tool result appeared.
+    let parent = PgAgentThreadRepository
+        .find_by_id(&mut conn, sp.parent.id())
+        .await
+        .expect("find parent")
+        .expect("present");
+    assert_eq!(parent.status(), AgentThreadStatus::Suspended);
+    let parent_records = PgAgentThreadRecordRepository
+        .find_by_thread_id(&mut conn, sp.parent.id())
+        .await
+        .expect("parent log");
+    assert!(
+        parent_records
+            .iter()
+            .all(|r| r.kind() != AgentThreadRecordKind::ToolResult),
+        "the rolled-back hand-back left no tool result",
+    );
+
+    teardown(ctx).await;
+}
+
+#[tokio::test]
 async fn test_child_terminal_discards_when_the_parent_is_no_longer_waiting() {
     let _guard = serial_lock().await;
     let ctx = test_context().await;
