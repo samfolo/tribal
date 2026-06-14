@@ -79,6 +79,46 @@ pub enum ExecutorChoice {
 }
 
 // ---------------------------------------------------------------------------
+// Verifier sub-config
+// ---------------------------------------------------------------------------
+
+/// Whether an accepted submission is checked by a fresh-context child
+/// execution, and (in time) under what model and budget.
+///
+/// A struct rather than a bare bool so the verifier's model and budget can
+/// be added as fields without a config-type break. A bare bool still
+/// deserialises (`verifier: false`), so the launched ergonomics hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct VerifierConfig {
+    /// Whether the verifier runs.
+    pub enabled: bool,
+}
+
+impl<'de> Deserialize<'de> for VerifierConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Detailed {
+            enabled: bool,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Shim {
+            Bare(bool),
+            Detailed(Detailed),
+        }
+
+        Ok(match Shim::deserialize(deserializer)? {
+            Shim::Bare(enabled) | Shim::Detailed(Detailed { enabled }) => Self { enabled },
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AgentsConfig
 // ---------------------------------------------------------------------------
 
@@ -104,7 +144,7 @@ pub struct StageAgentConfig {
     /// where there is no submission loop to verify, is inert and surfaced
     /// as a startup advisory.
     #[serde(default)]
-    pub verifier: Option<bool>,
+    pub verifier: Option<VerifierConfig>,
     /// Override for the turn cap; the named default applies when absent.
     #[serde(default)]
     pub max_turns: Option<u32>,
@@ -115,6 +155,15 @@ pub struct StageAgentConfig {
     /// applies when absent.
     #[serde(default)]
     pub execution_deadline_seconds: Option<u32>,
+}
+
+impl StageAgentConfig {
+    /// Whether the verifier runs, resolving the three-state config: an
+    /// explicit setting wins, absence takes the stage's loop default.
+    #[must_use]
+    pub fn verifier_enabled(&self, default_when_absent: bool) -> bool {
+        self.verifier.map_or(default_when_absent, |v| v.enabled)
+    }
 }
 
 impl AgentsConfig {
@@ -146,7 +195,7 @@ impl AgentsConfig {
     pub(crate) fn advisories(&self) -> Vec<&'static str> {
         let stage = &self.triage;
         let mut advisories = Vec::new();
-        if stage.verifier == Some(true) && stage.executor == ExecutorChoice::OneShot {
+        if stage.verifier.is_some_and(|v| v.enabled) && stage.executor == ExecutorChoice::OneShot {
             advisories.push(VERIFIER_INERT_ADVISORY);
         }
         advisories
@@ -170,8 +219,44 @@ mod tests {
             serde_yaml::from_str("triage:\n  executor: loop\n  verifier: false\n  max_turns: 4\n")
                 .expect("parse");
         assert_eq!(config.triage.executor, ExecutorChoice::Loop);
-        assert_eq!(config.triage.verifier, Some(false));
+        assert_eq!(
+            config.triage.verifier,
+            Some(VerifierConfig { enabled: false })
+        );
         assert_eq!(config.triage.max_turns, Some(4));
+    }
+
+    #[test]
+    fn test_verifier_accepts_both_the_bare_bool_and_the_struct_form() {
+        // The bare bool is the launched ergonomics; the struct form is the
+        // shape #213 extends with model and budget. Both must parse to the
+        // same value, and an unknown field in the struct form is rejected.
+        let bare: AgentsConfig =
+            serde_yaml::from_str("triage:\n  verifier: true\n").expect("bare bool parses");
+        let structured: AgentsConfig =
+            serde_yaml::from_str("triage:\n  verifier:\n    enabled: true\n")
+                .expect("struct form parses");
+        assert_eq!(bare.triage.verifier, Some(VerifierConfig { enabled: true }));
+        assert_eq!(bare.triage.verifier, structured.triage.verifier);
+
+        let unknown: Result<AgentsConfig, _> =
+            serde_yaml::from_str("triage:\n  verifier:\n    enabledd: true\n");
+        assert!(unknown.is_err(), "an unknown verifier field is rejected");
+    }
+
+    #[test]
+    fn test_verifier_enabled_resolves_the_three_states() {
+        let mut stage = StageAgentConfig::default();
+        assert!(
+            stage.verifier_enabled(true),
+            "absent takes the supplied default",
+        );
+        assert!(!stage.verifier_enabled(false));
+        stage.verifier = Some(VerifierConfig { enabled: false });
+        assert!(
+            !stage.verifier_enabled(true),
+            "an explicit setting overrides the default",
+        );
     }
 
     #[test]

@@ -96,6 +96,42 @@ pub struct ToolDescriptor {
     pub execution_mode: ToolExecutionMode,
 }
 
+/// A tool's reach over the knowledge graph: the security-sensitive
+/// boundary the design enforces structurally, not by prompt.
+///
+/// Payload-free deliberately: the concrete project a fenced tool is
+/// fenced to is always the running job's project, runtime data the live
+/// registry supplies at construction, never configuration. Hashing the
+/// reach *kind* keeps eval attribution stable across projects while a
+/// fenced-to-cross-project change still moves the binding version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectScope {
+    /// Cannot read beyond the running job's project; dedup stays
+    /// project-local.
+    Fenced,
+    /// May read across projects; the reach relation search needs.
+    CrossProject,
+}
+
+enum_text_conversions!(ProjectScope {
+    ProjectScope::Fenced => "fenced",
+    ProjectScope::CrossProject => "cross_project",
+});
+
+/// A tool with the reach it is granted, the unit the binding hash covers.
+///
+/// Reach enters the hash through this field rather than the descriptor
+/// text, so a fenced-to-cross-project change is a new binding version
+/// even when the model-facing descriptor is byte-identical.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TypedBuilder)]
+pub struct ToolBinding {
+    /// The tool as declared to the model and to the runtime.
+    pub descriptor: ToolDescriptor,
+    /// The reach the tool is granted for this binding.
+    pub project_scope: ProjectScope,
+}
+
 // ---------------------------------------------------------------------------
 // Budgets and spend
 // ---------------------------------------------------------------------------
@@ -176,8 +212,9 @@ pub struct AgentDefinition {
     pub prompt_hashes: Vec<String>,
     /// The execution caps, absent by default.
     pub budgets: ExecutionBudgets,
-    /// The tools exposed to the model; empty for one-shot.
-    pub tools: Vec<ToolDescriptor>,
+    /// The tools exposed to the model with their granted reach; empty for
+    /// one-shot.
+    pub tools: Vec<ToolBinding>,
 }
 
 impl AgentDefinition {
@@ -302,6 +339,16 @@ mod tests {
         ToolExecutionMode::Deferred => "deferred",
     });
 
+    enum_serde_tests!(test_project_scope_serde_roundtrip, ProjectScope {
+        ProjectScope::Fenced => "fenced",
+        ProjectScope::CrossProject => "cross_project",
+    });
+
+    enum_text_tests!(test_project_scope_text_roundtrip, ProjectScope {
+        ProjectScope::Fenced => "fenced",
+        ProjectScope::CrossProject => "cross_project",
+    });
+
     #[test]
     fn test_default_budgets_impose_no_caps() {
         let budgets = ExecutionBudgets::default();
@@ -351,6 +398,33 @@ mod tests {
             b = "b".repeat(64),
         );
         assert_eq!(definition.canonical_json().expect("serialises"), expected,);
+    }
+
+    #[test]
+    fn test_a_tool_scope_change_changes_the_canonical_form() {
+        // Reach is hash-honest: a fenced-to-cross-project flip on an
+        // otherwise byte-identical descriptor moves the binding version.
+        let descriptor = ToolDescriptor::builder()
+            .name("read_knowledge_item".to_owned())
+            .description("read one item".to_owned())
+            .input_schema(serde_json::json!({"type": "object"}))
+            .response_size_bound(8_192)
+            .safety_tier(ToolSafetyTier::Pure)
+            .execution_mode(ToolExecutionMode::Immediate)
+            .build();
+        let fenced = ToolBinding::builder()
+            .descriptor(descriptor.clone())
+            .project_scope(ProjectScope::Fenced)
+            .build();
+        let cross = ToolBinding::builder()
+            .descriptor(descriptor)
+            .project_scope(ProjectScope::CrossProject)
+            .build();
+
+        assert_ne!(
+            serde_json::to_string(&fenced).expect("serialises"),
+            serde_json::to_string(&cross).expect("serialises"),
+        );
     }
 
     #[test]

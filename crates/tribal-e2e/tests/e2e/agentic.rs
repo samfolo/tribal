@@ -28,7 +28,7 @@ async fn test_agentic_triage_loop_end_to_end() {
     let mut harness = TestHarness::init(|setup| {
         setup.config(|config| {
             config.agents.triage.executor = ExecutorChoice::Loop;
-            config.agents.triage.verifier = Some(true);
+            config.agents.triage.verifier = Some(tribal_config::VerifierConfig { enabled: true });
         });
     })
     .await;
