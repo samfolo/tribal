@@ -305,9 +305,7 @@ async fn test_a_budgeted_one_shot_suspends_pre_call_and_resumes() {
         .expect("find job");
     let binding = tribal_agent_runtime::resolve_binding(
         &mut conn,
-        &tribal_test_utils::an_agent_definition()
-            .pipeline_stage(tribal_domain::TaskType::Triage)
-            .build(),
+        &a_routed_definition(tribal_domain::TaskType::Triage),
     )
     .await
     .expect("binding");

@@ -269,6 +269,25 @@ pub(super) fn test_stage_specs() -> CompletionStageSpecs {
     }
 }
 
+/// An agent definition whose route matches the test worker's stage specs,
+/// so a thread fabricated under it resumes through the worker without
+/// tripping the resume-route-divergence guard (the default factory's
+/// route diverges from [`test_stage_specs`] by design).
+pub(super) fn a_routed_definition(stage: tribal_domain::TaskType) -> tribal_domain::AgentDefinition {
+    let specs = test_stage_specs();
+    let spec = match stage {
+        tribal_domain::TaskType::Extraction => specs.extraction,
+        tribal_domain::TaskType::Triage => specs.triage,
+        tribal_domain::TaskType::Relation => specs.relation,
+    };
+    tribal_test_utils::an_agent_definition()
+        .pipeline_stage(stage)
+        .provider(spec.provider)
+        .model(spec.model)
+        .base_url(spec.base_url)
+        .build()
+}
+
 /// Polls until a task is requeued with at least one retry.
 ///
 /// Used by reclaim and heartbeat tests where the exact retry count

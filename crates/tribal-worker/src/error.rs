@@ -155,6 +155,21 @@ pub(crate) enum StageError {
         #[source]
         source: tribal_db::DbError,
     },
+
+    /// A resumed thread's recorded binding names a different route than the
+    /// current stage configuration. Terminal: the gateway routes by the
+    /// current stage, so executing would run the thread under an endpoint
+    /// its recorded binding and attribution do not name, and no retry
+    /// reconciles a configuration change.
+    #[error("resume route diverged in {stage}: recorded {recorded}, current {current}")]
+    ResumeRouteDivergence {
+        /// The stage whose resumed thread diverged.
+        stage: String,
+        /// The recorded binding's route.
+        recorded: String,
+        /// The route the current configuration resolves.
+        current: String,
+    },
 }
 
 impl StageError {
@@ -172,6 +187,7 @@ impl StageError {
             }
             Self::BudgetExhausted { .. } => TaskErrorKind::BudgetExhausted,
             Self::Database { .. } => TaskErrorKind::DatabaseError,
+            Self::ResumeRouteDivergence { .. } => TaskErrorKind::RouteDivergence,
         }
     }
 }
@@ -231,6 +247,14 @@ mod tests {
                     },
                 },
                 TaskErrorKind::DatabaseError,
+            ),
+            (
+                StageError::ResumeRouteDivergence {
+                    stage: "relation".into(),
+                    recorded: "ollama/llama3".into(),
+                    current: "openai/gpt".into(),
+                },
+                TaskErrorKind::RouteDivergence,
             ),
         ];
 
