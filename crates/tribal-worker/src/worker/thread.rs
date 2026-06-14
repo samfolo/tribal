@@ -342,9 +342,9 @@ pub(crate) fn map_runtime_error(
     source: AgentRuntimeError,
 ) -> StageError {
     match source {
-        AgentRuntimeError::StatusCasMissed { .. } | AgentRuntimeError::LeaseLost { .. } => {
-            StageError::OwnershipLost
-        }
+        AgentRuntimeError::StatusCasMissed { .. }
+        | AgentRuntimeError::LeaseLost { .. }
+        | AgentRuntimeError::DrivingTaskNotBlocked { .. } => StageError::OwnershipLost,
         AgentRuntimeError::Database {
             context: inner,
             source,

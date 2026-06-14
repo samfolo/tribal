@@ -514,11 +514,11 @@ async fn hand_back(
             .await
             .map_err(|source| AgentRuntimeError::database("re-queueing the parent task", source))?;
         if rows == 0 {
-            tracing::warn!(
-                thread_id = %parent.thread_id,
-                task_id = %task_id,
-                "child hand-back found the parent task not blocked; committing the wake regardless",
-            );
+            // The parent's task is blocked by construction while a child
+            // drives, so a zero-row requeue would leave it running with an
+            // unclaimable task; roll the hand-back back rather than strand
+            // it.
+            return Err(AgentRuntimeError::DrivingTaskNotBlocked { task_id });
         }
     }
     Ok(ChildTerminalOutcome::HandedBack)

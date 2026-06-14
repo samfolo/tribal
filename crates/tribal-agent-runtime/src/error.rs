@@ -28,6 +28,16 @@ pub enum AgentRuntimeError {
         expected: AgentThreadStatus,
     },
 
+    /// Waking a suspended thread found its driving task not blocked, so
+    /// re-queueing it affected zero rows. Committing the wake would leave
+    /// the thread running with an unclaimable task, so the whole wake
+    /// rolls back and a sweep or retry re-attempts it.
+    #[error("stage task {task_id} was not blocked when its thread woke")]
+    DrivingTaskNotBlocked {
+        /// The stage task the wake expected to find blocked.
+        task_id: TaskId,
+    },
+
     /// The claim-guarded driving-task write affected zero rows: the
     /// lease was lost and the whole commit must roll back. Carries the
     /// driving task — stage or driver — so both families' guards report
