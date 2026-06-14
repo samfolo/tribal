@@ -199,14 +199,12 @@ pub async fn resolve_stage_thread(
                 AgentRuntimeError::database("re-queueing the driving task", source)
             })?;
         if rows == 0 {
-            // A suspended thread's task is blocked by construction; a
-            // zero-row requeue means an unmodelled pairing this commit
-            // would otherwise silently strand.
-            tracing::warn!(
-                thread_id = %thread.id(),
-                task_id = %task_id,
-                "resolve found the driving task not blocked; committing the wake regardless",
-            );
+            // A suspended thread's task is blocked by construction, so a
+            // zero-row requeue is an unmodelled pairing. Committing the
+            // wake would leave the thread running with an unclaimable
+            // task, so roll the whole wake back rather than strand it; a
+            // sweep or retry re-attempts.
+            return Err(AgentRuntimeError::DrivingTaskNotBlocked { task_id });
         }
     }
 
