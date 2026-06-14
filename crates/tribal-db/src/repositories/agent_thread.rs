@@ -35,6 +35,7 @@ const COLUMNS: Columns = Columns(&[
     "stage_task_id",
     "driver_task_id",
     "principal_id",
+    "job_id",
     "status",
     "suspension",
     "cancel_requested_at",
@@ -97,6 +98,9 @@ pub struct NewAgentThread {
     pub driving_task: DrivingTaskRef,
     /// The principal this run is attributed and metered to.
     pub principal_id: PrincipalId,
+    /// The job this run is metered to, when launched within one.
+    #[builder(default)]
+    pub job_id: Option<JobId>,
     /// The serialisation shape of the thread's owned structures.
     pub format_version: u32,
 }
@@ -362,8 +366,8 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         let sql = format!(
             "INSERT INTO agent_threads \
              (parent_thread_id, pipeline_stage, binding_version_id, stage_task_id, \
-              driver_task_id, principal_id, format_version) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+              driver_task_id, principal_id, job_id, format_version) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
              RETURNING {COLUMNS}"
         );
         let row = sqlx::query(&sql)
@@ -373,6 +377,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
             .bind(stage_task_id)
             .bind(driver_task_id)
             .bind(new.principal_id.inner())
+            .bind(new.job_id.map(|id| id.inner().to_owned()))
             .bind(i32::try_from(new.format_version).expect(FORMAT_VERSION_OVERFLOW))
             .fetch_one(&mut *conn)
             .await
@@ -814,6 +819,7 @@ fn map_agent_thread_row(r: &sqlx::postgres::PgRow) -> AgentThread {
                 .map(AgentDriverTaskId::from),
         )
         .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
+        .job_id(r.get::<Option<uuid::Uuid>, _>("job_id").map(JobId::from))
         .status(
             r.get::<String, _>("status")
                 .parse::<AgentThreadStatus>()

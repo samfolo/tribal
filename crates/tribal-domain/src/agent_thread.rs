@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
 use crate::{
-    AgentBindingVersionId, AgentDriverTaskId, AgentThreadId, AgentThreadRecordId, PrincipalId,
-    TaskId, TaskType,
+    AgentBindingVersionId, AgentDriverTaskId, AgentThreadId, AgentThreadRecordId, JobId,
+    PrincipalId, TaskId, TaskType,
 };
 
 /// The serialisation shape of thread-owned structures (record `content`
@@ -385,6 +385,11 @@ pub struct AgentThread {
     driver_task_id: Option<AgentDriverTaskId>,
     /// The principal this run is attributed and metered to.
     principal_id: PrincipalId,
+    /// The job this run is metered to, captured at launch so a reclaimed
+    /// driver attributes spend without walking the lineage. Absent for a
+    /// thread launched outside a pipeline job.
+    #[builder(default)]
+    job_id: Option<JobId>,
     /// Current lifecycle status.
     status: AgentThreadStatus,
     /// The typed cause a suspended thread awaits.
@@ -454,6 +459,11 @@ impl AgentThread {
     /// Returns the principal this run is attributed to.
     pub fn principal_id(&self) -> PrincipalId {
         self.principal_id
+    }
+
+    /// Returns the job this run is metered to, when launched within one.
+    pub fn job_id(&self) -> Option<JobId> {
+        self.job_id
     }
 
     /// Returns the current lifecycle status.

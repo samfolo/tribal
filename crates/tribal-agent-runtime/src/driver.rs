@@ -40,7 +40,7 @@ use tribal_db::{
 use tribal_domain::{
     AgentBindingVersionId, AgentDriverTaskId, AgentDriverTaskKind, AgentThread, AgentThreadId,
     AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus, AgentThreadSuspension,
-    AgentThreadTerminal, CompletionResponse, PrincipalId, TaskId, TaskType,
+    AgentThreadTerminal, CompletionResponse, JobId, PrincipalId, TaskId, TaskType,
 };
 use tribal_telemetry::{current_span_id, current_trace_id};
 
@@ -66,6 +66,10 @@ pub struct ChildLaunch {
     pub binding_version_id: AgentBindingVersionId,
     /// The principal the child is attributed and metered to.
     pub principal_id: PrincipalId,
+    /// The job the child's spend meters to, captured from the parent so a
+    /// reclaimed driver attributes without walking a possibly-terminal
+    /// lineage. Absent when the parent runs outside a pipeline job.
+    pub job_id: Option<JobId>,
     /// The serialisation shape of the child's owned structures.
     pub format_version: u32,
 }
@@ -188,6 +192,7 @@ pub async fn suspend_with_child(
                 .binding_version_id(launch.binding_version_id)
                 .driving_task(DrivingTaskRef::Driver(driver_task_id))
                 .principal_id(launch.principal_id)
+                .job_id(launch.job_id)
                 .format_version(launch.format_version)
                 .build(),
         )

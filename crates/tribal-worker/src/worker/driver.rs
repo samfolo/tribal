@@ -524,6 +524,7 @@ fn request_from(
 fn child_attribution(child: &AgentThread, attempt: u32) -> UsageAttribution {
     UsageAttribution {
         owner: UsageOwner::Thread {
+            job_id: child.job_id(),
             thread_id: child.id(),
             record_id: None,
             attempt: clamp_to_i32(attempt),
