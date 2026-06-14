@@ -229,7 +229,11 @@ impl TokenUsageRepository for PgTokenUsageRepository {
         // Constrained to the single most-recent matching row: attempt
         // values repeat once mid-thread progress resets the retry count,
         // and a bulk sweep would attach an earlier claim's orphaned row
-        // to the wrong record.
+        // to the wrong record. The outer `IS NULL` guard repeats the
+        // subquery's so the update only ever claims a still-unlinked row:
+        // callers already serialise on the claim CAS and the thread lock,
+        // but this keeps the statement correct in isolation rather than by
+        // caller convention. A zero-row result stays best-effort.
         let result = sqlx::query(
             "UPDATE token_usage \
              SET agent_thread_record_id = $5 \
@@ -242,7 +246,8 @@ impl TokenUsageRepository for PgTokenUsageRepository {
                    AND agent_thread_record_id IS NULL \
                  ORDER BY created_at DESC, id DESC \
                  LIMIT 1 \
-             )",
+             ) \
+               AND agent_thread_record_id IS NULL",
         )
         .bind(thread_id.inner())
         .bind(task_id.inner())
@@ -270,6 +275,9 @@ impl TokenUsageRepository for PgTokenUsageRepository {
             .map(|t| TokenUsageStage::from(t).pipeline_stage().as_str())
             .collect();
 
+        // The outer `IS NULL` guard mirrors the subquery's so the update
+        // only ever claims a still-unlinked row, keeping the statement
+        // correct in isolation rather than by the caller's serialisation.
         let result = sqlx::query(
             "UPDATE token_usage \
              SET agent_thread_record_id = $4 \
@@ -281,7 +289,8 @@ impl TokenUsageRepository for PgTokenUsageRepository {
                    AND agent_thread_record_id IS NULL \
                  ORDER BY created_at DESC, id DESC \
                  LIMIT 1 \
-             )",
+             ) \
+               AND agent_thread_record_id IS NULL",
         )
         .bind(thread_id.inner())
         .bind(attempt)
