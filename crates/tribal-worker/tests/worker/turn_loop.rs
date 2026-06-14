@@ -1852,6 +1852,14 @@ async fn test_the_verify_budget_bounds_launches_then_commits_directly() {
 
     {
         let mut conn = raw_conn(ctx).await;
+        // Exactly one verifier launched: the suspension is the budgeted
+        // launch, not an absent verifier. This makes the direct commit
+        // below an enforced bound rather than a vacuous no-launch.
+        assert_eq!(
+            count_deferred_launches(&mut conn, harness.thread.id()).await,
+            1,
+            "round one launches exactly one verifier under the budget of one",
+        );
         hand_back_verdict(
             &mut conn,
             harness.thread.id(),
