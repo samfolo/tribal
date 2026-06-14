@@ -328,35 +328,51 @@ pub async fn adopt_conversation(
     conn: &mut PgConnection,
     thread: &AgentThread,
 ) -> Result<RenderedConversation, AgentRuntimeError> {
+    recorded_conversation(conn, thread).await?.ok_or_else(|| {
+        AgentRuntimeError::database(
+            "adopting the thread's conversation",
+            tribal_db::DbError::NotFound {
+                entity: "agent_thread_record",
+                id: format!("rendered conversation for thread {}", thread.id()),
+            },
+        )
+    })
+}
+
+/// Returns the thread's recorded rendered conversation, or `None` when the
+/// thread has no committed input yet (a fresh claim).
+///
+/// A resuming caller reuses the recorded conversation, and the
+/// stage-opaque resolution context it carries, rather than re-deriving it.
+///
+/// # Errors
+///
+/// Returns [`AgentRuntimeError::Database`] on read failure and
+/// [`AgentRuntimeError::ContentSerialisation`] when a present input record
+/// will not deserialise.
+pub async fn recorded_conversation(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+) -> Result<Option<RenderedConversation>, AgentRuntimeError> {
     let records = PgAgentThreadRecordRepository
         .find_by_thread_id(conn, thread.id())
         .await
         .map_err(|source| AgentRuntimeError::database("reading the thread's input", source))?;
-    let input = records
-        .iter()
-        .find(|record| {
-            record.kind() == AgentThreadRecordKind::Input
-                && is_rendered_conversation(record.content())
-        })
-        .ok_or_else(|| {
-            AgentRuntimeError::database(
-                "adopting the thread's conversation",
-                tribal_db::DbError::NotFound {
-                    entity: "agent_thread_record",
-                    id: format!("rendered conversation for thread {}", thread.id()),
-                },
-            )
-        })?;
-    serde_json::from_value(input.content().clone()).map_err(|source| {
-        AgentRuntimeError::ContentSerialisation {
+    let Some(input) = records.iter().find(|record| {
+        record.kind() == AgentThreadRecordKind::Input && is_rendered_conversation(record.content())
+    }) else {
+        return Ok(None);
+    };
+    serde_json::from_value(input.content().clone())
+        .map(Some)
+        .map_err(|source| AgentRuntimeError::ContentSerialisation {
             context: format!(
                 "adopting the conversation of thread {} (format_version {})",
                 thread.id(),
                 thread.format_version(),
             ),
             source,
-        }
-    })
+        })
 }
 
 // ---------------------------------------------------------------------------
