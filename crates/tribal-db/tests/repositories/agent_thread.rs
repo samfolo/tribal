@@ -1208,6 +1208,40 @@ async fn test_sum_thread_spend_counts_only_the_thread() {
 }
 
 #[tokio::test]
+async fn test_sum_thread_spend_counts_cache_write_but_not_cache_read() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let thread = insert_thread(&mut txn, "spend-cache").await;
+
+    // Cache-write is additive spend and is counted; cache-read is a subset
+    // of input (the schema enforces it) and is not counted again. The sum
+    // is input(100) + output(20) + cache_write(30) = 150, excluding the
+    // cache_read(50).
+    PgTokenUsageRepository
+        .insert(
+            &mut txn,
+            &a_new_token_usage()
+                .agent_thread_id(Some(thread.id()))
+                .tokens_input(100)
+                .tokens_output(20)
+                .tokens_cache_read(50)
+                .tokens_cache_write(30)
+                .build(),
+        )
+        .await
+        .expect("insert thread row");
+
+    let total = PgTokenUsageRepository
+        .sum_thread_spend(&mut txn, thread.id())
+        .await
+        .expect("sum");
+    assert_eq!(
+        total, 150,
+        "cache-write is counted; cache-read, a subset of input, is not",
+    );
+}
+
+#[tokio::test]
 async fn test_thread_link_picks_only_the_most_recent_unlinked_row() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
