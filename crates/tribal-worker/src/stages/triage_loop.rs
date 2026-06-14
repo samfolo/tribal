@@ -14,7 +14,7 @@ use std::{collections::HashMap, sync::Arc};
 use tracing::Instrument;
 use tribal_agent_runtime::{
     LoopOutcome, RecheckPolicy, RecordedMessage, RenderedConversation, StageThread, ToolRegistry,
-    TurnLoopDeps, run_turn_loop,
+    TurnLoopDeps, recorded_conversation, run_turn_loop,
 };
 use tribal_config::{DEFAULT_AGENTIC_RECHECK_BOUND, DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS};
 use tribal_db::{NewTriageSimilarItemDecision, PgPromptVersionRepository, PromptVersionRepository};
@@ -56,6 +56,18 @@ struct LoopOpening {
     rendered: RenderedConversation,
     scores: HashMap<String, f64>,
     embedding_vector: Vec<f32>,
+}
+
+/// The context an accepted submission commits with: the candidate
+/// embedding for a novel item, and the opening search's id-to-score map
+/// for the similar-item decision rows. Recorded in the rendered
+/// conversation's resolution context at first render, so a resumed thread
+/// replays it rather than re-embedding and re-searching against a graph
+/// that may have moved since the model reasoned over it.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LoopCommitContext {
+    embedding_vector: Vec<f32>,
+    scores: HashMap<String, f64>,
 }
 
 impl Worker {
@@ -125,8 +137,15 @@ impl Worker {
                 prompts.user.id(),
             );
 
-            let opening = self
-                .loop_opening(&ctx, &prompts, &active_profile, &attribution, deadline)
+            let (opening_rendered, commit_context) = self
+                .loop_opening_or_replay(
+                    &stage_thread.thread,
+                    &ctx,
+                    &prompts,
+                    &active_profile,
+                    &attribution,
+                    deadline,
+                )
                 .await?;
 
             let registry = self.triage_tool_registry(
@@ -156,7 +175,7 @@ impl Worker {
                 submit_descriptor: &submit_descriptor,
                 pipeline: &pipeline,
                 pump,
-                rendered: opening.rendered,
+                rendered: opening_rendered,
                 // Enforcement re-resolves from the current configuration
                 // at every claim; the binding records admission-time
                 // intent.
@@ -196,10 +215,10 @@ impl Worker {
                             &ctx,
                             &submission,
                             CandidateEmbedding {
-                                vector: opening.embedding_vector,
+                                vector: commit_context.embedding_vector,
                                 profile: &active_profile,
                             },
-                            &opening.scores,
+                            &commit_context.scores,
                             deadline,
                             &attribution,
                         )
@@ -279,6 +298,71 @@ impl Worker {
             scores,
             embedding_vector: embedding_response.vector,
         })
+    }
+
+    /// The rendered opening and the context an accepted submission commits
+    /// with: built once on a fresh claim and recorded into the
+    /// conversation's resolution context, or replayed from that record on a
+    /// resume. A resumed thread therefore runs no embedding or search, and
+    /// its committed decision rows carry the scores the model actually saw
+    /// rather than a re-search against a graph that has since moved.
+    async fn loop_opening_or_replay(
+        &self,
+        thread: &tribal_domain::AgentThread,
+        ctx: &TriageContext<'_>,
+        prompts: &RecordedLoopPrompts,
+        active_profile: &tribal_domain::EmbeddingProfile,
+        attribution: &UsageAttribution,
+        deadline: tokio::time::Instant,
+    ) -> Result<(RenderedConversation, LoopCommitContext), StageError> {
+        let mut conn = self
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| StageError::Database {
+                stage: STAGE_TRIAGE.into(),
+                context: "acquiring connection to read the recorded opening".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "pool acquire".into(),
+                    source: e,
+                },
+            })?;
+        if let Some(rendered) =
+            recorded_conversation(&mut conn, thread)
+                .await
+                .map_err(|source| {
+                    map_runtime_error(STAGE_TRIAGE, "reading the recorded opening", source)
+                })?
+        {
+            let context = rendered
+                .resolution_context
+                .as_ref()
+                .and_then(|value| serde_json::from_value::<LoopCommitContext>(value.clone()).ok())
+                .ok_or_else(|| StageError::Parse {
+                    context: "a resumed triage loop is missing its recorded commit context"
+                        .to_owned(),
+                    raw_response: None,
+                })?;
+            return Ok((rendered, context));
+        }
+        drop(conn);
+
+        let opening = self
+            .loop_opening(ctx, prompts, active_profile, attribution, deadline)
+            .await?;
+        let context = LoopCommitContext {
+            embedding_vector: opening.embedding_vector,
+            scores: opening.scores,
+        };
+        let mut rendered = opening.rendered;
+        rendered.resolution_context =
+            Some(
+                serde_json::to_value(&context).map_err(|source| StageError::Parse {
+                    context: format!("recording the opening commit context: {source}"),
+                    raw_response: None,
+                })?,
+            );
+        Ok((rendered, context))
     }
 
     /// Maps an accepted submission onto the existing commit machinery:

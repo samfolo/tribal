@@ -243,6 +243,25 @@ async fn test_agentic_triage_loop_end_to_end() {
         "the prior turn's conversation is an exact prefix of the next request",
     );
 
+    // -- The opening is built once, not rebuilt on the verifier resume -------
+    //
+    // The candidate is embedded on the fresh claim; the verifier resume
+    // replays the recorded commit context rather than re-embedding and
+    // re-searching, so the embedding endpoint sees exactly one request
+    // carrying the candidate content.
+    let candidate_embeds = harness
+        .embedding_server()
+        .received_requests()
+        .await
+        .expect("recorded embedding requests")
+        .iter()
+        .filter(|r| String::from_utf8_lossy(&r.body).contains("retries a failed canary deploy"))
+        .count();
+    assert_eq!(
+        candidate_embeds, 1,
+        "the candidate is embedded once on the fresh claim, not again on the verifier resume",
+    );
+
     harness.shutdown().await;
     harness.teardown().await;
 }

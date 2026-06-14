@@ -40,7 +40,7 @@ pub use transitions::{
 pub use turn::{
     BegunTurn, DrivingClaim, OneShotOutcome, RecordedMessage, RecordedToolCall,
     RenderedConversation, adopt_conversation, begin_turn, commit_noop_terminal,
-    commit_one_shot_terminal,
+    commit_one_shot_terminal, recorded_conversation,
 };
 pub use turn_loop::{
     AcceptedSubmission, Admission, AdmissionDecision, BUDGET_RECHECK_CAUSE, BudgetFailure,
