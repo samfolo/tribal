@@ -58,15 +58,16 @@ struct LoopOpening {
     embedding_vector: Vec<f32>,
 }
 
-/// The context an accepted submission commits with: the candidate
-/// embedding for a novel item, and the opening search's id-to-score map
-/// for the similar-item decision rows. Recorded in the rendered
-/// conversation's resolution context at first render, so a resumed thread
-/// replays it rather than re-embedding and re-searching against a graph
-/// that may have moved since the model reasoned over it.
+/// The graph-dependent context an accepted submission commits with: the
+/// opening search's id-to-score map, backing the similar-item decision
+/// rows. Recorded in the rendered conversation's resolution context at
+/// first render so a resumed thread replays the scores the model saw
+/// rather than re-searching a graph that may have moved. The candidate
+/// embedding is deliberately not recorded: it is re-derived per claim
+/// against the current active profile, so the committed vector and its
+/// profile id stay consistent even across a reindex.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct LoopCommitContext {
-    embedding_vector: Vec<f32>,
     scores: HashMap<String, f64>,
 }
 
@@ -137,7 +138,7 @@ impl Worker {
                 prompts.user.id(),
             );
 
-            let (opening_rendered, commit_context) = self
+            let (opening_rendered, embedding_vector, opening_scores) = self
                 .loop_opening_or_replay(
                     &stage_thread.thread,
                     &ctx,
@@ -215,10 +216,10 @@ impl Worker {
                             &ctx,
                             &submission,
                             CandidateEmbedding {
-                                vector: commit_context.embedding_vector,
+                                vector: embedding_vector,
                                 profile: &active_profile,
                             },
-                            &commit_context.scores,
+                            &opening_scores,
                             deadline,
                             &attribution,
                         )
@@ -300,12 +301,14 @@ impl Worker {
         })
     }
 
-    /// The rendered opening and the context an accepted submission commits
-    /// with: built once on a fresh claim and recorded into the
-    /// conversation's resolution context, or replayed from that record on a
-    /// resume. A resumed thread therefore runs no embedding or search, and
-    /// its committed decision rows carry the scores the model actually saw
-    /// rather than a re-search against a graph that has since moved.
+    /// The rendered opening, the candidate embedding, and the opening
+    /// scores. On a fresh claim the opening is built and its scores recorded
+    /// into the conversation's resolution context; a resume replays those
+    /// scores and re-derives only the embedding, against the current active
+    /// profile, skipping the costly search. So a resumed commit carries the
+    /// scores the model reasoned over, while the vector stays consistent
+    /// with the active profile rather than being scored against a graph that
+    /// has since moved or labelled with a profile it was not built under.
     async fn loop_opening_or_replay(
         &self,
         thread: &tribal_domain::AgentThread,
@@ -314,7 +317,7 @@ impl Worker {
         active_profile: &tribal_domain::EmbeddingProfile,
         attribution: &UsageAttribution,
         deadline: tokio::time::Instant,
-    ) -> Result<(RenderedConversation, LoopCommitContext), StageError> {
+    ) -> Result<(RenderedConversation, Vec<f32>, HashMap<String, f64>), StageError> {
         let mut conn = self
             .pool()
             .acquire()
@@ -334,35 +337,50 @@ impl Worker {
                     map_runtime_error(STAGE_TRIAGE, "reading the recorded opening", source)
                 })?
         {
-            let context = rendered
-                .resolution_context
-                .as_ref()
-                .and_then(|value| serde_json::from_value::<LoopCommitContext>(value.clone()).ok())
-                .ok_or_else(|| StageError::Parse {
-                    context: "a resumed triage loop is missing its recorded commit context"
-                        .to_owned(),
-                    raw_response: None,
-                })?;
-            return Ok((rendered, context));
+            let scores = match rendered.resolution_context.as_ref() {
+                None => {
+                    return Err(StageError::Parse {
+                        context: "a resumed triage loop has no recorded opening context".to_owned(),
+                        raw_response: None,
+                    });
+                }
+                Some(value) => serde_json::from_value::<LoopCommitContext>(value.clone())
+                    .map(|context| context.scores)
+                    .map_err(|source| StageError::Parse {
+                        context: format!(
+                            "the resumed triage loop's recorded opening context is malformed: \
+                             {source}"
+                        ),
+                        raw_response: None,
+                    })?,
+            };
+            drop(conn);
+            let embedding = self
+                .embed_candidate(
+                    ctx.candidate.content(),
+                    &EmbeddingTarget::from(active_profile),
+                    deadline,
+                    attribution,
+                )
+                .await?;
+            return Ok((rendered, embedding.vector, scores));
         }
         drop(conn);
 
         let opening = self
             .loop_opening(ctx, prompts, active_profile, attribution, deadline)
             .await?;
-        let context = LoopCommitContext {
-            embedding_vector: opening.embedding_vector,
-            scores: opening.scores,
-        };
         let mut rendered = opening.rendered;
-        rendered.resolution_context =
-            Some(
-                serde_json::to_value(&context).map_err(|source| StageError::Parse {
-                    context: format!("recording the opening commit context: {source}"),
-                    raw_response: None,
-                })?,
-            );
-        Ok((rendered, context))
+        rendered.resolution_context = Some(
+            serde_json::to_value(&LoopCommitContext {
+                scores: opening.scores.clone(),
+            })
+            .map_err(|source| StageError::Parse {
+                context: format!("recording the opening scores: {source}"),
+                raw_response: None,
+            })?,
+        );
+        Ok((rendered, opening.embedding_vector, opening.scores))
     }
 
     /// Maps an accepted submission onto the existing commit machinery:
