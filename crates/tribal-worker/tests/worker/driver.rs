@@ -117,6 +117,7 @@ async fn seed_suspended_parent(
             pipeline_stage: tribal_domain::TaskType::Triage,
             binding_version_id: child_binding.id(),
             principal_id,
+            job_id: None,
             format_version: AGENT_THREAD_FORMAT_VERSION,
         },
         &a_child_input(),

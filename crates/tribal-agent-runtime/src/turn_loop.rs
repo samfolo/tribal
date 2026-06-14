@@ -1469,6 +1469,9 @@ async fn execute_batch(
                                 pipeline_stage: launch.pipeline_stage,
                                 binding_version_id: launch.binding_version_id,
                                 principal_id: deps.thread.principal_id(),
+                                // The parent's job, so the child's spend
+                                // meters to it without a lineage walk.
+                                job_id: deps.attribution.owner.job_id(),
                                 format_version: deps.thread.format_version(),
                             };
                             return match suspend_with_child(
