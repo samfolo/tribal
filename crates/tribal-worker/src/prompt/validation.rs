@@ -64,11 +64,18 @@ pub fn synthetic_validation_context(
 /// the relation shape, and its system prompt renders the relation legends.
 fn loop_validation_context(stage: PromptStage, role: PromptRole) -> tera::Context {
     match stage {
+        PromptStage::Extraction => extraction_loop_validation_context(role),
         PromptStage::Triage => triage_loop_validation_context(role),
         PromptStage::Relation => relation_loop_validation_context(role),
-        // Extraction has no loop class; the slot does not exist, so the
-        // static empty context is harmless and never rendered.
-        PromptStage::Extraction => tera::Context::new(),
+    }
+}
+
+/// The extraction loop's synthetic context: a static system prompt, a user
+/// prompt over the raw input and tag registry — the one-shot's own shape.
+fn extraction_loop_validation_context(role: PromptRole) -> tera::Context {
+    match role {
+        PromptRole::System => extraction_system_context(),
+        PromptRole::User => extraction_user_context("x", &["x"]),
     }
 }
 
@@ -268,7 +275,7 @@ mod tests {
     /// context. Mirrors the server's hot-reload validation path.
     #[test]
     fn test_synthetic_context_renders_all_embedded_defaults() {
-        let pairs: [(PromptStage, PromptClass, PromptRole, &str); 12] = [
+        let pairs: [(PromptStage, PromptClass, PromptRole, &str); 14] = [
             (
                 PromptStage::Extraction,
                 PromptClass::OneShot,
@@ -304,6 +311,18 @@ mod tests {
                 PromptClass::OneShot,
                 PromptRole::User,
                 include_str!("../../../../prompts/relation/user.tera"),
+            ),
+            (
+                PromptStage::Extraction,
+                PromptClass::Loop,
+                PromptRole::System,
+                include_str!("../../../../prompts/extraction/loop_system.tera"),
+            ),
+            (
+                PromptStage::Extraction,
+                PromptClass::Loop,
+                PromptRole::User,
+                include_str!("../../../../prompts/extraction/loop_user.tera"),
             ),
             (
                 PromptStage::Triage,

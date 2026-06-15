@@ -46,33 +46,41 @@ pub(crate) struct ExtractionContext<'a> {
 // ---------------------------------------------------------------------------
 
 impl Worker {
-    /// Runs the extraction stage for a task.
-    ///
-    /// Loads the prompt template and tag registry from the database,
-    /// acquires a semaphore permit, assembles the prompt via Tera,
-    /// calls the LLM, parses the response, caps candidates, and
-    /// builds the stage commit and the response for the thread terminal.
-    ///
-    /// The `deadline` is the absolute instant by which the outer task
-    /// timeout will fire.  Semaphore acquisition uses the remaining
-    /// time budget so that `SemaphoreTimeout` is reported instead of
-    /// a generic `Timeout` when permits are exhausted.
+    /// Runs the extraction stage for a task, routed by the thread's
+    /// recorded binding: the executor follows the binding, not the current
+    /// configuration, so a resumed thread continues the way it started.
     ///
     /// # Errors
     ///
-    /// Returns a [`StageError`] variant matching the failure mode:
-    /// - [`StageError::Database`] for pool/repository failures.
-    /// - [`StageError::SemaphoreTimeout`] if the provider semaphore
-    ///   cannot be acquired within the remaining time budget.
-    /// - [`StageError::TemplateRender`] if the prompt template is invalid.
-    /// - [`StageError::Provider`] if the LLM call fails.
-    /// - [`StageError::Parse`] if the LLM response cannot be parsed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the extraction provider key is not registered in the
-    /// provider registry or if the semaphore is unexpectedly closed.
+    /// Propagates the routed executor's [`StageError`]s; an external
+    /// executor on the recorded binding is a derivation fault — nothing can
+    /// produce one in this release.
     pub(crate) async fn run_extraction(
+        &self,
+        job: &Job,
+        task: &Task,
+        deadline: tokio::time::Instant,
+        stage_thread: &StageThread,
+        pump: &crate::worker::heartbeat::WorkerHeartbeatPump,
+    ) -> Result<Option<(StageCommit, StageTerminal)>, StageError> {
+        match stage_thread.binding.definition().executor {
+            tribal_domain::StageExecutorKind::OneShot => {
+                self.run_extraction_one_shot(job, task, deadline, stage_thread)
+                    .await
+            }
+            tribal_domain::StageExecutorKind::BuiltInLoop => {
+                self.run_extraction_loop(job, task, deadline, stage_thread, pump)
+                    .await
+            }
+            tribal_domain::StageExecutorKind::ExternalAgent => Err(StageError::BindingDerivation {
+                stage: STAGE_EXTRACTION.into(),
+                context: "the external-agent executor has no runner in this release".into(),
+            }),
+        }
+    }
+
+    /// Runs the one-shot extraction turn for a task.
+    async fn run_extraction_one_shot(
         &self,
         job: &Job,
         task: &Task,

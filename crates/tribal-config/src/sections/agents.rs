@@ -3,9 +3,9 @@
 //! Absent configuration reproduces launched behaviour exactly: every stage
 //! runs one-shot. Setting a stage's executor to `loop` routes it through
 //! the in-process turn loop with finite default budgets, every one of
-//! which is overridable here. The section admits the triage and relation
-//! stages; an `agents.extraction` key is an unknown-field error at load
-//! until extraction gains an executor of its own.
+//! which is overridable here. Every pipeline stage is configurable;
+//! verifier settings on relation and extraction are inert in this release
+//! and surfaced as advisories.
 
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +67,12 @@ pub const VERIFIER_INERT_ADVISORY: &str = "agents.triage.verifier is set but age
 /// ships without a verifier in this release, so the setting is inert under
 /// either executor. Non-fatal: the stage runs regardless.
 pub const RELATION_VERIFIER_UNAVAILABLE_ADVISORY: &str = "agents.relation.verifier is set, but the relation stage has no verifier in this release, \
+     so this setting is inert";
+
+/// The extraction-stage counterpart of
+/// [`RELATION_VERIFIER_UNAVAILABLE_ADVISORY`]: the extraction loop's
+/// verifier binding is deferred, so any setting is inert.
+pub const EXTRACTION_VERIFIER_UNAVAILABLE_ADVISORY: &str = "agents.extraction.verifier is set, but the extraction stage has no verifier in this release, \
      so this setting is inert";
 
 // ---------------------------------------------------------------------------
@@ -132,6 +138,9 @@ impl<'de> Deserialize<'de> for VerifierConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentsConfig {
+    /// The extraction stage's agentic configuration.
+    #[serde(default)]
+    pub extraction: StageAgentConfig,
     /// The triage stage's agentic configuration.
     #[serde(default)]
     pub triage: StageAgentConfig,
@@ -177,8 +186,9 @@ impl StageAgentConfig {
 
 impl AgentsConfig {
     /// The configurable stages, paired with their config-path prefix.
-    fn stages(&self) -> [(&'static str, &StageAgentConfig); 2] {
+    fn stages(&self) -> [(&'static str, &StageAgentConfig); 3] {
         [
+            ("agents.extraction", &self.extraction),
             ("agents.triage", &self.triage),
             ("agents.relation", &self.relation),
         ]
@@ -216,9 +226,13 @@ impl AgentsConfig {
         {
             advisories.push(VERIFIER_INERT_ADVISORY);
         }
-        // The relation stage has no verifier yet, so any setting is inert.
+        // The relation and extraction stages have no verifier yet, so any
+        // setting on them is inert.
         if self.relation.verifier.is_some_and(|v| v.enabled) {
             advisories.push(RELATION_VERIFIER_UNAVAILABLE_ADVISORY);
+        }
+        if self.extraction.verifier.is_some_and(|v| v.enabled) {
+            advisories.push(EXTRACTION_VERIFIER_UNAVAILABLE_ADVISORY);
         }
         advisories
     }
@@ -349,6 +363,18 @@ mod tests {
         assert!(
             !diags.is_empty(),
             "a zero relation token cap must fail validation",
+        );
+    }
+
+    #[test]
+    fn test_extraction_stage_parses_and_its_verifier_is_inert() {
+        let config: AgentsConfig =
+            serde_yaml::from_str("extraction:\n  executor: loop\n  verifier: true\n")
+                .expect("parse");
+        assert_eq!(config.extraction.executor, ExecutorChoice::Loop);
+        assert_eq!(
+            config.advisories(),
+            vec![EXTRACTION_VERIFIER_UNAVAILABLE_ADVISORY],
         );
     }
 

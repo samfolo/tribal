@@ -281,10 +281,9 @@ impl Worker {
         task: &Task,
     ) -> Result<Option<(String, String)>, StageError> {
         let (prompt_stage, executor) = match task.task_type() {
+            TaskType::Extraction => (PromptStage::Extraction, self.agents().extraction.executor),
             TaskType::Triage => (PromptStage::Triage, self.agents().triage.executor),
             TaskType::Relation => (PromptStage::Relation, self.agents().relation.executor),
-            // Extraction has no loop executor, so it carries no loop pair.
-            TaskType::Extraction => return Ok(None),
         };
         if executor != ExecutorChoice::Loop {
             return Ok(None);
