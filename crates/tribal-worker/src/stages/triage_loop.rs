@@ -27,14 +27,14 @@ use tribal_inference::{EmbeddingTarget, UsageAttribution};
 use super::{
     StageCommit, StageTerminal, TriageCommitDecision,
     common::attribution_with_prompts,
-    triage::{CandidateEmbedding, CommitEmbedding, TriageContext, duplicate_decision},
+    triage::{CandidateEmbedding, TriageContext, duplicate_decision},
 };
 use crate::{
     common::{EXPECT_BATCH_INDEX, PARSE_PREVIEW_LENGTH},
     error::{STAGE_TRIAGE, StageError},
     parsing::{TriageSubmission, TriageSubmissionDecision},
-    prompt::{LoopSimilarItemContext, assemble_loop_opening},
-    stages::{TriageSubmissionPipeline, VerifierContext},
+    prompt::assemble_loop_opening,
+    stages::{TriageSubmissionPipeline, VerifierContext, reconstruct_candidate_scores},
     tag_resolution,
     tools::{TriageToolset, build_triage_registry, submit_result_descriptor},
     worker::{Worker, heartbeat::WorkerHeartbeatPump, map_runtime_error},
@@ -44,28 +44,6 @@ use crate::{
 struct RecordedLoopPrompts {
     system: PromptVersion,
     user: PromptVersion,
-}
-
-/// The assembled opening: the rendered conversation, the opening
-/// search's id-to-score map, and the candidate's embedding vector for a
-/// novel commit.
-struct LoopOpening {
-    rendered: RenderedConversation,
-    scores: HashMap<String, f64>,
-    embedding_vector: Vec<f32>,
-}
-
-/// The graph-dependent context an accepted submission commits with: the
-/// opening search's id-to-score map, backing the similar-item decision
-/// rows. Recorded in the rendered conversation's resolution context at
-/// first render so a resumed thread replays the scores the model saw
-/// rather than re-searching a graph that may have moved. The candidate
-/// embedding is deliberately not recorded: it is re-derived per claim
-/// against the current active profile, so the committed vector and its
-/// profile id stay consistent even across a reindex.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct LoopCommitContext {
-    scores: HashMap<String, f64>,
 }
 
 impl Worker {
@@ -135,15 +113,8 @@ impl Worker {
                 prompts.user.id(),
             );
 
-            let (opening_rendered, embedding_vector, opening_scores) = self
-                .loop_opening_or_replay(
-                    &stage_thread.thread,
-                    &ctx,
-                    &prompts,
-                    &active_profile,
-                    &attribution,
-                    deadline,
-                )
+            let opening_rendered = self
+                .loop_opening_or_replay(&stage_thread.thread, &ctx, &prompts)
                 .await?;
 
             let registry = self.triage_tool_registry(
@@ -212,11 +183,8 @@ impl Worker {
                         .submission_commit(
                             &ctx,
                             &submission,
-                            CommitEmbedding {
-                                vector: embedding_vector,
-                                profile: &active_profile,
-                            },
-                            &opening_scores,
+                            &stage_thread.thread,
+                            &active_profile,
                             deadline,
                             &attribution,
                         )
@@ -238,87 +206,49 @@ impl Worker {
         .await
     }
 
-    /// Assembles the loop's opening: the candidate embedded and
-    /// searched exactly as the one-shot does, rendered through the
-    /// binding's loop templates.
-    async fn loop_opening(
-        &self,
+    /// Assembles the loop's opening: the candidate and the tag registry
+    /// rendered through the binding's loop templates, with no prefetched
+    /// similar items. The candidate corpus is reached only through the
+    /// candidate-search tool, so the model fetches what it needs and the
+    /// decision-row scores are grounded in candidate similarity.
+    fn loop_opening(
         ctx: &TriageContext<'_>,
         prompts: &RecordedLoopPrompts,
-        active_profile: &tribal_domain::EmbeddingProfile,
-        attribution: &UsageAttribution,
-        deadline: tokio::time::Instant,
-    ) -> Result<LoopOpening, StageError> {
-        let embedding_target = EmbeddingTarget::from(active_profile);
-        let embedding_response = self
-            .embed_candidate(
-                ctx.candidate.content(),
-                &embedding_target,
-                deadline,
-                attribution,
-            )
-            .await?;
-        let search_results = self
-            .search_similar_items(&embedding_response.vector, active_profile, ctx.job)
-            .await?;
-        let similar_items: Vec<LoopSimilarItemContext> = search_results
-            .iter()
-            .map(LoopSimilarItemContext::from)
-            .collect();
-        // The opening's scores back the similar-item decision rows an
-        // accepted submission produces; assessments of items found
-        // through tools carry no candidate similarity and ride the
-        // submission record instead.
-        let scores: HashMap<String, f64> = search_results
-            .iter()
-            .map(|result| (result.item.id().to_string(), result.similarity))
-            .collect();
-
+    ) -> Result<RenderedConversation, StageError> {
         let (rendered_system, rendered_user) = assemble_loop_opening(
             prompts.system.content(),
             prompts.user.content(),
             &ctx.candidate,
-            &similar_items,
+            &[],
             &ctx.tag_registry,
         )?;
-        Ok(LoopOpening {
-            rendered: RenderedConversation {
-                system: Some(rendered_system),
-                messages: vec![RecordedMessage {
-                    role: "user".to_owned(),
-                    content: rendered_user,
-                }],
-                system_prompt_version_id: Some(prompts.system.id()),
-                user_prompt_version_id: Some(prompts.user.id()),
-                resolution_context: None,
-                response_schema: None,
-            },
-            scores,
-            embedding_vector: embedding_response.vector,
+        Ok(RenderedConversation {
+            system: Some(rendered_system),
+            messages: vec![RecordedMessage {
+                role: "user".to_owned(),
+                content: rendered_user,
+            }],
+            system_prompt_version_id: Some(prompts.system.id()),
+            user_prompt_version_id: Some(prompts.user.id()),
+            resolution_context: None,
+            response_schema: None,
         })
     }
 
-    /// The rendered opening, the candidate embedding if one was produced
-    /// here, and the opening scores. On a fresh claim the opening is built,
-    /// its scores recorded into the conversation's resolution context, and
-    /// its search embedding returned. A resume replays those scores and
-    /// embeds nothing: the costly search is skipped, and the candidate
-    /// embedding is deferred to the novel commit (its only consumer), so a
-    /// budget-recheck wake re-suspends without an inference call and a
-    /// resume that commits a duplicate never embeds at all. So a resumed
-    /// commit carries the scores the model reasoned over, while the vector,
-    /// when a novel commit needs one, is derived against the active profile
-    /// rather than scored against a graph that has since moved or labelled
-    /// with a profile it was not built under.
+    /// The rendered opening for a claim: a fresh claim builds it, a resume
+    /// replays the committed one.
+    ///
+    /// The resume signal is the committed record log itself, not a recorded
+    /// resolution context: with no opening prefetch there are no opening
+    /// scores to record, and the decision-row scores are reconstructed from
+    /// the candidate-search tool results at commit, which survive the
+    /// resume unchanged.
     async fn loop_opening_or_replay(
         &self,
         thread: &tribal_domain::AgentThread,
         ctx: &TriageContext<'_>,
         prompts: &RecordedLoopPrompts,
-        active_profile: &tribal_domain::EmbeddingProfile,
-        attribution: &UsageAttribution,
-        deadline: tokio::time::Instant,
-    ) -> Result<(RenderedConversation, Option<Vec<f32>>, HashMap<String, f64>), StageError> {
+    ) -> Result<RenderedConversation, StageError> {
         let mut conn = self
             .pool()
             .acquire()
@@ -331,52 +261,16 @@ impl Worker {
                     source: e,
                 },
             })?;
-        if let Some(rendered) =
-            recorded_conversation(&mut conn, thread)
-                .await
-                .map_err(|source| {
-                    map_runtime_error(STAGE_TRIAGE, "reading the recorded opening", source)
-                })?
-        {
-            let scores = match rendered.resolution_context.as_ref() {
-                None => {
-                    return Err(StageError::Parse {
-                        context: "a resumed triage loop has no recorded opening context".to_owned(),
-                        raw_response: None,
-                    });
-                }
-                Some(value) => serde_json::from_value::<LoopCommitContext>(value.clone())
-                    .map(|context| context.scores)
-                    .map_err(|source| StageError::Parse {
-                        context: format!(
-                            "the resumed triage loop's recorded opening context is malformed: \
-                             {source}"
-                        ),
-                        raw_response: None,
-                    })?,
-            };
-            drop(conn);
-            // The resume embeds nothing: scores are replayed, and the
-            // candidate embedding is deferred to the novel commit that
-            // alone consumes it.
-            return Ok((rendered, None, scores));
-        }
+        let recorded = recorded_conversation(&mut conn, thread)
+            .await
+            .map_err(|source| {
+                map_runtime_error(STAGE_TRIAGE, "reading the recorded opening", source)
+            })?;
         drop(conn);
-
-        let opening = self
-            .loop_opening(ctx, prompts, active_profile, attribution, deadline)
-            .await?;
-        let mut rendered = opening.rendered;
-        rendered.resolution_context = Some(
-            serde_json::to_value(&LoopCommitContext {
-                scores: opening.scores.clone(),
-            })
-            .map_err(|source| StageError::Parse {
-                context: format!("recording the opening scores: {source}"),
-                raw_response: None,
-            })?,
-        );
-        Ok((rendered, Some(opening.embedding_vector), opening.scores))
+        match recorded {
+            Some(rendered) => Ok(rendered),
+            None => Self::loop_opening(ctx, prompts),
+        }
     }
 
     /// Maps an accepted submission onto the existing commit machinery:
@@ -386,12 +280,38 @@ impl Worker {
         &self,
         ctx: &TriageContext<'_>,
         submission: &TriageSubmission,
-        embedding: CommitEmbedding<'_>,
-        opening_scores: &HashMap<String, f64>,
+        thread: &tribal_domain::AgentThread,
+        profile: &tribal_domain::EmbeddingProfile,
         deadline: tokio::time::Instant,
         attribution: &UsageAttribution,
     ) -> Result<StageCommit, StageError> {
-        let embedding_target = EmbeddingTarget::from(embedding.profile);
+        // The decision-row scores are the candidate-similarity provenance
+        // the must-search rule already validated, reconstructed from the
+        // durable tool-result log so a resumed commit reads exactly what
+        // the model reasoned over.
+        let mut conn = self
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| StageError::Database {
+                stage: STAGE_TRIAGE.into(),
+                context: "acquiring connection to reconstruct candidate scores".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "pool acquire".into(),
+                    source: e,
+                },
+            })?;
+        let scores = reconstruct_candidate_scores(&mut conn, thread)
+            .await
+            .map_err(|source| StageError::Database {
+                stage: STAGE_TRIAGE.into(),
+                context: "reconstructing candidate-search scores".into(),
+                source,
+            })?
+            .scores;
+        drop(conn);
+
+        let embedding_target = EmbeddingTarget::from(profile);
         let decision = match &submission.decision {
             TriageSubmissionDecision::Novel => {
                 let tag_data = tag_resolution::resolve_tags(
@@ -405,31 +325,23 @@ impl Worker {
                     attribution,
                 )
                 .await?;
-                // The fresh-claim opening already embedded for its search,
-                // so its vector is reused here; a resume carried none and
-                // embeds only now, where the novel commit finally consumes
-                // it, against the active profile under the commit's
-                // flip-check.
-                let vector = match embedding.vector {
-                    Some(vector) => vector,
-                    None => {
-                        self.embed_candidate(
-                            ctx.candidate.content(),
-                            &embedding_target,
-                            deadline,
-                            attribution,
-                        )
-                        .await?
-                        .vector
-                    }
-                };
+                // The candidate-search tool embedded for its search; the
+                // novel commit embeds for storage against the active
+                // profile under the commit's flip-check, the embedding it
+                // alone consumes.
+                let vector = self
+                    .embed_candidate(
+                        ctx.candidate.content(),
+                        &embedding_target,
+                        deadline,
+                        attribution,
+                    )
+                    .await?
+                    .vector;
                 self.novel_decision(
                     ctx.job,
                     &ctx.candidate,
-                    CandidateEmbedding {
-                        vector,
-                        profile: embedding.profile,
-                    },
+                    CandidateEmbedding { vector, profile },
                     tag_data,
                 )
             }
@@ -450,7 +362,7 @@ impl Worker {
                 ctx.job.id(),
                 ctx.batch_index,
                 submission,
-                opening_scores,
+                &scores,
             ),
         })
     }
@@ -467,6 +379,7 @@ impl Worker {
         stage_thread: &StageThread,
     ) -> Result<ToolRegistry, StageError> {
         build_triage_registry(&TriageToolset {
+            candidate_content: ctx.candidate.content().to_owned(),
             project_id: ctx.job.project_id(),
             profile: active_profile.clone(),
             gateway: Arc::clone(self.gateway()),
@@ -628,24 +541,24 @@ async fn resolve_loop_prompt(
         })
 }
 
-/// Builds similar-item decision rows from an accepted submission: the
-/// assessments whose items the opening search scored. Tool-discovered
-/// assessments carry no candidate similarity for this table; they live
-/// in full on the submission record.
+/// Builds similar-item decision rows from an accepted submission: every
+/// assessment grounded in a candidate-search score. The must-search rule
+/// guarantees a cited id carries one, so the lookup never misses for a
+/// validated submission; the guard is defence, not an expected path.
 fn decisions_from_submission(
     job_id: JobId,
     batch_index: u32,
     submission: &TriageSubmission,
-    opening_scores: &HashMap<String, f64>,
+    scores: &HashMap<String, f64>,
 ) -> Vec<NewTriageSimilarItemDecision> {
     submission
         .considered_items
         .iter()
         .filter_map(|item| {
-            let Some(similarity) = opening_scores.get(&item.item_id) else {
-                tracing::debug!(
+            let Some(similarity) = scores.get(&item.item_id) else {
+                tracing::warn!(
                     item_id = %item.item_id,
-                    "assessment of a tool-discovered item rides the submission record only",
+                    "an assessed item reached commit without a candidate-similarity score",
                 );
                 return None;
             };

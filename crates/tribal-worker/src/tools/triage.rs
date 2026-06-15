@@ -98,33 +98,49 @@ async fn read_project_item(
 }
 
 // ---------------------------------------------------------------------------
-// search_similar_items
+// search_candidate_similar_items
 // ---------------------------------------------------------------------------
 
-const SEARCH_NAME: &str = "search_similar_items";
+const SEARCH_NAME: &str = "search_candidate_similar_items";
 const SEARCH_RESPONSE_SIZE_BOUND: u32 = 16_384;
-const SEARCH_EXPECTED: &str = r#"{"query": "<search text>"}"#;
+const SEARCH_EXPECTED: &str = r#"{"cursor": "<next-page cursor, or omitted for the first page>"}"#;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchArguments {
-    query: String,
+    /// The opaque page cursor a prior result returned; absent for the
+    /// first page.
+    #[serde(default)]
+    cursor: Option<String>,
 }
 
+/// One page of the candidate's similar items, with the page cursor and the
+/// embedding profile the scores were computed under, so the model
+/// paginates and the commit reconstructs scores from the durable record.
 #[derive(Debug, Serialize)]
-struct SearchResults {
+struct CandidateSearchResults {
     results: Vec<LoopSimilarItemContext>,
+    embedding_profile_id: String,
+    next_cursor: Option<String>,
 }
 
-/// Semantic search over the project's knowledge items.
+/// What `prepare` hands `execute`: the candidate embedding (computed once)
+/// and the page cursor the model supplied.
+#[derive(Debug, Serialize, Deserialize)]
+struct PreparedSearch {
+    embedding: Vec<f32>,
+    cursor: Option<String>,
+}
+
+/// Candidate-bound semantic search over the project's knowledge items.
 ///
-/// The two phases split exactly along the provider boundary: `prepare`
-/// embeds the query through the gateway with no transaction held, and
-/// `execute` runs the project-scoped search against the prepared
-/// vector. Results render in the same shape as the loop's opening
-/// similar-claims context, so the ids the model copies are uniform
-/// wherever it reads them.
-pub(crate) struct SearchSimilarItemsTool {
+/// Embeds the *fixed candidate* rather than arbitrary query text, so every
+/// score is candidate-to-item similarity, the score the decision rows and
+/// relation's similarity band read. The embedding is computed once and
+/// reused across pages; the model walks the neighbourhood through the page
+/// cursor. `prepare` embeds with no transaction held; `execute` runs the
+/// project-scoped, cursor-paginated search.
+pub(crate) struct SearchCandidateSimilarItemsTool {
     descriptor: ToolDescriptor,
     project_id: ProjectId,
     profile: EmbeddingProfile,
@@ -132,9 +148,11 @@ pub(crate) struct SearchSimilarItemsTool {
     attribution: UsageAttribution,
     search_limit: u32,
     deadline: tokio::time::Instant,
+    candidate_content: String,
+    embedding: tokio::sync::OnceCell<Vec<f32>>,
 }
 
-impl SearchSimilarItemsTool {
+impl SearchCandidateSimilarItemsTool {
     /// The tool's declared contract — the binding-hash input the
     /// lockstep definition derivation reads without constructing the
     /// tool.
@@ -142,21 +160,23 @@ impl SearchSimilarItemsTool {
         ToolDescriptor::builder()
             .name(SEARCH_NAME.to_owned())
             .description(
-                "Search this project's knowledge graph for items semantically similar to a \
-                 query. Returns items with their ids, kinds, content, tags, and similarity \
-                 scores, most similar first. Rephrase the candidate's claim from different \
-                 angles to probe for duplicates the opening context may have missed."
+                "Search this project's knowledge graph for items similar to the candidate \
+                 under triage. Returns items with their ids, kinds, content, tags, and \
+                 candidate-similarity scores, most similar first, plus a next-page cursor. \
+                 Call it with no cursor for the first page, then pass the returned cursor to \
+                 walk further. You must search before you can classify: only items returned \
+                 here can be cited as duplicates or similar."
                     .to_owned(),
             )
             .input_schema(serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "query": {
+                    "cursor": {
                         "type": "string",
-                        "description": "The text to search for; phrased as a claim, not keywords."
+                        "description": "The next-page cursor from a prior result; omit for \
+                                        the first page."
                     }
                 },
-                "required": ["query"],
                 "additionalProperties": false
             }))
             .response_size_bound(SEARCH_RESPONSE_SIZE_BOUND)
@@ -165,10 +185,12 @@ impl SearchSimilarItemsTool {
             .build()
     }
 
-    /// Creates the search tool for one stage execution: the project
-    /// fence, the active embedding profile the search space is keyed
-    /// to, and the attribution its embedding spend is metered under.
+    /// Creates the candidate-bound search tool for one stage execution: the
+    /// candidate whose embedding scores every page, the project fence, the
+    /// active embedding profile the search space is keyed to, and the
+    /// attribution its embedding spend is metered under.
     pub(crate) fn new(
+        candidate_content: String,
         project_id: ProjectId,
         profile: EmbeddingProfile,
         gateway: Arc<InferenceGateway>,
@@ -185,12 +207,42 @@ impl SearchSimilarItemsTool {
             attribution,
             search_limit,
             deadline,
+            candidate_content,
+            embedding: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// Embeds the candidate once, reusing the cached vector across pages.
+    async fn candidate_embedding(&self) -> Result<&Vec<f32>, ToolFailure> {
+        self.embedding
+            .get_or_try_init(|| async {
+                let request = EmbeddingRequest {
+                    input: self.candidate_content.clone(),
+                    purpose: EmbeddingPurpose::Query,
+                };
+                let remaining = self
+                    .deadline
+                    .saturating_duration_since(tokio::time::Instant::now());
+                let response = self
+                    .gateway
+                    .embed(
+                        &EmbeddingTarget::from(&self.profile),
+                        request,
+                        PermitWait::Bounded { limit: remaining },
+                        &self.attribution,
+                    )
+                    .await
+                    .map_err(|source| ToolFailure::System {
+                        context: format!("candidate embedding call: {source}"),
+                    })?;
+                Ok(response.vector)
+            })
+            .await
     }
 }
 
 #[async_trait]
-impl StageTool for SearchSimilarItemsTool {
+impl StageTool for SearchCandidateSimilarItemsTool {
     fn descriptor(&self) -> &ToolDescriptor {
         &self.descriptor
     }
@@ -200,35 +252,13 @@ impl StageTool for SearchSimilarItemsTool {
         arguments: &serde_json::Value,
     ) -> Result<serde_json::Value, ToolFailure> {
         let args: SearchArguments = parse_arguments(SEARCH_NAME, arguments, SEARCH_EXPECTED)?;
-        if args.query.trim().is_empty() {
-            return Err(ToolFailure::Recoverable(
-                RecoverableToolFailure::InvalidArguments {
-                    tool: SEARCH_NAME.to_owned(),
-                    detail: "'query' must be non-empty search text".to_owned(),
-                },
-            ));
-        }
-        let request = EmbeddingRequest {
-            input: args.query,
-            purpose: EmbeddingPurpose::Query,
-        };
-        let remaining = self
-            .deadline
-            .saturating_duration_since(tokio::time::Instant::now());
-        let response = self
-            .gateway
-            .embed(
-                &EmbeddingTarget::from(&self.profile),
-                request,
-                PermitWait::Bounded { limit: remaining },
-                &self.attribution,
-            )
-            .await
-            .map_err(|source| ToolFailure::System {
-                context: format!("search query embedding call: {source}"),
-            })?;
-        serde_json::to_value(response.vector).map_err(|source| ToolFailure::System {
-            context: format!("serialising the prepared query embedding: {source}"),
+        let embedding = self.candidate_embedding().await?.clone();
+        serde_json::to_value(PreparedSearch {
+            embedding,
+            cursor: args.cursor,
+        })
+        .map_err(|source| ToolFailure::System {
+            context: format!("serialising the prepared candidate search: {source}"),
         })
     }
 
@@ -238,29 +268,34 @@ impl StageTool for SearchSimilarItemsTool {
         prepared: serde_json::Value,
         _arguments: &serde_json::Value,
     ) -> Result<ToolOutcome, ToolFailure> {
-        let vector: Vec<f32> =
+        let prepared: PreparedSearch =
             serde_json::from_value(prepared).map_err(|_| ToolFailure::System {
-                context: "search executed without its prepared query embedding".to_owned(),
+                context: "candidate search executed without its prepared embedding".to_owned(),
             })?;
         let params = SemanticSearchParams::builder()
-            .query_embedding(vector)
+            .query_embedding(prepared.embedding)
             .embedding_profile_id(self.profile.id())
             .dimensions(self.profile.dimensions())
             .project_id(Some(self.project_id))
             .limit(self.search_limit)
+            .cursor(prepared.cursor)
             .build();
         let response = PgKnowledgeItemRepository
             .semantic_search(conn, &params)
             .await
-            .map_err(|source| db_failure("similar-item search", &source))?;
+            .map_err(|source| db_failure("candidate similar-item search", &source))?;
         let results: Vec<LoopSimilarItemContext> = response
             .results
             .iter()
             .map(LoopSimilarItemContext::from)
             .collect();
         serialise_outcome(
-            "serialising similar-item search results",
-            &SearchResults { results },
+            "serialising candidate similar-item search results",
+            &CandidateSearchResults {
+                results,
+                embedding_profile_id: self.profile.id().to_string(),
+                next_cursor: response.next_cursor,
+            },
         )
     }
 }
@@ -770,7 +805,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_search_embeds_in_prepare_then_searches_only_the_project() {
+    async fn test_candidate_search_embeds_the_candidate_then_searches_only_the_project() {
         let _guard = serial_lock().await;
         let ctx = test_context().await;
         let mut txn = ctx.begin_test().await.expect("begin_test");
@@ -804,7 +839,8 @@ mod tests {
                 .on_embed(an_embedding_response(basis_vector(0)), None)
                 .build(),
         );
-        let tool = SearchSimilarItemsTool::new(
+        let tool = SearchCandidateSimilarItemsTool::new(
+            "does this claim already exist".to_owned(),
             project_a,
             profile.clone(),
             embed_gateway(profile.id(), Arc::clone(&embedding)),
@@ -813,10 +849,9 @@ mod tests {
             a_deadline(),
         );
 
-        let arguments = serde_json::json!({"query": "does this claim already exist"});
+        // The first page carries no cursor; prepare embeds the candidate.
+        let arguments = serde_json::json!({});
         let prepared = tool.prepare(&arguments).await.expect("prepare embeds");
-
-        // The provider work happened in the prepare phase, on the query.
         let history = embedding.embedding_history();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].input, "does this claim already exist");
@@ -835,17 +870,22 @@ mod tests {
         );
         assert_eq!(results[0]["item_id"], item_a.id().to_string());
         assert_eq!(results[0]["content"], "claim in project A");
-        assert!(results[0]["similarity_label"].is_string());
+        assert_eq!(
+            view["embedding_profile_id"],
+            profile.id().to_string(),
+            "the profile marks the result so the commit can reconstruct its scores",
+        );
     }
 
     #[tokio::test]
-    async fn test_search_executed_without_its_prepared_embedding_is_a_system_failure() {
+    async fn test_candidate_search_executed_without_its_prepared_embedding_is_a_system_failure() {
         let _guard = serial_lock().await;
         let ctx = test_context().await;
         let mut txn = ctx.begin_test().await.expect("begin_test");
         let profile = an_embedding_profile().build();
         let embedding = Arc::new(MockEmbeddingProvider::builder().build());
-        let tool = SearchSimilarItemsTool::new(
+        let tool = SearchCandidateSimilarItemsTool::new(
+            "a candidate".to_owned(),
             tribal_domain::ProjectId::new(),
             profile,
             embed_gateway(tribal_domain::EmbeddingProfileId::new(), embedding),
@@ -855,46 +895,54 @@ mod tests {
         );
 
         let err = tool
-            .execute(
-                &mut txn,
-                serde_json::Value::Null,
-                &serde_json::json!({"query": "anything"}),
-            )
+            .execute(&mut txn, serde_json::Value::Null, &serde_json::json!({}))
             .await
             .expect_err("a skipped prepare phase must not reach the search");
         assert!(matches!(err, ToolFailure::System { .. }));
     }
 
     #[tokio::test]
-    async fn test_search_rejects_a_missing_or_blank_query() {
+    async fn test_candidate_search_embeds_once_across_pages_and_rejects_unknown_arguments() {
         let profile = an_embedding_profile().build();
-        let embedding = Arc::new(MockEmbeddingProvider::builder().build());
-        let tool = SearchSimilarItemsTool::new(
+        let embedding = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed(an_embedding_response(basis_vector(0)), None)
+                .build(),
+        );
+        let tool = SearchCandidateSimilarItemsTool::new(
+            "a candidate".to_owned(),
             tribal_domain::ProjectId::new(),
             profile.clone(),
-            embed_gateway(profile.id(), embedding),
+            embed_gateway(profile.id(), Arc::clone(&embedding)),
             unowned_attribution(),
             10,
             a_deadline(),
         );
 
-        let missing = tool
-            .prepare(&serde_json::json!({}))
+        // The first page (no cursor) and a later page (with one) both
+        // prepare, but the candidate is embedded once and cached.
+        tool.prepare(&serde_json::json!({}))
             .await
-            .expect_err("a missing query must be rejected before any provider call");
+            .expect("the first page prepares");
+        tool.prepare(&serde_json::json!({"cursor": "next-page"}))
+            .await
+            .expect("a later page prepares");
+        assert_eq!(
+            embedding.embedding_history().len(),
+            1,
+            "the candidate is embedded once across pages",
+        );
+
+        // An unknown argument is an argument fault, caught before any
+        // provider call.
+        let err = tool
+            .prepare(&serde_json::json!({"page": 2}))
+            .await
+            .expect_err("an unknown argument must be rejected");
         assert!(matches!(
-            missing,
+            err,
             ToolFailure::Recoverable(RecoverableToolFailure::InvalidArguments { ref tool, .. })
                 if tool == SEARCH_NAME
-        ));
-
-        let blank = tool
-            .prepare(&serde_json::json!({"query": "   "}))
-            .await
-            .expect_err("a blank query must be rejected before any provider call");
-        assert!(matches!(
-            blank,
-            ToolFailure::Recoverable(RecoverableToolFailure::InvalidArguments { .. })
         ));
     }
 

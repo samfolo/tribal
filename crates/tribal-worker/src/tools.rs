@@ -19,8 +19,8 @@ use std::sync::Arc;
 pub(crate) use common::{ReadJobContextTool, ReadSiblingThreadsTool};
 use serde::{Serialize, de::DeserializeOwned};
 pub(crate) use triage::{
-    ListTagRegistryTool, ReadItemNeighbourhoodTool, ReadKnowledgeItemTool, SearchSimilarItemsTool,
-    submit_result_descriptor,
+    ListTagRegistryTool, ReadItemNeighbourhoodTool, ReadKnowledgeItemTool,
+    SearchCandidateSimilarItemsTool, submit_result_descriptor,
 };
 use tribal_agent_runtime::{StageTool, ToolOutcome, ToolRegistry, ToolRegistryError};
 use tribal_domain::{
@@ -48,7 +48,7 @@ pub(crate) fn stage_tool_bindings(stage: TaskType) -> Vec<ToolBinding> {
 /// dedup stays project-local by construction rather than by prompt.
 fn triage_tool_bindings() -> Vec<ToolBinding> {
     let mut reads = vec![
-        SearchSimilarItemsTool::describe(),
+        SearchCandidateSimilarItemsTool::describe(),
         ReadKnowledgeItemTool::describe(),
         ReadItemNeighbourhoodTool::describe(),
         ListTagRegistryTool::describe(),
@@ -72,6 +72,8 @@ fn fenced(descriptor: ToolDescriptor) -> ToolBinding {
 /// project the reads fence to, the embedding identity the search embeds
 /// under, and the ids that scope the job-context and sibling reads.
 pub(crate) struct TriageToolset {
+    /// The candidate's content, embedded once to score every search page.
+    pub candidate_content: String,
     /// The project the reads are fenced to.
     pub project_id: ProjectId,
     /// The active embedding profile the candidate search embeds under.
@@ -106,7 +108,8 @@ pub(crate) fn build_triage_registry(
 ) -> Result<ToolRegistry, ToolRegistryError> {
     let mut registry = ToolRegistry::new();
     let reads: [Arc<dyn StageTool>; 6] = [
-        Arc::new(SearchSimilarItemsTool::new(
+        Arc::new(SearchCandidateSimilarItemsTool::new(
+            toolset.candidate_content.clone(),
             toolset.project_id,
             toolset.profile.clone(),
             Arc::clone(&toolset.gateway),
@@ -229,6 +232,7 @@ mod tests {
             ),
         ));
         TriageToolset {
+            candidate_content: "a candidate claim".to_owned(),
             project_id: ProjectId::new(),
             profile: an_embedding_profile().build(),
             gateway,
@@ -265,7 +269,7 @@ mod tests {
                 "read_job_context",
                 "read_knowledge_item",
                 "read_sibling_threads",
-                "search_similar_items",
+                "search_candidate_similar_items",
             ],
         );
     }

@@ -54,9 +54,10 @@ async fn test_agentic_triage_loop_end_to_end() {
 
     // -- Triage: the agentic loop (streamed) + the verifier (buffered) -------
     //
-    // Turn one investigates with a read tool; turn two submits the novel
-    // decision. Both are streamed. The verifier child's buffered verdict
-    // accepts the submission, and the loop commits.
+    // Turn one runs the candidate search the must-search rule requires
+    // before any classification; turn two submits the novel decision. Both
+    // are streamed. The verifier child's buffered verdict accepts the
+    // submission, and the loop commits.
 
     harness
         .mount_triage(|m| {
@@ -68,7 +69,10 @@ async fn test_agentic_triage_loop_end_to_end() {
             m.on_content_streamed(
                 "\"stream\":true",
                 &[json!({
-                    "tool_calls": [{ "name": "list_tag_registry", "arguments": {} }],
+                    "tool_calls": [{
+                        "name": "search_candidate_similar_items",
+                        "arguments": {},
+                    }],
                 })
                 .into()],
             );
@@ -214,7 +218,7 @@ async fn test_agentic_triage_loop_end_to_end() {
     assert_eq!(
         streamed.len(),
         2,
-        "the loop ran two streamed turns: the read tool and the submission",
+        "the loop ran two streamed turns: the candidate search and the submission",
     );
     assert_eq!(
         verifier_calls, 1,
@@ -245,16 +249,14 @@ async fn test_agentic_triage_loop_end_to_end() {
 
     // -- The candidate is embedded at its two consumption points only --------
     //
-    // The fresh claim embeds the candidate for its opening similarity
-    // search; the resume itself embeds nothing and re-runs no search, it
-    // replays the recorded opening scores. The second embedding is deferred
-    // to the novel commit, where the vector is finally consumed, derived
-    // against the then-active profile so the committed vector and its
-    // profile id stay consistent rather than a recorded vector being
-    // replayed under a profile it was not built under. So for this verified
-    // novel fact the embedding endpoint sees the candidate exactly twice,
-    // the opening search and the novel commit, not the search-driven work
-    // the old path re-ran on every resume.
+    // The search tool embeds the candidate once on turn one, reusing that
+    // vector across any further pages; the second embedding is deferred to
+    // the novel commit, where the vector is finally consumed, derived
+    // against the then-active profile so the committed vector and its profile
+    // id stay consistent rather than a recorded vector being replayed under a
+    // profile it was not built under. So for this verified novel fact the
+    // embedding endpoint sees the candidate exactly twice, the candidate
+    // search and the novel commit.
     let candidate_embeds = harness
         .embedding_server()
         .received_requests()
@@ -265,8 +267,8 @@ async fn test_agentic_triage_loop_end_to_end() {
         .count();
     assert_eq!(
         candidate_embeds, 2,
-        "the candidate is embedded for the opening search and again at the novel commit, \
-         never on the resume itself and never replayed from a recorded vector",
+        "the candidate is embedded for the candidate search and again at the novel commit, \
+         never replayed from a recorded vector",
     );
 
     harness.shutdown().await;
