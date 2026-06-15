@@ -575,7 +575,7 @@ impl Worker {
                     .await?
             }
             TaskType::Relation => {
-                self.run_relation(job, task, deadline, &stage_thread)
+                self.run_relation(job, task, deadline, &stage_thread, pump)
                     .await?
             }
         };

@@ -93,6 +93,61 @@ fn loop_agents_config() -> tribal_config::AgentsConfig {
     agents
 }
 
+/// The loop config for relation: relation on the loop executor, triage
+/// left one-shot so the seeded job reaches an agentic relation stage.
+fn relation_loop_agents_config() -> tribal_config::AgentsConfig {
+    let mut agents = tribal_config::AgentsConfig::default();
+    agents.relation.executor = tribal_config::ExecutorChoice::Loop;
+    agents
+}
+
+/// Seeds the relation loop prompt pair and returns its source. The user
+/// template renders each committed item's id, so the membership corpus
+/// genuinely contains the ids the model copies into its edges.
+async fn seed_relation_loop_prompts(conn: &mut sqlx::PgConnection) -> FixedAgenticPrompts {
+    let system = tribal_db::PgPromptVersionRepository
+        .upsert(
+            conn,
+            &tribal_test_utils::a_new_prompt_version()
+                .stage(PromptStage::Relation)
+                .class(PromptClass::Loop)
+                .role(PromptRole::System)
+                .content("Investigate, then submit the edges.".to_owned())
+                .content_hash("7".repeat(64))
+                .build(),
+        )
+        .await
+        .expect("seed relation loop system prompt");
+    let user = tribal_db::PgPromptVersionRepository
+        .upsert(
+            conn,
+            &tribal_test_utils::a_new_prompt_version()
+                .stage(PromptStage::Relation)
+                .class(PromptClass::Loop)
+                .role(PromptRole::User)
+                .content(
+                    "batch:\n{% for c in candidates %}- {{ c.item_id }}: {{ c.candidate.content }}\n\
+                     {% endfor %}"
+                        .to_owned(),
+                )
+                .content_hash("8".repeat(64))
+                .build(),
+        )
+        .await
+        .expect("seed relation loop user prompt");
+
+    let mut slots = HashMap::new();
+    slots.insert(
+        (PromptStage::Relation, PromptClass::Loop, PromptRole::System),
+        system.id(),
+    );
+    slots.insert(
+        (PromptStage::Relation, PromptClass::Loop, PromptRole::User),
+        user.id(),
+    );
+    FixedAgenticPrompts(slots)
+}
+
 /// The loop executor completes a triage job end to end through the live
 /// worker: the model submits a duplicate decision referencing an id from
 /// its opening context, and the commit lands the observation, the typed
@@ -561,6 +616,153 @@ async fn test_the_recorded_binding_wins_the_ingest_claim_divergence_window() {
         recorded.hash(),
         loop_hash,
         "the thread's recorded binding, not the ingest composite, is the truth of what ran",
+    );
+
+    teardown(ctx).await;
+}
+
+/// The loop executor completes a relation job end to end through the live
+/// worker: the model runs a cross-project search, then submits one edge
+/// between two committed batch items by their ids, and the commit lands the
+/// relation, seals the batch, and transitions the job to completed.
+#[tokio::test]
+async fn test_the_loop_executor_completes_a_relation_job_end_to_end() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "agentic-relation-loop").await;
+    let mut conn = raw_conn(ctx).await;
+    let prompts = seed_relation_loop_prompts(&mut conn).await;
+    let candidates = vec![
+        a_candidate()
+            .content("Rust has zero-cost abstractions".to_owned())
+            .build(),
+        a_candidate()
+            .content("Ownership prevents data races".to_owned())
+            .build(),
+    ];
+    let (job_id, task_id, ki_ids) = seed_relation_job(
+        &mut conn,
+        principal_id,
+        project_id,
+        system_pv_id,
+        user_pv_id,
+        &candidates,
+        &[a_relation_hint().build()],
+    )
+    .await;
+    drop(conn);
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            // Turn one: a cross-project search for related claims.
+            .on_complete(
+                a_tool_call_response(&[(
+                    "call_0",
+                    "search_related_items",
+                    serde_json::json!({ "query": "memory safety guarantees" }),
+                )]),
+                None,
+            )
+            // Turn two: one edge between the two committed batch items.
+            .on_complete(
+                a_tool_call_response(&[(
+                    "call_1",
+                    SUBMIT_RESULT_TOOL,
+                    serde_json::json!({
+                        "relations": [{
+                            "source_id": ki_ids[0].to_string(),
+                            "target_id": ki_ids[1].to_string(),
+                            "relation_type": "supports",
+                            "justification": "the first reinforces the second",
+                        }],
+                    }),
+                )]),
+                None,
+            )
+            .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
+                tribal_inference::InferenceError::provider_unavailable("mock", "test stub")
+            })))
+            .build(),
+    );
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.5_f32; 768]), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let (worker, _) = build_agentic_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+        relation_loop_agents_config(),
+        Arc::new(prompts),
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let (task, job) = tokio::join!(
+        poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE),
+        poll_job_status(&pool, job_id, JobStatus::Completed, POLL_SETTLE),
+    );
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(task.status(), TaskStatus::Completed);
+    assert_eq!(job.status(), JobStatus::Completed);
+    assert!(
+        job.committed_batch_id().is_some(),
+        "the loop sealed the relation batch",
+    );
+
+    let mut conn = raw_conn(ctx).await;
+
+    // The submitted edge committed between the two batch items.
+    let outbound = PgRelationRepository
+        .find_outbound(&mut conn, ki_ids[0], None)
+        .await
+        .expect("find outbound relations");
+    assert_eq!(outbound.len(), 1, "the one submitted edge committed");
+    assert_eq!(outbound[0].target_id(), ki_ids[1]);
+    assert_eq!(
+        outbound[0].justification(),
+        Some("the first reinforces the second"),
+    );
+
+    // The thread completed under a loop binding, its log ending in the
+    // accepted submission.
+    let thread = PgAgentThreadRepository
+        .find_by_stage_task_id(&mut conn, task_id)
+        .await
+        .expect("find thread")
+        .expect("present");
+    assert_eq!(thread.status(), AgentThreadStatus::Completed);
+    let binding = PgAgentBindingVersionRepository
+        .find_by_id(&mut conn, thread.binding_version_id())
+        .await
+        .expect("find binding")
+        .expect("present");
+    assert_eq!(
+        binding.definition().executor,
+        StageExecutorKind::BuiltInLoop
+    );
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread_id(&mut conn, thread.id())
+        .await
+        .expect("log");
+    assert_eq!(
+        records.last().expect("records").kind(),
+        AgentThreadRecordKind::Submission,
+        "the log ends in the accepted submission",
     );
 
     teardown(ctx).await;

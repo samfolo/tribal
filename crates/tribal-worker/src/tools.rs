@@ -12,11 +12,13 @@
 //! sees.
 
 mod common;
+mod relation;
 mod triage;
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 pub(crate) use common::{ReadJobContextTool, ReadSiblingThreadsTool};
+pub(crate) use relation::submit_relations_descriptor;
 use serde::{Serialize, de::DeserializeOwned};
 pub(crate) use triage::{
     ListTagRegistryTool, ReadItemNeighbourhoodTool, ReadKnowledgeItemTool,
@@ -38,9 +40,10 @@ use tribal_inference::{InferenceGateway, UsageAttribution};
 pub(crate) fn stage_tool_bindings(stage: TaskType) -> Vec<ToolBinding> {
     match stage {
         TaskType::Triage => triage_tool_bindings(),
-        // Relation and extraction run one-shot until their loops land; a
-        // one-shot binding carries no tools.
-        TaskType::Relation | TaskType::Extraction => Vec::new(),
+        TaskType::Relation => relation_tool_bindings(),
+        // Extraction runs one-shot until its loop lands; a one-shot
+        // binding carries no tools.
+        TaskType::Extraction => Vec::new(),
     }
 }
 
@@ -60,11 +63,33 @@ fn triage_tool_bindings() -> Vec<ToolBinding> {
     reads.into_iter().map(fenced).collect()
 }
 
+/// The relation surface: every tool reaches across projects, because
+/// relation connects a batch to the wider graph rather than deduplicating
+/// within one project.
+fn relation_tool_bindings() -> Vec<ToolBinding> {
+    let mut reads = vec![
+        relation::SearchRelatedItemsTool::describe(),
+        relation::ReadKnowledgeItemTool::describe(),
+        relation::ReadItemNeighbourhoodTool::describe(),
+    ];
+    reads.sort_by(|a, b| a.name.cmp(&b.name));
+    reads.push(submit_relations_descriptor());
+    reads.into_iter().map(cross_project).collect()
+}
+
 /// Grants a descriptor the project-local fence.
 fn fenced(descriptor: ToolDescriptor) -> ToolBinding {
     ToolBinding {
         descriptor,
         project_scope: ProjectScope::Fenced,
+    }
+}
+
+/// Grants a descriptor cross-project reach.
+fn cross_project(descriptor: ToolDescriptor) -> ToolBinding {
+    ToolBinding {
+        descriptor,
+        project_scope: ProjectScope::CrossProject,
     }
 }
 
@@ -124,6 +149,57 @@ pub(crate) fn build_triage_registry(
         Arc::new(ReadSiblingThreadsTool::new(
             toolset.job_id,
             toolset.thread_id,
+        )),
+    ];
+    for tool in reads {
+        registry.register(tool)?;
+    }
+    Ok(registry)
+}
+
+/// The runtime context a relation tool registry is built against: the
+/// embedding identity the cross-project search embeds under, and the set
+/// of projects the batch's items belong to (the neighbourhood read's
+/// default reach).
+pub(crate) struct RelationToolset {
+    /// The active embedding profile the cross-project search embeds under.
+    pub profile: EmbeddingProfile,
+    /// The gateway the search tool embeds through.
+    pub gateway: Arc<InferenceGateway>,
+    /// The attribution the search's embedding calls meter to.
+    pub attribution: UsageAttribution,
+    /// The item cap the search tool returns.
+    pub search_limit: u32,
+    /// The deadline the search tool's embedding call honours.
+    pub deadline: tokio::time::Instant,
+    /// The projects the batch spans, bounding the neighbourhood read.
+    pub batch_projects: HashSet<ProjectId>,
+}
+
+/// Builds the relation stage's live tool registry: the same surface
+/// [`stage_tool_bindings`] hashes, instantiated with the runtime scope each
+/// tool captures at construction. The lockstep test pins the two against
+/// drift; this is the only constructor the loop uses.
+///
+/// # Errors
+///
+/// Returns [`ToolRegistryError`] when a tool declares an inadmissible tier
+/// or mode, or two tools contest a name.
+pub(crate) fn build_relation_registry(
+    toolset: &RelationToolset,
+) -> Result<ToolRegistry, ToolRegistryError> {
+    let mut registry = ToolRegistry::new();
+    let reads: [Arc<dyn StageTool>; 3] = [
+        Arc::new(relation::SearchRelatedItemsTool::new(
+            toolset.profile.clone(),
+            Arc::clone(&toolset.gateway),
+            toolset.attribution.clone(),
+            toolset.search_limit,
+            toolset.deadline,
+        )),
+        Arc::new(relation::ReadKnowledgeItemTool::new()),
+        Arc::new(relation::ReadItemNeighbourhoodTool::new(
+            toolset.batch_projects.clone(),
         )),
     ];
     for tool in reads {
@@ -303,6 +379,75 @@ mod tests {
             stage_tool_bindings(TaskType::Triage)
                 .iter()
                 .all(|binding| binding.project_scope == tribal_domain::ProjectScope::Fenced),
+        );
+    }
+
+    /// A relation toolset over a mock gateway, the fixture both relation
+    /// registry tests build from.
+    fn a_relation_toolset() -> RelationToolset {
+        let inference_key =
+            ProviderKey::new("mock", "http://localhost:9999", RequestClass::Inference)
+                .expect("valid key");
+        let registry = ProviderRegistry::new(vec![(
+            inference_key.clone(),
+            ProviderLimits {
+                max_in_flight: 1,
+                request_timeout: Duration::from_secs(1),
+            },
+        )])
+        .expect("valid registry");
+        let gateway = Arc::new(InferenceGateway::with_providers(
+            InjectedProviders::uniform(
+                registry,
+                Arc::new(MockInferenceProvider::builder().build()),
+                inference_key,
+                vec![],
+                Arc::new(NoopLedgerSink),
+            ),
+        ));
+        RelationToolset {
+            profile: an_embedding_profile().build(),
+            gateway,
+            attribution: UsageAttribution {
+                owner: UsageOwner::Unowned,
+                system_prompt_version_id: None,
+                user_prompt_version_id: None,
+                trace_id: None,
+            },
+            search_limit: 10,
+            deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+            batch_projects: HashSet::from([ProjectId::new()]),
+        }
+    }
+
+    #[test]
+    fn test_relation_aggregator_and_registry_descriptor_sets_match() {
+        // The hashed relation surface and the live registry are two
+        // hand-maintained lists; the lockstep test pins them so a tool
+        // added to one and not the other fails here rather than silently.
+        let aggregated: Vec<ToolDescriptor> = stage_tool_bindings(TaskType::Relation)
+            .into_iter()
+            .map(|binding| binding.descriptor)
+            .filter(|descriptor| descriptor.name != submit_relations_descriptor().name)
+            .collect();
+        let built =
+            build_relation_registry(&a_relation_toolset()).expect("the inventory registers");
+        assert_eq!(
+            aggregated,
+            built.descriptors(),
+            "the hashed relation surface and the live registry must agree, same order",
+        );
+    }
+
+    #[test]
+    fn test_every_relation_tool_crosses_projects() {
+        // Relation reaches the wider graph: cross-project reach is hashed so
+        // a future fence slip moves the binding version rather than passing
+        // silently.
+        assert!(
+            stage_tool_bindings(TaskType::Relation)
+                .iter()
+                .all(|binding| binding.project_scope == tribal_domain::ProjectScope::CrossProject),
         );
     }
 }

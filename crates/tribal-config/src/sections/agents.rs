@@ -3,9 +3,9 @@
 //! Absent configuration reproduces launched behaviour exactly: every stage
 //! runs one-shot. Setting a stage's executor to `loop` routes it through
 //! the in-process turn loop with finite default budgets, every one of
-//! which is overridable here. The section admits only the triage stage in
-//! this release, so no other stage can select the loop: an
-//! `agents.extraction` key is an unknown-field error at load.
+//! which is overridable here. The section admits the triage and relation
+//! stages; an `agents.extraction` key is an unknown-field error at load
+//! until extraction gains an executor of its own.
 
 use serde::{Deserialize, Serialize};
 
@@ -62,6 +62,12 @@ const _: () = assert!(
 /// setting is inert. Non-fatal: the stage runs one-shot regardless.
 pub const VERIFIER_INERT_ADVISORY: &str = "agents.triage.verifier is set but agents.triage.executor is one_shot; \
      the verifier runs only under the loop executor, so this setting is inert";
+
+/// Advisory raised when the relation verifier is set. The relation loop
+/// ships without a verifier in this release, so the setting is inert under
+/// either executor. Non-fatal: the stage runs regardless.
+pub const RELATION_VERIFIER_UNAVAILABLE_ADVISORY: &str = "agents.relation.verifier is set, but the relation stage has no verifier in this release, \
+     so this setting is inert";
 
 // ---------------------------------------------------------------------------
 // Executor choice
@@ -129,6 +135,9 @@ pub struct AgentsConfig {
     /// The triage stage's agentic configuration.
     #[serde(default)]
     pub triage: StageAgentConfig,
+    /// The relation stage's agentic configuration.
+    #[serde(default)]
+    pub relation: StageAgentConfig,
 }
 
 /// One stage's agentic configuration.
@@ -139,10 +148,10 @@ pub struct StageAgentConfig {
     #[serde(default)]
     pub executor: ExecutorChoice,
     /// Whether an accepted submission is verified by a child execution.
-    /// Absent leaves the loop's default in force (verification on). It is
-    /// honoured only under the loop executor; setting it under one-shot,
-    /// where there is no submission loop to verify, is inert and surfaced
-    /// as a startup advisory.
+    /// Absent leaves the stage's loop default in force (triage verifies by
+    /// default, relation does not). It is honoured only under the loop
+    /// executor; setting it under one-shot, where there is no submission
+    /// loop to verify, is inert and surfaced as a startup advisory.
     #[serde(default)]
     pub verifier: Option<VerifierConfig>,
     /// Override for the turn cap; the named default applies when absent.
@@ -167,36 +176,49 @@ impl StageAgentConfig {
 }
 
 impl AgentsConfig {
+    /// The configurable stages, paired with their config-path prefix.
+    fn stages(&self) -> [(&'static str, &StageAgentConfig); 2] {
+        [
+            ("agents.triage", &self.triage),
+            ("agents.relation", &self.relation),
+        ]
+    }
+
     /// Validates the section's value constraints.
     pub(crate) fn validate(&self, diags: &mut Diagnostics) {
-        let stage = &self.triage;
-        for (field, value) in [
-            ("agents.triage.max_turns", stage.max_turns),
-            (
-                "agents.triage.execution_deadline_seconds",
-                stage.execution_deadline_seconds,
-            ),
-        ] {
-            if value == Some(0) {
-                diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
-                    field,
-                )));
+        for (prefix, stage) in self.stages() {
+            let positive = [
+                ("max_turns", stage.max_turns.map(u64::from)),
+                (
+                    "execution_deadline_seconds",
+                    stage.execution_deadline_seconds.map(u64::from),
+                ),
+                ("max_total_tokens", stage.max_total_tokens),
+            ];
+            for (field, value) in positive {
+                if value == Some(0) {
+                    diags.push(ValidationError::must_be_positive(ConfigPath::child(
+                        prefix, field,
+                    )));
+                }
             }
-        }
-        if stage.max_total_tokens == Some(0) {
-            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
-                "agents.triage.max_total_tokens",
-            )));
         }
     }
 
     /// Non-fatal advisories about inert or surprising combinations that
     /// validation admits but the operator may not have intended.
     pub(crate) fn advisories(&self) -> Vec<&'static str> {
-        let stage = &self.triage;
         let mut advisories = Vec::new();
-        if stage.verifier.is_some_and(|v| v.enabled) && stage.executor == ExecutorChoice::OneShot {
+        // Triage's verifier runs under the loop, so it is inert only when
+        // set under the one-shot executor.
+        if self.triage.verifier.is_some_and(|v| v.enabled)
+            && self.triage.executor == ExecutorChoice::OneShot
+        {
             advisories.push(VERIFIER_INERT_ADVISORY);
+        }
+        // The relation stage has no verifier yet, so any setting is inert.
+        if self.relation.verifier.is_some_and(|v| v.enabled) {
+            advisories.push(RELATION_VERIFIER_UNAVAILABLE_ADVISORY);
         }
         advisories
     }
@@ -300,5 +322,49 @@ mod tests {
         // (one-shot) raises nothing: only an explicit verifier under
         // one-shot is the inert combination worth surfacing.
         assert!(AgentsConfig::default().advisories().is_empty());
+    }
+
+    #[test]
+    fn test_relation_stage_parses_independently_of_triage() {
+        let config: AgentsConfig = serde_yaml::from_str(
+            "relation:\n  executor: loop\n  verifier: false\n  max_turns: 6\n",
+        )
+        .expect("parse");
+        assert_eq!(config.relation.executor, ExecutorChoice::Loop);
+        assert_eq!(config.triage.executor, ExecutorChoice::OneShot);
+        assert_eq!(
+            config.relation.verifier,
+            Some(VerifierConfig { enabled: false }),
+        );
+        assert_eq!(config.relation.max_turns, Some(6));
+    }
+
+    #[test]
+    fn test_relation_zero_caps_are_rejected() {
+        let config: AgentsConfig =
+            serde_yaml::from_str("relation:\n  executor: loop\n  max_total_tokens: 0\n")
+                .expect("parse");
+        let mut diags = Diagnostics::default();
+        config.validate(&mut diags);
+        assert!(
+            !diags.is_empty(),
+            "a zero relation token cap must fail validation",
+        );
+    }
+
+    #[test]
+    fn test_relation_verifier_is_inert_under_either_executor() {
+        // The relation loop has no verifier yet, so the setting is inert
+        // whether the stage runs one-shot or under the loop.
+        for yaml in [
+            "relation:\n  verifier: true\n",
+            "relation:\n  executor: loop\n  verifier: true\n",
+        ] {
+            let config: AgentsConfig = serde_yaml::from_str(yaml).expect("parse");
+            assert_eq!(
+                config.advisories(),
+                vec![RELATION_VERIFIER_UNAVAILABLE_ADVISORY],
+            );
+        }
     }
 }

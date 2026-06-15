@@ -142,13 +142,14 @@ pub(crate) fn current_stage_budgets(
     }
 }
 
-/// The stage's agentic configuration, where one exists. Only triage is
-/// configurable in this release; the config section makes any other
-/// stage key an unknown-field error at load.
+/// The stage's agentic configuration, where one exists. Triage and
+/// relation are configurable; extraction stays one-shot, and the config
+/// section makes an `agents.extraction` key an unknown-field error at load.
 fn stage_agent_config(stage: TaskType, agents: &AgentsConfig) -> Option<&StageAgentConfig> {
     match stage {
         TaskType::Triage => Some(&agents.triage),
-        TaskType::Extraction | TaskType::Relation => None,
+        TaskType::Relation => Some(&agents.relation),
+        TaskType::Extraction => None,
     }
 }
 
@@ -330,15 +331,49 @@ mod tests {
     }
 
     #[test]
-    fn test_non_triage_stages_never_gain_agentic_shape() {
+    fn test_extraction_never_gains_agentic_shape() {
+        // Extraction has no executor of its own, so even a fully agentic
+        // triage and relation configuration leaves it the launched one-shot.
         let mut agents = AgentsConfig::default();
         agents.triage.executor = ExecutorChoice::Loop;
         agents.triage.max_total_tokens = Some(1);
+        agents.relation.executor = ExecutorChoice::Loop;
 
         let derived =
             derive_stage_definition(TaskType::Extraction, &a_spec(), &hashes(None), &agents)
                 .expect("derives");
         assert_eq!(derived.executor, StageExecutorKind::OneShot);
         assert_eq!(derived.budgets, ExecutionBudgets::default());
+    }
+
+    #[test]
+    fn test_the_loop_executor_reshapes_the_relation_definition() {
+        let mut agents = AgentsConfig::default();
+        agents.relation.executor = ExecutorChoice::Loop;
+
+        let derived = derive_stage_definition(
+            TaskType::Relation,
+            &a_spec(),
+            &hashes(Some(("c".repeat(64), "d".repeat(64)))),
+            &agents,
+        )
+        .expect("derives");
+
+        assert_eq!(derived.executor, StageExecutorKind::BuiltInLoop);
+        assert_eq!(derived.prompt_hashes, vec!["c".repeat(64), "d".repeat(64)]);
+        assert!(
+            derived
+                .tools
+                .iter()
+                .any(|tool| tool.descriptor.name == tribal_agent_runtime::SUBMIT_RESULT_TOOL),
+            "the relation loop binds its own tool surface",
+        );
+        assert!(
+            derived
+                .tools
+                .iter()
+                .all(|tool| tool.project_scope == tribal_domain::ProjectScope::CrossProject),
+            "every relation tool reaches across projects",
+        );
     }
 }

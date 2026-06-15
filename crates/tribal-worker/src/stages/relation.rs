@@ -89,7 +89,7 @@ pub(crate) enum RelationCommitDecision {
 impl Worker {
     /// Loads all relation stage inputs from the database using a single
     /// pooled connection and returns the assembled context.
-    async fn load_relation_data<'a>(
+    pub(super) async fn load_relation_data<'a>(
         &self,
         job: &'a Job,
     ) -> Result<RelationContext<'a>, StageError> {
@@ -172,7 +172,40 @@ fn handoffs_by_batch_index(submissions: Vec<JobTriageSubmission>) -> HashMap<u32
 // ---------------------------------------------------------------------------
 
 impl Worker {
-    /// Runs the relation stage for a task.
+    /// Runs the relation stage for a task, routed by the thread's recorded
+    /// binding: the executor follows the binding, not the current
+    /// configuration, so a resumed thread continues the way it started.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the routed executor's [`StageError`]s; an external
+    /// executor on the recorded binding is a derivation fault — nothing can
+    /// produce one in this release.
+    pub(crate) async fn run_relation(
+        &self,
+        job: &Job,
+        task: &Task,
+        deadline: tokio::time::Instant,
+        stage_thread: &StageThread,
+        pump: &crate::worker::heartbeat::WorkerHeartbeatPump,
+    ) -> Result<Option<(StageCommit, StageTerminal)>, StageError> {
+        match stage_thread.binding.definition().executor {
+            tribal_domain::StageExecutorKind::OneShot => {
+                self.run_relation_one_shot(job, task, deadline, stage_thread)
+                    .await
+            }
+            tribal_domain::StageExecutorKind::BuiltInLoop => {
+                self.run_relation_loop(job, task, deadline, stage_thread, pump)
+                    .await
+            }
+            tribal_domain::StageExecutorKind::ExternalAgent => Err(StageError::BindingDerivation {
+                stage: STAGE_RELATION.into(),
+                context: "the external-agent executor has no runner in this release".into(),
+            }),
+        }
+    }
+
+    /// Runs the one-shot relation turn for a job.
     ///
     /// Loads triage results and extraction relation hints, calls the
     /// relation LLM, normalises and filters edges, and returns a
@@ -196,7 +229,7 @@ impl Worker {
     ///
     /// Panics if the relation provider key is not registered in the
     /// provider registry or if the semaphore is unexpectedly closed.
-    pub(crate) async fn run_relation(
+    async fn run_relation_one_shot(
         &self,
         job: &Job,
         task: &Task,
@@ -473,7 +506,7 @@ async fn build_similar_item_decision_contexts(
 ///
 /// Returns [`StageError::Database`] if `batch_size` exceeds the
 /// candidates array length (data corruption).
-fn build_prompt_context<'a>(
+pub(super) fn build_prompt_context<'a>(
     ctx: &'a RelationContext<'_>,
     batch_size: u32,
 ) -> Result<RelationPromptContext<'a>, StageError> {
@@ -743,7 +776,7 @@ fn resolve_target(
 // ---------------------------------------------------------------------------
 
 /// Computes the job outcome from triage results and batch size.
-fn compute_outcome(triage_results: &[TriageResult], batch_size: u32) -> JobOutcome {
+pub(super) fn compute_outcome(triage_results: &[TriageResult], batch_size: u32) -> JobOutcome {
     let n_created = triage_results
         .iter()
         .filter(|r| matches!(r.outcome(), TriageOutcome::Created { .. }))

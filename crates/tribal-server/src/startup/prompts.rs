@@ -31,6 +31,8 @@ const RELATION_SYSTEM: &str = include_str!("../../../../prompts/relation/system.
 const RELATION_USER: &str = include_str!("../../../../prompts/relation/user.tera");
 const TRIAGE_LOOP_SYSTEM: &str = include_str!("../../../../prompts/triage/loop_system.tera");
 const TRIAGE_LOOP_USER: &str = include_str!("../../../../prompts/triage/loop_user.tera");
+const RELATION_LOOP_SYSTEM: &str = include_str!("../../../../prompts/relation/loop_system.tera");
+const RELATION_LOOP_USER: &str = include_str!("../../../../prompts/relation/loop_user.tera");
 const TRIAGE_VERIFIER_SYSTEM: &str =
     include_str!("../../../../prompts/triage/verifier_system.tera");
 const TRIAGE_VERIFIER_USER: &str = include_str!("../../../../prompts/triage/verifier_user.tera");
@@ -62,7 +64,9 @@ fn embedded_default(location: PromptTemplateLocation) -> Result<&'static str, Ap
         PromptClass::Loop => match (location.stage, location.role) {
             (PromptStage::Triage, PromptRole::System) => Ok(TRIAGE_LOOP_SYSTEM),
             (PromptStage::Triage, PromptRole::User) => Ok(TRIAGE_LOOP_USER),
-            (PromptStage::Extraction | PromptStage::Relation, _) => Err(slot_error()),
+            (PromptStage::Relation, PromptRole::System) => Ok(RELATION_LOOP_SYSTEM),
+            (PromptStage::Relation, PromptRole::User) => Ok(RELATION_LOOP_USER),
+            (PromptStage::Extraction, _) => Err(slot_error()),
         },
         PromptClass::Verifier => match (location.stage, location.role) {
             (PromptStage::Triage, PromptRole::System) => Ok(TRIAGE_VERIFIER_SYSTEM),
@@ -95,10 +99,11 @@ pub(crate) struct PromptTemplateLocation {
 
 impl PromptTemplateLocation {
     /// Every template slot in canonical order: the single authority on
-    /// which (stage, class) pairings exist. The loop and verifier
-    /// classes serve triage only in this release; admitting another
-    /// stage is an addition here, never a new match arm elsewhere.
-    pub(crate) const ALL: [Self; 10] = [
+    /// which (stage, class) pairings exist. The loop class serves triage
+    /// and relation, the verifier class triage only in this release;
+    /// admitting another stage is an addition here, never a new match arm
+    /// elsewhere.
+    pub(crate) const ALL: [Self; 12] = [
         Self::one_shot(PromptStage::Extraction, PromptRole::System),
         Self::one_shot(PromptStage::Extraction, PromptRole::User),
         Self::one_shot(PromptStage::Triage, PromptRole::System),
@@ -107,6 +112,8 @@ impl PromptTemplateLocation {
         Self::one_shot(PromptStage::Relation, PromptRole::User),
         Self::new(PromptStage::Triage, PromptClass::Loop, PromptRole::System),
         Self::new(PromptStage::Triage, PromptClass::Loop, PromptRole::User),
+        Self::new(PromptStage::Relation, PromptClass::Loop, PromptRole::System),
+        Self::new(PromptStage::Relation, PromptClass::Loop, PromptRole::User),
         Self::new(
             PromptStage::Triage,
             PromptClass::Verifier,
@@ -407,25 +414,37 @@ mod tests {
             one_shot, expected,
             "the one-shot class must cover all stage×role combinations"
         );
-        for class in [PromptClass::Loop, PromptClass::Verifier] {
-            let roles: HashSet<(PromptStage, PromptRole)> = PromptTemplateLocation::ALL
+        let class_coverage = |class: PromptClass| -> HashSet<(PromptStage, PromptRole)> {
+            PromptTemplateLocation::ALL
                 .iter()
                 .filter(|l| l.class() == class)
                 .map(|l| (l.stage(), l.role()))
-                .collect();
-            assert_eq!(
-                roles,
-                HashSet::from([
-                    (PromptStage::Triage, PromptRole::System),
-                    (PromptStage::Triage, PromptRole::User),
-                ]),
-                "the {class} class serves the triage pair in this release"
-            );
-        }
+                .collect()
+        };
+        // The loop class serves triage and relation; the verifier class
+        // serves triage only in this release.
+        assert_eq!(
+            class_coverage(PromptClass::Loop),
+            HashSet::from([
+                (PromptStage::Triage, PromptRole::System),
+                (PromptStage::Triage, PromptRole::User),
+                (PromptStage::Relation, PromptRole::System),
+                (PromptStage::Relation, PromptRole::User),
+            ]),
+            "the loop class serves the triage and relation pairs",
+        );
+        assert_eq!(
+            class_coverage(PromptClass::Verifier),
+            HashSet::from([
+                (PromptStage::Triage, PromptRole::System),
+                (PromptStage::Triage, PromptRole::User),
+            ]),
+            "the verifier class serves the triage pair in this release",
+        );
         assert_eq!(
             PromptTemplateLocation::ALL.len(),
-            10,
-            "ALL must contain exactly 10 entries"
+            12,
+            "ALL must contain exactly 12 entries"
         );
     }
 
