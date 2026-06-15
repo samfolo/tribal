@@ -7,27 +7,113 @@
 //! graph re-checks run at evaluation time so the optimistic reads the
 //! agent's tools established are re-validated at the commit boundary.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
+use serde::Deserialize;
 use sqlx::PgConnection;
 use tribal_agent_runtime::{
     RecordedMessage, RenderedConversation, SeenCorpus, SubmissionOutcome, SubmissionPipeline,
-    VerifierLaunch, verdict_schema,
+    ToolResultContent, VerifierLaunch, verdict_schema,
 };
 use tribal_db::{
-    DbError, KnowledgeItemRepository, PgKnowledgeItemRepository, PgRelationRepository,
-    RelationRepository,
+    AgentThreadRecordRepository, DbError, KnowledgeItemRepository, PgAgentThreadRecordRepository,
+    PgKnowledgeItemRepository, PgRelationRepository, RelationRepository,
 };
 use tribal_domain::{
-    AgentBindingVersionId, AgentThread, Candidate, KnowledgeItem, KnowledgeItemId, ProjectId,
-    PromptVersionId, RelationKind, RelationSuggestion, TaskType, ToolFailure,
+    AgentBindingVersionId, AgentThread, AgentThreadRecordKind, Candidate, KnowledgeItem,
+    KnowledgeItemId, ProjectId, PromptVersionId, RelationKind, RelationSuggestion, TaskType,
+    ToolFailure,
 };
 
 use crate::{
     parsing::{HANDOFF_MAX_CHARS, TriageSubmission, TriageSubmissionDecision},
     prompt::{VerifierConsideredItem, VerifierSubmissionContext, assemble_verifier_input},
 };
+
+/// One candidate-search result page, as the reconstruction reads it back
+/// from the thread log. The `embedding_profile_id` marker is present only
+/// on a candidate-search page, so requiring it makes the parse reject
+/// every other tool's record.
+#[derive(Deserialize)]
+struct CandidateSearchPage {
+    results: Vec<CandidateScoreItem>,
+    // Required so the parse selects only candidate-search records; the
+    // value itself is not read here.
+    #[allow(dead_code, reason = "presence is the marker; the value is unused")]
+    embedding_profile_id: String,
+}
+
+#[derive(Deserialize)]
+struct CandidateScoreItem {
+    item_id: String,
+    similarity_score: f64,
+}
+
+/// What a thread's candidate searches established: whether at least one
+/// search ran, and the highest similarity score recorded per item.
+///
+/// The two are deliberately distinct. An empty `scores` with `searched` set
+/// is a real search that found nothing (the first item into an empty graph),
+/// which is allowed to conclude novel; an empty `scores` with `searched`
+/// clear is a submission that skipped the search entirely, which is not.
+pub(crate) struct CandidateSearchProvenance {
+    pub searched: bool,
+    pub scores: HashMap<String, f64>,
+}
+
+/// Reconstructs the candidate-search provenance from a thread's tool
+/// results: the highest candidate-to-item similarity recorded per item, and
+/// whether any search executed at all.
+///
+/// This is the durable provenance the decision rows read and the
+/// must-search rule checks, reconstructed from the committed record log
+/// rather than a write-once resolution context that cannot accumulate it,
+/// so it survives a resume intact. A successful search records a page even
+/// when it returned no items, so `searched` tracks the page's presence, not
+/// the score count.
+///
+/// # Errors
+///
+/// Returns [`DbError`] when the records cannot be read.
+pub(crate) async fn reconstruct_candidate_scores(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+) -> Result<CandidateSearchProvenance, DbError> {
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread_id(conn, thread.id())
+        .await?;
+    let mut searched = false;
+    let mut scores: HashMap<String, f64> = HashMap::new();
+    for record in records {
+        if record.kind() != AgentThreadRecordKind::ToolResult {
+            continue;
+        }
+        let Ok(result) = serde_json::from_value::<ToolResultContent>(record.content().clone())
+        else {
+            continue;
+        };
+        if result.is_error {
+            continue;
+        }
+        let Ok(page) = serde_json::from_str::<CandidateSearchPage>(&result.output) else {
+            continue;
+        };
+        // A candidate-search page parsed: a search ran, whatever it returned.
+        searched = true;
+        for item in page.results {
+            scores
+                .entry(item.item_id)
+                .and_modify(|best| {
+                    if item.similarity_score > *best {
+                        *best = item.similarity_score;
+                    }
+                })
+                .or_insert(item.similarity_score);
+        }
+    }
+    Ok(CandidateSearchProvenance { searched, scores })
+}
 
 /// The verifier configuration one stage execution carries: the resolved
 /// verifier binding, its templates, and the candidate the submission
@@ -142,7 +228,7 @@ impl SubmissionPipeline for TriageSubmissionPipeline {
     async fn evaluate(
         &self,
         conn: &mut PgConnection,
-        _thread: &AgentThread,
+        thread: &AgentThread,
         corpus: &SeenCorpus,
         arguments: &serde_json::Value,
     ) -> Result<SubmissionOutcome, ToolFailure> {
@@ -193,6 +279,41 @@ impl SubmissionPipeline for TriageSubmissionPipeline {
                     "these ids do not appear in anything you were shown: {}; copy item ids \
                      exactly as rendered in your context or a tool result",
                     unseen.join(", "),
+                ),
+            });
+        }
+
+        // 3b. The must-search rule: classification must be grounded in
+        //     candidate similarity. At least one search must have run (even
+        //     one that found nothing, so the first item into an empty graph
+        //     can still conclude novel), and every cited id needs a recorded
+        //     candidate-search score. Together this closes the
+        //     novel-by-laziness gap the removed opening prefetch would
+        //     otherwise open.
+        let provenance = reconstruct_candidate_scores(conn, thread)
+            .await
+            .map_err(|source| ToolFailure::System {
+                context: format!("reconstructing candidate-search provenance: {source}"),
+            })?;
+        if !provenance.searched {
+            return Ok(SubmissionOutcome::Bounced {
+                diagnostics: "you have not searched yet; call search_candidate_similar_items \
+                              before classifying, so the decision is grounded in candidate \
+                              similarity"
+                    .to_owned(),
+            });
+        }
+        let ungrounded: Vec<&str> = referenced
+            .iter()
+            .copied()
+            .filter(|id| !provenance.scores.contains_key(*id))
+            .collect();
+        if !ungrounded.is_empty() {
+            return Ok(SubmissionOutcome::Bounced {
+                diagnostics: format!(
+                    "these ids carry no candidate-similarity score: {}; only items returned by \
+                     search_candidate_similar_items can be cited, so search for them first",
+                    ungrounded.join(", "),
                 ),
             });
         }
@@ -342,14 +463,19 @@ impl SubmissionPipeline for TriageSubmissionPipeline {
 #[cfg(test)]
 mod tests {
     use tribal_db::{
-        JobStateOverride, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
-        PrincipalRepository, ProjectRepository,
+        AgentThreadRepository, DrivingTaskRef, JobRepository, JobStateOverride, NewAgentThread,
+        NewAgentThreadRecord, PgAgentThreadRepository, PgJobRepository, PgPrincipalRepository,
+        PgProjectRepository, PgTaskRepository, PrincipalRepository, ProjectRepository,
+        TaskRepository,
     };
-    use tribal_domain::{GitRemote, JobOutcome, JobStatus, RelationBatchId};
+    use tribal_domain::{
+        AGENT_THREAD_FORMAT_VERSION, GitRemote, JobOutcome, JobStatus, PrincipalId, RelationBatchId,
+    };
     use tribal_test_utils::{
         a_new_job, a_new_knowledge_item, a_new_principal, a_new_project, a_new_prompt_version,
-        a_new_system_fingerprint, an_agent_thread, insert_committed_relation,
-        insert_prompt_version, serial_lock, test_context, upsert_system_fingerprint,
+        a_new_system_fingerprint, a_new_task, an_agent_definition, an_agent_thread,
+        insert_committed_relation, insert_prompt_version, serial_lock, test_context,
+        upsert_system_fingerprint,
     };
 
     use super::*;
@@ -366,6 +492,130 @@ mod tests {
         serde_json::json!({
             "decision": {"decision": "duplicate", "matched_item_id": id},
         })
+    }
+
+    /// Persists a triage thread whose log carries one candidate-search
+    /// result scoring `scored`, so a submission evaluated against it clears
+    /// the must-search gate and reaches the graph re-checks under test. The
+    /// page mirrors the search tool's output, so the same reconstruction the
+    /// production commit runs reads these scores back.
+    async fn thread_with_scored_search(
+        conn: &mut sqlx::PgConnection,
+        principal_id: PrincipalId,
+        project_id: ProjectId,
+        scored: &[(String, f64)],
+    ) -> AgentThread {
+        let pv_id = insert_prompt_version(conn, &a_new_prompt_version().build()).await;
+        let fingerprint =
+            upsert_system_fingerprint(conn, &a_new_system_fingerprint().build()).await;
+        let job = PgJobRepository
+            .insert(
+                conn,
+                &a_new_job()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .extraction_system_prompt_version_id(pv_id)
+                    .extraction_user_prompt_version_id(pv_id)
+                    .triage_system_prompt_version_id(pv_id)
+                    .triage_user_prompt_version_id(pv_id)
+                    .relation_system_prompt_version_id(pv_id)
+                    .relation_user_prompt_version_id(pv_id)
+                    .system_fingerprint_hash(fingerprint)
+                    .build(),
+            )
+            .await
+            .expect("seed job");
+        let task = PgTaskRepository
+            .insert(
+                conn,
+                &a_new_task()
+                    .job_id(job.id())
+                    .task_type(TaskType::Triage)
+                    .batch_index(Some(0))
+                    .build(),
+            )
+            .await
+            .expect("seed triage task");
+        let binding = tribal_agent_runtime::resolve_binding(
+            conn,
+            &an_agent_definition()
+                .pipeline_stage(TaskType::Triage)
+                .build(),
+        )
+        .await
+        .expect("resolve binding");
+        let thread = PgAgentThreadRepository
+            .insert(
+                conn,
+                &NewAgentThread::builder()
+                    .pipeline_stage(TaskType::Triage)
+                    .binding_version_id(binding.id())
+                    .driving_task(DrivingTaskRef::Stage(task.id()))
+                    .principal_id(principal_id)
+                    .format_version(AGENT_THREAD_FORMAT_VERSION)
+                    .build(),
+            )
+            .await
+            .expect("insert thread");
+
+        // The candidate search the model ran: the assistant call, then its
+        // result page scoring the cited items.
+        let call_seq = PgAgentThreadRecordRepository
+            .next_seq(conn, thread.id())
+            .await
+            .expect("call seq");
+        PgAgentThreadRecordRepository
+            .append(
+                conn,
+                &NewAgentThreadRecord::builder()
+                    .thread_id(thread.id())
+                    .seq(call_seq)
+                    .kind(AgentThreadRecordKind::AssistantMessage)
+                    .content(serde_json::json!({
+                        "text": "",
+                        "tool_calls": [{
+                            "id": "call_search",
+                            "name": "search_candidate_similar_items",
+                            "arguments": {},
+                        }],
+                    }))
+                    .build(),
+            )
+            .await
+            .expect("append search call");
+        let page = serde_json::json!({
+            "results": scored
+                .iter()
+                .map(|(id, score)| serde_json::json!({
+                    "item_id": id,
+                    "similarity_score": score,
+                }))
+                .collect::<Vec<_>>(),
+            "embedding_profile_id": "ep_marker",
+        });
+        let result_seq = PgAgentThreadRecordRepository
+            .next_seq(conn, thread.id())
+            .await
+            .expect("result seq");
+        PgAgentThreadRecordRepository
+            .append(
+                conn,
+                &NewAgentThreadRecord::builder()
+                    .thread_id(thread.id())
+                    .seq(result_seq)
+                    .kind(AgentThreadRecordKind::ToolResult)
+                    .requesting_seq(Some(call_seq))
+                    .tool_call_id(Some("call_search".to_owned()))
+                    .content(serde_json::json!({
+                        "output": serde_json::to_string(&page).expect("serialise page"),
+                        "is_error": false,
+                    }))
+                    .build(),
+            )
+            .await
+            .expect("append search result");
+
+        thread
     }
 
     #[tokio::test]
@@ -422,6 +672,9 @@ mod tests {
     struct RecheckFixture {
         pipeline: TriageSubmissionPipeline,
         corpus: SeenCorpus,
+        /// A thread carrying candidate-search scores for every fixture id,
+        /// so each recheck clears the must-search gate ahead of it.
+        thread: AgentThread,
         live: KnowledgeItemId,
         foreign: KnowledgeItemId,
         superseded: KnowledgeItemId,
@@ -525,9 +778,20 @@ mod tests {
             foreign.id(),
             superseded.id(),
         )]);
+        // The search that grounds every recheck: the vanished id was scored
+        // too, so it clears the gate and bounces on the live-item recheck,
+        // not on the must-search rule.
+        let scored = vec![
+            (live.id().to_string(), 0.95),
+            (foreign.id().to_string(), 0.92),
+            (superseded.id().to_string(), 0.90),
+            ("ki_00000000-0000-0000-0000-00000000dead".to_owned(), 0.88),
+        ];
+        let thread = thread_with_scored_search(txn, principal.id(), project.id(), &scored).await;
         RecheckFixture {
             pipeline: TriageSubmissionPipeline::new(project.id()),
             corpus,
+            thread,
             live: live.id(),
             foreign: foreign.id(),
             superseded: superseded.id(),
@@ -539,10 +803,10 @@ mod tests {
         let _guard = serial_lock().await;
         let ctx = test_context().await;
         let mut txn = ctx.begin_test().await.expect("begin_test");
-        let thread = an_agent_thread().build();
         let RecheckFixture {
             pipeline,
             corpus,
+            thread,
             live,
             foreign,
             superseded,
@@ -610,7 +874,6 @@ mod tests {
         let _guard = serial_lock().await;
         let ctx = test_context().await;
         let mut txn = ctx.begin_test().await.expect("begin_test");
-        let thread = an_agent_thread().build();
 
         let principal = PgPrincipalRepository
             .insert(
@@ -657,6 +920,18 @@ mod tests {
 
         let pipeline = TriageSubmissionPipeline::new(project.id());
         let corpus = corpus_with(&[&format!("shown: {} {}", matched.id(), other.id())]);
+        // Both examined claims carry a candidate-search score, so the bounce
+        // under test is the contradiction rule, not the must-search gate.
+        let thread = thread_with_scored_search(
+            &mut txn,
+            principal.id(),
+            project.id(),
+            &[
+                (matched.id().to_string(), 0.9),
+                (other.id().to_string(), 0.9),
+            ],
+        )
+        .await;
 
         let submission = |contradicted: &str| {
             serde_json::json!({
@@ -860,5 +1135,113 @@ mod tests {
             outcome,
             SubmissionOutcome::Bounced { ref diagnostics } if diagnostics.contains("too long")
         ));
+    }
+
+    /// The must-search gate: a submission bounces when nothing has been
+    /// searched, and when a cited id carries no candidate-search score, but
+    /// a search that grounds every cited id clears it. This is what keeps a
+    /// classification anchored to candidate similarity once the opening
+    /// prefetch is gone.
+    #[tokio::test]
+    async fn test_the_must_search_gate_bounces_unsearched_and_ungrounded_submissions() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+
+        let principal = PgPrincipalRepository
+            .insert(
+                &mut txn,
+                &a_new_principal()
+                    .principal_key("user:must-search".to_owned())
+                    .build(),
+            )
+            .await
+            .expect("principal");
+        let project = PgProjectRepository
+            .insert(
+                &mut txn,
+                &a_new_project()
+                    .git_remote(GitRemote::from_parts(
+                        "github.com",
+                        "test/must-search",
+                        None,
+                    ))
+                    .build(),
+            )
+            .await
+            .expect("project");
+        let pipeline = TriageSubmissionPipeline::new(project.id());
+
+        let scored_id = "ki_00000000-0000-0000-0000-0000000000a1";
+        let unscored_id = "ki_00000000-0000-0000-0000-0000000000b2";
+        let corpus = corpus_with(&[&format!("shown: {scored_id} {unscored_id}")]);
+        let novel_citing = |id: &str| {
+            serde_json::json!({
+                "decision": {"decision": "created"},
+                "considered_items": [{
+                    "item_id": id,
+                    "suggested_relation": "supports",
+                    "justification": "related context",
+                }],
+            })
+        };
+
+        // Nothing searched: the empty log bounces on the must-search rule
+        // even though the cited id was shown.
+        let unsearched = an_agent_thread().build();
+        let outcome = pipeline
+            .evaluate(&mut txn, &unsearched, &corpus, &novel_citing(scored_id))
+            .await
+            .expect("evaluates");
+        assert!(matches!(
+            outcome,
+            SubmissionOutcome::Bounced { ref diagnostics } if diagnostics.contains("searched")
+        ));
+
+        // A search that scored only one id: citing the other one bounces as
+        // ungrounded, citing the scored one clears the gate.
+        let thread = thread_with_scored_search(
+            &mut txn,
+            principal.id(),
+            project.id(),
+            &[(scored_id.to_owned(), 0.9)],
+        )
+        .await;
+        let outcome = pipeline
+            .evaluate(&mut txn, &thread, &corpus, &novel_citing(unscored_id))
+            .await
+            .expect("evaluates");
+        assert!(matches!(
+            outcome,
+            SubmissionOutcome::Bounced { ref diagnostics }
+                if diagnostics.contains("candidate-similarity score")
+        ));
+
+        let outcome = pipeline
+            .evaluate(&mut txn, &thread, &corpus, &novel_citing(scored_id))
+            .await
+            .expect("evaluates");
+        assert!(
+            matches!(outcome, SubmissionOutcome::Accepted { .. }),
+            "a grounded novel submission clears the must-search gate",
+        );
+
+        // A search that found nothing still counts as having searched: the
+        // first item into an empty graph submits novel with no citations.
+        let empty_graph =
+            thread_with_scored_search(&mut txn, principal.id(), project.id(), &[]).await;
+        let outcome = pipeline
+            .evaluate(
+                &mut txn,
+                &empty_graph,
+                &corpus,
+                &serde_json::json!({"decision": {"decision": "created"}, "considered_items": []}),
+            )
+            .await
+            .expect("evaluates");
+        assert!(
+            matches!(outcome, SubmissionOutcome::Accepted { .. }),
+            "an empty but executed search lets the first item conclude novel",
+        );
     }
 }

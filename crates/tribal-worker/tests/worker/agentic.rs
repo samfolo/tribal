@@ -145,9 +145,20 @@ async fn test_the_loop_executor_completes_a_triage_job_end_to_end() {
 
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
+            // Turn one: the candidate search the must-search rule requires
+            // before any classification can be cited.
             .on_complete(
                 a_tool_call_response(&[(
                     "call_0",
+                    "search_candidate_similar_items",
+                    serde_json::json!({}),
+                )]),
+                None,
+            )
+            // Turn two: the submission, now grounded in the search result.
+            .on_complete(
+                a_tool_call_response(&[(
+                    "call_1",
                     SUBMIT_RESULT_TOOL,
                     serde_json::json!({
                         "decision": {
@@ -260,9 +271,12 @@ async fn test_the_loop_executor_completes_a_triage_job_end_to_end() {
         vec![
             AgentThreadRecordKind::Input,
             AgentThreadRecordKind::AssistantMessage,
+            AgentThreadRecordKind::ToolResult,
+            AgentThreadRecordKind::AssistantMessage,
             AgentThreadRecordKind::Submission,
         ],
-        "one turn: the opening, the submit call, the accepted submission",
+        "two turns: the opening, the candidate search and its result, then \
+         the submit call and the accepted submission",
     );
 
     teardown(ctx).await;
