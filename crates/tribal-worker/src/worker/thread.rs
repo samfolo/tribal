@@ -280,9 +280,13 @@ impl Worker {
         conn: &mut sqlx::PgConnection,
         task: &Task,
     ) -> Result<Option<(String, String)>, StageError> {
-        if task.task_type() != TaskType::Triage
-            || self.agents().triage.executor != ExecutorChoice::Loop
-        {
+        let (prompt_stage, executor) = match task.task_type() {
+            TaskType::Triage => (PromptStage::Triage, self.agents().triage.executor),
+            TaskType::Relation => (PromptStage::Relation, self.agents().relation.executor),
+            // Extraction has no loop executor, so it carries no loop pair.
+            TaskType::Extraction => return Ok(None),
+        };
+        if executor != ExecutorChoice::Loop {
             return Ok(None);
         }
         let stage = task.task_type().as_str();
@@ -290,11 +294,11 @@ impl Worker {
         for role in [PromptRole::System, PromptRole::User] {
             let id = self
                 .active_prompts()
-                .version_id(PromptStage::Triage, PromptClass::Loop, role)
+                .version_id(prompt_stage, PromptClass::Loop, role)
                 .await
                 .ok_or_else(|| StageError::BindingDerivation {
                     stage: stage.into(),
-                    context: format!("no active triage loop {} prompt", role.as_str()),
+                    context: format!("no active {stage} loop {} prompt", role.as_str()),
                 })?;
             let version = PgPromptVersionRepository
                 .find_by_id(conn, id)

@@ -3,6 +3,8 @@
 mod common;
 mod extraction;
 mod relation;
+mod relation_loop;
+mod relation_submission;
 mod triage;
 mod triage_loop;
 mod triage_submission;
@@ -13,6 +15,7 @@ pub(crate) use common::{
     record_prompt_version_ids, stage_attribution,
 };
 pub(crate) use relation::RelationCommitDecision;
+pub(crate) use relation_submission::RelationSubmissionPipeline;
 pub(crate) use triage_submission::{
     TriageSubmissionPipeline, VerifierContext, reconstruct_candidate_scores,
 };

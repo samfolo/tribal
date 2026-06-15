@@ -559,7 +559,7 @@ mod tests {
 
     #[test]
     fn test_validate_prompt_template_accepts_embedded_defaults() {
-        let pairs: [(PromptStage, PromptClass, PromptRole, &str); 10] = [
+        let pairs: [(PromptStage, PromptClass, PromptRole, &str); 12] = [
             (
                 PromptStage::Extraction,
                 PromptClass::OneShot,
@@ -607,6 +607,18 @@ mod tests {
                 PromptClass::Loop,
                 PromptRole::User,
                 include_str!("../../../../../prompts/triage/loop_user.tera"),
+            ),
+            (
+                PromptStage::Relation,
+                PromptClass::Loop,
+                PromptRole::System,
+                include_str!("../../../../../prompts/relation/loop_system.tera"),
+            ),
+            (
+                PromptStage::Relation,
+                PromptClass::Loop,
+                PromptRole::User,
+                include_str!("../../../../../prompts/relation/loop_user.tera"),
             ),
             (
                 PromptStage::Triage,
