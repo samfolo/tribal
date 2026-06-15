@@ -2,11 +2,10 @@ use tribal_db::{
     AgentBindingVersionRepository, AgentDriverTaskRepository, AgentThreadRecordRepository,
     AgentThreadRepository, DbError, DrivingTaskRef, JobRepository, JobStatusTransition,
     NewAgentBindingVersion, NewAgentDriverTask, NewAgentThread, NewAgentThreadRecord,
-    PgAgentBindingVersionRepository,
-    PgAgentDriverTaskRepository, PgAgentThreadRecordRepository, PgAgentThreadRepository,
-    PgJobRepository, PgPrincipalRepository, PgProjectRepository, PgTaskRepository,
-    PgTokenUsageRepository, PrincipalRepository, ProjectRepository, TaskRepository,
-    ThreadPruneCriteria, TokenUsageRepository,
+    PgAgentBindingVersionRepository, PgAgentDriverTaskRepository, PgAgentThreadRecordRepository,
+    PgAgentThreadRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
+    PgTaskRepository, PgTokenUsageRepository, PrincipalRepository, ProjectRepository,
+    TaskRepository, ThreadPruneCriteria, TokenUsageRepository,
 };
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentDriverTaskId, AgentDriverTaskKind, AgentDriverTaskState,

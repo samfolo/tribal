@@ -24,7 +24,8 @@ use tribal_db::{
 };
 use tribal_domain::{
     AgentDriverTaskId, AgentThread, AgentThreadTerminal, Disposition, DispositionCounters,
-    JobOutcome, JobState, StageExecutorKind, TaskErrorKind, TaskId, TurnOutcome, decide_disposition,
+    JobOutcome, JobState, StageExecutorKind, TaskErrorKind, TaskId, TurnOutcome,
+    decide_disposition,
 };
 
 use crate::{

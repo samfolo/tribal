@@ -104,11 +104,13 @@ mod tests {
     fn test_non_database_failures_are_not_retryable() {
         // Only a serialisation or deadlock abort is retryable; a logical
         // failure re-run identically would fail identically.
-        assert!(!DbError::NotFound {
-            entity: "job",
-            id: "job_x".to_owned(),
-        }
-        .is_retryable());
+        assert!(
+            !DbError::NotFound {
+                entity: "job",
+                id: "job_x".to_owned(),
+            }
+            .is_retryable()
+        );
         assert!(
             !DbError::QueryFailed {
                 context: "fetching".to_owned(),
