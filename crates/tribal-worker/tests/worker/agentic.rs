@@ -101,6 +101,59 @@ fn relation_loop_agents_config() -> tribal_config::AgentsConfig {
     agents
 }
 
+/// The loop config for extraction: extraction on the loop executor.
+fn extraction_loop_agents_config() -> tribal_config::AgentsConfig {
+    let mut agents = tribal_config::AgentsConfig::default();
+    agents.extraction.executor = tribal_config::ExecutorChoice::Loop;
+    agents
+}
+
+/// Seeds the extraction loop prompt pair and returns its source. The user
+/// template renders the raw input the model extracts from.
+async fn seed_extraction_loop_prompts(conn: &mut sqlx::PgConnection) -> FixedAgenticPrompts {
+    let system = tribal_db::PgPromptVersionRepository
+        .upsert(
+            conn,
+            &tribal_test_utils::a_new_prompt_version()
+                .stage(PromptStage::Extraction)
+                .class(PromptClass::Loop)
+                .role(PromptRole::System)
+                .content("Extract the claims, then submit.".to_owned())
+                .content_hash("3".repeat(64))
+                .build(),
+        )
+        .await
+        .expect("seed extraction loop system prompt");
+    let user = tribal_db::PgPromptVersionRepository
+        .upsert(
+            conn,
+            &tribal_test_utils::a_new_prompt_version()
+                .stage(PromptStage::Extraction)
+                .class(PromptClass::Loop)
+                .role(PromptRole::User)
+                .content("input: {{ raw_input }}".to_owned())
+                .content_hash("4".repeat(64))
+                .build(),
+        )
+        .await
+        .expect("seed extraction loop user prompt");
+
+    let mut slots = HashMap::new();
+    slots.insert(
+        (
+            PromptStage::Extraction,
+            PromptClass::Loop,
+            PromptRole::System,
+        ),
+        system.id(),
+    );
+    slots.insert(
+        (PromptStage::Extraction, PromptClass::Loop, PromptRole::User),
+        user.id(),
+    );
+    FixedAgenticPrompts(slots)
+}
+
 /// Seeds the relation loop prompt pair and returns its source. The user
 /// template renders each committed item's id, so the membership corpus
 /// genuinely contains the ids the model copies into its edges.
@@ -763,6 +816,109 @@ async fn test_the_loop_executor_completes_a_relation_job_end_to_end() {
         records.last().expect("records").kind(),
         AgentThreadRecordKind::Submission,
         "the log ends in the accepted submission",
+    );
+
+    teardown(ctx).await;
+}
+
+/// The loop executor completes an extraction job end to end through the
+/// live worker: the model submits two candidates in one turn, and the
+/// commit persists the extraction result and fans out one triage task per
+/// candidate, exactly as the one-shot path would.
+#[tokio::test]
+async fn test_the_loop_executor_completes_an_extraction_job_end_to_end() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "agentic-extraction-loop").await;
+    let mut conn = raw_conn(ctx).await;
+    let prompts = seed_extraction_loop_prompts(&mut conn).await;
+    let (job_id, task_id) = seed_extraction_job(
+        &mut conn,
+        principal_id,
+        project_id,
+        system_pv_id,
+        user_pv_id,
+    )
+    .await;
+    drop(conn);
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(
+                a_tool_call_response(&[(
+                    "call_0",
+                    SUBMIT_RESULT_TOOL,
+                    serde_json::json!({
+                        "candidates": [
+                            {"kind": "fact", "content": "first claim", "suggested_tags": []},
+                            {"kind": "fact", "content": "second claim", "suggested_tags": []},
+                        ],
+                        "relation_hints": [],
+                    }),
+                )]),
+                None,
+            )
+            .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
+                tribal_inference::InferenceError::provider_unavailable("mock", "test stub")
+            })))
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let (worker, _) = build_agentic_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+        extraction_loop_agents_config(),
+        Arc::new(prompts),
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    // The extraction task completes and the job moves to triaging — the
+    // fan-out the loop commit performed.
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    let _ = poll_job_status(&pool, job_id, JobStatus::Triaging, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    let mut conn = raw_conn(ctx).await;
+
+    // The extraction result carries the two submitted candidates.
+    let result = PgExtractionResultRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find extraction result")
+        .expect("the loop committed an extraction result");
+    let candidates: Vec<serde_json::Value> =
+        serde_json::from_value(result.candidates().clone()).expect("candidates are an array");
+    assert_eq!(candidates.len(), 2, "both submitted candidates committed");
+
+    // The thread completed under a loop binding, its log ending in the
+    // accepted submission.
+    let thread = PgAgentThreadRepository
+        .find_by_stage_task_id(&mut conn, task_id)
+        .await
+        .expect("find thread")
+        .expect("present");
+    assert_eq!(thread.status(), AgentThreadStatus::Completed);
+    let binding = PgAgentBindingVersionRepository
+        .find_by_id(&mut conn, thread.binding_version_id())
+        .await
+        .expect("find binding")
+        .expect("present");
+    assert_eq!(
+        binding.definition().executor,
+        StageExecutorKind::BuiltInLoop
     );
 
     teardown(ctx).await;

@@ -24,12 +24,16 @@ pub(crate) use triage::{
     ListTagRegistryTool, ReadItemNeighbourhoodTool, ReadKnowledgeItemTool,
     SearchCandidateSimilarItemsTool, submit_result_descriptor,
 };
-use tribal_agent_runtime::{StageTool, ToolOutcome, ToolRegistry, ToolRegistryError};
+use tribal_agent_runtime::{
+    SUBMIT_RESULT_TOOL, StageTool, ToolOutcome, ToolRegistry, ToolRegistryError,
+};
 use tribal_domain::{
     AgentThreadId, EmbeddingProfile, JobId, ProjectId, ProjectScope, RecoverableToolFailure,
-    TaskType, ToolBinding, ToolDescriptor, ToolFailure,
+    TaskType, ToolBinding, ToolDescriptor, ToolExecutionMode, ToolFailure, ToolSafetyTier,
 };
 use tribal_inference::{InferenceGateway, UsageAttribution};
+
+use crate::parsing::extraction_submission_schema;
 
 /// The tool bindings a stage's agentic loop exposes, in wire order: the
 /// read inventory name-sorted (the registry's projection), then the
@@ -41,9 +45,7 @@ pub(crate) fn stage_tool_bindings(stage: TaskType) -> Vec<ToolBinding> {
     match stage {
         TaskType::Triage => triage_tool_bindings(),
         TaskType::Relation => relation_tool_bindings(),
-        // Extraction runs one-shot until its loop lands; a one-shot
-        // binding carries no tools.
-        TaskType::Extraction => Vec::new(),
+        TaskType::Extraction => extraction_tool_bindings(),
     }
 }
 
@@ -75,6 +77,33 @@ fn relation_tool_bindings() -> Vec<ToolBinding> {
     reads.sort_by(|a, b| a.name.cmp(&b.name));
     reads.push(submit_relations_descriptor());
     reads.into_iter().map(cross_project).collect()
+}
+
+/// The extraction surface: no reads (extraction produces claims from the
+/// raw input, it investigates nothing), only the submission contract. The
+/// fence is the narrowest reach, honest about touching no project.
+fn extraction_tool_bindings() -> Vec<ToolBinding> {
+    vec![fenced(submit_candidates_descriptor())]
+}
+
+/// The distinguished completion tool's contract for extraction. The loop
+/// dispatches it through the submission pipeline; this descriptor shapes the
+/// candidate submission the model returns and what the binding hashes.
+pub(crate) fn submit_candidates_descriptor() -> ToolDescriptor {
+    ToolDescriptor::builder()
+        .name(SUBMIT_RESULT_TOOL.to_owned())
+        .description(
+            "Submit the knowledge items you extracted from the input. This is the only way to \
+             complete the task: the candidates, and any intra-batch derivation hints between them \
+             by index. Submit an empty list when the input holds no extractable knowledge. A \
+             rejected submission comes back with diagnostics; correct it and resubmit."
+                .to_owned(),
+        )
+        .input_schema(extraction_submission_schema())
+        .response_size_bound(8_192)
+        .safety_tier(ToolSafetyTier::InternalTransactional)
+        .execution_mode(ToolExecutionMode::Immediate)
+        .build()
 }
 
 /// Grants a descriptor the project-local fence.

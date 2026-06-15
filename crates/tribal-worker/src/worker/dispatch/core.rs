@@ -567,7 +567,7 @@ impl Worker {
         }
         let run = match task.task_type() {
             TaskType::Extraction => {
-                self.run_extraction(job, task, deadline, &stage_thread)
+                self.run_extraction(job, task, deadline, &stage_thread, pump)
                     .await?
             }
             TaskType::Triage => {

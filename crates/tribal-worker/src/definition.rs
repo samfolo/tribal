@@ -62,38 +62,34 @@ pub fn derive_stage_definition(
     prompts: &StagePromptHashes,
     agents: &AgentsConfig,
 ) -> Result<AgentDefinition, DefinitionError> {
-    match stage_agent_config(stage, agents) {
-        Some(stage_config) if stage_config.executor == ExecutorChoice::Loop => {
-            let Some((loop_system, loop_user)) = prompts.loop_pair.clone() else {
-                return Err(DefinitionError::MissingLoopPrompts { stage });
-            };
-            Ok(AgentDefinition {
-                pipeline_stage: stage,
-                executor: StageExecutorKind::BuiltInLoop,
-                provider: spec.provider,
-                model: spec.model.clone(),
-                base_url: spec.base_url.clone(),
-                parameters: spec.parameters.clone(),
-                prompt_hashes: vec![loop_system, loop_user],
-                budgets: loop_budgets(stage_config),
-                tools: stage_tool_bindings(stage),
-            })
-        }
-        stage_config => {
-            let mut definition = AgentDefinition::one_shot(
-                stage,
-                spec.provider,
-                spec.model.clone(),
-                spec.base_url.clone(),
-                spec.parameters.clone(),
-                prompts.system.clone(),
-                prompts.user.clone(),
-            );
-            if let Some(stage_config) = stage_config {
-                definition.budgets = one_shot_budgets(stage_config);
-            }
-            Ok(definition)
-        }
+    let stage_config = stage_agent_config(stage, agents);
+    if stage_config.executor == ExecutorChoice::Loop {
+        let Some((loop_system, loop_user)) = prompts.loop_pair.clone() else {
+            return Err(DefinitionError::MissingLoopPrompts { stage });
+        };
+        Ok(AgentDefinition {
+            pipeline_stage: stage,
+            executor: StageExecutorKind::BuiltInLoop,
+            provider: spec.provider,
+            model: spec.model.clone(),
+            base_url: spec.base_url.clone(),
+            parameters: spec.parameters.clone(),
+            prompt_hashes: vec![loop_system, loop_user],
+            budgets: loop_budgets(stage_config),
+            tools: stage_tool_bindings(stage),
+        })
+    } else {
+        let mut definition = AgentDefinition::one_shot(
+            stage,
+            spec.provider,
+            spec.model.clone(),
+            spec.base_url.clone(),
+            spec.parameters.clone(),
+            prompts.system.clone(),
+            prompts.user.clone(),
+        );
+        definition.budgets = one_shot_budgets(stage_config);
+        Ok(definition)
     }
 }
 
@@ -133,23 +129,22 @@ pub(crate) fn current_stage_budgets(
     executor: StageExecutorKind,
     agents: &AgentsConfig,
 ) -> ExecutionBudgets {
-    match stage_agent_config(stage, agents) {
-        Some(stage_config) if executor == StageExecutorKind::BuiltInLoop => {
-            loop_budgets(stage_config)
-        }
-        Some(stage_config) => one_shot_budgets(stage_config),
-        None => ExecutionBudgets::default(),
+    let stage_config = stage_agent_config(stage, agents);
+    if executor == StageExecutorKind::BuiltInLoop {
+        loop_budgets(stage_config)
+    } else {
+        one_shot_budgets(stage_config)
     }
 }
 
-/// The stage's agentic configuration, where one exists. Triage and
-/// relation are configurable; extraction stays one-shot, and the config
-/// section makes an `agents.extraction` key an unknown-field error at load.
-fn stage_agent_config(stage: TaskType, agents: &AgentsConfig) -> Option<&StageAgentConfig> {
+/// The stage's agentic configuration. Every stage is configurable; a
+/// one-shot configuration with no overrides reproduces the launched
+/// definition's budgets exactly.
+fn stage_agent_config(stage: TaskType, agents: &AgentsConfig) -> &StageAgentConfig {
     match stage {
-        TaskType::Triage => Some(&agents.triage),
-        TaskType::Relation => Some(&agents.relation),
-        TaskType::Extraction => None,
+        TaskType::Extraction => &agents.extraction,
+        TaskType::Triage => &agents.triage,
+        TaskType::Relation => &agents.relation,
     }
 }
 
@@ -331,9 +326,10 @@ mod tests {
     }
 
     #[test]
-    fn test_extraction_never_gains_agentic_shape() {
-        // Extraction has no executor of its own, so even a fully agentic
-        // triage and relation configuration leaves it the launched one-shot.
+    fn test_a_stage_follows_its_own_executor_not_a_sibling_stage() {
+        // Extraction left at its default stays one-shot even when triage
+        // and relation are fully agentic: a stage's shape is its own
+        // configuration's, never a sibling's.
         let mut agents = AgentsConfig::default();
         agents.triage.executor = ExecutorChoice::Loop;
         agents.triage.max_total_tokens = Some(1);
@@ -344,6 +340,30 @@ mod tests {
                 .expect("derives");
         assert_eq!(derived.executor, StageExecutorKind::OneShot);
         assert_eq!(derived.budgets, ExecutionBudgets::default());
+    }
+
+    #[test]
+    fn test_the_loop_executor_reshapes_the_extraction_definition() {
+        let mut agents = AgentsConfig::default();
+        agents.extraction.executor = ExecutorChoice::Loop;
+
+        let derived = derive_stage_definition(
+            TaskType::Extraction,
+            &a_spec(),
+            &hashes(Some(("c".repeat(64), "d".repeat(64)))),
+            &agents,
+        )
+        .expect("derives");
+
+        assert_eq!(derived.executor, StageExecutorKind::BuiltInLoop);
+        assert_eq!(derived.prompt_hashes, vec!["c".repeat(64), "d".repeat(64)]);
+        assert!(
+            derived
+                .tools
+                .iter()
+                .any(|tool| tool.descriptor.name == tribal_agent_runtime::SUBMIT_RESULT_TOOL),
+            "the extraction loop binds its submission contract",
+        );
     }
 
     #[test]
