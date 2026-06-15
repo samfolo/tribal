@@ -37,9 +37,10 @@ impl ActiveAgenticPrompts for FixedAgenticPrompts {
     }
 }
 
-/// Seeds the triage loop prompt pair and returns its source. The user
-/// template renders the similar items' ids, so the membership corpus
-/// genuinely contains what the model is told to copy.
+/// Seeds the triage loop prompt pair and returns its source. The opening
+/// pre-loads no similar items: the loop reaches the corpus through its
+/// search tool, so the model's referenced ids come from a tool result, not
+/// the rendered opening.
 async fn seed_loop_prompts(conn: &mut sqlx::PgConnection) -> FixedAgenticPrompts {
     let system = tribal_db::PgPromptVersionRepository
         .upsert(
@@ -61,11 +62,7 @@ async fn seed_loop_prompts(conn: &mut sqlx::PgConnection) -> FixedAgenticPrompts
                 .stage(PromptStage::Triage)
                 .class(PromptClass::Loop)
                 .role(PromptRole::User)
-                .content(
-                    "candidate: {{ candidate.content }}\nsimilar:\n{% for item in similar_items %}\
-                     - {{ item.item_id }}: {{ item.content }}\n{% endfor %}"
-                        .to_owned(),
-                )
+                .content("candidate: {{ candidate.content }}".to_owned())
                 .content_hash("6".repeat(64))
                 .build(),
         )

@@ -12,9 +12,8 @@ use tribal_domain::{
 };
 
 use super::{
-    CandidateOutcome, LoopSimilarItemContext, RelationPromptContext, SimilarItemContext,
-    SimilarItemDecisionContext, VerifierConsideredItem, VerifierSubmissionContext,
-    extraction_user_context,
+    CandidateOutcome, RelationPromptContext, SimilarItemContext, SimilarItemDecisionContext,
+    VerifierConsideredItem, VerifierSubmissionContext, extraction_user_context,
     legends::SimilarityBand,
     loop_user_context, relation_user_context, triage_user_context,
     variables::{
@@ -80,7 +79,8 @@ fn extraction_loop_validation_context(role: PromptRole) -> tera::Context {
 }
 
 /// The triage loop's synthetic context: a static system prompt, a user
-/// prompt over the triage shape whose similar-item entries carry their ids.
+/// prompt over the candidate and tags, with no prefetched similar items
+/// (the loop reaches the corpus through its search tool).
 fn triage_loop_validation_context(role: PromptRole) -> tera::Context {
     match role {
         PromptRole::System => tera::Context::new(),
@@ -92,16 +92,7 @@ fn triage_loop_validation_context(role: PromptRole) -> tera::Context {
             }))
             .expect("synthetic candidate is valid");
 
-            let similar = LoopSimilarItemContext {
-                item_id: KnowledgeItemId::new().to_string(),
-                kind: KnowledgeKind::Fact,
-                content: "x".to_owned(),
-                similarity_score: 0.5,
-                similarity_label: SimilarityBand::from(0.5).to_string(),
-                tags: vec!["x".to_owned()],
-            };
-
-            loop_user_context(&candidate, &[similar], &["x"])
+            loop_user_context(&candidate, &["x"])
         }
     }
 }

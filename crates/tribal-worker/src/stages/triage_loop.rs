@@ -219,7 +219,6 @@ impl Worker {
             prompts.system.content(),
             prompts.user.content(),
             &ctx.candidate,
-            &[],
             &ctx.tag_registry,
         )?;
         Ok(RenderedConversation {
