@@ -273,7 +273,9 @@ pub(super) fn test_stage_specs() -> CompletionStageSpecs {
 /// so a thread fabricated under it resumes through the worker without
 /// tripping the resume-route-divergence guard (the default factory's
 /// route diverges from [`test_stage_specs`] by design).
-pub(super) fn a_routed_definition(stage: tribal_domain::TaskType) -> tribal_domain::AgentDefinition {
+pub(super) fn a_routed_definition(
+    stage: tribal_domain::TaskType,
+) -> tribal_domain::AgentDefinition {
     let specs = test_stage_specs();
     let spec = match stage {
         tribal_domain::TaskType::Extraction => specs.extraction,

@@ -339,7 +339,10 @@ fn guard_resume_route(
             "{}/{}@{}",
             recorded.provider, recorded.model, recorded.base_url
         ),
-        current: format!("{}/{}@{}", current.provider, current.model, current.base_url),
+        current: format!(
+            "{}/{}@{}",
+            current.provider, current.model, current.base_url
+        ),
     })
 }
 
