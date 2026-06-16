@@ -196,6 +196,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_a_seen_but_unparseable_id_bounces_on_shape() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let thread = an_agent_thread().build();
+
+        // The corpus shows a non-id token, so membership passes, but the
+        // id-shape check rejects it: a seen string is not a usable id.
+        let outcome = RelationSubmissionPipeline
+            .evaluate(
+                &mut txn,
+                &thread,
+                &corpus_with(&[&format!("the batch shows not-an-id and {ID_B}")]),
+                &serde_json::json!({ "relations": [edge("not-an-id", ID_B)] }),
+            )
+            .await
+            .expect("evaluates");
+        assert!(matches!(
+            outcome,
+            SubmissionOutcome::Bounced { ref diagnostics }
+                if diagnostics.contains("copy ids exactly")
+        ));
+    }
+
+    #[tokio::test]
     async fn test_a_malformed_submission_bounces_with_the_schema_diagnostics() {
         let _guard = serial_lock().await;
         let ctx = test_context().await;

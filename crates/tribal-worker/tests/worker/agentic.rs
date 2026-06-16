@@ -900,6 +900,19 @@ async fn test_the_loop_executor_completes_an_extraction_job_end_to_end() {
         serde_json::from_value(result.candidates().clone()).expect("candidates are an array");
     assert_eq!(candidates.len(), 2, "both submitted candidates committed");
 
+    // The loop fanned out one triage task per candidate: the central
+    // committed effect, asserted directly rather than inferred from the
+    // job's transition to triaging.
+    let tasks = PgTaskRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find the job's tasks");
+    let triage_tasks = tasks
+        .iter()
+        .filter(|t| t.task_type() == tribal_domain::TaskType::Triage)
+        .count();
+    assert_eq!(triage_tasks, 2, "one triage task fanned out per candidate");
+
     // The thread completed under a loop binding, its log ending in the
     // accepted submission.
     let thread = PgAgentThreadRepository
