@@ -1,8 +1,11 @@
 //! The agentic extraction submission: the `submit_result` tool's schema.
 //!
 //! The same candidate-and-hints shape the one-shot returns as structured
-//! output, but strict (unknown fields rejected) because the loop's model
-//! submits it as a tool call the validator pipeline checks and can bounce.
+//! output. The submission envelope is strict: an unknown field beside
+//! `candidates` or `relation_hints` is rejected, since the loop's model
+//! submits it as a tool call the validator can bounce. That strictness is
+//! the envelope's own, not recursive into the candidate and hint shapes,
+//! which stay the ones the one-shot parses.
 
 use serde::{Deserialize, Serialize};
 use tribal_domain::{Candidate, RelationHint};
@@ -31,7 +34,7 @@ pub(crate) struct ExtractionSubmission {
     pub relation_hints: Vec<RelationHint>,
 }
 
-/// The extraction `submit_result` tool's input schema — a binding-hash
+/// The extraction `submit_result` tool's input schema: a binding-hash
 /// input, so its stability is part of the binding's identity.
 pub(crate) fn extraction_submission_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(ExtractionSubmission))

@@ -139,7 +139,7 @@ pub(crate) struct SearchRelatedItemsTool {
 }
 
 impl SearchRelatedItemsTool {
-    /// The tool's declared contract — the binding-hash input the lockstep
+    /// The tool's declared contract: the binding-hash input the lockstep
     /// definition derivation reads without constructing the tool.
     pub(crate) fn describe() -> ToolDescriptor {
         ToolDescriptor::builder()
@@ -299,7 +299,7 @@ pub(crate) struct ReadKnowledgeItemTool {
 }
 
 impl ReadKnowledgeItemTool {
-    /// The tool's declared contract — the binding-hash input.
+    /// The tool's declared contract: the binding-hash input.
     pub(crate) fn describe() -> ToolDescriptor {
         ToolDescriptor::builder()
             .name(READ_ITEM_NAME.to_owned())
@@ -397,19 +397,21 @@ struct NeighbourhoodView {
     neighbours: Vec<ItemView>,
 }
 
-/// Reads an item's committed relations and its neighbours within the
-/// batch's project set.
+/// Reads an item's committed relations and the neighbouring items they
+/// connect to within the batch's project set.
 ///
-/// The project-set fence is the design's default reach: surface the edges
-/// among the batch's own projects, not a traversal of the whole graph. The
-/// captured set is the projects the batch's items belong to.
+/// The anchor may be any item a cross-project search surfaced; the fence
+/// applies to the neighbours, not the anchor. Neighbours outside the
+/// batch's projects are dropped, so the read shows how a claim sits in the
+/// graph among the batch's own projects rather than traversing the whole
+/// graph. The fenced set is the projects the batch's items belong to.
 pub(crate) struct ReadItemNeighbourhoodTool {
     descriptor: ToolDescriptor,
     batch_projects: HashSet<ProjectId>,
 }
 
 impl ReadItemNeighbourhoodTool {
-    /// The tool's declared contract — the binding-hash input.
+    /// The tool's declared contract: the binding-hash input.
     pub(crate) fn describe() -> ToolDescriptor {
         ToolDescriptor::builder()
             .name(NEIGHBOURHOOD_NAME.to_owned())
