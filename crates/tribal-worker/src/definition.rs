@@ -5,7 +5,7 @@
 //! at byte-identical definitions, or the recorded composite stops naming
 //! the binding execution resolves. Both call here: the agentic
 //! configuration selects the executor, the budgets, the tool surface,
-//! and which prompt pair the definition hashes — everything else
+//! and which prompt pair the definition hashes. Everything else
 //! reproduces the launched one-shot shape exactly.
 
 use tribal_config::{
@@ -35,7 +35,7 @@ pub struct StagePromptHashes {
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum DefinitionError {
     /// The loop executor is configured but no loop prompt hashes were
-    /// supplied — a wiring fault at the caller, not a configuration the
+    /// supplied: a wiring fault at the caller, not a configuration the
     /// system can run.
     #[error("the {stage} loop executor needs loop prompt hashes, and none were supplied")]
     MissingLoopPrompts {
@@ -97,7 +97,7 @@ pub fn derive_stage_definition(
 /// model and endpoint, carrying the verifier prompts.
 ///
 /// Flat by construction. A one-shot has no tools and runs no submission
-/// pipeline, so it can launch no verifier of its own — the delegation
+/// pipeline, so it can launch no verifier of its own. The delegation
 /// chain terminates by rule, not by configuration discipline, and a
 /// verifier-of-a-verifier is unrepresentable rather than merely refused.
 pub(crate) fn verifier_definition(
@@ -118,8 +118,8 @@ pub(crate) fn verifier_definition(
 
 /// The budgets the admission check enforces for a stage right now.
 ///
-/// Budgets re-resolve from the current configuration at every claim —
-/// never from the thread's recorded binding — so headroom can genuinely
+/// Budgets re-resolve from the current configuration at every claim
+/// (never from the thread's recorded binding), so headroom can genuinely
 /// return through a configuration change while the binding stays the
 /// recorded truth of what ran. The executor kind is the recorded one:
 /// a loop thread keeps the finite-default discipline whatever the
@@ -148,8 +148,8 @@ fn stage_agent_config(stage: TaskType, agents: &AgentsConfig) -> &StageAgentConf
     }
 }
 
-/// A one-shot's budgets: overrides only, absent caps stay absent — the
-/// launched no-limit behaviour, and the launched binding hash with it.
+/// A one-shot's budgets: overrides only, absent caps stay absent. This is
+/// the launched no-limit behaviour, and the launched binding hash with it.
 fn one_shot_budgets(stage_config: &StageAgentConfig) -> ExecutionBudgets {
     ExecutionBudgets {
         max_total_tokens: stage_config.max_total_tokens,
@@ -292,7 +292,7 @@ mod tests {
         assert_eq!(derived.budgets.max_total_tokens, Some(50_000));
         assert_eq!(
             derived.budgets.max_turns, None,
-            "unset one-shot caps stay absent — never the agentic defaults",
+            "unset one-shot caps stay absent, never the agentic defaults",
         );
     }
 

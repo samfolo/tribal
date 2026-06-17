@@ -294,7 +294,7 @@ impl Worker {
         Ok(child)
     }
 
-    /// Reads the parent's launching suspension from its durable log — the
+    /// Reads the parent's launching suspension from its durable log. The
     /// record persists even when a cancellation has cleared the live
     /// suspension column, so a child resolving into a terminal parent
     /// still finds the call it answers.

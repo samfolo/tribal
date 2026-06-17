@@ -422,7 +422,7 @@ async fn test_child_terminal_discards_when_the_parent_is_no_longer_waiting() {
     // The orphan window: the parent reaches a terminal (a cascade
     // cancel, say) while the child runs. The child's terminal must
     // complete the child and driver and discard the hand-back under the
-    // parent row lock — never resurrecting the parent.
+    // parent row lock: never resurrecting the parent.
     let moved = PgAgentThreadRepository
         .complete(
             &mut conn,
@@ -480,7 +480,7 @@ async fn test_child_terminal_discards_when_the_parent_is_no_longer_waiting() {
 }
 
 /// The live driver loop claims the child's `Drive` task, executes the
-/// child one-shot against the mock, and hands the verdict back — the
+/// child one-shot against the mock, and hands the verdict back. The
 /// parent wakes and its stage task re-queues, all without the main
 /// claim loop running.
 #[tokio::test]

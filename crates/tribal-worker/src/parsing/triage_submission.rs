@@ -98,7 +98,7 @@ pub(crate) struct ConsideredItemAssessment {
     pub justification: String,
 }
 
-/// The `submit_result` tool's input schema — a binding-hash input, so
+/// The `submit_result` tool's input schema: a binding-hash input, so
 /// its stability is part of the binding's identity.
 pub(crate) fn triage_submission_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(TriageSubmission))

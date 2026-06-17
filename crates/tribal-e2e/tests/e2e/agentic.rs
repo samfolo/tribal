@@ -21,7 +21,7 @@ const VERIFIER_DELAY_MS: u64 = 1_200;
 /// The two wire modes share the endpoint and are told apart by the
 /// `stream` flag in the request body.
 ///
-/// Theme: Canopy's deployment retry policy — one novel fact, verified and
+/// Theme: Canopy's deployment retry policy. One novel fact, verified and
 /// committed through the loop.
 #[tokio::test]
 async fn test_agentic_triage_loop_end_to_end() {
@@ -134,7 +134,7 @@ async fn test_agentic_triage_loop_end_to_end() {
     // -- The verifier suspension blocks the triage task, live ----------------
     //
     // While the verifier's verdict is held, the parent's triage task sits
-    // in the `blocked` status — the first task this codebase blocks in
+    // in the `blocked` status: the first task this codebase blocks in
     // production. `tribal_job_status` must report the job live through the
     // suspension, never terminal, and the blocked/queued cycle rides the
     // one task row exactly as the one-shot path's queued/claimed cycle does.

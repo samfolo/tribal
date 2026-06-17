@@ -79,7 +79,7 @@ pub struct NewAgentThreadRecord {
 }
 
 /// One agentic triage thread's submission, keyed by the candidate's batch
-/// index — the relation stage's handoff lookup. Only agentic threads
+/// index: the relation stage's handoff lookup. Only agentic threads
 /// commit submission records, so a one-shot job yields none.
 #[derive(Debug, Clone)]
 pub struct JobTriageSubmission {
@@ -134,7 +134,7 @@ pub trait AgentThreadRecordRepository {
     ) -> Result<Vec<AgentThreadRecord>, DbError>;
 
     /// Lists a thread's records in log order from `from_seq` (inclusive),
-    /// at most `limit` of them — the keyset page behind paged reads.
+    /// at most `limit` of them: the keyset page behind paged reads.
     /// The first page starts at [`AgentThreadRecordSeq::FIRST`]; each
     /// further page starts at the previous page's last seq's `next()`.
     ///
@@ -161,7 +161,7 @@ pub trait AgentThreadRecordRepository {
     ) -> Result<Option<AgentThreadRecord>, DbError>;
 
     /// Counts a thread's executed tool results under one requesting
-    /// message — the resolve transaction's completeness input.
+    /// message: the resolve transaction's completeness input.
     ///
     /// # Errors
     ///
@@ -174,7 +174,7 @@ pub trait AgentThreadRecordRepository {
     ) -> Result<u64, DbError>;
 
     /// Lists the submission records of a job's triage threads, each with
-    /// its candidate's batch index — the relation stage's handoff lookup.
+    /// its candidate's batch index: the relation stage's handoff lookup.
     /// Only agentic threads commit submission records, so a one-shot job
     /// yields an empty list and the caller gates the call on the
     /// configured executor so the default path issues no query at all.

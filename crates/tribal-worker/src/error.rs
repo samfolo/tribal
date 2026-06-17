@@ -123,7 +123,7 @@ pub(crate) enum StageError {
 
     /// The stage's binding could not be derived at claim: a configured
     /// shape the supplied inputs cannot produce (a missing active loop
-    /// prompt). Retryable — a prompt reload or configuration fix
+    /// prompt). Retryable: a prompt reload or configuration fix
     /// restores it.
     #[error("binding derivation failed in {stage}: {context}")]
     BindingDerivation {
@@ -135,7 +135,7 @@ pub(crate) enum StageError {
 
     /// An execution budget exhausted in a way no retry can change: the
     /// turn cap, the execution deadline, or the bounded budget
-    /// re-checks running dry. Terminal — the thread fails with its task.
+    /// re-checks running dry. Terminal: the thread fails with its task.
     #[error("execution budget exhausted in {stage}: {context}")]
     BudgetExhausted {
         /// The stage whose thread exhausted its budget.

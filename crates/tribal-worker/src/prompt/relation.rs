@@ -350,7 +350,7 @@ mod tests {
 
     /// The agentic triage handoff reaches the relation model through the
     /// launched template: a candidate that carried notes renders them in a
-    /// fenced line, and a candidate with none renders nothing — so the
+    /// fenced line, and a candidate with none renders nothing, so the
     /// one-shot path (no handoffs) is byte-identical, which the golden
     /// snapshot pins.
     #[test]

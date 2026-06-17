@@ -38,7 +38,7 @@ impl SubmissionPipeline for ExtractionSubmissionPipeline {
         _corpus: &SeenCorpus,
         arguments: &serde_json::Value,
     ) -> Result<SubmissionOutcome, ToolFailure> {
-        // 1. Schema parse — free, and the diagnostics teach the shape.
+        // 1. Schema parse: free, and the diagnostics teach the shape.
         let submission: ExtractionSubmission = match serde_json::from_value(arguments.clone()) {
             Ok(submission) => submission,
             Err(source) => {

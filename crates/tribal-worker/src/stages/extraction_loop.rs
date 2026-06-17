@@ -253,7 +253,7 @@ impl Worker {
         }
     }
 
-    /// Resolves the loop templates the binding's recorded hashes pin —
+    /// Resolves the loop templates the binding's recorded hashes pin:
     /// execution truth, hot-reload-proof, resume-stable.
     async fn recorded_extraction_loop_prompts(
         &self,

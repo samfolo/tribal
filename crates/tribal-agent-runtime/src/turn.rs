@@ -1,13 +1,13 @@
 //! The one-shot turn: the degenerate case of the turn loop.
 //!
 //! Render prompt, single structured-output inference call, parse,
-//! reconcile — exactly the launched behaviour, bracketed by the thread
+//! reconcile: exactly the launched behaviour, bracketed by the thread
 //! log. The bracket commits two records: `input` (the rendered
 //! conversation as sent, so resume and evaluation read what the model
 //! read without re-rendering) and `assistant_message` (the response with
 //! its usage). The input record commits before the call in its own small
 //! transaction; the terminal record commits inside the caller's domain
-//! transaction, after the wire call returns — no transaction is ever held
+//! transaction, after the wire call returns. No transaction is ever held
 //! across inference. The loop's structure commits the model's response
 //! before any tool-dispatch seam executes; one-shot has zero tools, so
 //! the ordering is unobservable here, but the shape is the loop's.
@@ -29,8 +29,8 @@ use crate::AgentRuntimeError;
 
 /// A driving task's lease, verified before a guarded write.
 ///
-/// Pairs the driving task — a launched stage task or a driver-family
-/// row — with the claim token the holder presents. Both families verify
+/// Pairs the driving task (a launched stage task or a driver-family
+/// row) with the claim token the holder presents. Both families verify
 /// through their repository's shared-lock check, so the turn machinery
 /// guards a stage thread and a driver-driven child through one type.
 #[derive(Debug, Clone, Copy)]
@@ -82,7 +82,7 @@ impl DrivingClaim {
     }
 
     /// Verifies the lease, returning [`AgentRuntimeError::LeaseLost`] on a
-    /// miss — the guarded-write helper.
+    /// miss: the guarded-write helper.
     pub(crate) async fn require(&self, conn: &mut PgConnection) -> Result<(), AgentRuntimeError> {
         if self.holds(conn).await? {
             Ok(())
@@ -99,7 +99,7 @@ impl DrivingClaim {
 pub(crate) const RENDERED_CONVERSATION_KIND: &str = "rendered_conversation";
 
 /// Returns `true` when an input record's content is a rendered
-/// conversation — the record resume re-sends.
+/// conversation: the record resume re-sends.
 pub(crate) fn is_rendered_conversation(content: &serde_json::Value) -> bool {
     content
         .get("content_kind")
@@ -124,8 +124,8 @@ pub struct RecordedMessage {
 
 /// The rendered conversation a turn sends: the input record's content.
 ///
-/// Stores what was sent — the conversation an inference call receives is
-/// a pure projection of the log — with the prompt versions as provenance
+/// Stores what was sent (the conversation an inference call receives is
+/// a pure projection of the log) with the prompt versions as provenance
 /// metadata. The `content_kind` tag discriminates this shape from other
 /// input-record payloads (a timer resolution, a human reply), so resume
 /// selects the right record structurally rather than by position.
@@ -141,14 +141,14 @@ pub struct RenderedConversation {
     /// The user prompt version rendered from.
     pub user_prompt_version_id: Option<PromptVersionId>,
     /// Stage-opaque context the model's positional references resolve
-    /// against — recorded with the conversation so a resumed attempt
+    /// against: recorded with the conversation so a resumed attempt
     /// resolves the answer it gets against what this attempt rendered,
     /// never against re-derived state that may have drifted. Defaulted
     /// on read so records written before the field existed deserialise.
     #[serde(default)]
     pub resolution_context: Option<serde_json::Value>,
     /// The JSON Schema this turn's response is constrained to, when it
-    /// is — a driver child's structured output (a verifier's verdict).
+    /// is: a driver child's structured output (a verifier's verdict).
     /// Held as the schema value, not a wire type, so the record stays
     /// provider-independent; the executor builds the response format from
     /// it. Defaulted on read for records written before the field
@@ -215,7 +215,7 @@ impl From<&CompletionResponse> for RecordedUsage {
 /// A turn ready to call: the conversation to send, durably committed.
 #[derive(Debug)]
 pub struct BegunTurn {
-    /// The conversation to send — the committed input verbatim, whether
+    /// The conversation to send: the committed input verbatim, whether
     /// this attempt rendered it or a prior one did.
     pub conversation: RenderedConversation,
 }
@@ -230,7 +230,7 @@ pub struct BegunTurn {
 /// once re-execution sends byte-identical content rather than
 /// re-rendering against drifted sources. The transaction carries the
 /// driving task's claim guard (a shared lock on the lease), so a zombie
-/// worker's write fails on ownership, deterministically — never by the
+/// worker's write fails on ownership, deterministically, never by the
 /// luck of a seq collision, which the locked tail-append makes
 /// impossible anyway.
 ///
@@ -313,7 +313,7 @@ pub async fn begin_turn(
 /// A driver-family child is born with its input record (a verifier's
 /// rubric and the submission, committed in the suspend-with-child
 /// transaction), so the driver adopts that conversation rather than
-/// rendering its own — the one-shot bracket's no-re-render contract. The
+/// rendering its own: the one-shot bracket's no-re-render contract. The
 /// child has not begun a turn, so the rendered conversation is the only
 /// input record; its absence is a consistency fault, never a first-claim
 /// case.
@@ -389,7 +389,7 @@ pub struct OneShotOutcome {
 
 /// Commits the one-shot terminal inside the caller's transaction: the
 /// assistant-message record, the thread's completed status, and the
-/// spend projection — composed with the caller's claim-guarded task
+/// spend projection, composed with the caller's claim-guarded task
 /// completion, domain effects, and job coupling so the whole turn
 /// outcome is one atomic commit.
 ///

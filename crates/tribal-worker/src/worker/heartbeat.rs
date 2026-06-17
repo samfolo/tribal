@@ -320,8 +320,8 @@ impl Worker {
 }
 
 /// The exhaustion transaction's body: the thread row is locked before
-/// its status is judged — a concurrent guarded queued-to-running move
-/// serialises against this write rather than racing it — then the thread
+/// its status is judged (a concurrent guarded queued-to-running move
+/// serialises against this write rather than racing it), then the thread
 /// dead-letters from whatever live status the locked row holds, the
 /// driving task dead-letters under its claim guard, and the job couples,
 /// returning the owed notification.
@@ -458,7 +458,7 @@ impl tribal_agent_runtime::HeartbeatPump for WorkerHeartbeatPump {
         let task_id = self.task_id;
         let claim_token = self.claim_token;
         // Fire-and-forget: a delta beat is pure liveness. Ownership loss
-        // is not signalled from here — the next claim-guarded commit
+        // is not signalled from here. The next claim-guarded commit
         // refuses deterministically, and the timer resumes after the
         // call.
         tokio::spawn(async move {
@@ -591,7 +591,7 @@ impl DriverHeartbeatHandle {
 /// driver loop executes its child.
 ///
 /// A driver child is a single bounded one-shot, so this beats on the
-/// timer alone — no phase-aware suppression and no ownership-lost
+/// timer alone. No phase-aware suppression and no ownership-lost
 /// channel: the child-terminal's claim-guarded driver-task completion is
 /// the deterministic ownership check, and a stale beat is harmless.
 pub(crate) fn spawn_driver_heartbeat(

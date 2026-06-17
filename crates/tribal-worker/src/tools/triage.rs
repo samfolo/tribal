@@ -153,7 +153,7 @@ pub(crate) struct SearchCandidateSimilarItemsTool {
 }
 
 impl SearchCandidateSimilarItemsTool {
-    /// The tool's declared contract — the binding-hash input the
+    /// The tool's declared contract: the binding-hash input the
     /// lockstep definition derivation reads without constructing the
     /// tool.
     pub(crate) fn describe() -> ToolDescriptor {
@@ -321,7 +321,7 @@ pub(crate) struct ReadKnowledgeItemTool {
 }
 
 impl ReadKnowledgeItemTool {
-    /// The tool's declared contract — the binding-hash input the
+    /// The tool's declared contract: the binding-hash input the
     /// lockstep definition derivation reads without constructing the
     /// tool.
     pub(crate) fn describe() -> ToolDescriptor {
@@ -428,7 +428,7 @@ pub(crate) struct ReadItemNeighbourhoodTool {
 }
 
 impl ReadItemNeighbourhoodTool {
-    /// The tool's declared contract — the binding-hash input the
+    /// The tool's declared contract: the binding-hash input the
     /// lockstep definition derivation reads without constructing the
     /// tool.
     pub(crate) fn describe() -> ToolDescriptor {
@@ -569,7 +569,7 @@ pub(crate) struct ListTagRegistryTool {
 }
 
 impl ListTagRegistryTool {
-    /// The tool's declared contract — the binding-hash input the
+    /// The tool's declared contract: the binding-hash input the
     /// lockstep definition derivation reads without constructing the
     /// tool.
     pub(crate) fn describe() -> ToolDescriptor {

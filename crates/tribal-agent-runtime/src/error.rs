@@ -18,7 +18,7 @@ pub enum AgentRuntimeError {
     },
 
     /// A status compare-and-set missed: the thread moved under the
-    /// actor, which abandons its write — ownership is lost, or the next
+    /// actor, which abandons its write. Ownership is lost, or the next
     /// sweep cycle converges what this attempt could not.
     #[error("thread {thread_id} status CAS missed: expected {expected}, the row moved")]
     StatusCasMissed {
@@ -40,7 +40,7 @@ pub enum AgentRuntimeError {
 
     /// The claim-guarded driving-task write affected zero rows: the
     /// lease was lost and the whole commit must roll back. Carries the
-    /// driving task — stage or driver — so both families' guards report
+    /// driving task (stage or driver), so both families' guards report
     /// the same way.
     #[error("{driving_task} lease lost during a thread-runtime commit")]
     LeaseLost {
@@ -48,7 +48,7 @@ pub enum AgentRuntimeError {
         driving_task: DrivingTaskRef,
     },
 
-    /// A stage task's thread vanished between operations — a consistency
+    /// A stage task's thread vanished between operations: a consistency
     /// fault, since threads are never deleted while their task is live.
     #[error("no thread found for stage task {task_id}")]
     ThreadMissing {
@@ -57,7 +57,7 @@ pub enum AgentRuntimeError {
     },
 
     /// Serialising a thread-owned structure (record content, suspension)
-    /// failed — a format-version bug, not an operational fault.
+    /// failed: a format-version bug, not an operational fault.
     #[error("serialising thread content failed: {context}")]
     ContentSerialisation {
         /// What was being serialised.
@@ -67,7 +67,7 @@ pub enum AgentRuntimeError {
         source: serde_json::Error,
     },
 
-    /// A loop inference call failed — a provider fault that routes to
+    /// A loop inference call failed: a provider fault that routes to
     /// the stage-error path, never the conversation. Boxed so the
     /// provider error's width never inflates every runtime result.
     #[error("loop inference call failed: {context}")]
@@ -79,7 +79,7 @@ pub enum AgentRuntimeError {
         source: Box<tribal_inference::InferenceError>,
     },
 
-    /// A tool's system half failed — routed to the stage-error path,
+    /// A tool's system half failed: routed to the stage-error path,
     /// never the conversation; the recoverable half returns in-band by
     /// construction and can never reach this variant.
     #[error("tool execution failed: {context}")]
@@ -89,7 +89,7 @@ pub enum AgentRuntimeError {
     },
 
     /// The committed log violated a structural expectation of the
-    /// projection — a consistency fault, not an operational one.
+    /// projection: a consistency fault, not an operational one.
     #[error("thread log projection failed: {context}")]
     LogProjection {
         /// What the projection found.

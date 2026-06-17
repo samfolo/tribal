@@ -4,7 +4,7 @@
 //! [`StageTool`](tribal_agent_runtime::StageTool) contract: the registry
 //! owns name lookup, response trimming, and the wire projection, while
 //! these implementations own what the operations mean. Scope is
-//! structural — every tool captures its project, job, or thread at
+//! structural: every tool captures its project, job, or thread at
 //! construction, so no model-supplied argument can widen what it
 //! reaches. Argument faults and misses on named reads return as
 //! recoverable failures the model can act on; database and

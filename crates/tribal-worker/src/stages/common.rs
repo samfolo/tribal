@@ -238,7 +238,7 @@ pub(crate) fn stage_attribution(job: &Job, task: &Task, thread: &AgentThread) ->
     attribution_with_prompts(job, task, thread, system_pv_id, user_pv_id)
 }
 
-/// Builds the ledger attribution with an explicit prompt version pair —
+/// Builds the ledger attribution with an explicit prompt version pair:
 /// the loop path attributes its calls to the binding's loop prompts,
 /// not the job's stamped one-shot pair.
 pub(crate) fn attribution_with_prompts(
@@ -378,7 +378,7 @@ impl Worker {
     /// Brackets a stage's single completion call with the thread log:
     /// commits the input record (first attempt) or adopts the committed
     /// one (resume), enforces the binding's token budget, and returns
-    /// the turn to send — the committed conversation verbatim, with this
+    /// the turn to send: the committed conversation verbatim, with this
     /// attempt's runtime parameters, plus the recorded resolution
     /// context the caller's positional references must resolve against.
     ///
@@ -389,7 +389,7 @@ impl Worker {
     ///
     /// Returns `None` when no turn runs this claim: the budget admission
     /// suspended the thread (or its bounded re-checks ran dry, or a
-    /// cancellation intervened) — the caller propagates the no-terminal
+    /// cancellation intervened). The caller propagates the no-terminal
     /// outcome up through dispatch. Under the default cap-less binding
     /// the admission issues no query at all.
     pub(crate) async fn bracket_one_shot(
@@ -588,8 +588,8 @@ impl Worker {
     }
 }
 
-/// The one-shot bracket's product: the request to send — the committed
-/// conversation on resume — and the resolution context recorded with it.
+/// The one-shot bracket's product: the request to send (the committed
+/// conversation on resume) and the resolution context recorded with it.
 pub(crate) struct BracketedTurn {
     /// The request to send.
     pub request: CompletionRequest,

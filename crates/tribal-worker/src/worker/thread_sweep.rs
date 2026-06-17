@@ -38,7 +38,7 @@ pub(crate) struct ThreadSweepStats {
 impl Worker {
     /// Runs one availability-sweep cycle: the timer-wake predicate, the
     /// cancel-fallback predicate, then the stuck-relating predicate.
-    /// Best-effort like every sweep — a failing predicate warns and leaves
+    /// Best-effort like every sweep: a failing predicate warns and leaves
     /// convergence to the next cycle.
     pub(crate) async fn run_thread_sweep(&self) -> ThreadSweepStats {
         let mut stats = ThreadSweepStats::default();

@@ -7,8 +7,8 @@
 //! derived here through the same derivation the worker uses at claim.
 //! The composite names ingest-time intent: a configuration or prompt
 //! flip between ingest and first claim leaves it naming a binding
-//! version no thread ran, and the thread's recorded binding — not this
-//! composite — is the truth of what executed. The composite adds what no
+//! version no thread ran, and the thread's recorded binding (not this
+//! composite) is the truth of what executed. The composite adds what no
 //! stage binding carries: the build version, the job-level pipeline
 //! parameters, and the embedding identity with its dimensions.
 

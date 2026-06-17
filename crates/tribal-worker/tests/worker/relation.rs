@@ -614,7 +614,7 @@ async fn test_relation_stage_all_edges_dropped() {
 
 /// The relation stage's handoff read: an agentic triage thread's
 /// submission record surfaces its handoff keyed by the candidate's batch
-/// index, and a thread with no submission record contributes nothing — so
+/// index, and a thread with no submission record contributes nothing, so
 /// the one-shot path (which commits none) reaches today's context exactly.
 #[tokio::test]
 async fn test_find_triage_submissions_by_job_surfaces_agentic_handoffs() {
