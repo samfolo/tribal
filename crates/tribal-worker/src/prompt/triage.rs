@@ -152,7 +152,7 @@ pub(crate) fn assemble_loop_opening(
 
     let rendered_system = renderer.render(
         system_template,
-        tera::Context::new(),
+        triage_system_context(),
         "rendering the triage loop system prompt",
     )?;
 
@@ -176,7 +176,7 @@ pub(crate) fn assemble_loop_opening(
 /// thread's reasoning.
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct VerifierSubmissionContext {
-    /// The classification — `novel` or `duplicate`.
+    /// The classification: `novel` or `duplicate`.
     pub decision: String,
     /// The duplicated claim's id, present only for a duplicate decision.
     #[serde(skip_serializing_if = "Option::is_none")]

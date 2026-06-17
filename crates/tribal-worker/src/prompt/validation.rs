@@ -70,7 +70,7 @@ fn loop_validation_context(stage: PromptStage, role: PromptRole) -> tera::Contex
 }
 
 /// The extraction loop's synthetic context: a static system prompt, a user
-/// prompt over the raw input and tag registry — the one-shot's own shape.
+/// prompt over the raw input and tag registry: the one-shot's own shape.
 fn extraction_loop_validation_context(role: PromptRole) -> tera::Context {
     match role {
         PromptRole::System => extraction_system_context(),
@@ -78,12 +78,13 @@ fn extraction_loop_validation_context(role: PromptRole) -> tera::Context {
     }
 }
 
-/// The triage loop's synthetic context: a static system prompt, a user
-/// prompt over the candidate and tags, with no prefetched similar items
-/// (the loop reaches the corpus through its search tool).
+/// The triage loop's synthetic context: the system prompt renders the
+/// similarity and relation-suggestion legends, the user prompt the candidate
+/// and tags, with no prefetched similar items (the loop reaches the corpus
+/// through its search tool).
 fn triage_loop_validation_context(role: PromptRole) -> tera::Context {
     match role {
-        PromptRole::System => tera::Context::new(),
+        PromptRole::System => triage_system_context(),
         PromptRole::User => {
             let candidate: Candidate = serde_json::from_value(json!({
                 "kind": "fact",
