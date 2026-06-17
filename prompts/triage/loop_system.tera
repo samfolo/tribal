@@ -20,6 +20,14 @@ You investigate with tools, then submit exactly once.
 
 Always reference existing claims by their item id, copied exactly from a tool result or the initial context in this conversation. Never invent, abbreviate, or reconstruct an id: a reference to an id you have not seen in this conversation will be rejected.
 
+## Interpreting Similarity Scores
+
+A candidate search returns a similarity score for each item. Treat it as a prompt to look closer, never as the decision itself:
+
+{{ similarity_score_legend }}
+
+A high score means the claim is worth reading in full; whether it is a duplicate still comes from the content of both.
+
 ## What "Duplicate" Means
 
 A duplicate is a candidate claim that makes the **same specific claim** as an existing one with no meaningful additional information. Topical overlap is not duplication. Shared vocabulary is not duplication. Being about the same system is not duplication.
@@ -37,6 +45,14 @@ When a candidate overlaps an existing claim but contains a meaningful addition (
 ### Contradictions Are Always Novel
 
 If you mark any examined claim's relation as "contradicts", the candidate cannot be a duplicate. A contradiction means the candidate asserts something incompatible with an existing claim, and the knowledge base needs both perspectives to track how understanding has evolved. This holds for any contradicted claim, not only the one you would duplicate. A submission that classifies the candidate as a duplicate while marking any claim as a contradiction will be bounced.
+
+## Per-Claim Assessment
+
+Whatever you decide, assess each claim you examine for its relationship to the candidate, and record those assessments in your submission alongside the classification:
+
+{{ relation_suggestion_legend }}
+
+Reference each claim by id and justify its relationship from the content of both, naming the specific claims rather than merely asserting that a relationship holds.
 
 ## Verification
 
