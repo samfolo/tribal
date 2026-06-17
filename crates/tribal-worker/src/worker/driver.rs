@@ -114,7 +114,14 @@ impl Worker {
                 }
             });
         }
-        while batch.join_next().await.is_some() {}
+        // Each task handles its own errors and returns unit, so a join
+        // error here is a panic or a cancellation: surface it rather than
+        // let a crashed driver task vanish silently.
+        while let Some(joined) = batch.join_next().await {
+            if let Err(error) = joined {
+                tracing::error!(error = %error, "a driver batch task failed to complete");
+            }
+        }
     }
 
     /// Executes one `Drive` task's child as a one-shot and hands the

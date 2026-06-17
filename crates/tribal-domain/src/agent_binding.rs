@@ -124,12 +124,48 @@ enum_text_conversions!(ProjectScope {
 /// Reach enters the hash through this field rather than the descriptor
 /// text, so a fenced-to-cross-project change is a new binding version
 /// even when the model-facing descriptor is byte-identical.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TypedBuilder)]
+#[derive(Debug, Clone, PartialEq, Serialize, TypedBuilder)]
 pub struct ToolBinding {
     /// The tool as declared to the model and to the runtime.
     pub descriptor: ToolDescriptor,
     /// The reach the tool is granted for this binding.
     pub project_scope: ProjectScope,
+}
+
+impl<'de> Deserialize<'de> for ToolBinding {
+    /// Reads the current `{descriptor, project_scope}` shape and the
+    /// pre-reach shape, a bare descriptor, so binding rows written before
+    /// the reach was hashed still load instead of panicking the definition
+    /// read. Those rows predate any cross-project tool, so a bare descriptor
+    /// takes the fenced reach.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Compat {
+            Bound {
+                descriptor: ToolDescriptor,
+                project_scope: ProjectScope,
+            },
+            Legacy(ToolDescriptor),
+        }
+
+        Ok(match Compat::deserialize(deserializer)? {
+            Compat::Bound {
+                descriptor,
+                project_scope,
+            } => Self {
+                descriptor,
+                project_scope,
+            },
+            Compat::Legacy(descriptor) => Self {
+                descriptor,
+                project_scope: ProjectScope::Fenced,
+            },
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +461,38 @@ mod tests {
             serde_json::to_string(&fenced).expect("serialises"),
             serde_json::to_string(&cross).expect("serialises"),
         );
+    }
+
+    #[test]
+    fn test_tool_binding_reads_the_pre_reach_bare_descriptor_shape() {
+        // Binding rows written before reach was hashed stored each tool as a
+        // bare descriptor. They must still load, taking the fenced reach,
+        // rather than failing the definition read (which panics). Those rows
+        // predate any cross-project tool, so fenced is the faithful default.
+        let descriptor = ToolDescriptor::builder()
+            .name("read_knowledge_item".to_owned())
+            .description("read one item".to_owned())
+            .input_schema(serde_json::json!({"type": "object"}))
+            .response_size_bound(8_192)
+            .safety_tier(ToolSafetyTier::Pure)
+            .execution_mode(ToolExecutionMode::Immediate)
+            .build();
+
+        let legacy = serde_json::to_value(&descriptor).expect("serialises");
+        let from_legacy: ToolBinding =
+            serde_json::from_value(legacy).expect("a bare descriptor loads");
+        assert_eq!(from_legacy.descriptor, descriptor);
+        assert_eq!(from_legacy.project_scope, ProjectScope::Fenced);
+
+        // The current shape round-trips with its recorded reach intact.
+        let cross = ToolBinding::builder()
+            .descriptor(descriptor)
+            .project_scope(ProjectScope::CrossProject)
+            .build();
+        let round_tripped: ToolBinding =
+            serde_json::from_value(serde_json::to_value(&cross).expect("serialises"))
+                .expect("the current shape loads");
+        assert_eq!(round_tripped, cross);
     }
 
     #[test]

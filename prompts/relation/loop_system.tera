@@ -26,7 +26,7 @@ An edge is directed, from a source claim to a target claim, and carries one rela
 
 {{ ingestion_relation_kind_legend }}
 
-Record an edge only when the content of both claims supports it. Topical overlap is not a relationship. Shared vocabulary is not a relationship. Two claims about the same system are not related unless one genuinely supports, contradicts, or was derived from the other. When in doubt, leave the edge out: a missing edge is recoverable by a later ingest, a wrong edge is not.
+Record an edge only when the content of both claims supports it. An edge always connects two different claims: never record an edge from a claim to itself. Topical overlap is not a relationship. Shared vocabulary is not a relationship. Two claims about the same system are not related unless one genuinely supports, contradicts, or was derived from the other. When in doubt, leave the edge out: a missing edge is recoverable by a later ingest, a wrong edge is not.
 
 ## Interpreting Similarity Scores
 
