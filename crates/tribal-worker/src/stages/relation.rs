@@ -179,7 +179,7 @@ impl Worker {
     /// # Errors
     ///
     /// Propagates the routed executor's [`StageError`]s; an external
-    /// executor on the recorded binding is a derivation fault — nothing can
+    /// executor on the recorded binding is a derivation fault. Nothing can
     /// produce one in this release.
     pub(crate) async fn run_relation(
         &self,
@@ -522,6 +522,37 @@ pub(super) fn build_prompt_context<'a>(
         relation_hints: &ctx.relation_hints,
         similar_item_decisions: &ctx.similar_item_decision_contexts,
     })
+}
+
+/// The ids the relation opening offers as citable references up front: each
+/// in-batch candidate's committed id (created, or the item a duplicate
+/// matched) and the existing claims triage surfaced. The loop's tool results
+/// extend this set at submission time; together they are the provenance the
+/// submission pipeline grounds endpoints against. Sourced from the loaded
+/// context rather than the thread's job id, which a stage thread does not
+/// carry.
+pub(super) fn relation_citable_seed(ctx: &RelationContext<'_>) -> HashSet<KnowledgeItemId> {
+    let mut seed = HashSet::new();
+    for result in &ctx.triage_results {
+        if result.batch_index() >= ctx.batch_size {
+            continue;
+        }
+        match result.outcome() {
+            TriageOutcome::Created { item_id } => {
+                seed.insert(*item_id);
+            }
+            TriageOutcome::Duplicate {
+                matched_item_id, ..
+            } => {
+                seed.insert(*matched_item_id);
+            }
+            TriageOutcome::Failed { .. } => {}
+        }
+    }
+    for decision in &ctx.similar_item_decision_contexts {
+        seed.insert(decision.matched_item_id);
+    }
+    seed
 }
 
 // ---------------------------------------------------------------------------
