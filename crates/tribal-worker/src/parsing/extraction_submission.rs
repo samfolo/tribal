@@ -11,7 +11,7 @@ use tribal_domain::{Candidate, RelationHint};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(
-    description = "The knowledge items extracted from the input, with any intra-batch derivation \
+    description = "The knowledge items extracted from the input, with any intra-batch relation \
     hints. Empty when the input holds no extractable knowledge."
 )]
 pub(crate) struct ExtractionSubmission {
@@ -21,10 +21,10 @@ pub(crate) struct ExtractionSubmission {
         claim. Empty when the input contains no extractable knowledge."
     )]
     pub candidates: Vec<Candidate>,
-    /// Intra-batch derivation hints between candidates, by index.
+    /// Intra-batch relation hints between candidates, by index.
     #[serde(default)]
     #[schemars(
-        description = "Derivation links between candidates in this batch, each referencing a \
+        description = "Relation hints between candidates in this batch, each referencing a \
         candidate by its zero-based position. Empty unless one candidate is genuinely derived \
         from another."
     )]
