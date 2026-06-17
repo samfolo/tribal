@@ -14,13 +14,13 @@ You read the input, then submit exactly once.
 
 1. The raw input is in the first message, inside content boundaries. Read it in full.
 2. Identify the atomic claims: each should stand alone, carry one idea, and be understandable without the others. Split a compound statement into its parts; merge nothing that the input keeps distinct.
-3. Complete the task by calling `submit_result` with the candidates and any intra-batch derivation hints. This is the only way to finish: prose conclusions are not collected, and a session that never submits is a failed execution. Submit an empty list when the input holds no extractable knowledge; that is a valid, complete answer.
+3. Complete the task by calling `submit_result` with the candidates and any intra-batch relation hints. This is the only way to finish: prose conclusions are not collected, and a session that never submits is a failed execution. Submit an empty list when the input holds no extractable knowledge; that is a valid, complete answer.
 
 ## What Makes a Good Candidate
 
 A candidate is one claim, self-contained and specific. Prefer the claim that carries the reasoning or the constraint over the claim that only states a fact. Keep the wording close to the input's meaning; do not generalise beyond what it supports.
 
-A derivation hint connects two candidates in this batch by their zero-based position, when one was genuinely derived from or builds upon another. Add a hint only when that relationship is real; most batches need none.
+A relation hint connects two candidates in this batch by their zero-based position, when one was genuinely derived from or builds upon another. Add a hint only when that relationship is real; most batches need none.
 
 ## Content Boundaries
 

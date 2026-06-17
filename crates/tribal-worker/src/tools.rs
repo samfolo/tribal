@@ -94,7 +94,7 @@ pub(crate) fn submit_candidates_descriptor() -> ToolDescriptor {
         .name(SUBMIT_RESULT_TOOL.to_owned())
         .description(
             "Submit the knowledge items you extracted from the input. This is the only way to \
-             complete the task: the candidates, and any intra-batch derivation hints between them \
+             complete the task: the candidates, and any intra-batch relation hints between them \
              by index. Submit an empty list when the input holds no extractable knowledge. A \
              rejected submission comes back with diagnostics; correct it and resubmit."
                 .to_owned(),
