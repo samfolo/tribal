@@ -1,7 +1,7 @@
 //! The agentic relation stage: the loop executor's wiring.
 //!
-//! Context assembly is the one-shot's — the batch's committed items, the
-//! intra-batch hints, the triage handoffs and similar-item decisions —
+//! Context assembly is the one-shot's (the batch's committed items, the
+//! intra-batch hints, the triage handoffs and similar-item decisions),
 //! rendered through the loop templates the thread's recorded binding pins.
 //! The runtime drives the turns; this module supplies the cross-project
 //! tools, the submission pipeline, and the mapping from an accepted
@@ -30,7 +30,7 @@ use tribal_inference::UsageAttribution;
 use super::{
     RelationCommitDecision, StageCommit, StageTerminal,
     common::attribution_with_prompts,
-    relation::{RelationContext, build_prompt_context, compute_outcome},
+    relation::{RelationContext, build_prompt_context, compute_outcome, relation_citable_seed},
 };
 use crate::{
     common::PARSE_PREVIEW_LENGTH,
@@ -112,7 +112,7 @@ impl Worker {
 
             let registry =
                 self.relation_tool_registry(job, &active_profile, attribution.clone(), deadline)?;
-            let pipeline = RelationSubmissionPipeline;
+            let pipeline = RelationSubmissionPipeline::new(relation_citable_seed(&ctx));
             let submit_descriptor = submit_relations_descriptor();
             let parameters = &stage_thread.binding.definition().parameters;
 
@@ -343,7 +343,7 @@ impl Worker {
         })
     }
 
-    /// Resolves the loop templates the binding's recorded hashes pin —
+    /// Resolves the loop templates the binding's recorded hashes pin:
     /// execution truth, hot-reload-proof, resume-stable.
     async fn recorded_relation_loop_prompts(
         &self,
@@ -405,7 +405,7 @@ async fn resolve_relation_loop_prompt(
 /// Resolves the submission's id-based edges into relation rows, sealed with
 /// the batch id. Drops, with a skip count, every edge whose endpoint no
 /// longer exists, every self-edge, and every duplicate `(source, target,
-/// type)` triple — the same normalisation the one-shot path applies to its
+/// type)` triple: the same normalisation the one-shot path applies to its
 /// index-resolved edges.
 fn normalise_submission_edges(
     edges: &[RelationSubmissionEdge],
