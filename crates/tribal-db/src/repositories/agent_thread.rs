@@ -700,12 +700,17 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         // Terminal sets as interpolated literals: a live descendant is one
         // whose status sits outside its family's terminal set, and the
         // derivations from ALL keep the single-source contract. A relation
-        // thread is stranded only when neither a live child thread nor a
-        // live descendant driver task remains, so a healthy
-        // verifier-suspended thread (which has both) is never selected. The
-        // cancel-intent guard leaves intent-carrying threads to the cancel
-        // fallback. The job-relating check rides the driving task rather
-        // than the thread row, which carries no job id.
+        // thread is stranded only when it has no live resolver: neither a
+        // pending wake (a budget-exhaustion suspension carries a wake_at and
+        // is woken for its recheck, so it is never stranded), nor a live
+        // child thread, nor a live descendant driver task. A healthy
+        // verifier-suspended thread keeps a live child and a live driver
+        // task and carries no wake_at, so the descendant clauses exclude it;
+        // only the deferred-results orphan (child gone, no wake_at, no
+        // descendant) is selected. The cancel-intent guard leaves
+        // intent-carrying threads to the cancel fallback. The job-relating
+        // check rides the driving task rather than the thread row, which
+        // carries no job id.
         let thread_terminal = terminal_status_literals();
         let driver_terminal: Vec<String> = AgentDriverTaskState::ALL
             .iter()
@@ -717,6 +722,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
              WHERE pipeline_stage = 'relation' \
                AND status = 'suspended' \
                AND cancel_requested_at IS NULL \
+               AND wake_at IS NULL \
                AND stage_task_id IN ( \
                    SELECT t.id FROM tasks t \
                    JOIN jobs j ON j.id = t.job_id \

@@ -1643,3 +1643,82 @@ async fn test_stuck_relating_scan_keys_on_resolver_liveness() {
         "a relation thread with a live verifier child is left alone",
     );
 }
+
+/// A relation thread suspended on budget exhaustion carries a `wake_at` and
+/// has no descendants, so it satisfies every resolver-liveness clause. The
+/// scan must still spare it: the pending wake is its live resolver, and
+/// failing it would discard a recoverable suspension long before its
+/// legitimate recheck. Without a `wake_at` term the scan would kill every
+/// budget-suspended relation loop thread, which is the only way a relation
+/// loop suspends while the verifier binding is deferred.
+#[tokio::test]
+async fn test_stuck_relating_scan_spares_a_budget_suspended_thread() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    let prereq = setup_thread_prerequisites(&mut txn, "stuck-relating-budget").await;
+    PgJobRepository
+        .update_status_if_live(
+            &mut txn,
+            prereq.job_id,
+            &JobStatusTransition::builder()
+                .status(JobStatus::Relating)
+                .build(),
+        )
+        .await
+        .expect("relating");
+
+    let binding = PgAgentBindingVersionRepository
+        .record(
+            &mut txn,
+            &NewAgentBindingVersion::builder()
+                .hash(HASH_B.to_owned())
+                .pipeline_stage(TaskType::Relation)
+                .definition(
+                    an_agent_definition()
+                        .pipeline_stage(TaskType::Relation)
+                        .build(),
+                )
+                .build(),
+        )
+        .await
+        .expect("relation binding");
+    let thread = PgAgentThreadRepository
+        .insert(
+            &mut txn,
+            &NewAgentThread::builder()
+                .pipeline_stage(TaskType::Relation)
+                .binding_version_id(binding.id())
+                .driving_task(DrivingTaskRef::Stage(prereq.stage_task_id))
+                .principal_id(prereq.principal_id)
+                .format_version(AGENT_THREAD_FORMAT_VERSION)
+                .build(),
+        )
+        .await
+        .expect("relation thread");
+    PgAgentThreadRepository
+        .mark_running(&mut txn, thread.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("run");
+    // Budget exhaustion suspends with a wake_at and no descendants.
+    PgAgentThreadRepository
+        .suspend(
+            &mut txn,
+            thread.id(),
+            &AgentThreadSuspension::BudgetExhaustion {
+                unchanged_rechecks: 0,
+            },
+            Some(chrono::Utc::now() + chrono::Duration::seconds(300)),
+        )
+        .await
+        .expect("suspend");
+
+    let scanned = PgAgentThreadRepository
+        .find_stuck_relating_threads(&mut txn, 16)
+        .await
+        .expect("scan");
+    assert!(
+        !scanned.iter().any(|t| t.id() == thread.id()),
+        "a budget-suspended relation thread has a pending wake and is not stranded",
+    );
+}
