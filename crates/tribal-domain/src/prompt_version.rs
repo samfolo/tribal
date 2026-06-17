@@ -12,8 +12,8 @@ use crate::{PromptClass, PromptRole, PromptStage, PromptVersionId};
 /// A content-addressed prompt version.
 ///
 /// Prompt versions are immutable. The `content_hash` (SHA-256, hex-encoded)
-/// together with `stage`, `class`, and `role` forms a unique constraint —
-/// identical content for the same slot is deduplicated to one row.
+/// together with `stage`, `class`, and `role` forms a unique constraint.
+/// Identical content for the same slot is deduplicated to one row.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TypedBuilder)]
 pub struct PromptVersion {
     /// Unique identifier with `pv_` prefix.

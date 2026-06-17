@@ -39,7 +39,7 @@ Notes from triage: <justification-{{ nonce }}>{{ c.handoff }}</justification-{{ 
 Existing claims the triage stage already matched against batch items. Reference them by the id shown.
 {%- for d in similar_item_decisions %}
 
-### Item {{ d.batch_index }} ↔ {{ d.matched_item_id }} (similarity: {{ d.similarity_score | round(precision=4) }} — {{ d.similarity_label }})
+### Item {{ d.batch_index }} ↔ {{ d.matched_item_id }} (similarity: {{ d.similarity_score | round(precision=4) }}, {{ d.similarity_label }})
 Suggested relation: {{ d.suggested_relation }}
 Justification: <justification-{{ nonce }}>{{ d.justification }}</justification-{{ nonce }}>
 

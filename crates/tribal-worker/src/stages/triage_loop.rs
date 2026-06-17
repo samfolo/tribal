@@ -1,7 +1,7 @@
 //! The agentic triage stage: the loop executor's wiring.
 //!
-//! Context assembly is the one-shot's — the candidate, the opening
-//! semantic search, the tag registry — rendered through the loop
+//! Context assembly is the one-shot's (the candidate, the opening
+//! semantic search, the tag registry), rendered through the loop
 //! templates the thread's recorded binding pins. The runtime drives the
 //! turns; this module supplies the tools, the submission pipeline, and
 //! the mapping from an accepted submission onto the existing commit
@@ -395,7 +395,7 @@ impl Worker {
         })
     }
 
-    /// Resolves the loop templates the binding's recorded hashes pin —
+    /// Resolves the loop templates the binding's recorded hashes pin:
     /// execution truth, hot-reload-proof, resume-stable.
     async fn recorded_loop_prompts(
         &self,
@@ -436,8 +436,8 @@ impl Worker {
     /// commit on the validators alone.
     ///
     /// The verifier prompts follow the active set rather than the parent's
-    /// recorded binding — they are no part of its hash (the parent binds
-    /// the loop pair only) — and each launch pins its own verifier binding
+    /// recorded binding, they are no part of its hash (the parent binds
+    /// the loop pair only), and each launch pins its own verifier binding
     /// on the child it creates, so the child is resume-stable thereafter.
     async fn verifier_context(
         &self,
@@ -491,7 +491,7 @@ impl Worker {
     }
 
     /// Resolves the active verifier template for a role, erroring when the
-    /// verifier is on but no template is live — a wiring fault, not a
+    /// verifier is on but no template is live: a wiring fault, not a
     /// configuration the binding can run.
     async fn active_verifier_prompt(
         &self,

@@ -1,5 +1,5 @@
 //! Integration tests for the agentic turn loop, driven directly through
-//! the runtime against a live job — the same harness shape as the
+//! the runtime against a live job: the same harness shape as the
 //! suspend/resolve tests. The worker's dispatch does not route to the
 //! loop yet; these pin the loop contract the stage wiring will inherit.
 
@@ -894,7 +894,7 @@ async fn test_mid_turn_crash_resume_executes_pending_calls_only() {
 }
 
 /// The second turn's request repeats the first turn's conversation as an
-/// exact prefix — the cache-discipline contract.
+/// exact prefix: the cache-discipline contract.
 #[tokio::test]
 async fn test_second_turn_request_prefix_is_byte_identical() {
     let _guard = serial_lock().await;
@@ -1149,7 +1149,7 @@ async fn test_unchanged_rechecks_advance_and_run_dry_at_the_bound() {
             .expect("the loop runs");
     assert!(matches!(outcome, LoopOutcome::Suspended));
 
-    // First wake: still exhausted — the suspension's count advances.
+    // First wake: still exhausted. The suspension's count advances.
     let mut conn = raw_conn(ctx).await;
     let wake = |count: u32| {
         serde_json::json!({
@@ -1561,8 +1561,8 @@ async fn test_an_accepted_verdict_commits_the_submission_on_resume() {
 
 /// An accepted verdict commits without running a tool call the model
 /// issued alongside `submit_result`. The verdict dispositions before the
-/// leftover tail, so a sibling call — here one that fails the loop with a
-/// system error if it runs — is dropped rather than pre-empting (or, on
+/// leftover tail, so a sibling call (here one that fails the loop with a
+/// system error if it runs) is dropped rather than pre-empting (or, on
 /// failure, sinking) the verified submission.
 #[tokio::test]
 async fn test_an_accepted_verdict_drops_a_sibling_call_rather_than_running_it() {
@@ -1638,7 +1638,7 @@ async fn test_an_accepted_verdict_drops_a_sibling_call_rather_than_running_it() 
 
 /// A rejected verdict continues the loop: the critique rides the
 /// conversation, the model re-decides, and a fresh verifier round
-/// launches — the submission never commits on a rejection.
+/// launches. The submission never commits on a rejection.
 #[tokio::test]
 async fn test_a_rejected_verdict_continues_the_loop_with_the_critique() {
     let _guard = serial_lock().await;
@@ -1677,7 +1677,7 @@ async fn test_a_rejected_verdict_continues_the_loop_with_the_critique() {
     }
 
     // The resume re-decides against the critique and launches a second
-    // verifier round — it does not commit the rejected submission.
+    // verifier round. It does not commit the rejected submission.
     let (task, thread) = reclaim_parent(ctx, &harness).await;
     let resumed = LoopHarness {
         task,
@@ -1955,7 +1955,7 @@ async fn test_a_dead_verifier_consumes_a_round_and_the_loop_commits_directly() {
 /// acceptance and the resumed commit. The re-validation bounces, but the
 /// fence forbids a second result for the answered call, so the
 /// diagnostics cross as a conversation-bearing input and the loop
-/// continues — never a stale commit, never a fence collision.
+/// continues: never a stale commit, never a fence collision.
 #[tokio::test]
 async fn test_post_acceptance_drift_injects_diagnostics_and_continues() {
     let _guard = serial_lock().await;

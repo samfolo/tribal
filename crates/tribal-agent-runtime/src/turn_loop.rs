@@ -1,7 +1,7 @@
 //! The turn loop: the agentic generalisation of the one-shot bracket.
 //!
-//! At every entry the loop derives its position from the committed tail
-//! — fresh, mid-turn crash, tool-batch crash, and budget wake all
+//! At every entry the loop derives its position from the committed tail:
+//! fresh, mid-turn crash, tool-batch crash, and budget wake all
 //! resolve to a position before anything executes. The conversation an
 //! inference call receives is the recorded projection plus in-memory
 //! appends, never a re-rendering, so the byte-stable prefix and the
@@ -59,7 +59,7 @@ pub const SUBMIT_RESULT_TOOL: &str = "submit_result";
 /// carries, discriminating it from a plain timer wake.
 pub const BUDGET_RECHECK_CAUSE: &str = "budget_recheck";
 
-/// The `content_kind` tag of an injected conversational message — a
+/// The `content_kind` tag of an injected conversational message: a
 /// system-authored user turn the model reads (post-acceptance drift
 /// diagnostics, a human resolution). Distinct from the rendered opening
 /// and from bookkeeping resolutions.
@@ -73,7 +73,7 @@ pub(crate) const INJECTED_MESSAGE_KIND: &str = "injected_message";
 /// explicit error marker the contract requires.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolResultContent {
-    /// What the model reads — the serialised result, or the rendered
+    /// What the model reads: the serialised result, or the rendered
     /// recoverable diagnostic when `is_error` is set.
     pub output: String,
     /// Whether this result is an error-shaped diagnostic.
@@ -110,7 +110,7 @@ pub struct SubmissionContent {
 /// The worker's handle implements this over its heartbeat machinery;
 /// the loop only names the moments: streamed deltas during inference
 /// (the timer suppressed), the return to timer-driven beating between
-/// calls, and the stop before a suspension commits — a cleared claim
+/// calls, and the stop before a suspension commits. A cleared claim
 /// must never race a spurious ownership-lost signal from a beat in
 /// flight.
 pub trait HeartbeatPump: Send + Sync {
@@ -131,7 +131,7 @@ pub trait HeartbeatPump: Send + Sync {
 /// Everything the model was actually shown as graph content: the
 /// opening conversation's rendered messages and every non-error tool
 /// result. The ID-membership validation resolves references against
-/// this corpus — what the model saw, not what the system could derive.
+/// this corpus: what the model saw, not what the system could derive.
 ///
 /// Containment is substring containment: identifiers are prefixed
 /// UUIDs, unmistakable in any rendering, so no per-stage extraction
@@ -199,7 +199,7 @@ pub trait SubmissionPipeline: Send + Sync {
     /// Decides whether a validators-accepted submission is verified by a
     /// child execution, and if so renders that child's opening.
     ///
-    /// `None` commits the submission directly — the default, and the only
+    /// `None` commits the submission directly: the default, and the only
     /// behaviour for a binding with no verifier. `Some` launches the
     /// verifier as a fresh-context child whose verdict the loop awaits.
     ///
@@ -217,7 +217,7 @@ pub trait SubmissionPipeline: Send + Sync {
 }
 
 /// The verifier child a validators-accepted submission launches: its
-/// binding, its stage, and the opening the verifier reads — the
+/// binding, its stage, and the opening the verifier reads: the
 /// submission and the rubric, never the submitting thread's reasoning.
 #[derive(Debug, Clone)]
 pub struct VerifierLaunch {
@@ -253,7 +253,7 @@ pub struct VerdictContent {
 }
 
 /// The JSON Schema a verifier child's structured output is constrained
-/// to — a [`VerdictContent`]. A binding-hash input for a verifier
+/// to: a [`VerdictContent`]. A binding-hash input for a verifier
 /// definition, and the response-format schema the child's call carries.
 ///
 /// # Panics
@@ -296,7 +296,7 @@ pub enum Admission {
 }
 
 /// Checks the thread's ledger spend against its token cap before an
-/// inference call — the admission contract both executors share.
+/// inference call: the admission contract both executors share.
 ///
 /// An absent cap admits without touching the database at all: the
 /// default path gains no new failure surface.
@@ -349,7 +349,7 @@ pub enum AdmissionDecision {
 }
 
 /// Runs the token admission and folds in the bounded-recheck
-/// accounting — the decision both executors share before an inference
+/// accounting: the decision both executors share before an inference
 /// call. The caller commits the suspension (or the failure), so each
 /// path keeps its own heartbeat discipline around the commit.
 ///
@@ -442,10 +442,10 @@ pub enum LoopOutcome {
     /// A budget suspension committed; no terminal this claim.
     Suspended,
     /// A durable cancellation intent was observed at a turn boundary;
-    /// nothing committed — the caller performs the cancel transaction.
+    /// nothing committed. The caller performs the cancel transaction.
     CancelIntent,
     /// A budget exhausted in a way that fails the thread; nothing
-    /// committed — the caller fails the thread with its task
+    /// committed. The caller fails the thread with its task
     /// disposition and job coupling.
     BudgetFailed {
         /// Which budget, with its numbers.
@@ -538,7 +538,7 @@ pub struct TurnLoopDeps<'a> {
     /// The lease-liveness seam.
     pub pump: &'a dyn HeartbeatPump,
     /// This attempt's rendering, committed only when the log holds no
-    /// rendered conversation yet — the log, not caller bookkeeping,
+    /// rendered conversation yet: the log, not caller bookkeeping,
     /// decides.
     pub rendered: RenderedConversation,
     /// The binding's execution caps.
@@ -565,8 +565,8 @@ pub struct TurnLoopDeps<'a> {
 ///
 /// Returns [`AgentRuntimeError::LeaseLost`] when a claim guard misses,
 /// [`AgentRuntimeError::Inference`] on provider faults, and
-/// [`AgentRuntimeError::ToolExecution`] on a tool's system failure —
-/// all of which route to the stage-error path, never the conversation —
+/// [`AgentRuntimeError::ToolExecution`] on a tool's system failure
+/// (all of which route to the stage-error path, never the conversation),
 /// plus the serialisation and database errors of the parts.
 pub async fn run_turn_loop(deps: TurnLoopDeps<'_>) -> Result<LoopOutcome, AgentRuntimeError> {
     let mut conn = acquire(deps.pool).await?;
@@ -710,7 +710,7 @@ pub async fn run_turn_loop(deps: TurnLoopDeps<'_>) -> Result<LoopOutcome, AgentR
 }
 
 /// Dispositions a returned verifier verdict. `Some` terminates the stage;
-/// `None` continues the loop — a rejection's critique already rides the
+/// `None` continues the loop. A rejection's critique already rides the
 /// conversation, and a drift's diagnostics are committed as a fresh
 /// conversation-bearing input here.
 async fn resolve_verdict(
@@ -810,7 +810,7 @@ async fn commit_drift_input(
 // ---------------------------------------------------------------------------
 
 /// The committed log's model-facing reading, kept current in memory as
-/// the loop commits — never re-rendered, never re-derived mid-claim
+/// the loop commits: never re-rendered, never re-derived mid-claim
 /// except when a fence conflict proves the memory stale.
 #[derive(Debug)]
 struct Projection {
@@ -914,8 +914,8 @@ fn project(
                     // diagnostics, a human resolution): conversation-
                     // bearing, but not graph data, so it joins the
                     // messages without entering the membership corpus. It
-                    // also supersedes a pending verdict — the injection is
-                    // that verdict's disposition — so a crash between the
+                    // also supersedes a pending verdict (the injection is
+                    // that verdict's disposition), so a crash between the
                     // injection and the next turn never re-resolves it.
                     projection.messages.push(Message::User { content: message });
                     resolved = None;
@@ -1027,7 +1027,7 @@ fn project(
 }
 
 /// The content of an injected conversational message, when the record is
-/// one — a system-authored user turn the model reads.
+/// one: a system-authored user turn the model reads.
 fn injected_message(content: &serde_json::Value) -> Option<String> {
     if content
         .get("content_kind")
@@ -1178,7 +1178,7 @@ async fn stream_to_terminal(
 
 /// Commits one turn's assistant record: the record with its usage, the
 /// per-turn ledger link (constrained to the single most-recent matching
-/// row), the spend projection, and the driving task's progress reset —
+/// row), the spend projection, and the driving task's progress reset:
 /// one transaction.
 async fn commit_assistant_turn(
     conn: &mut PgConnection,
@@ -1271,7 +1271,7 @@ enum ResultCommit {
 }
 
 /// Commits one tool-result record under the fence in its own
-/// transaction — the error-shaped and bounced paths, where no tool side
+/// transaction: the error-shaped and bounced paths, where no tool side
 /// effect shares the commit.
 async fn commit_result_record(
     conn: &mut PgConnection,
@@ -1324,7 +1324,7 @@ async fn commit_result_record(
 /// Commits the loop's terminal contribution inside the caller's
 /// transaction: the typed submission record and the thread's completed
 /// status. The spend projection is maintained per turn, so it is
-/// already final — the submission itself makes no call.
+/// already final. The submission itself makes no call.
 ///
 /// # Errors
 ///
@@ -1867,8 +1867,8 @@ mod tests {
     #[test]
     fn test_projection_routes_an_unanswered_batch_to_tool_execution() {
         // A trailing assistant message with one of two calls answered
-        // must resume at tool execution for exactly the unanswered call
-        // — never at a fresh inference call.
+        // must resume at tool execution for exactly the unanswered call,
+        // never at a fresh inference call.
         let thread = an_agent_thread().build();
         let records = vec![
             rendered_input(&thread, "the opening"),
@@ -2024,7 +2024,7 @@ mod tests {
     }
 
     /// A non-error tool result answering the trailing turn's submit call
-    /// is a returned verifier verdict — the loop must re-derive its
+    /// is a returned verifier verdict. The loop must re-derive its
     /// disposition, not issue fresh inference.
     #[test]
     fn test_projection_detects_a_returned_verifier_verdict() {
@@ -2163,7 +2163,7 @@ mod tests {
     }
 
     /// Child launches are counted from the suspend-with-child suspension
-    /// records across the whole log — the measure the verify budget
+    /// records across the whole log: the measure the verify budget
     /// bounds. A launch counts whether its verdict accepts, rejects, or
     /// the child dies; a budget-exhaustion suspension launches nothing and
     /// is not counted.
@@ -2217,7 +2217,7 @@ mod tests {
     }
 
     /// An injected message is a system-authored user turn the model
-    /// reads, not bookkeeping — it joins the conversation but not the
+    /// reads, not bookkeeping. It joins the conversation but not the
     /// membership corpus.
     #[test]
     fn test_projection_renders_an_injected_message_as_a_user_turn() {

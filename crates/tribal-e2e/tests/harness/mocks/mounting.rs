@@ -100,7 +100,7 @@ impl<'a> StageMountBuilder<'a> {
     }
 
     /// Mounts a persistent buffered response that arrives only after the
-    /// given delay — a slow stage call, so a test can observe the state a
+    /// given delay: a slow stage call, so a test can observe the state a
     /// thread holds while it waits (a verifier child suspending its
     /// parent, say).
     pub fn on_content_delayed(
@@ -113,7 +113,7 @@ impl<'a> StageMountBuilder<'a> {
     }
 
     /// Mounts a response sequence matched by content, framed as the
-    /// provider's streaming wire body — the agentic loop's turns, whose
+    /// provider's streaming wire body: the agentic loop's turns, whose
     /// only inference entry is the streaming path. A verifier child, which
     /// runs a buffered one-shot, is mounted with [`Self::on_content`]
     /// against the same endpoint; the two are told apart by the `stream`

@@ -389,7 +389,7 @@ async fn test_the_loop_executor_completes_a_triage_job_end_to_end() {
 
 /// A budgeted one-shot whose thread already carries ledger spend
 /// suspends at the bracket before any call, and a wake under restored
-/// headroom resumes it to completion — the shared admission contract on
+/// headroom resumes it to completion: the shared admission contract on
 /// the default executor.
 #[tokio::test]
 async fn test_a_budgeted_one_shot_suspends_pre_call_and_resumes() {
@@ -462,7 +462,7 @@ async fn test_a_budgeted_one_shot_suspends_pre_call_and_resumes() {
     drop(conn);
 
     // Phase one: a worker whose budget the prior spend already exhausts
-    // suspends the thread at the bracket — the opening embed is context
+    // suspends the thread at the bracket. The opening embed is context
     // assembly, but no completion call runs (the inference mock panics
     // on any).
     let mut tight = loop_agents_config();
@@ -880,7 +880,7 @@ async fn test_the_loop_executor_completes_an_extraction_job_end_to_end() {
         tokio::spawn(async move { w.run().await })
     };
 
-    // The extraction task completes and the job moves to triaging — the
+    // The extraction task completes and the job moves to triaging: the
     // fan-out the loop commit performed.
     let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
     let _ = poll_job_status(&pool, job_id, JobStatus::Triaging, POLL_SETTLE).await;

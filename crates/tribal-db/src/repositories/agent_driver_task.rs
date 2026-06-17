@@ -56,7 +56,7 @@ const MAX_ATTEMPTS_OVERFLOW: &str = "negative max_attempts in database: data cor
 /// `state`, `attempt`, `max_attempts`, `available_at`, and the
 /// timestamps are server-defaulted: a new row is pending and immediately
 /// available with the standard retry budget. The id is server-defaulted
-/// too unless the caller supplies one — the thread/driver pair writer
+/// too unless the caller supplies one. The thread/driver pair writer
 /// must, because the thread row names the driver task's id under the
 /// deferred foreign key before the task exists.
 #[derive(Debug, Clone, TypedBuilder)]

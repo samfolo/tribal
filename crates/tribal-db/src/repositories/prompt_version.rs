@@ -26,9 +26,9 @@ const COLUMNS: Columns = Columns(&[
     "created_at",
 ]);
 
-const UNKNOWN_PROMPT_STAGE_IN_DB: &str = "unrecognised prompt stage in database — schema mismatch";
-const UNKNOWN_PROMPT_CLASS_IN_DB: &str = "unrecognised prompt class in database — schema mismatch";
-const UNKNOWN_PROMPT_ROLE_IN_DB: &str = "unrecognised prompt role in database — schema mismatch";
+const UNKNOWN_PROMPT_STAGE_IN_DB: &str = "unrecognised prompt stage in database: schema mismatch";
+const UNKNOWN_PROMPT_CLASS_IN_DB: &str = "unrecognised prompt class in database: schema mismatch";
+const UNKNOWN_PROMPT_ROLE_IN_DB: &str = "unrecognised prompt role in database: schema mismatch";
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -61,7 +61,7 @@ pub struct NewPromptVersion {
 ///
 /// All methods take `&mut PgConnection` as an explicit executor,
 /// keeping the repository pool-agnostic.  Prompt versions are
-/// content-addressed and immutable — the upsert returns the existing
+/// content-addressed and immutable: the upsert returns the existing
 /// row when the content hash matches.
 #[async_trait]
 pub trait PromptVersionRepository {
@@ -163,7 +163,7 @@ impl PromptVersionRepository for PgPromptVersionRepository {
             return Ok(map_prompt_version_row(&r));
         }
 
-        // Conflict path — content already exists in this slot.
+        // Conflict path: content already exists in this slot.
         let sql = format!(
             "SELECT {COLUMNS} FROM prompt_versions \
              WHERE stage = $1 AND class = $2 AND role = $3 AND content_hash = $4",

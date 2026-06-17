@@ -62,7 +62,7 @@ pub(crate) struct RelationSubmissionEdge {
     pub justification: Option<String>,
 }
 
-/// The relation `submit_result` tool's input schema — a binding-hash
+/// The relation `submit_result` tool's input schema: a binding-hash
 /// input, so its stability is part of the binding's identity.
 pub(crate) fn relation_submission_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(RelationSubmission))

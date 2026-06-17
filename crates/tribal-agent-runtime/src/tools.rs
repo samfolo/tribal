@@ -2,9 +2,9 @@
 //! tools.
 //!
 //! Tools are named, schema-typed, stage-scoped semantic operations. The
-//! registry owns the model-facing contract mechanics — name lookup with
+//! registry owns the model-facing contract mechanics (name lookup with
 //! actionable diagnostics, response-size trimming, and the wire
-//! projection — while graph semantics live entirely in the tool
+//! projection) while graph semantics live entirely in the tool
 //! implementations the worker registers (the runtime never learns them).
 //! Scoping is structural: a tool captures its project at construction,
 //! so no argument the model supplies can widen it.
@@ -153,7 +153,7 @@ impl ToolRegistry {
             })
     }
 
-    /// The registered descriptors, in name order — the binding-hash
+    /// The registered descriptors, in name order: the binding-hash
     /// input.
     #[must_use]
     pub fn descriptors(&self) -> Vec<ToolDescriptor> {

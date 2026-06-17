@@ -3,7 +3,7 @@
 //!
 //! Schema parse first, then the checks, in order, never a model call.
 //! Every model-addressable rejection bounces with diagnostics held to
-//! the prompt bar — the loop's model corrects its own output — and the
+//! the prompt bar (the loop's model corrects its own output), and the
 //! graph re-checks run at evaluation time so the optimistic reads the
 //! agent's tools established are re-validated at the commit boundary.
 
@@ -117,7 +117,7 @@ pub(crate) async fn reconstruct_candidate_scores(
 
 /// The verifier configuration one stage execution carries: the resolved
 /// verifier binding, its templates, and the candidate the submission
-/// classifies — everything the launch needs to render a fresh-context
+/// classifies: everything the launch needs to render a fresh-context
 /// child without reaching back into worker state.
 pub(crate) struct VerifierContext {
     /// The content-addressed verifier binding the child runs under.
@@ -232,7 +232,7 @@ impl SubmissionPipeline for TriageSubmissionPipeline {
         corpus: &SeenCorpus,
         arguments: &serde_json::Value,
     ) -> Result<SubmissionOutcome, ToolFailure> {
-        // 1. Schema parse — free, and the diagnostics teach the shape.
+        // 1. Schema parse: free, and the diagnostics teach the shape.
         let submission: TriageSubmission = match serde_json::from_value(arguments.clone()) {
             Ok(submission) => submission,
             Err(source) => {
@@ -320,7 +320,7 @@ impl SubmissionPipeline for TriageSubmissionPipeline {
 
         // 4. The duplicate path's graph re-checks: the matched item still
         //    exists in this project and its supersedence state is
-        //    unchanged — the optimistic re-check at the submit boundary.
+        //    unchanged: the optimistic re-check at the submit boundary.
         if let TriageSubmissionDecision::Duplicate { matched_item_id } = &submission.decision {
             let Ok(matched_id) = matched_item_id.parse::<KnowledgeItemId>() else {
                 return Ok(SubmissionOutcome::Bounced {
@@ -367,7 +367,7 @@ impl SubmissionPipeline for TriageSubmissionPipeline {
             }
 
             // 5. Contradiction implies novel: a candidate that contradicts
-            //    any examined claim cannot be a duplicate — the graph needs
+            //    any examined claim cannot be a duplicate. The graph needs
             //    both perspectives. The disqualifying contradiction need not
             //    be against the matched claim; a duplicate that conflicts
             //    with some other claim would silently discard that conflict.
@@ -978,7 +978,7 @@ mod tests {
     /// The verifier launch renders a fresh-context child: the rubric
     /// system prompt, the candidate and submission, every assessed claim's
     /// content, and the duplicated claim surfaced even without a per-claim
-    /// assessment — all constrained to the verdict schema.
+    /// assessment: all constrained to the verdict schema.
     #[tokio::test]
     async fn test_the_verifier_launch_renders_the_child_with_the_rubric_and_verdict_schema() {
         let _guard = serial_lock().await;

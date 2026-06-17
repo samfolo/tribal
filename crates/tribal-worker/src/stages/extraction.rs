@@ -53,7 +53,7 @@ impl Worker {
     /// # Errors
     ///
     /// Propagates the routed executor's [`StageError`]s; an external
-    /// executor on the recorded binding is a derivation fault — nothing can
+    /// executor on the recorded binding is a derivation fault. Nothing can
     /// produce one in this release.
     pub(crate) async fn run_extraction(
         &self,

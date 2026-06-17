@@ -2,7 +2,7 @@
 //!
 //! The worker derives each stage's agent definition from the boot-time
 //! stage specs, the job's prompt versions, and the agentic
-//! configuration — through the same derivation the ingest-time
+//! configuration, through the same derivation the ingest-time
 //! fingerprint uses, so the recorded composite names exactly the binding
 //! execution resolves. The default binding is one-shot with no tools and
 //! no budget caps, reproducing launched behaviour exactly.
@@ -72,7 +72,7 @@ impl Worker {
     /// Applies the claim-time crash-window rules: a worker that claims a
     /// task whose thread is suspended, terminal, or carries a durable
     /// cancellation intent disposes of the task accordingly and never
-    /// executes — a cancelled thread never starts a turn after the intent
+    /// executes. A cancelled thread never starts a turn after the intent
     /// is visible at a claim. Returns `true` when the task was disposed
     /// (the stage must not run).
     pub(crate) async fn dispose_for_thread_state(
@@ -140,7 +140,7 @@ impl Worker {
                     // The thread's terminal commit landed but the task half
                     // was re-queued (mid-upgrade or partial history): finish
                     // the task and fire the idempotent coupling. No task
-                    // histogram here — the run that did the work recorded
+                    // histogram here. The run that did the work recorded
                     // its own metrics.
                     let rows = PgTaskRepository
                         .complete(&mut txn, task.id(), claim_token)
@@ -157,7 +157,7 @@ impl Worker {
                         // Extraction's fan-out and relation's batch seal
                         // cannot be re-derived here, so this reconciliation
                         // closes the task and leaves the job where it
-                        // stands — loudly, since an operator must finish
+                        // stands, loudly, since an operator must finish
                         // the job's convergence by hand.
                         tracing::error!(
                             task_id = %task.id(),
@@ -272,7 +272,7 @@ impl Worker {
     }
 
     /// Resolves the active loop templates' content hashes for a stage
-    /// whose configuration selects the loop executor — the binding-hash
+    /// whose configuration selects the loop executor: the binding-hash
     /// half of claim-time prompt resolution. `None` everywhere else, so
     /// the default path reads nothing.
     async fn active_loop_hashes(

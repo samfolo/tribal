@@ -7,8 +7,8 @@
 //! - **Suspend-with-child** commits, in one transaction: the parent's
 //!   suspension record, its thread CAS to suspended, its stage task to
 //!   blocked, the child thread, and the child's paired driver task. The
-//!   child/driver pair relies on the deferred foreign key — the thread
-//!   row names the driver task's id before the task exists — so nothing
+//!   child/driver pair relies on the deferred foreign key (the thread
+//!   row names the driver task's id before the task exists), so nothing
 //!   deferred is durable before the suspension that awaits it.
 //! - **The child terminal** commits, in one transaction: the child's
 //!   assistant record, its completion, the driver task's completion, the
@@ -16,7 +16,7 @@
 //!   resolution (running again, stage task re-queued). A parent no
 //!   longer waiting (cancelled, already resolved) is the orphan window:
 //!   the child and driver still complete, and the hand-back is discarded
-//!   under the parent row lock — never resurrecting the parent, never
+//!   under the parent row lock: never resurrecting the parent, never
 //!   double-committing.
 //! - **Deferred death** owns the child terminal too: when the driver's
 //!   retries exhaust, one transaction dead-letters the child and its
@@ -24,7 +24,7 @@
 //!   conversation as an error tool-result, then resolves the parent. The
 //!   child never outlives its driver row, so no janitor must hunt it.
 //!
-//! Orphan windows — a live child behind a terminal parent — are bounded
+//! Orphan windows (a live child behind a terminal parent) are bounded
 //! by the same parent row lock every terminal takes: the child runs to
 //! its own terminal, finds the parent gone, and discards. The
 //! availability sweep's cancel fallback reaches a child still suspended
@@ -268,7 +268,7 @@ pub struct ParentResolution {
 /// The driver-task completion is the claim guard: a stale token (a
 /// reclaimed task) affects zero rows and the whole commit rolls back, so
 /// a reclaimed run can never hand back twice. A parent no longer
-/// suspended is the orphan window — the child and driver still complete,
+/// suspended is the orphan window: the child and driver still complete,
 /// the hand-back discards.
 ///
 /// # Errors
@@ -483,7 +483,7 @@ async fn finish_child(
 }
 
 /// Moves the child to a terminal status. A death path carries no
-/// assistant record — the child produced no result — so the status move
+/// assistant record (the child produced no result), so the status move
 /// stands alone.
 async fn finish_child_status(
     txn: &mut PgConnection,
