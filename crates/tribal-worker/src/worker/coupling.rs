@@ -153,14 +153,14 @@ enum DrivingDisposition {
     /// A stage task this transaction disposed; its job couples here.
     CoupleStage(Task),
     /// Nothing to couple: a stage task already terminal (coupled by
-    /// whoever made it so), a verifier child's driver task (a child has no
-    /// job coupling of its own), or no driving task.
+    /// whoever made it so), a child's driver task (a child has no job
+    /// coupling of its own), or no driving task.
     NoCoupling,
 }
 
 /// Disposes a cancelled thread's driving task under the locked-unclaimed
-/// guard, branching on whether it is a stage task or a verifier child's
-/// driver task.
+/// guard, branching on whether it is a stage task or a child's driver
+/// task.
 async fn dispose_cancelled_driving_task(
     txn: &mut sqlx::PgConnection,
     thread: &AgentThread,
