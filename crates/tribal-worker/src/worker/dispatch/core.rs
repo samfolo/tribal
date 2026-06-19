@@ -780,11 +780,13 @@ impl Worker {
                     self.heal_stuck_triaging_jobs().await;
                     let thread_stats = self.run_thread_sweep().await;
                     if thread_stats.timer_wakes > 0
+                        || thread_stats.cascaded > 0
                         || thread_stats.cancelled > 0
                         || thread_stats.stuck_relating > 0
                     {
                         tracing::info!(
                             timer_wakes = thread_stats.timer_wakes,
+                            cascaded = thread_stats.cascaded,
                             cancelled = thread_stats.cancelled,
                             stuck_relating = thread_stats.stuck_relating,
                             "availability sweep converged threads",

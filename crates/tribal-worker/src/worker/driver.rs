@@ -35,7 +35,11 @@ use tribal_inference::{
 use crate::{
     error::StageError,
     prompt::narrow_temperature,
-    worker::{Worker, heartbeat::spawn_driver_heartbeat},
+    worker::{
+        Worker,
+        heartbeat::spawn_driver_heartbeat,
+        thread::{guard_route, stage_spec},
+    },
 };
 
 /// How many driver tasks one cycle claims and executes.
@@ -43,6 +47,11 @@ const DRIVER_CLAIM_BATCH: u32 = 4;
 
 /// The claimer identity recorded on a driver task's lease.
 const DRIVER_WORKER: &str = "driver-loop";
+
+/// The deferred-death message for a child the §10.3 cancellation cascade
+/// reached before the driver could run it.
+const CHILD_CASCADE_CANCELLED: &str =
+    "the parent's cancellation cascaded to this verifier child before it ran";
 
 impl Worker {
     /// Drives the driver family until cancellation: each cycle reclaims
@@ -159,6 +168,18 @@ impl Worker {
         let mut conn = self.acquire_driver_conn().await?;
 
         let child = self.run_child_thread(&mut conn, task, claim_token).await?;
+
+        // A cancellation intent supersedes the run: the §10.3 cascade (or
+        // an operator) marked this child while it queued. Hand the
+        // cancellation back through deferred death rather than spend a paid
+        // model call; a parent already terminal discards it under the
+        // orphan guard.
+        if child.cancel_requested_at().is_some() {
+            drop(conn);
+            self.deferred_death(task, CHILD_CASCADE_CANCELLED).await;
+            return Ok(());
+        }
+
         let parent_id = child
             .parent_thread_id()
             .ok_or_else(|| StageError::Runtime {
@@ -192,6 +213,16 @@ impl Worker {
                     },
                 )
             })?;
+        // The gateway routes the call by the child's stage, so a config
+        // edit that moved the stage's route after the child was admitted
+        // would run it under an endpoint its recorded binding does not
+        // name; fail terminal before the call, as the stage path does.
+        guard_route(
+            child.pipeline_stage().as_str(),
+            binding.definition(),
+            stage_spec(self.stage_specs(), child.pipeline_stage()),
+        )?;
+
         let request = request_from(&conversation, &binding.definition().parameters);
         let attribution = child_attribution(&child, task.attempt());
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

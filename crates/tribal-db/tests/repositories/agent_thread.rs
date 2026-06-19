@@ -1722,3 +1722,121 @@ async fn test_stuck_relating_scan_spares_a_budget_suspended_thread() {
         "a budget-suspended relation thread has a pending wake and is not stranded",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Cancellation cascade (§10.3)
+// ---------------------------------------------------------------------------
+
+/// Marks an inserted thread terminal (running then failed), so it can
+/// stand in for a parent the cascade must propagate from.
+async fn make_terminal(txn: &mut sqlx::PgConnection, thread: &AgentThread) {
+    PgAgentThreadRepository
+        .mark_running(txn, thread.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .complete(
+            txn,
+            thread.id(),
+            AgentThreadTerminal::Failed,
+            AgentThreadStatus::Running,
+        )
+        .await
+        .expect("complete");
+}
+
+async fn insert_child(
+    txn: &mut sqlx::PgConnection,
+    suffix: &str,
+    parent_id: tribal_domain::AgentThreadId,
+) -> AgentThread {
+    let mut prereq = setup_thread_prerequisites(txn, suffix).await;
+    prereq.new_thread.parent_thread_id = Some(parent_id);
+    PgAgentThreadRepository
+        .insert(txn, &prereq.new_thread)
+        .await
+        .expect("insert child")
+}
+
+#[tokio::test]
+async fn test_orphan_cascade_marks_only_live_children_of_terminal_parents() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    let terminal_parent = insert_thread(&mut txn, "cascade-terminal-parent").await;
+    make_terminal(&mut txn, &terminal_parent).await;
+    let orphan = insert_child(&mut txn, "cascade-orphan", terminal_parent.id()).await;
+
+    // A control: a live parent's child is not an orphan.
+    let live_parent = insert_thread(&mut txn, "cascade-live-parent").await;
+    let live_child = insert_child(&mut txn, "cascade-live-child", live_parent.id()).await;
+
+    let marked = PgAgentThreadRepository
+        .cascade_cancel_to_orphans(&mut txn, 16, "test")
+        .await
+        .expect("cascade");
+    assert_eq!(marked, 1, "only the terminal parent's live child is marked");
+
+    let orphan = PgAgentThreadRepository
+        .find_by_id(&mut txn, orphan.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert!(
+        orphan.cancel_requested_at().is_some(),
+        "the orphan carries the cascaded intent",
+    );
+    let live_child = PgAgentThreadRepository
+        .find_by_id(&mut txn, live_child.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert!(
+        live_child.cancel_requested_at().is_none(),
+        "a live parent's child is untouched",
+    );
+
+    // Idempotent: a second pass finds nothing new to mark.
+    let again = PgAgentThreadRepository
+        .cascade_cancel_to_orphans(&mut txn, 16, "test")
+        .await
+        .expect("cascade again");
+    assert_eq!(
+        again, 0,
+        "the cascade does not re-mark an already-marked orphan"
+    );
+}
+
+#[tokio::test]
+async fn test_cascade_to_children_skips_terminal_and_already_marked_children() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    let parent = insert_thread(&mut txn, "children-parent").await;
+    let live = insert_child(&mut txn, "children-live", parent.id()).await;
+    let terminal = insert_child(&mut txn, "children-terminal", parent.id()).await;
+    make_terminal(&mut txn, &terminal).await;
+
+    let marked = PgAgentThreadRepository
+        .cascade_cancel_to_children(&mut txn, parent.id(), "test")
+        .await
+        .expect("cascade");
+    assert_eq!(
+        marked, 1,
+        "only the live child is marked; the terminal one is skipped"
+    );
+
+    let live = PgAgentThreadRepository
+        .find_by_id(&mut txn, live.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert!(live.cancel_requested_at().is_some());
+
+    // Idempotent: the already-marked child is not re-marked.
+    let again = PgAgentThreadRepository
+        .cascade_cancel_to_children(&mut txn, parent.id(), "test")
+        .await
+        .expect("cascade again");
+    assert_eq!(again, 0);
+}

@@ -325,6 +325,8 @@ pub async fn commit_child_terminal(
 /// surfaces, matching the shared [`retry_on_conflict`] budget.
 const CHILD_TERMINAL_CONFLICT_RETRIES: u32 = 5;
 
+// The same guard and hand-back context as the wrapper; a params struct would
+// only move the same arguments behind a name.
 #[allow(clippy::too_many_arguments)]
 async fn commit_child_terminal_once(
     conn: &mut PgConnection,

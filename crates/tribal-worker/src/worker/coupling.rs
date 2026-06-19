@@ -9,12 +9,19 @@
 use chrono::Utc;
 use tribal_agent_runtime::{AgentRuntimeError, CancelOutcome, cancel_thread_in_txn};
 use tribal_db::{
-    DbError, JobRepository, JobStatusTransition, NewTask, PgJobRepository, PgTaskRepository,
-    TaskRepository,
+    AgentDriverTaskRepository, AgentThreadRepository, DbError, JobRepository, JobStatusTransition,
+    NewTask, PgAgentDriverTaskRepository, PgAgentThreadRepository, PgJobRepository,
+    PgTaskRepository, TaskRepository,
 };
 use tribal_domain::{
-    AgentThread, JobId, JobOutcome, JobState, JobStatus, Task, TaskErrorKind, TaskId, TaskType,
+    AgentThread, AgentThreadId, JobId, JobOutcome, JobState, JobStatus, Task, TaskErrorKind,
+    TaskId, TaskType,
 };
+
+/// The requester recorded on a cancellation intent the §10.3 cascade
+/// writes, distinguishing a cascaded intent from an operator's in the
+/// durable record.
+pub(crate) const CANCEL_CASCADE_REQUESTED_BY: &str = "parent-terminal cascade";
 
 /// A notification a committed coupling owes its caller: sent to the
 /// job-state watch hub only after the enclosing transaction commits,
@@ -137,16 +144,87 @@ pub enum CancelThreadOutcome {
     },
 }
 
+/// What disposing a cancelled thread's driving task implies for the rest
+/// of the cancel transaction.
+enum DrivingDisposition {
+    /// A live worker holds the task and performs the cancel at its own
+    /// boundary, so the cancel transaction rolls back untouched.
+    Claimed,
+    /// A stage task this transaction disposed; its job couples here.
+    CoupleStage(Task),
+    /// Nothing to couple: a stage task already terminal (coupled by
+    /// whoever made it so), a verifier child's driver task (a child has no
+    /// job coupling of its own), or no driving task.
+    NoCoupling,
+}
+
+/// Disposes a cancelled thread's driving task under the locked-unclaimed
+/// guard, branching on whether it is a stage task or a verifier child's
+/// driver task.
+async fn dispose_cancelled_driving_task(
+    txn: &mut sqlx::PgConnection,
+    thread: &AgentThread,
+) -> Result<DrivingDisposition, AgentRuntimeError> {
+    if let Some(task_id) = thread.stage_task_id() {
+        let task = PgTaskRepository
+            .find_by_id(txn, task_id)
+            .await
+            .map_err(|source| AgentRuntimeError::database("loading the driving task", source))?;
+        let disposed = PgTaskRepository
+            .dead_letter_unclaimed(
+                txn,
+                task_id,
+                TaskErrorKind::InternalError,
+                "thread cancelled",
+            )
+            .await
+            .map_err(|source| {
+                AgentRuntimeError::database("disposing of the driving task", source)
+            })?;
+        if disposed == 0 && !task.status().is_terminal() {
+            return Ok(DrivingDisposition::Claimed);
+        }
+        return Ok(if disposed > 0 {
+            DrivingDisposition::CoupleStage(task)
+        } else {
+            DrivingDisposition::NoCoupling
+        });
+    }
+
+    if let Some(driver_task_id) = thread.driver_task_id() {
+        let task = PgAgentDriverTaskRepository
+            .find_by_id(txn, driver_task_id)
+            .await
+            .map_err(|source| {
+                AgentRuntimeError::database("loading the child's driver task", source)
+            })?;
+        let disposed = PgAgentDriverTaskRepository
+            .dispose_unclaimed(txn, driver_task_id, "thread cancelled")
+            .await
+            .map_err(|source| {
+                AgentRuntimeError::database("disposing of the child's driver task", source)
+            })?;
+        if disposed == 0 && task.is_some_and(|task| !task.state().is_terminal()) {
+            return Ok(DrivingDisposition::Claimed);
+        }
+        return Ok(DrivingDisposition::NoCoupling);
+    }
+
+    Ok(DrivingDisposition::NoCoupling)
+}
+
 /// Cancels an unclaimed thread and couples its job, in one transaction:
-/// the locked-unclaimed task disposal, the cancellation record and
+/// the locked-unclaimed driving-task disposal, the cancellation record and
 /// status, and the launched job coupling. The sweep's cancel fallback and
 /// the control plane share this seam.
 ///
 /// A claimed driving task means a live worker observes the intent at its
-/// own boundary, so this rolls back untouched. A task already terminal
-/// still cancels the thread but never re-couples the job: whichever
-/// transaction made the task terminal fired its coupling, and coupling a
-/// completed task as if dead-lettered would fail a healthy job.
+/// own boundary, so this rolls back untouched. A stage task already
+/// terminal still cancels the thread but never re-couples the job:
+/// whichever transaction made it terminal fired its coupling, and coupling
+/// a completed task as if dead-lettered would fail a healthy job. A
+/// cancelled root thread cascades the intent to its live descendants once
+/// the transaction commits (§10.3).
 ///
 /// # Errors
 ///
@@ -168,36 +246,10 @@ pub async fn cancel_thread(
             )
         })?;
 
-    let task = match thread.stage_task_id() {
-        Some(task_id) => {
-            let task = PgTaskRepository
-                .find_by_id(&mut txn, task_id)
-                .await
-                .map_err(|source| {
-                    AgentRuntimeError::database("loading the driving task", source)
-                })?;
-            let disposed = PgTaskRepository
-                .dead_letter_unclaimed(
-                    &mut txn,
-                    task_id,
-                    TaskErrorKind::InternalError,
-                    "thread cancelled",
-                )
-                .await
-                .map_err(|source| {
-                    AgentRuntimeError::database("disposing of the driving task", source)
-                })?;
-            if disposed == 0 && !task.status().is_terminal() {
-                // Claimed: the live worker performs the cancel at its own
-                // boundary. Nothing commits.
-                return Ok(CancelThreadOutcome::Skipped);
-            }
-            // The coupling fires only for the task this transaction
-            // disposed; a terminal task was coupled by whichever
-            // transaction made it terminal.
-            (disposed > 0).then_some(task)
-        }
-        None => None,
+    let coupling_task = match dispose_cancelled_driving_task(&mut txn, thread).await? {
+        DrivingDisposition::Claimed => return Ok(CancelThreadOutcome::Skipped),
+        DrivingDisposition::CoupleStage(task) => Some(task),
+        DrivingDisposition::NoCoupling => None,
     };
 
     let outcome = cancel_thread_in_txn(&mut txn, thread.id()).await?;
@@ -206,7 +258,7 @@ pub async fn cancel_thread(
     }
 
     let mut notification = None;
-    if let Some(task) = &task {
+    if let Some(task) = &coupling_task {
         notification = couple_dead_lettered_task(&mut txn, task, "thread cancelled")
             .await
             .map_err(|source| AgentRuntimeError::database("coupling the cancelled job", source))?;
@@ -221,5 +273,36 @@ pub async fn cancel_thread(
             },
         )
     })?;
+
+    // The fast path of the §10.3 cascade: a cancelled root writes intents
+    // to its live descendants post-commit. Best-effort; the sweep's orphan
+    // janitor heals a crash in this window. Only a root has descendants (a
+    // child binding is flat by construction), so the gate skips children.
+    if thread.parent_thread_id().is_none() {
+        cascade_cancel_to_children(conn, thread.id()).await;
+    }
+
     Ok(CancelThreadOutcome::Cancelled { notification })
+}
+
+/// Records cancellation intents on a cancelled root's live descendants,
+/// post-commit and best-effort: a failure leaves the orphan janitor to
+/// heal the descendants on a later sweep.
+async fn cascade_cancel_to_children(conn: &mut sqlx::PgConnection, parent_id: AgentThreadId) {
+    match PgAgentThreadRepository
+        .cascade_cancel_to_children(conn, parent_id, CANCEL_CASCADE_REQUESTED_BY)
+        .await
+    {
+        Ok(0) => {}
+        Ok(count) => tracing::info!(
+            parent_thread_id = %parent_id,
+            count,
+            "cancellation cascaded to live descendants",
+        ),
+        Err(e) => tracing::warn!(
+            parent_thread_id = %parent_id,
+            error = %e,
+            "post-commit cancellation cascade failed; the orphan janitor will heal it",
+        ),
+    }
 }
