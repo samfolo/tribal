@@ -325,6 +325,37 @@ pub trait AgentThreadRepository {
         limit: u32,
     ) -> Result<Vec<AgentThread>, DbError>;
 
+    /// Records cancellation intents on a terminal parent's live
+    /// descendants, the post-commit fast path of the §10.3 cascade.
+    /// Idempotent and seq-free: only non-terminal descendants without an
+    /// intent are touched. Returns the count written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn cascade_cancel_to_children(
+        &self,
+        conn: &mut PgConnection,
+        parent_id: AgentThreadId,
+        requested_by: &str,
+    ) -> Result<u64, DbError>;
+
+    /// Records cancellation intents on non-terminal threads whose parent is
+    /// terminal, the sweep's orphan janitor: the convergent half of the
+    /// §10.3 cascade that heals a crash between a parent's terminal commit
+    /// and its fast-path cascade. Rows are locked with `SKIP LOCKED`.
+    /// Returns the count written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn cascade_cancel_to_orphans(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+        requested_by: &str,
+    ) -> Result<u64, DbError>;
+
     /// Replaces the committed-record spend projection.
     ///
     /// # Errors
@@ -755,6 +786,75 @@ impl AgentThreadRepository for PgAgentThreadRepository {
             })?;
 
         Ok(rows.iter().map(map_agent_thread_row).collect())
+    }
+
+    async fn cascade_cancel_to_children(
+        &self,
+        conn: &mut PgConnection,
+        parent_id: AgentThreadId,
+        requested_by: &str,
+    ) -> Result<u64, DbError> {
+        let terminal = terminal_status_literals();
+        let sql = format!(
+            "UPDATE agent_threads \
+             SET cancel_requested_at = now(), cancel_requested_by = $2, updated_at = now() \
+             WHERE parent_thread_id = $1 \
+               AND cancel_requested_at IS NULL \
+               AND status NOT IN ({terminal})",
+            terminal = terminal.join(", "),
+        );
+        let result = sqlx::query(&sql)
+            .bind(parent_id.inner())
+            .bind(requested_by)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("cascading cancellation to children of thread {parent_id}"),
+                source: e,
+            })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn cascade_cancel_to_orphans(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+        requested_by: &str,
+    ) -> Result<u64, DbError> {
+        // The CTE locks the orphan rows it will write under `SKIP LOCKED`,
+        // so concurrent sweeps never contend; the terminal sets are
+        // interpolated literals derived from `ALL`, the single-source
+        // contract every status predicate here keeps.
+        let terminal = terminal_status_literals();
+        let terminal = terminal.join(", ");
+        let sql = format!(
+            "WITH orphan AS ( \
+                 SELECT child.id FROM agent_threads child \
+                 JOIN agent_threads parent ON parent.id = child.parent_thread_id \
+                 WHERE parent.status IN ({terminal}) \
+                   AND child.cancel_requested_at IS NULL \
+                   AND child.status NOT IN ({terminal}) \
+                 ORDER BY child.updated_at \
+                 LIMIT $1 \
+                 FOR UPDATE OF child SKIP LOCKED \
+             ) \
+             UPDATE agent_threads c \
+             SET cancel_requested_at = now(), cancel_requested_by = $2, updated_at = now() \
+             FROM orphan \
+             WHERE c.id = orphan.id"
+        );
+        let result = sqlx::query(&sql)
+            .bind(i64::from(limit))
+            .bind(requested_by)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "cascading cancellation to orphaned descendants".to_owned(),
+                source: e,
+            })?;
+
+        Ok(result.rows_affected())
     }
 
     async fn set_execution_spend(

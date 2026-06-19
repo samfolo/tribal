@@ -14,9 +14,9 @@ use tribal_db::{
     PgAgentThreadRepository,
 };
 use tribal_domain::{
-    AGENT_THREAD_FORMAT_VERSION, AgentDriverTaskId, AgentDriverTaskState, AgentThread,
-    AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus, AgentThreadSuspension,
-    AgentThreadTerminal,
+    AGENT_THREAD_FORMAT_VERSION, AgentDefinition, AgentDriverTaskId, AgentDriverTaskState,
+    AgentThread, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus,
+    AgentThreadSuspension, AgentThreadTerminal,
 };
 
 use super::common::*;
@@ -35,10 +35,27 @@ struct SuspendedParent {
 }
 
 /// Seeds a running stage thread, gives it an assistant record bearing a
-/// submit call, then suspends it with a child through the runtime.
+/// submit call, then suspends it with a child whose recorded route
+/// matches the triage stage spec, as a freshly launched verifier's would.
 async fn seed_suspended_parent(
     ctx: &TestContext,
     suffix: &str,
+) -> (sqlx::PgConnection, SuspendedParent) {
+    seed_suspended_parent_with_child(
+        ctx,
+        suffix,
+        a_routed_definition(tribal_domain::TaskType::Triage),
+    )
+    .await
+}
+
+/// Like [`seed_suspended_parent`], with the child's recorded binding
+/// definition supplied so a test can diverge its route from the stage
+/// spec.
+async fn seed_suspended_parent_with_child(
+    ctx: &TestContext,
+    suffix: &str,
+    child_definition: AgentDefinition,
 ) -> (sqlx::PgConnection, SuspendedParent) {
     let (principal_id, project_id, system_pv_id, user_pv_id) =
         setup_prerequisites(ctx, suffix).await;
@@ -96,15 +113,10 @@ async fn seed_suspended_parent(
         .await
         .expect("assistant record");
 
-    // The child binds to a distinct (triage) binding, as a verifier would.
-    let child_binding = resolve_binding(
-        &mut conn,
-        &tribal_test_utils::an_agent_definition()
-            .pipeline_stage(tribal_domain::TaskType::Triage)
-            .build(),
-    )
-    .await
-    .expect("child binding");
+    let child_stage = child_definition.pipeline_stage;
+    let child_binding = resolve_binding(&mut conn, &child_definition)
+        .await
+        .expect("child binding");
 
     let outcome = suspend_with_child(
         &mut conn,
@@ -114,7 +126,7 @@ async fn seed_suspended_parent(
         seq,
         SUBMIT_CALL_ID,
         ChildLaunch {
-            pipeline_stage: tribal_domain::TaskType::Triage,
+            pipeline_stage: child_stage,
             binding_version_id: child_binding.id(),
             principal_id,
             job_id: None,
@@ -582,6 +594,253 @@ async fn test_the_driver_loop_drives_a_child_and_hands_back() {
             Some(tribal_inference::ResponseFormat::JsonSchema { .. })
         ),
         "the verdict schema constrains the child's structured output",
+    );
+
+    teardown(ctx).await;
+}
+
+/// A child whose recorded route diverges from its stage spec (a config
+/// edit moved the route after the child was admitted) fails terminal
+/// before any model call: the divergence crosses into the parent as an
+/// error tool-result, and the gateway is never reached.
+#[tokio::test]
+async fn test_the_driver_loop_fails_a_route_diverged_child_before_the_call() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+    // The default factory's route diverges from the triage stage spec the
+    // test worker resolves, standing in for a post-admission config edit.
+    let (conn, sp) = seed_suspended_parent_with_child(
+        ctx,
+        "route-diverged",
+        tribal_test_utils::an_agent_definition()
+            .pipeline_stage(tribal_domain::TaskType::Triage)
+            .build(),
+    )
+    .await;
+    drop(conn);
+
+    let provider = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(
+                a_completion_response(r#"{"accepted": true, "critique": null}"#),
+                None,
+            )
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+    let inference: Arc<dyn InferenceProvider> = Arc::clone(&provider) as Arc<dyn InferenceProvider>;
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    )
+    .await;
+
+    let driver = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run_driver_loop().await })
+    };
+
+    let driver_task_id = sp.driver_task_id;
+    poll_until(
+        "the route-diverged child's driver task dead-letters",
+        POLL_INTERVAL,
+        POLL_SETTLE,
+        || {
+            let pool = pool.clone();
+            async move {
+                let mut conn = pool.acquire().await.ok()?;
+                let task = PgAgentDriverTaskRepository
+                    .find_by_id(&mut conn, driver_task_id)
+                    .await
+                    .ok()??;
+                (task.state() == AgentDriverTaskState::DeadLetter).then_some(())
+            }
+        },
+    )
+    .await;
+    token.cancel();
+    let _ = driver.await;
+
+    // The guard fired before the call, so the gateway was never reached.
+    assert!(
+        provider.completion_history().is_empty(),
+        "the route-diverged child never calls the model",
+    );
+
+    let mut conn = raw_conn(ctx).await;
+    let child = child(&mut conn, sp.child_thread_id).await;
+    assert_eq!(child.status(), AgentThreadStatus::DeadLetter);
+
+    // The divergence crossed into the parent as an error tool-result, and
+    // the parent woke to face it.
+    let parent = PgAgentThreadRepository
+        .find_by_id(&mut conn, sp.parent.id())
+        .await
+        .expect("find parent")
+        .expect("present");
+    assert_eq!(parent.status(), AgentThreadStatus::Running);
+    let parent_records = PgAgentThreadRecordRepository
+        .find_by_thread_id(&mut conn, sp.parent.id())
+        .await
+        .expect("parent log");
+    let result = parent_records
+        .iter()
+        .find(|r| r.kind() == AgentThreadRecordKind::ToolResult)
+        .expect("the divergence committed an error tool result");
+    assert_eq!(result.content()["is_error"], true);
+    assert_eq!(result.tool_call_id(), Some(SUBMIT_CALL_ID));
+
+    teardown(ctx).await;
+}
+
+/// A child carrying a cancellation intent (the §10.3 cascade, or an
+/// operator) is refused before any model call: the driver hands the
+/// cancellation back through deferred death rather than spend a paid turn.
+#[tokio::test]
+async fn test_the_driver_loop_refuses_a_cancelled_child_before_the_call() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+    let (mut conn, sp) = seed_suspended_parent(ctx, "cancelled-child").await;
+    PgAgentThreadRepository
+        .record_cancel_intent(&mut conn, sp.child_thread_id, "operator:test")
+        .await
+        .expect("record the child's cancel intent");
+    drop(conn);
+
+    let provider = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(
+                a_completion_response(r#"{"accepted": true, "critique": null}"#),
+                None,
+            )
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+    let inference: Arc<dyn InferenceProvider> = Arc::clone(&provider) as Arc<dyn InferenceProvider>;
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    )
+    .await;
+
+    let driver = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run_driver_loop().await })
+    };
+
+    let driver_task_id = sp.driver_task_id;
+    poll_until(
+        "the cancelled child's driver task dead-letters",
+        POLL_INTERVAL,
+        POLL_SETTLE,
+        || {
+            let pool = pool.clone();
+            async move {
+                let mut conn = pool.acquire().await.ok()?;
+                let task = PgAgentDriverTaskRepository
+                    .find_by_id(&mut conn, driver_task_id)
+                    .await
+                    .ok()??;
+                (task.state() == AgentDriverTaskState::DeadLetter).then_some(())
+            }
+        },
+    )
+    .await;
+    token.cancel();
+    let _ = driver.await;
+
+    assert!(
+        provider.completion_history().is_empty(),
+        "a cancelled child never calls the model",
+    );
+
+    let mut conn = raw_conn(ctx).await;
+    let child = child(&mut conn, sp.child_thread_id).await;
+    assert_eq!(child.status(), AgentThreadStatus::DeadLetter);
+
+    // The cancellation crossed back to the still-suspended parent as an
+    // error tool-result, so the parent is not stranded waiting on a child
+    // that will never run.
+    let parent = PgAgentThreadRepository
+        .find_by_id(&mut conn, sp.parent.id())
+        .await
+        .expect("find parent")
+        .expect("present");
+    assert_eq!(parent.status(), AgentThreadStatus::Running);
+    let parent_records = PgAgentThreadRecordRepository
+        .find_by_thread_id(&mut conn, sp.parent.id())
+        .await
+        .expect("parent log");
+    let result = parent_records
+        .iter()
+        .find(|r| r.kind() == AgentThreadRecordKind::ToolResult)
+        .expect("the cancellation committed an error tool result");
+    assert_eq!(result.content()["is_error"], true);
+
+    teardown(ctx).await;
+}
+
+/// Cancelling a parent with a queued verifier child cascades the intent to
+/// the child and, on the cancel that follows, disposes the child's
+/// unclaimed driver task so it never starts a paid call.
+#[tokio::test]
+async fn test_cancelling_a_parent_cascades_to_and_disposes_a_queued_child() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let (mut conn, sp) = seed_suspended_parent(ctx, "cascade-queued-child").await;
+
+    let outcome = tribal_worker::coupling::cancel_thread(&mut conn, &sp.parent)
+        .await
+        .expect("cancel the parent");
+    assert!(matches!(
+        outcome,
+        tribal_worker::coupling::CancelThreadOutcome::Cancelled { .. }
+    ));
+
+    let parent = PgAgentThreadRepository
+        .find_by_id(&mut conn, sp.parent.id())
+        .await
+        .expect("find parent")
+        .expect("present");
+    assert_eq!(parent.status(), AgentThreadStatus::Cancelled);
+
+    // The post-commit cascade marked the queued child.
+    let cascaded_child = child(&mut conn, sp.child_thread_id).await;
+    assert!(
+        cascaded_child.cancel_requested_at().is_some(),
+        "the cancellation cascaded to the live child",
+    );
+
+    // The cancel that the fallback then runs disposes the child and its
+    // still-unclaimed driver task in one transaction.
+    let outcome = tribal_worker::coupling::cancel_thread(&mut conn, &cascaded_child)
+        .await
+        .expect("cancel the child");
+    assert!(matches!(
+        outcome,
+        tribal_worker::coupling::CancelThreadOutcome::Cancelled { .. }
+    ));
+    let cancelled_child = child(&mut conn, sp.child_thread_id).await;
+    assert_eq!(cancelled_child.status(), AgentThreadStatus::Cancelled);
+    let driver_task = PgAgentDriverTaskRepository
+        .find_by_id(&mut conn, sp.driver_task_id)
+        .await
+        .expect("find driver task")
+        .expect("present");
+    assert_eq!(
+        driver_task.state(),
+        AgentDriverTaskState::DeadLetter,
+        "the child's unclaimed driver task is disposed with it",
     );
 
     teardown(ctx).await;

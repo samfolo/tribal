@@ -65,7 +65,11 @@ impl Worker {
             .await
             .map_err(|source| map_runtime_error(stage, "establishing the thread", source))?;
 
-        guard_resume_route(stage, &definition, &stage_thread)?;
+        guard_route(
+            stage,
+            stage_thread.binding.definition(),
+            stage_spec(self.stage_specs(), task.task_type()),
+        )?;
         Ok(stage_thread)
     }
 
@@ -248,7 +252,7 @@ impl Worker {
         task: &Task,
     ) -> Result<AgentDefinition, StageError> {
         let stage = task.task_type().as_str();
-        let spec = stage_spec(self.stage_specs(), task);
+        let spec = stage_spec(self.stage_specs(), task.task_type());
         let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
 
         let system_hash = prompt_hash(conn, system_pv_id)
@@ -315,24 +319,21 @@ impl Worker {
     }
 }
 
-/// Fails a resumed thread whose recorded binding names a different route
-/// than the configuration now resolves.
+/// Fails a resumed thread or driver child whose recorded binding names a
+/// different route than the gateway now resolves for its stage.
 ///
-/// The gateway routes by the current stage, so a divergent resume would
-/// run under an endpoint its recorded binding, eval row, and attribution
-/// do not name; failing fast preserves the recorded-binding-names-what-ran
-/// invariant rather than silently re-routing. A fresh thread pairs the
-/// current binding, so its route matches by construction and the guard is
-/// a no-op.
-fn guard_resume_route(
+/// The gateway routes by stage, so a divergent resume would run under an
+/// endpoint the recorded binding and attribution do not name; failing
+/// fast preserves the recorded-binding-names-what-ran invariant. A fresh
+/// thread pairs the current spec, so its route matches by construction.
+pub(super) fn guard_route(
     stage: &str,
-    current: &AgentDefinition,
-    stage_thread: &StageThread,
+    recorded: &AgentDefinition,
+    spec: &CompletionStageSpec,
 ) -> Result<(), StageError> {
-    let recorded = stage_thread.binding.definition();
-    if recorded.provider == current.provider
-        && recorded.model == current.model
-        && recorded.base_url == current.base_url
+    if recorded.provider == spec.provider
+        && recorded.model == spec.model
+        && recorded.base_url == spec.base_url
     {
         return Ok(());
     }
@@ -342,16 +343,13 @@ fn guard_resume_route(
             "{}/{}@{}",
             recorded.provider, recorded.model, recorded.base_url
         ),
-        current: format!(
-            "{}/{}@{}",
-            current.provider, current.model, current.base_url
-        ),
+        current: format!("{}/{}@{}", spec.provider, spec.model, spec.base_url),
     })
 }
 
-/// Selects the boot-time endpoint spec for a task's stage.
-fn stage_spec<'a>(specs: &'a CompletionStageSpecs, task: &Task) -> &'a CompletionStageSpec {
-    match task.task_type() {
+/// Selects the boot-time endpoint spec for a stage.
+pub(super) fn stage_spec(specs: &CompletionStageSpecs, stage: TaskType) -> &CompletionStageSpec {
+    match stage {
         TaskType::Extraction => &specs.extraction,
         TaskType::Triage => &specs.triage,
         TaskType::Relation => &specs.relation,
@@ -453,24 +451,29 @@ fn stage_db(stage: &str, context: &str, source: tribal_db::DbError) -> StageErro
 
 #[cfg(test)]
 mod tests {
-    use tribal_test_utils::{an_agent_binding, an_agent_definition, an_agent_thread};
+    use tribal_domain::{ProviderKind, StageParameters};
+    use tribal_test_utils::an_agent_definition;
 
     use super::*;
 
-    fn a_stage_thread() -> StageThread {
-        StageThread {
-            thread: an_agent_thread().build(),
-            input: None,
-            binding: an_agent_binding().build(),
+    /// A spec on the default route's provider and endpoint, with `model`
+    /// the divergence axis.
+    fn a_stage_spec(model: &str) -> CompletionStageSpec {
+        CompletionStageSpec {
+            provider: ProviderKind::Ollama,
+            model: model.to_owned(),
+            base_url: "http://localhost:11434".to_owned(),
+            api_key: String::new(),
+            parameters: StageParameters::default(),
         }
     }
 
     #[test]
     fn test_guard_passes_a_matching_route() {
-        // A fresh thread pairs the current binding, so the recorded and
+        // A fresh thread pairs the current spec, so the recorded and
         // current routes are identical and the guard is a no-op.
-        let current = an_agent_definition().build();
-        assert!(guard_resume_route("relation", &current, &a_stage_thread()).is_ok());
+        let recorded = an_agent_definition().build();
+        assert!(guard_route("relation", &recorded, &a_stage_spec("llama3")).is_ok());
     }
 
     #[test]
@@ -478,11 +481,9 @@ mod tests {
         // A configuration edit moved the model after admission: the resume
         // fails fast rather than running under the new endpoint while the
         // recorded binding still names the old one.
-        let current = an_agent_definition()
-            .model("a-different-model".to_owned())
-            .build();
+        let recorded = an_agent_definition().build();
         assert!(matches!(
-            guard_resume_route("relation", &current, &a_stage_thread()),
+            guard_route("relation", &recorded, &a_stage_spec("a-different-model")),
             Err(StageError::ResumeRouteDivergence { .. }),
         ));
     }

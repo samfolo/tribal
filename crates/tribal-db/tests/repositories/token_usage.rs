@@ -300,3 +300,34 @@ async fn test_insert_attributes_embedding_usage_to_a_reindex_run() {
     assert_eq!(tu.stage(), PipelineStage::Embedding);
     assert_eq!(tu.purpose(), Some(EmbeddingPurpose::Candidate));
 }
+
+#[tokio::test]
+async fn test_find_by_job_id_surfaces_verifier_child_spend() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgTokenUsageRepository;
+
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "child-spend").await;
+    let pv_id = setup_prompt_version(&mut txn).await;
+    let job_id = setup_job(&mut txn, project_id, principal_id, pv_id).await;
+
+    // A verifier child meters to its job through the thread owner, not a
+    // stage task: the row carries the job id but no task id. The job's cost
+    // accounting must include it.
+    let child_spend = a_new_token_usage()
+        .job_id(Some(job_id))
+        .stage(TokenUsageStage::Triage)
+        .attempt(1)
+        .build();
+    let inserted = repo.insert(&mut txn, &child_spend).await.expect("insert");
+    assert!(
+        inserted.task_id().is_none(),
+        "a verifier child has no stage task",
+    );
+
+    let for_job = repo.find_by_job_id(&mut txn, job_id).await.expect("find");
+    assert!(
+        for_job.iter().any(|tu| tu.id() == inserted.id()),
+        "the child's task-less spend surfaces in the job's accounting",
+    );
+}
