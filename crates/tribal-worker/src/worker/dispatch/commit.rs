@@ -670,6 +670,11 @@ impl Worker {
                 .map_err(|e| stage_db_error(STAGE_RELATION, "batch-inserting relations", e))?;
         }
 
+        // The job-completion stays in this shared relation commit, atomically
+        // bound to the batch seal above: one-shot and loop both reach it (one
+        // observable model), and unlike the failure couplings it has a single
+        // producer (the sweep only fails a Relating job, never completes it),
+        // so a coupling-seam lift would only add indirection.
         let transition = JobStatusTransition::builder()
             .status(JobStatus::Completed)
             .outcome(Some(outcome))
