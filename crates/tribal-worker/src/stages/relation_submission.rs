@@ -12,27 +12,33 @@
 //!
 //! Provenance is checked against a structured set of trusted ids, not the
 //! substring corpus: the batch's committed items and the existing claims
-//! triage surfaced (seeded from the stage's loaded context), plus the
-//! `item_id` fields of the model's own tool results (harvested from the
-//! thread log at submission time). An id that appears only inside
-//! externally-derived content (a candidate's body, an item's body) is not a
-//! citable reference, so it cannot be laundered into a permanent
+//! triage surfaced (seeded from the stage's loaded context), extended only
+//! through grounded tool results harvested from the thread log at submission
+//! time. A search result is grounded by construction; an id-addressed read
+//! extends the set only when the id it was given was already citable, so the
+//! set grows by walking out from grounded anchors. An id that appears only
+//! inside externally-derived content (a candidate's body, an item's body)
+//! cannot enter the set, whether cited directly or read back out of a read's
+//! own echoed id field, so it cannot be laundered into a permanent
 //! cross-project edge.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
+use serde::Deserialize;
 use sqlx::PgConnection;
 use tribal_agent_runtime::{
-    SeenCorpus, SubmissionOutcome, SubmissionPipeline, ToolResultContent, VerifierLaunch,
+    RecordedToolCall, SeenCorpus, SubmissionOutcome, SubmissionPipeline, ToolResultContent,
+    VerifierLaunch,
 };
 use tribal_db::{AgentThreadRecordRepository, PgAgentThreadRecordRepository};
 use tribal_domain::{
     AgentThread, AgentThreadRecordKind, KnowledgeItemId, RelationKind, ToolFailure,
 };
 
-use crate::parsing::{
-    RELATION_JUSTIFICATION_MAX_CHARS, RelationSubmission, RelationSubmissionEdge,
+use crate::{
+    parsing::{RELATION_JUSTIFICATION_MAX_CHARS, RelationSubmission, RelationSubmissionEdge},
+    tools::{RelationToolGrounding, relation_tool_grounding},
 };
 
 /// The relation stage's submission pipeline. Cross-project by nature, so it
@@ -193,11 +199,13 @@ fn parse_endpoint(raw: &str) -> Result<KnowledgeItemId, String> {
     })
 }
 
-/// Extends `ids` with the knowledge item ids the model's own non-error tool
+/// Extends `ids` with the knowledge item ids the model's grounded tool
 /// results surfaced under an `item_id` or `*_item_id` field. Read by thread
-/// id, which a stage thread always carries (unlike its job id). Ids that
-/// appear only inside an item's content are absent by construction, so they
-/// cannot be cited as edge endpoints.
+/// id, which a stage thread always carries (unlike its job id), in log order
+/// so trust walks out from grounded anchors: a search result is grounded by
+/// construction, an id-addressed read only when the id it was given is
+/// already citable. An id that appears only inside content is never citable,
+/// and reading it back out of a read's echoed id field does not ground it.
 async fn harvest_tool_result_ids(
     conn: &mut PgConnection,
     thread: &AgentThread,
@@ -209,6 +217,19 @@ async fn harvest_tool_result_ids(
         .map_err(|source| ToolFailure::System {
             context: format!("reading thread records for relation provenance: {source}"),
         })?;
+
+    // The call behind each result, keyed by its id: a result grounds
+    // provenance only through the call that produced it.
+    let calls: HashMap<String, RecordedToolCall> = records
+        .iter()
+        .filter(|record| record.kind() == AgentThreadRecordKind::AssistantMessage)
+        .filter_map(|record| {
+            serde_json::from_value::<AssistantToolCalls>(record.content().clone()).ok()
+        })
+        .flat_map(|content| content.tool_calls)
+        .map(|call| (call.id.clone(), call))
+        .collect();
+
     for record in &records {
         if record.kind() != AgentThreadRecordKind::ToolResult {
             continue;
@@ -220,19 +241,49 @@ async fn harvest_tool_result_ids(
         if content.is_error {
             continue;
         }
-        // A successful result is whole, valid JSON (§10.1); a parse failure
-        // is an internal inconsistency, not a skip.
+        let Some(call) = record.tool_call_id().and_then(|id| calls.get(id)) else {
+            continue;
+        };
+        if !call_grounds_provenance(call, ids) {
+            continue;
+        }
+        // A grounded result is whole, valid JSON (§10.1); a parse failure is
+        // an internal inconsistency, not a skip.
         let value =
             serde_json::from_str::<serde_json::Value>(&content.output).map_err(|source| {
                 ToolFailure::System {
-                    context: format!(
-                        "a successful relation tool result is not valid JSON: {source}"
-                    ),
+                    context: format!("a grounded relation tool result is not valid JSON: {source}"),
                 }
             })?;
         collect_item_id_fields(&value, ids);
     }
     Ok(())
+}
+
+/// The assistant message's tool calls, the only field the harvest reads off a
+/// committed record.
+#[derive(Deserialize)]
+struct AssistantToolCalls {
+    #[serde(default)]
+    tool_calls: Vec<RecordedToolCall>,
+}
+
+/// Whether a call's result may extend the citable set, given the set as it
+/// stands. A search is grounded by construction; an id-addressed read grounds
+/// its result only when the id it was given is already citable, so an id seen
+/// only inside content cannot bootstrap trust by being read back out of the
+/// read's own echoed id field.
+fn call_grounds_provenance(call: &RecordedToolCall, citable: &HashSet<KnowledgeItemId>) -> bool {
+    match relation_tool_grounding(call.name.as_str()) {
+        RelationToolGrounding::Search => true,
+        RelationToolGrounding::IdAddressedRead => call
+            .arguments
+            .get("item_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|raw| raw.parse::<KnowledgeItemId>().ok())
+            .is_some_and(|id| citable.contains(&id)),
+        RelationToolGrounding::NotProvenance => false,
+    }
 }
 
 /// Walks a tool result's JSON, collecting every well-formed knowledge item id
@@ -426,6 +477,71 @@ mod tests {
         assert!(ids.is_empty());
     }
 
+    // -- call_grounds_provenance: which results extend the citable set --
+
+    fn a_call(name: &str, item_id: Option<&str>) -> RecordedToolCall {
+        RecordedToolCall {
+            id: "call_x".to_owned(),
+            name: name.to_owned(),
+            arguments: match item_id {
+                Some(id) => serde_json::json!({ "item_id": id }),
+                None => serde_json::json!({}),
+            },
+        }
+    }
+
+    #[test]
+    fn test_a_search_result_is_grounded_by_construction() {
+        // A search ranks real items, so its result grounds whatever the
+        // citable set holds.
+        assert!(call_grounds_provenance(
+            &a_call("search_related_items", None),
+            &HashSet::new(),
+        ));
+    }
+
+    #[test]
+    fn test_a_read_grounds_only_a_citable_id() {
+        let anchor = ki("aaaa");
+        let foreign = ki("ffff");
+        let citable = HashSet::from([anchor]);
+        // The anchor is citable, so reading it grounds; the foreign id, seen
+        // only inside content, does not become citable by being read.
+        assert!(call_grounds_provenance(
+            &a_call("read_knowledge_item", Some(&anchor.to_string())),
+            &citable,
+        ));
+        assert!(!call_grounds_provenance(
+            &a_call("read_knowledge_item", Some(&foreign.to_string())),
+            &citable,
+        ));
+        assert!(call_grounds_provenance(
+            &a_call("read_item_neighbourhood", Some(&anchor.to_string())),
+            &citable,
+        ));
+    }
+
+    #[test]
+    fn test_a_read_of_a_malformed_or_absent_id_does_not_ground() {
+        let citable = HashSet::from([ki("aaaa")]);
+        assert!(!call_grounds_provenance(
+            &a_call("read_knowledge_item", Some("not-an-id")),
+            &citable,
+        ));
+        assert!(!call_grounds_provenance(
+            &a_call("read_knowledge_item", None),
+            &citable,
+        ));
+    }
+
+    #[test]
+    fn test_an_unknown_tool_grounds_nothing() {
+        assert!(!call_grounds_provenance(
+            &a_call("submit_result", None),
+            &HashSet::from([ki("aaaa")]),
+        ));
+    }
+
     // -- evaluate: schema, empty, and seed-only membership (no records) --
 
     #[tokio::test]
@@ -500,16 +616,9 @@ mod tests {
 
     // -- evaluate: ids harvested from the model's own tool results --
 
-    /// Persists a relation stage thread (with no job id, as the runtime
-    /// creates it) whose log carries a search tool result surfacing
-    /// `searched` by its `item_id` field while naming `laundered` only inside
-    /// the result's content. The page mirrors the search tool's output, so
-    /// the same harvest the production evaluate runs reads these ids back.
-    async fn seed_relation_thread(
-        conn: &mut sqlx::PgConnection,
-        searched: KnowledgeItemId,
-        laundered: KnowledgeItemId,
-    ) -> AgentThread {
+    /// Persists a relation stage thread with no job id, as the runtime
+    /// creates one: the harvest must rely on the thread id alone.
+    async fn insert_relation_thread(conn: &mut sqlx::PgConnection) -> AgentThread {
         let principal = PgPrincipalRepository
             .insert(
                 conn,
@@ -567,9 +676,7 @@ mod tests {
         )
         .await
         .expect("resolve binding");
-        // The stage thread is created without a job id, mirroring the runtime:
-        // the harvest must rely on the thread id alone.
-        let thread = PgAgentThreadRepository
+        PgAgentThreadRepository
             .insert(
                 conn,
                 &NewAgentThread::builder()
@@ -581,44 +688,18 @@ mod tests {
                     .build(),
             )
             .await
-            .expect("insert thread");
-
-        append_relation_search_records(conn, &thread, searched, laundered).await;
-        thread
+            .expect("insert thread")
     }
 
-    /// Appends the relation search the model ran: the assistant call, then a
-    /// result page surfacing `searched` by its `item_id` field while naming
+    /// Persists a relation thread whose log carries the search the model ran:
+    /// a result page surfacing `searched` by its `item_id` field while naming
     /// `laundered` only inside the result's content.
-    async fn append_relation_search_records(
+    async fn seed_relation_thread(
         conn: &mut sqlx::PgConnection,
-        thread: &AgentThread,
         searched: KnowledgeItemId,
         laundered: KnowledgeItemId,
-    ) {
-        let call_seq = PgAgentThreadRecordRepository
-            .next_seq(conn, thread.id())
-            .await
-            .expect("call seq");
-        PgAgentThreadRecordRepository
-            .append(
-                conn,
-                &NewAgentThreadRecord::builder()
-                    .thread_id(thread.id())
-                    .seq(call_seq)
-                    .kind(AgentThreadRecordKind::AssistantMessage)
-                    .content(serde_json::json!({
-                        "text": "",
-                        "tool_calls": [{
-                            "id": "call_search",
-                            "name": "search_related_items",
-                            "arguments": {},
-                        }],
-                    }))
-                    .build(),
-            )
-            .await
-            .expect("append search call");
+    ) -> AgentThread {
+        let thread = insert_relation_thread(conn).await;
         let page = serde_json::json!({
             "results": [{
                 "item_id": searched.to_string(),
@@ -629,6 +710,47 @@ mod tests {
             }],
             "next_cursor": null,
         });
+        append_tool_call(
+            conn,
+            &thread,
+            "search_related_items",
+            serde_json::json!({}),
+            &page,
+        )
+        .await;
+        thread
+    }
+
+    /// Appends the assistant call/result pair the harvest reads: an assistant
+    /// message naming `tool_name` with `arguments`, then a non-error result
+    /// carrying the serialised `result`. The call id pairs the two.
+    async fn append_tool_call(
+        conn: &mut sqlx::PgConnection,
+        thread: &AgentThread,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        result: &serde_json::Value,
+    ) {
+        let call_seq = PgAgentThreadRecordRepository
+            .next_seq(conn, thread.id())
+            .await
+            .expect("call seq");
+        let call_id = format!("call_{call_seq}");
+        PgAgentThreadRecordRepository
+            .append(
+                conn,
+                &NewAgentThreadRecord::builder()
+                    .thread_id(thread.id())
+                    .seq(call_seq)
+                    .kind(AgentThreadRecordKind::AssistantMessage)
+                    .content(serde_json::json!({
+                        "text": "",
+                        "tool_calls": [{ "id": call_id, "name": tool_name, "arguments": arguments }],
+                    }))
+                    .build(),
+            )
+            .await
+            .expect("append tool call");
         let result_seq = PgAgentThreadRecordRepository
             .next_seq(conn, thread.id())
             .await
@@ -641,15 +763,15 @@ mod tests {
                     .seq(result_seq)
                     .kind(AgentThreadRecordKind::ToolResult)
                     .requesting_seq(Some(call_seq))
-                    .tool_call_id(Some("call_search".to_owned()))
+                    .tool_call_id(Some(call_id))
                     .content(serde_json::json!({
-                        "output": serde_json::to_string(&page).expect("serialise page"),
+                        "output": serde_json::to_string(result).expect("serialise result"),
                         "is_error": false,
                     }))
                     .build(),
             )
             .await
-            .expect("append search result");
+            .expect("append tool result");
     }
 
     #[tokio::test]
@@ -704,5 +826,115 @@ mod tests {
                 if diagnostics.contains(&laundered.to_string())
                     && diagnostics.contains("citable references")
         ));
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_does_not_launder_an_id_read_from_content() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let committed = ki("aaaa");
+        let foreign = ki("ffff");
+        let thread = insert_relation_thread(&mut txn).await;
+
+        // The model reads a foreign id it saw only inside content. The read
+        // echoes that id in its `item_id` field, but the read was grounded by
+        // neither the seed nor a prior search, so the echo cannot make it
+        // citable and an edge to it bounces.
+        let item = serde_json::json!({
+            "item_id": foreign.to_string(),
+            "kind": "fact",
+            "content": "a foreign claim",
+            "tags": [],
+            "created_at": "2026-01-01T00:00:00Z",
+        });
+        append_tool_call(
+            &mut txn,
+            &thread,
+            "read_knowledge_item",
+            serde_json::json!({ "item_id": foreign.to_string() }),
+            &item,
+        )
+        .await;
+
+        let outcome = RelationSubmissionPipeline::new(HashSet::from([committed]))
+            .evaluate(
+                &mut txn,
+                &thread,
+                &SeenCorpus::default(),
+                &serde_json::json!({ "relations": [edge(&committed, &foreign)] }),
+            )
+            .await
+            .expect("evaluates");
+        assert!(matches!(
+            outcome,
+            SubmissionOutcome::Bounced { ref diagnostics }
+                if diagnostics.contains(&foreign.to_string())
+                    && diagnostics.contains("citable references")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_grounds_a_neighbour_read_from_a_citable_anchor() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let committed = ki("aaaa");
+        let anchor = ki("5555");
+        let neighbour = ki("6666");
+        let thread = insert_relation_thread(&mut txn).await;
+
+        // A search grounds the anchor; reading the anchor's neighbourhood is
+        // then grounded too, so a neighbour it surfaces becomes citable and
+        // can anchor an edge. Trust walks out from the grounded anchor.
+        let page = serde_json::json!({
+            "results": [{
+                "item_id": anchor.to_string(),
+                "kind": "fact",
+                "content": "a surfaced claim",
+                "tags": [],
+                "similarity_score": 0.9,
+            }],
+            "next_cursor": null,
+        });
+        append_tool_call(
+            &mut txn,
+            &thread,
+            "search_related_items",
+            serde_json::json!({}),
+            &page,
+        )
+        .await;
+        let neighbourhood = serde_json::json!({
+            "item_id": anchor.to_string(),
+            "inbound_relations": [],
+            "outbound_relations": [{ "relation": "supports", "to_item_id": neighbour.to_string() }],
+            "neighbours": [{
+                "item_id": neighbour.to_string(),
+                "kind": "fact",
+                "content": "a neighbouring claim",
+                "tags": [],
+                "created_at": "2026-01-01T00:00:00Z",
+            }],
+        });
+        append_tool_call(
+            &mut txn,
+            &thread,
+            "read_item_neighbourhood",
+            serde_json::json!({ "item_id": anchor.to_string() }),
+            &neighbourhood,
+        )
+        .await;
+
+        let outcome = RelationSubmissionPipeline::new(HashSet::from([committed]))
+            .evaluate(
+                &mut txn,
+                &thread,
+                &SeenCorpus::default(),
+                &serde_json::json!({ "relations": [edge(&committed, &neighbour)] }),
+            )
+            .await
+            .expect("evaluates");
+        assert!(matches!(outcome, SubmissionOutcome::Accepted { .. }));
     }
 }
