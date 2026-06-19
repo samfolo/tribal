@@ -287,11 +287,15 @@ impl StageTool for SearchCandidateSimilarItemsTool {
             "serialising candidate similar-item search results",
             params,
             self.descriptor.response_size_bound,
-            |response| CandidateSearchResults {
+            |response, rendering| CandidateSearchResults {
                 results: response
                     .results
                     .iter()
-                    .map(LoopSimilarItemContext::from)
+                    .map(|result| {
+                        let mut context = LoopSimilarItemContext::from(result);
+                        context.content = rendering.apply(&context.content);
+                        context
+                    })
                     .collect(),
                 embedding_profile_id: profile_id.clone(),
                 next_cursor: response.next_cursor.clone(),
@@ -941,6 +945,80 @@ mod tests {
         assert!(
             !view["next_cursor"].is_null(),
             "the rows that did not fit are reachable by cursor",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_candidate_search_elides_a_single_item_larger_than_its_bound() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let (principal_id, project) = seed_actors(&mut txn, "search-elide").await;
+        let profile = ensure_genesis_profile(&mut txn, EMBEDDING_MODEL, DIMENSIONS).await;
+
+        // A single item whose content alone exceeds the bound: paging cannot
+        // shrink below one row, so the search must elide its content to a
+        // marker rather than return an oversized page the loop would flag an
+        // error and skip, stranding the candidate with nothing to cite.
+        let huge = "x".repeat(SEARCH_RESPONSE_SIZE_BOUND as usize + 1_000);
+        let item = seed_item(&mut txn, principal_id, project, &huge).await;
+        insert_embedding_for_profile(
+            &mut txn,
+            item.id(),
+            profile.id(),
+            EMBEDDING_MODEL,
+            basis_vector(0),
+        )
+        .await;
+
+        let embedding = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed(an_embedding_response(basis_vector(0)), None)
+                .build(),
+        );
+        let tool = SearchCandidateSimilarItemsTool::new(
+            "does this claim already exist".to_owned(),
+            project,
+            profile.clone(),
+            embed_gateway(profile.id(), Arc::clone(&embedding)),
+            unowned_attribution(),
+            10,
+            a_deadline(),
+        );
+
+        let arguments = serde_json::json!({});
+        let prepared = tool.prepare(&arguments).await.expect("prepare embeds");
+        let outcome = tool
+            .execute(&mut txn, prepared, &arguments)
+            .await
+            .expect("execute searches");
+
+        // The elided page fits the bound and parses, so the loop records it as
+        // a usable, non-error result rather than a trimmed one.
+        assert!(
+            outcome.content.len() <= SEARCH_RESPONSE_SIZE_BOUND as usize,
+            "the elided page fits the bound: {}",
+            outcome.content.len(),
+        );
+        let view = parsed(&outcome);
+        let results = view["results"].as_array().expect("results array");
+        assert_eq!(results.len(), 1, "the single item is still returned");
+
+        // Provenance survives the eliding: the id, score, and profile let the
+        // model cite the item and fetch its full content.
+        assert_eq!(results[0]["item_id"], item.id().to_string());
+        assert!(results[0]["similarity_score"].is_number());
+        assert_eq!(view["embedding_profile_id"], profile.id().to_string());
+        let content = results[0]["content"]
+            .as_str()
+            .expect("the content is a string");
+        assert!(
+            content.contains("read_knowledge_item"),
+            "the over-long content is elided to a marker: {content}",
+        );
+        assert!(
+            !content.contains(huge.as_str()),
+            "the full content is not inlined",
         );
     }
 

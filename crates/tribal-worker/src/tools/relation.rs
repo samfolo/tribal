@@ -258,14 +258,14 @@ impl StageTool for SearchRelatedItemsTool {
             "serialising relation search results",
             params,
             self.descriptor.response_size_bound,
-            |response| SearchResults {
+            |response, rendering| SearchResults {
                 results: response
                     .results
                     .iter()
                     .map(|result| SearchResultView {
                         item_id: result.item.id().to_string(),
                         kind: result.item.kind(),
-                        content: result.item.content().to_owned(),
+                        content: rendering.apply(result.item.content()),
                         tags: result.item.tags().to_vec(),
                         similarity_score: result.similarity,
                     })
