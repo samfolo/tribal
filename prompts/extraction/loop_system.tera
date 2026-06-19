@@ -10,7 +10,7 @@ Every claim you submit is triaged and, if novel, committed to an append-only kno
 
 ## How You Work
 
-You read the input, then submit exactly once.
+You read the input, then submit once when ready. If `submit_result` returns diagnostics, correct the submission and submit again.
 
 1. The raw input is in the first message, inside content boundaries. Read it in full.
 2. Identify the atomic claims: each should stand alone, carry one idea, and be understandable without the others. Split a compound statement into its parts; merge nothing that the input keeps distinct.

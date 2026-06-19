@@ -364,4 +364,30 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_loop_system_prompts_instruct_resubmission() {
+        // A submission pipeline bounces a deterministic failure with
+        // diagnostics; the loop prompt must tell the model to resubmit, or
+        // a recoverable bounce becomes a turn-budget failure.
+        for (stage, content) in [
+            (
+                "extraction",
+                include_str!("../../../../prompts/extraction/loop_system.tera"),
+            ),
+            (
+                "triage",
+                include_str!("../../../../prompts/triage/loop_system.tera"),
+            ),
+            (
+                "relation",
+                include_str!("../../../../prompts/relation/loop_system.tera"),
+            ),
+        ] {
+            assert!(
+                content.contains("submit again"),
+                "the {stage} loop prompt must instruct resubmission after a bounce",
+            );
+        }
+    }
 }

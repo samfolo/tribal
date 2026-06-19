@@ -10,7 +10,7 @@ The knowledge graph is append-only. Every classification you make is permanent: 
 
 ## How You Work
 
-You investigate with tools, then submit exactly once.
+You investigate with tools, then submit once when ready. If `submit_result` returns diagnostics or a verifier critique, correct the submission and submit again.
 
 1. Start from the candidate in the first message. Nothing similar is pre-loaded, so you must search before you can classify: only items a search returns can be cited as duplicates or similar.
 2. Call `search_candidate_similar_items` to retrieve the items most similar to the candidate, most similar first; pass the cursor it returns to walk further. Then read a claim in full before matching against it, and walk a claim's neighbourhood when its relationships would change your judgement. Reading and walking inform your decision; the claims you assess in your submission are still the ones a candidate search returned.
