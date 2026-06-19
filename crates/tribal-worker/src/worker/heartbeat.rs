@@ -2,8 +2,8 @@
 //!
 //! Provides per-task background heartbeat with ownership-loss
 //! signalling, the per-row thread-aware reclaim (recovery cycles and
-//! thread exhaustion for stage tasks that drive a thread), the legacy
-//! bulk reclaim for rows with no thread, and a startup reclaim pass for
+//! thread exhaustion for stage tasks that drive a thread), the bulk
+//! reclaim for rows with no thread, and a startup reclaim pass for
 //! crash recovery.
 
 use std::{
@@ -46,28 +46,20 @@ pub(crate) const STARTUP_RECLAIM_MESSAGE: &str = "startup_reclaim";
 /// Error message written to tasks reclaimed by the periodic sweep.
 pub(crate) const HEARTBEAT_EXPIRED_MESSAGE: &str = "heartbeat_expired";
 
-/// The thread recovery-cycle budget. Positive is a hard precondition for
-/// the job-terminal relation loop: at zero, the first reclaim of a stale
-/// running stage thread dead-letters its task and fails the job, discarding
-/// every upstream extraction and triage turn the job already paid for. A
-/// positive cap opens fresh cycles instead (retry budget reset, escalating
-/// per-cycle backoff, re-driven from the committed record-log tail) before
-/// the thread fails, so a transient worker death mid-loop costs a retry,
-/// not the job.
+/// The thread recovery-cycle budget. Positive is a precondition for the
+/// job-terminal relation loop: at zero, the first reclaim of a stale running
+/// thread fails the job and discards the upstream extraction and triage turns
+/// already paid for; a positive cap opens fresh cycles before the thread fails.
 pub(crate) const THREAD_RECOVERY_CAP: u32 = 2;
 
-// A hard precondition for the job-terminal relation loop: at zero, a
-// transient worker death mid loop fails the whole job and discards its
-// upstream spend, with no fan-in to recover it. Enforced at compile time
-// so a future reset to zero fails the build.
 const _: () = assert!(THREAD_RECOVERY_CAP > 0);
 
 /// The recovery-cycle cap a thread's disposition runs under, resolved from
 /// its binding's executor: a loop earns recovery cycles (the relation-loop
 /// precondition, re-driven from the committed record-log tail), while a
-/// one-shot keeps its launched fail-fast exhaustion, which has no
-/// mid-thread progress to recover to. A binding that cannot be read
-/// defaults to the one-shot cap, the conservative fail-fast choice.
+/// one-shot keeps its fail-fast exhaustion, which has no mid-thread
+/// progress to recover to. A binding that cannot be read defaults to the
+/// one-shot cap, the conservative fail-fast choice.
 pub(crate) async fn recovery_cap_for_thread(
     conn: &mut sqlx::PgConnection,
     thread: &AgentThread,
@@ -213,7 +205,7 @@ impl Worker {
                 .map_err(reclaim_db)?
             else {
                 // The scan's EXISTS clause makes this unreachable; the
-                // rolled-back row falls to the legacy pass.
+                // rolled-back row falls to the bulk pass.
                 break;
             };
             let Some(claim_token) = task.claim_token() else {
@@ -300,8 +292,8 @@ impl Worker {
                 },
             })?;
 
-            // Metrics and notifications mirror the launched dead-letter
-            // path, fired only after the commit.
+            // Metrics and notifications mirror the dead-letter path, fired
+            // only after the commit.
             if task_dead_lettered {
                 self.metrics()
                     .record_task_dead_lettered(task.task_type().as_str());
@@ -486,7 +478,7 @@ impl tribal_agent_runtime::HeartbeatPump for WorkerHeartbeatPump {
 /// Spawns a background heartbeat task for the given claimed task.
 ///
 /// The task periodically updates `heartbeat_at` via
-/// [`TaskRepository::heartbeat`].  When the update affects zero rows
+/// [`TaskRepository::heartbeat`]. When the update affects zero rows
 /// (ownership lost), it fires the `ownership_lost` signal and exits.
 /// On cancellation, it exits immediately without signalling ownership
 /// loss.

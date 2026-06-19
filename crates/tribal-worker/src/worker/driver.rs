@@ -1,16 +1,12 @@
 //! The driver loop: a sibling worker loop executing the driver family.
 //!
-//! It claims `Drive` tasks, executes their child threads as one-shots
-//! under the driver-claim guard and a driver-task heartbeat, and hands
-//! each child's result back to its parent through the child-terminal
-//! transaction. A child's permanent failure crosses into the parent as
-//! deferred death. The `DeferredTool` kind has no producer in this
-//! release: the claim loop matches it exhaustively and dead-letters it
-//! loudly, so an unmodelled enqueue can never sit unexecuted in silence.
-//!
-//! Reclaim mirrors the stage families': a lapsed-heartbeat claim is
-//! re-queued within its attempt budget, and the final attempt drives the
-//! deferred-death transaction so the child never strands its lineage.
+//! It claims `Drive` tasks, executes their child threads as one-shots under
+//! the driver-claim guard and a driver-task heartbeat, and hands each child's
+//! result back to its parent through the child-terminal transaction. A
+//! child's permanent failure crosses into the parent as deferred death.
+//! Reclaim mirrors the stage families': a lapsed-heartbeat claim is re-queued
+//! within its attempt budget, and the final attempt drives the deferred-death
+//! transaction so the child never strands its lineage.
 
 use std::sync::Arc;
 
@@ -48,16 +44,14 @@ const DRIVER_CLAIM_BATCH: u32 = 4;
 /// The claimer identity recorded on a driver task's lease.
 const DRIVER_WORKER: &str = "driver-loop";
 
-/// The deferred-death message for a child the §10.3 cancellation cascade
-/// reached before the driver could run it.
+/// The deferred-death message for a child the cancellation cascade reached
+/// before the driver could run it.
 const CHILD_CASCADE_CANCELLED: &str =
     "the parent's cancellation cascaded to this child before it ran";
 
 impl Worker {
-    /// Drives the driver family until cancellation: each cycle reclaims
-    /// stale leases, then claims and executes a batch of pending tasks.
-    /// Sibling to the reclaim and reindex loops; [`Worker::run`] spawns
-    /// it, and it is a standalone entry point for tests and tooling.
+    /// Drives the driver family until cancellation: each cycle reclaims stale
+    /// leases, then claims and executes a batch of pending tasks.
     pub async fn run_driver_loop(self: &Arc<Self>) {
         let mut ticker = tokio::time::interval(self.config().poll_interval());
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -74,15 +68,10 @@ impl Worker {
         }
     }
 
-    /// Claims one batch of pending driver tasks and drives them with
-    /// bounded concurrency.
-    ///
-    /// The batch runs concurrently, not in series: a single lane would
-    /// funnel every stage's child through one model call at a
-    /// time, and relation's terminal hand-back, on the job-completion
-    /// critical path, would wait behind all of them. The claim count is
-    /// the concurrency bound; the gateway's per-provider permits bound the
-    /// real inference parallelism beneath it.
+    /// Claims one batch of pending driver tasks and drives them concurrently:
+    /// a serial lane would stall relation's terminal hand-back, on the
+    /// job-completion critical path, behind every other stage's child. The
+    /// claim count bounds concurrency; the gateway's permits bound inference.
     async fn drive_pending_tasks(self: &Arc<Self>) {
         let claimed = {
             let Ok(mut conn) = self.pool().acquire().await else {
@@ -107,14 +96,11 @@ impl Worker {
             batch.spawn(async move {
                 match task.kind() {
                     AgentDriverTaskKind::Drive => worker.drive_child(&task).await,
-                    // No v1 producer enqueues a deferred tool; matching it
-                    // exhaustively and dead-lettering loudly means an
-                    // unmodelled enqueue surfaces, never sits unexecuted.
                     AgentDriverTaskKind::DeferredTool => {
                         tracing::error!(
                             driver_task_id = %task.id(),
-                            "claimed a deferred-tool driver task, which no producer creates in \
-                             this release; dead-lettering it",
+                            "claimed a deferred-tool driver task, which has no executor; \
+                             dead-lettering it",
                         );
                         worker
                             .dispose_driver_task(&task, "deferred-tool execution is unsupported")
@@ -123,9 +109,8 @@ impl Worker {
                 }
             });
         }
-        // Each task handles its own errors and returns unit, so a join
-        // error here is a panic or a cancellation: surface it rather than
-        // let a crashed driver task vanish silently.
+        // Tasks handle their own errors and return unit, so a join error is a
+        // panic or cancellation: surface it rather than lose it silently.
         while let Some(joined) = batch.join_next().await {
             if let Err(error) = joined {
                 tracing::error!(error = %error, "a driver batch task failed to complete");
@@ -156,9 +141,8 @@ impl Worker {
         }
     }
 
-    /// The child's one-shot: adopt its committed conversation, call the
-    /// model under thread-keyed attribution, and commit the child
-    /// terminal handing the result back to the parent.
+    /// Adopts the child's committed conversation, calls the model, and commits
+    /// the terminal hand-back to its parent.
     async fn execute_child(
         &self,
         task: &AgentDriverTask,
@@ -169,8 +153,8 @@ impl Worker {
 
         let child = self.run_child_thread(&mut conn, task, claim_token).await?;
 
-        // A cancellation intent supersedes the run: the §10.3 cascade (or
-        // an operator) marked this child while it queued. Hand the
+        // A cancellation intent supersedes the run: the cascade (or an
+        // operator) marked this child while it queued. Hand the
         // cancellation back through deferred death rather than spend a paid
         // model call; a parent already terminal discards it under the
         // orphan guard.

@@ -5,7 +5,7 @@
 //! configuration, through the same derivation the ingest-time
 //! fingerprint uses, so the recorded composite names exactly the binding
 //! execution resolves. The default binding is one-shot with no tools and
-//! no budget caps, reproducing launched behaviour exactly.
+//! no budget caps, reproducing the one-shot path exactly.
 
 use std::collections::HashMap;
 
@@ -224,8 +224,8 @@ impl Worker {
             },
         })?;
 
-        // Metrics and notifications mirror the launched dead-letter path,
-        // fired only after the commit.
+        // Metrics and notifications mirror the dead-letter path, fired only
+        // after the commit.
         if dead_lettered {
             self.metrics()
                 .record_task_dead_lettered(task.task_type().as_str());

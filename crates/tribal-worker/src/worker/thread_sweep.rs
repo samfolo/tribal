@@ -62,8 +62,8 @@ impl Worker {
 }
 
 /// The timer-wake predicate: suspended threads whose `wake_at` elapsed
-/// get the full resolve transaction — a timer-fired input record, the
-/// running status, and the driving task re-queued.
+/// get the full resolve transaction (a timer-fired input record, the
+/// running status, and the driving task re-queued).
 async fn sweep_timer_wakes(agents: &AgentsConfig, conn: &mut sqlx::PgConnection) -> u32 {
     let due = match PgAgentThreadRepository
         .find_due_timer_wakes(conn, SWEEP_BATCH)
@@ -132,12 +132,12 @@ async fn wake_budgets_basis(
 
 /// The orphan-cascade janitor: a non-terminal thread whose parent is
 /// terminal receives the cancellation intent, the convergent half of the
-/// §10.3 cascade. It heals a crash between a parent's terminal commit and
-/// its post-commit fast-path cascade, and stands in for that fast path on
-/// every terminal transition that does not run it. Writing the intent is
-/// all it does; the cancel fallback (next, same cycle) disposes the
-/// unclaimed ones, and a claimed child's driver observes the intent at its
-/// own boundary.
+/// cancellation cascade. It heals a crash between a parent's terminal
+/// commit and its post-commit fast-path cascade, and stands in for that
+/// fast path on every terminal transition that does not run it. Writing
+/// the intent is all it does; the cancel fallback (next, same cycle)
+/// disposes the unclaimed ones, and a claimed child's driver observes the
+/// intent at its own boundary.
 async fn sweep_orphan_cascade(conn: &mut sqlx::PgConnection) -> u32 {
     match PgAgentThreadRepository
         .cascade_cancel_to_orphans(conn, SWEEP_BATCH, coupling::CANCEL_CASCADE_REQUESTED_BY)
