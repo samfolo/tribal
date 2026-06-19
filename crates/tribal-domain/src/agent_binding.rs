@@ -221,6 +221,14 @@ pub struct ExecutionSpend {
 // Definition, binding, and version
 // ---------------------------------------------------------------------------
 
+/// The verifier prompt pair a stage binding runs, by content hash, so a
+/// verifier toggle or rubric edit is a new binding version.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TypedBuilder)]
+pub struct VerifierBinding {
+    pub system_prompt_hash: String,
+    pub user_prompt_hash: String,
+}
+
 /// Everything a binding pins about how a stage runs.
 ///
 /// The content address hashes this structure's canonical serialisation,
@@ -251,6 +259,12 @@ pub struct AgentDefinition {
     /// The tools exposed to the model with their granted reach; empty for
     /// one-shot.
     pub tools: Vec<ToolBinding>,
+    /// The verifier this binding runs. Skipped from the canonical
+    /// serialisation when absent, so a binding without one hashes exactly as
+    /// it did before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default)]
+    pub verifier: Option<VerifierBinding>,
 }
 
 impl AgentDefinition {
@@ -278,6 +292,7 @@ impl AgentDefinition {
             prompt_hashes: vec![system_prompt_hash, user_prompt_hash],
             budgets: ExecutionBudgets::default(),
             tools: Vec::new(),
+            verifier: None,
         }
     }
 

@@ -103,7 +103,7 @@ mod usage;
 pub use agent_binding::{
     AgentBinding, AgentBindingBuilder, AgentDefinition, AgentDefinitionBuilder, ExecutionBudgets,
     ExecutionSpend, ProjectScope, StageExecutorKind, ToolBinding, ToolBindingBuilder,
-    ToolDescriptor, ToolDescriptorBuilder, ToolExecutionMode, ToolSafetyTier,
+    ToolDescriptor, ToolDescriptorBuilder, ToolExecutionMode, ToolSafetyTier, VerifierBinding,
 };
 pub use agent_driver_task::{
     AgentDriverTask, AgentDriverTaskBuilder, AgentDriverTaskKind, AgentDriverTaskState,

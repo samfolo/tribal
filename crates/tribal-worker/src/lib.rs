@@ -16,7 +16,10 @@ mod tools;
 mod worker;
 
 pub use active_prompts::{ActiveAgenticPrompts, NoAgenticPrompts};
-pub use definition::{DefinitionError, StagePromptHashes, derive_stage_definition};
+pub use definition::{
+    AgenticPromptHashes, DefinitionError, StagePromptHashes, derive_stage_definition,
+    resolve_agentic_prompt_hashes,
+};
 pub use error::WorkerError;
 pub use gauge_task::run_queue_health_gauges;
 pub use prompt::{reserved_keys, synthetic_validation_context};

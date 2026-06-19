@@ -12,22 +12,35 @@ use tribal_config::{
     AgentsConfig, DEFAULT_AGENTIC_EXECUTION_DEADLINE_SECONDS, DEFAULT_AGENTIC_MAX_TOTAL_TOKENS,
     DEFAULT_AGENTIC_MAX_TURNS, DEFAULT_AGENTIC_VERIFY_ROUNDS, ExecutorChoice, StageAgentConfig,
 };
-use tribal_domain::{AgentDefinition, ExecutionBudgets, StageExecutorKind, TaskType};
+use tribal_domain::{
+    AgentDefinition, ExecutionBudgets, PromptClass, PromptRole, PromptStage, StageExecutorKind,
+    TaskType, VerifierBinding,
+};
 use tribal_inference::CompletionStageSpec;
 
 use crate::tools::stage_tool_bindings;
 
-/// A stage's prompt content hashes: the launched pair always, the loop
-/// pair when the agentic executor needs it.
+/// A stage's prompt content hashes: the launched pair always, the loop and
+/// verifier pairs when the agentic executor needs them.
 #[derive(Debug, Clone)]
 pub struct StagePromptHashes {
     /// The launched system prompt's content hash.
     pub system: String,
     /// The launched user prompt's content hash.
     pub user: String,
-    /// The loop pair's content hashes, `(system, user)`, when the
-    /// active set carries them.
+    /// The agentic loop and verifier pairs the executor needs.
+    pub agentic: AgenticPromptHashes,
+}
+
+/// The agentic prompt-hash pairs beyond a stage's one-shot system and user:
+/// the loop pair under the loop executor, and the verifier pair when that
+/// loop also runs a verifier. Empty under the one-shot executor.
+#[derive(Debug, Clone, Default)]
+pub struct AgenticPromptHashes {
+    /// The loop pair's content hashes, `(system, user)`.
     pub loop_pair: Option<(String, String)>,
+    /// The verifier pair's content hashes, `(system, user)`.
+    pub verifier_pair: Option<(String, String)>,
 }
 
 /// The derivation refused: the configuration selects a shape the
@@ -64,7 +77,7 @@ pub fn derive_stage_definition(
 ) -> Result<AgentDefinition, DefinitionError> {
     let stage_config = stage_agent_config(stage, agents);
     if stage_config.executor == ExecutorChoice::Loop {
-        let Some((loop_system, loop_user)) = prompts.loop_pair.clone() else {
+        let Some((loop_system, loop_user)) = prompts.agentic.loop_pair.clone() else {
             return Err(DefinitionError::MissingLoopPrompts { stage });
         };
         Ok(AgentDefinition {
@@ -77,6 +90,14 @@ pub fn derive_stage_definition(
             prompt_hashes: vec![loop_system, loop_user],
             budgets: loop_budgets(stage_config),
             tools: stage_tool_bindings(stage),
+            verifier: prompts
+                .agentic
+                .verifier_pair
+                .clone()
+                .map(|(system, user)| VerifierBinding {
+                    system_prompt_hash: system,
+                    user_prompt_hash: user,
+                }),
         })
     } else {
         let mut definition = AgentDefinition::one_shot(
@@ -91,6 +112,60 @@ pub fn derive_stage_definition(
         definition.budgets = one_shot_budgets(stage_config);
         Ok(definition)
     }
+}
+
+/// Resolves the agentic prompt-hash pairs a stage's binding needs, the
+/// single decision the claim-time worker and the ingest fingerprint share
+/// so the two cannot disagree on which slots a stage requires. `lookup`
+/// supplies each slot's content hash from the caller's source: the prompt
+/// store at claim, the active set at ingest.
+///
+/// # Errors
+///
+/// Surfaces the caller's lookup error for a slot the configuration needs.
+pub fn resolve_agentic_prompt_hashes<E>(
+    stage: TaskType,
+    agents: &AgentsConfig,
+    mut lookup: impl FnMut(PromptStage, PromptClass, PromptRole) -> Result<String, E>,
+) -> Result<AgenticPromptHashes, E> {
+    let stage_config = stage_agent_config(stage, agents);
+    if stage_config.executor != ExecutorChoice::Loop {
+        return Ok(AgenticPromptHashes::default());
+    }
+    let prompt_stage = prompt_stage_of(stage);
+    let loop_pair = Some((
+        lookup(prompt_stage, PromptClass::Loop, PromptRole::System)?,
+        lookup(prompt_stage, PromptClass::Loop, PromptRole::User)?,
+    ));
+    let verifier_pair = if stage_runs_verifier(stage, stage_config) {
+        Some((
+            lookup(prompt_stage, PromptClass::Verifier, PromptRole::System)?,
+            lookup(prompt_stage, PromptClass::Verifier, PromptRole::User)?,
+        ))
+    } else {
+        None
+    };
+    Ok(AgenticPromptHashes {
+        loop_pair,
+        verifier_pair,
+    })
+}
+
+/// Maps a pipeline stage to its prompt namespace.
+pub(crate) fn prompt_stage_of(stage: TaskType) -> PromptStage {
+    match stage {
+        TaskType::Extraction => PromptStage::Extraction,
+        TaskType::Triage => PromptStage::Triage,
+        TaskType::Relation => PromptStage::Relation,
+    }
+}
+
+/// Whether a stage's loop runs a verifier. Only triage carries one in this
+/// release; the extraction and relation verifier toggles are inert (the
+/// configuration advisory says so), so no verifier pair enters their
+/// bindings and no verifier prompt is required of them.
+fn stage_runs_verifier(stage: TaskType, config: &StageAgentConfig) -> bool {
+    stage == TaskType::Triage && config.verifier_enabled(true)
 }
 
 /// The verifier child's binding definition: a one-shot on the parent's
@@ -187,20 +262,17 @@ mod tests {
     use super::*;
 
     fn a_spec() -> CompletionStageSpec {
-        CompletionStageSpec {
-            provider: ProviderKind::Ollama,
-            model: "llama3".to_owned(),
-            base_url: "http://localhost:11434".to_owned(),
-            api_key: String::new(),
-            parameters: StageParameters::default(),
-        }
+        tribal_test_utils::a_completion_stage_spec()
     }
 
     fn hashes(loop_pair: Option<(String, String)>) -> StagePromptHashes {
         StagePromptHashes {
             system: "a".repeat(64),
             user: "b".repeat(64),
-            loop_pair,
+            agentic: AgenticPromptHashes {
+                loop_pair,
+                verifier_pair: None,
+            },
         }
     }
 
