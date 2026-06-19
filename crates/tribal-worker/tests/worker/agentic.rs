@@ -19,7 +19,8 @@ use tribal_test_utils::{
     a_new_knowledge_item, a_new_token_usage, a_tool_call_response, insert_embedding_for_profile,
 };
 use tribal_worker::{
-    ActiveAgenticPrompts, AgenticPromptHashes, StagePromptHashes, derive_stage_definition,
+    ActiveAgenticPrompts, AgenticPromptHashes, PromptHashPair, StagePromptHashes,
+    derive_stage_definition,
 };
 
 use super::common::*;
@@ -603,7 +604,10 @@ async fn test_the_recorded_binding_wins_the_ingest_claim_divergence_window() {
                 system: "a".repeat(64),
                 user: "b".repeat(64),
                 agentic: AgenticPromptHashes {
-                    loop_pair: Some(("5".repeat(64), "6".repeat(64))),
+                    loop_pair: Some(PromptHashPair {
+                        system: "5".repeat(64),
+                        user: "6".repeat(64),
+                    }),
                     verifier_pair: None,
                 },
             },

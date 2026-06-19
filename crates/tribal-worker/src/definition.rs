@@ -1,12 +1,9 @@
 //! Stage definition derivation: the single constructor both lockstep
 //! sites use.
 //!
-//! The worker's claim path and the ingest-time fingerprint must arrive
-//! at byte-identical definitions, or the recorded composite stops naming
-//! the binding execution resolves. Both call here: the agentic
-//! configuration selects the executor, the budgets, the tool surface,
-//! and which prompt pair the definition hashes. Everything else
-//! reproduces the launched one-shot shape exactly.
+//! The worker's claim path and the ingest-time fingerprint must arrive at
+//! byte-identical definitions, or the recorded composite stops naming the
+//! binding execution resolves. Both call here.
 
 use tribal_config::{
     AgentsConfig, DEFAULT_AGENTIC_EXECUTION_DEADLINE_SECONDS, DEFAULT_AGENTIC_MAX_TOTAL_TOKENS,
@@ -20,27 +17,28 @@ use tribal_inference::CompletionStageSpec;
 
 use crate::tools::stage_tool_bindings;
 
-/// A stage's prompt content hashes: the launched pair always, the loop and
-/// verifier pairs when the agentic executor needs them.
+/// A system and user prompt's content hashes.
+#[derive(Debug, Clone)]
+pub struct PromptHashPair {
+    pub system: String,
+    pub user: String,
+}
+
+/// A stage's prompt content hashes: the one-shot pair always, the loop and
+/// verifier pairs when the executor needs them.
 #[derive(Debug, Clone)]
 pub struct StagePromptHashes {
-    /// The launched system prompt's content hash.
     pub system: String,
-    /// The launched user prompt's content hash.
     pub user: String,
-    /// The agentic loop and verifier pairs the executor needs.
     pub agentic: AgenticPromptHashes,
 }
 
-/// The agentic prompt-hash pairs beyond a stage's one-shot system and user:
-/// the loop pair under the loop executor, and the verifier pair when that
-/// loop also runs a verifier. Empty under the one-shot executor.
+/// The loop and verifier hash pairs an agentic stage needs; both empty under
+/// the one-shot executor.
 #[derive(Debug, Clone, Default)]
 pub struct AgenticPromptHashes {
-    /// The loop pair's content hashes, `(system, user)`.
-    pub loop_pair: Option<(String, String)>,
-    /// The verifier pair's content hashes, `(system, user)`.
-    pub verifier_pair: Option<(String, String)>,
+    pub loop_pair: Option<PromptHashPair>,
+    pub verifier_pair: Option<PromptHashPair>,
 }
 
 /// The derivation refused: the configuration selects a shape the
@@ -57,18 +55,15 @@ pub enum DefinitionError {
     },
 }
 
-/// Derives one stage's definition from its endpoint spec, prompt
-/// hashes, and the agentic configuration.
+/// Derives one stage's definition from its endpoint spec, prompt hashes,
+/// and the agentic configuration.
 ///
-/// Absent agentic configuration reproduces the launched one-shot
-/// definition byte for byte. Budget overrides apply to either executor
-/// (a budgeted one-shot is legal); the finite agentic defaults apply
-/// only under the loop.
+/// Budget overrides apply to either executor (a budgeted one-shot is
+/// legal); the finite agentic defaults apply only under the loop.
 ///
 /// # Errors
 ///
-/// Returns [`DefinitionError::MissingLoopPrompts`] when the loop
-/// executor is selected without its prompt hashes.
+/// Fails when the loop executor is selected without its prompt hashes.
 pub fn derive_stage_definition(
     stage: TaskType,
     spec: &CompletionStageSpec,
@@ -77,7 +72,7 @@ pub fn derive_stage_definition(
 ) -> Result<AgentDefinition, DefinitionError> {
     let stage_config = stage_agent_config(stage, agents);
     if stage_config.executor == ExecutorChoice::Loop {
-        let Some((loop_system, loop_user)) = prompts.agentic.loop_pair.clone() else {
+        let Some(loop_prompts) = prompts.agentic.loop_pair.clone() else {
             return Err(DefinitionError::MissingLoopPrompts { stage });
         };
         Ok(AgentDefinition {
@@ -87,16 +82,16 @@ pub fn derive_stage_definition(
             model: spec.model.clone(),
             base_url: spec.base_url.clone(),
             parameters: spec.parameters.clone(),
-            prompt_hashes: vec![loop_system, loop_user],
+            prompt_hashes: vec![loop_prompts.system, loop_prompts.user],
             budgets: loop_budgets(stage_config),
             tools: stage_tool_bindings(stage),
             verifier: prompts
                 .agentic
                 .verifier_pair
                 .clone()
-                .map(|(system, user)| VerifierBinding {
-                    system_prompt_hash: system,
-                    user_prompt_hash: user,
+                .map(|pair| VerifierBinding {
+                    system_prompt_hash: pair.system,
+                    user_prompt_hash: pair.user,
                 }),
         })
     } else {
@@ -133,15 +128,15 @@ pub fn resolve_agentic_prompt_hashes<E>(
         return Ok(AgenticPromptHashes::default());
     }
     let prompt_stage = prompt_stage_of(stage);
-    let loop_pair = Some((
-        lookup(prompt_stage, PromptClass::Loop, PromptRole::System)?,
-        lookup(prompt_stage, PromptClass::Loop, PromptRole::User)?,
-    ));
+    let loop_pair = Some(PromptHashPair {
+        system: lookup(prompt_stage, PromptClass::Loop, PromptRole::System)?,
+        user: lookup(prompt_stage, PromptClass::Loop, PromptRole::User)?,
+    });
     let verifier_pair = if stage_runs_verifier(stage, stage_config) {
-        Some((
-            lookup(prompt_stage, PromptClass::Verifier, PromptRole::System)?,
-            lookup(prompt_stage, PromptClass::Verifier, PromptRole::User)?,
-        ))
+        Some(PromptHashPair {
+            system: lookup(prompt_stage, PromptClass::Verifier, PromptRole::System)?,
+            user: lookup(prompt_stage, PromptClass::Verifier, PromptRole::User)?,
+        })
     } else {
         None
     };
@@ -160,10 +155,9 @@ pub(crate) fn prompt_stage_of(stage: TaskType) -> PromptStage {
     }
 }
 
-/// Whether a stage's loop runs a verifier. Only triage carries one in this
-/// release; the extraction and relation verifier toggles are inert (the
-/// configuration advisory says so), so no verifier pair enters their
-/// bindings and no verifier prompt is required of them.
+/// Whether a stage's loop runs a verifier. Only triage carries one; the
+/// extraction and relation verifier toggles are inert, so no verifier pair
+/// enters their bindings and no verifier prompt is required of them.
 fn stage_runs_verifier(stage: TaskType, config: &StageAgentConfig) -> bool {
     stage == TaskType::Triage && config.verifier_enabled(true)
 }
@@ -171,10 +165,10 @@ fn stage_runs_verifier(stage: TaskType, config: &StageAgentConfig) -> bool {
 /// The verifier child's binding definition: a one-shot on the parent's
 /// model and endpoint, carrying the verifier prompts.
 ///
-/// Flat by construction. A one-shot has no tools and runs no submission
+/// Flat by construction: a one-shot has no tools and runs no submission
 /// pipeline, so it can launch no verifier of its own. The delegation
-/// chain terminates by rule, not by configuration discipline, and a
-/// verifier-of-a-verifier is unrepresentable rather than merely refused.
+/// chain terminates by rule, so a verifier-of-a-verifier is
+/// unrepresentable rather than merely refused.
 pub(crate) fn verifier_definition(
     parent: &AgentDefinition,
     system_prompt_hash: String,
@@ -193,12 +187,10 @@ pub(crate) fn verifier_definition(
 
 /// The budgets the admission check enforces for a stage right now.
 ///
-/// Budgets re-resolve from the current configuration at every claim
-/// (never from the thread's recorded binding), so headroom can genuinely
-/// return through a configuration change while the binding stays the
-/// recorded truth of what ran. The executor kind is the recorded one:
-/// a loop thread keeps the finite-default discipline whatever the
-/// configuration now selects.
+/// Budgets re-resolve from the current configuration at every claim, never
+/// from the thread's recorded binding, so headroom can return through a
+/// configuration change while the binding stays the recorded truth of what
+/// ran. The executor kind, though, is the recorded one.
 pub(crate) fn current_stage_budgets(
     stage: TaskType,
     executor: StageExecutorKind,
@@ -213,8 +205,8 @@ pub(crate) fn current_stage_budgets(
 }
 
 /// The stage's agentic configuration. Every stage is configurable; a
-/// one-shot configuration with no overrides reproduces the launched
-/// definition's budgets exactly.
+/// one-shot configuration with no overrides reproduces the one-shot
+/// path's budgets exactly.
 fn stage_agent_config(stage: TaskType, agents: &AgentsConfig) -> &StageAgentConfig {
     match stage {
         TaskType::Extraction => &agents.extraction,
@@ -226,7 +218,7 @@ fn stage_agent_config(stage: TaskType, agents: &AgentsConfig) -> &StageAgentConf
 /// A one-shot's budgets: the token cap it enforces, nothing more. The turn
 /// and deadline caps bound a turn loop, so a one-shot binding does not record
 /// a contract it would not honour. Absent caps stay absent, reproducing the
-/// launched binding hash.
+/// default binding hash.
 fn one_shot_budgets(stage_config: &StageAgentConfig) -> ExecutionBudgets {
     ExecutionBudgets {
         max_total_tokens: stage_config.max_total_tokens,
@@ -265,7 +257,14 @@ mod tests {
         tribal_test_utils::a_completion_stage_spec()
     }
 
-    fn hashes(loop_pair: Option<(String, String)>) -> StagePromptHashes {
+    fn pair(system: &str, user: &str) -> PromptHashPair {
+        PromptHashPair {
+            system: system.repeat(64),
+            user: user.repeat(64),
+        }
+    }
+
+    fn hashes(loop_pair: Option<PromptHashPair>) -> StagePromptHashes {
         StagePromptHashes {
             system: "a".repeat(64),
             user: "b".repeat(64),
@@ -277,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn test_absent_configuration_reproduces_the_launched_definition() {
+    fn test_absent_configuration_reproduces_the_one_shot_definition() {
         let derived = derive_stage_definition(
             TaskType::Triage,
             &a_spec(),
@@ -285,7 +284,7 @@ mod tests {
             &AgentsConfig::default(),
         )
         .expect("derives");
-        let launched = AgentDefinition::one_shot(
+        let one_shot = AgentDefinition::one_shot(
             TaskType::Triage,
             ProviderKind::Ollama,
             "llama3".to_owned(),
@@ -296,7 +295,7 @@ mod tests {
         );
         assert_eq!(
             derived.canonical_json().expect("serialises"),
-            launched.canonical_json().expect("serialises"),
+            one_shot.canonical_json().expect("serialises"),
             "the default path's binding hash must not move",
         );
     }
@@ -310,7 +309,7 @@ mod tests {
         let derived = derive_stage_definition(
             TaskType::Triage,
             &a_spec(),
-            &hashes(Some(("c".repeat(64), "d".repeat(64)))),
+            &hashes(Some(pair("c", "d"))),
             &agents,
         )
         .expect("derives");
@@ -402,7 +401,7 @@ mod tests {
         let parent = derive_stage_definition(
             TaskType::Triage,
             &a_spec(),
-            &hashes(Some(("c".repeat(64), "d".repeat(64)))),
+            &hashes(Some(pair("c", "d"))),
             &agents,
         )
         .expect("derives the loop parent");
@@ -449,7 +448,7 @@ mod tests {
         let derived = derive_stage_definition(
             TaskType::Extraction,
             &a_spec(),
-            &hashes(Some(("c".repeat(64), "d".repeat(64)))),
+            &hashes(Some(pair("c", "d"))),
             &agents,
         )
         .expect("derives");
@@ -473,7 +472,7 @@ mod tests {
         let derived = derive_stage_definition(
             TaskType::Relation,
             &a_spec(),
-            &hashes(Some(("c".repeat(64), "d".repeat(64)))),
+            &hashes(Some(pair("c", "d"))),
             &agents,
         )
         .expect("derives");
