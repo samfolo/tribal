@@ -156,18 +156,24 @@ pub(crate) enum StageError {
         source: tribal_db::DbError,
     },
 
-    /// A resumed thread's recorded binding names a different route than the
-    /// current stage configuration. Terminal: the gateway routes by the
-    /// current stage, so executing would run the thread under an endpoint
-    /// its recorded binding and attribution do not name, and no retry
-    /// reconciles a configuration change.
-    #[error("resume route diverged in {stage}: recorded {recorded}, current {current}")]
-    ResumeRouteDivergence {
+    /// A resumed thread's recorded binding diverges from the current stage
+    /// configuration in an aspect execution takes live: the gateway's route,
+    /// or the tool surface the turn loop projects. Terminal: executing would
+    /// run the thread under a route or tool contract its recorded binding
+    /// does not name, and no retry reconciles a configuration or binary
+    /// change. A fresh thread pairs the current configuration by
+    /// construction, so it never diverges.
+    #[error(
+        "resume binding diverged in {stage} ({aspect}): recorded {recorded}, current {current}"
+    )]
+    ResumeBindingDivergence {
         /// The stage whose resumed thread diverged.
         stage: String,
-        /// The recorded binding's route.
+        /// Which aspect diverged: the route, or the tool surface.
+        aspect: &'static str,
+        /// The recorded binding's value for the diverged aspect.
         recorded: String,
-        /// The route the current configuration resolves.
+        /// The value the current configuration resolves for that aspect.
         current: String,
     },
 }
@@ -187,7 +193,7 @@ impl StageError {
             }
             Self::BudgetExhausted { .. } => TaskErrorKind::BudgetExhausted,
             Self::Database { .. } => TaskErrorKind::DatabaseError,
-            Self::ResumeRouteDivergence { .. } => TaskErrorKind::RouteDivergence,
+            Self::ResumeBindingDivergence { .. } => TaskErrorKind::BindingDivergence,
         }
     }
 }
@@ -249,12 +255,13 @@ mod tests {
                 TaskErrorKind::DatabaseError,
             ),
             (
-                StageError::ResumeRouteDivergence {
+                StageError::ResumeBindingDivergence {
                     stage: "relation".into(),
+                    aspect: "route",
                     recorded: "ollama/llama3".into(),
                     current: "openai/gpt".into(),
                 },
-                TaskErrorKind::RouteDivergence,
+                TaskErrorKind::BindingDivergence,
             ),
         ];
 
