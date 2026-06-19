@@ -23,20 +23,24 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # The list form lets the optional agent budgets and the triage verifier
+    # be bare host pass-throughs: forwarded only when the host sets them, so
+    # an unset override stays the binary's default rather than an empty value
+    # the config would reject.
     environment:
-      TRIBAL_DATABASE__URL: postgres://tribal:tribal@postgres:5432/tribal
+      - TRIBAL_DATABASE__URL=postgres://tribal:tribal@postgres:5432/tribal
       # http or sse — both accept a bind_address; stdio rejects it via
       # validate_server. Swap to sse here if you prefer the legacy transport.
-      TRIBAL_SERVER__TRANSPORT: "http"
-      TRIBAL_SERVER__BIND_ADDRESS: "0.0.0.0:8725"
-      TRIBAL_PUBLIC_MCP_URL: "http://127.0.0.1:8725/mcp"
+      - TRIBAL_SERVER__TRANSPORT=http
+      - TRIBAL_SERVER__BIND_ADDRESS=0.0.0.0:8725
+      - TRIBAL_PUBLIC_MCP_URL=http://127.0.0.1:8725/mcp
       # Redirect tribal.yaml and credentials.json into the state volume so
       # they survive container restart. Resolves to
       # /var/lib/tribal/tribal/{tribal.yaml,credentials.json} (the inner
       # `tribal/` segment is the binary's own subdirectory under any
       # XDG_CONFIG_HOME parent).
-      XDG_CONFIG_HOME: "/var/lib/tribal"
-      TRIBAL_CONFIG_PATH: "/var/lib/tribal/tribal/tribal.yaml"
+      - XDG_CONFIG_HOME=/var/lib/tribal
+      - TRIBAL_CONFIG_PATH=/var/lib/tribal/tribal/tribal.yaml
       # Provider selection. Defaults target a local Ollama on the host.
       # Every field is exposed as a host-overridable variable: Compose only
       # forwards variables it names here, so each needs a default to stay
@@ -51,40 +55,53 @@ services:
       # example https://api.openai.com or https://api.anthropic.com),
       # otherwise requests route to the local Ollama address. Model
       # defaults mirror the binary's.
-      TRIBAL_INIT__EMBEDDING__PROVIDER: "${TRIBAL_INIT__EMBEDDING__PROVIDER:-ollama}"
-      TRIBAL_INIT__EMBEDDING__MODEL: "${TRIBAL_INIT__EMBEDDING__MODEL:-nomic-embed-text:v1.5}"
-      TRIBAL_INIT__EMBEDDING__BASE_URL: "${TRIBAL_INIT__EMBEDDING__BASE_URL:-http://host.docker.internal:11434}"
-      TRIBAL_INFERENCE__EXTRACTION__PROVIDER: "${TRIBAL_INFERENCE__EXTRACTION__PROVIDER:-ollama}"
-      TRIBAL_INFERENCE__EXTRACTION__MODEL: "${TRIBAL_INFERENCE__EXTRACTION__MODEL:-llama3.1:70b}"
-      TRIBAL_INFERENCE__EXTRACTION__BASE_URL: "${TRIBAL_INFERENCE__EXTRACTION__BASE_URL:-http://host.docker.internal:11434}"
-      TRIBAL_INFERENCE__TRIAGE__PROVIDER: "${TRIBAL_INFERENCE__TRIAGE__PROVIDER:-ollama}"
-      TRIBAL_INFERENCE__TRIAGE__MODEL: "${TRIBAL_INFERENCE__TRIAGE__MODEL:-llama3.1:8b}"
-      TRIBAL_INFERENCE__TRIAGE__BASE_URL: "${TRIBAL_INFERENCE__TRIAGE__BASE_URL:-http://host.docker.internal:11434}"
-      TRIBAL_INFERENCE__RELATION__PROVIDER: "${TRIBAL_INFERENCE__RELATION__PROVIDER:-ollama}"
-      TRIBAL_INFERENCE__RELATION__MODEL: "${TRIBAL_INFERENCE__RELATION__MODEL:-llama3.1:8b}"
-      TRIBAL_INFERENCE__RELATION__BASE_URL: "${TRIBAL_INFERENCE__RELATION__BASE_URL:-http://host.docker.internal:11434}"
+      - TRIBAL_INIT__EMBEDDING__PROVIDER=${TRIBAL_INIT__EMBEDDING__PROVIDER:-ollama}
+      - TRIBAL_INIT__EMBEDDING__MODEL=${TRIBAL_INIT__EMBEDDING__MODEL:-nomic-embed-text:v1.5}
+      - TRIBAL_INIT__EMBEDDING__BASE_URL=${TRIBAL_INIT__EMBEDDING__BASE_URL:-http://host.docker.internal:11434}
+      - TRIBAL_INFERENCE__EXTRACTION__PROVIDER=${TRIBAL_INFERENCE__EXTRACTION__PROVIDER:-ollama}
+      - TRIBAL_INFERENCE__EXTRACTION__MODEL=${TRIBAL_INFERENCE__EXTRACTION__MODEL:-llama3.1:70b}
+      - TRIBAL_INFERENCE__EXTRACTION__BASE_URL=${TRIBAL_INFERENCE__EXTRACTION__BASE_URL:-http://host.docker.internal:11434}
+      - TRIBAL_INFERENCE__TRIAGE__PROVIDER=${TRIBAL_INFERENCE__TRIAGE__PROVIDER:-ollama}
+      - TRIBAL_INFERENCE__TRIAGE__MODEL=${TRIBAL_INFERENCE__TRIAGE__MODEL:-llama3.1:8b}
+      - TRIBAL_INFERENCE__TRIAGE__BASE_URL=${TRIBAL_INFERENCE__TRIAGE__BASE_URL:-http://host.docker.internal:11434}
+      - TRIBAL_INFERENCE__RELATION__PROVIDER=${TRIBAL_INFERENCE__RELATION__PROVIDER:-ollama}
+      - TRIBAL_INFERENCE__RELATION__MODEL=${TRIBAL_INFERENCE__RELATION__MODEL:-llama3.1:8b}
+      - TRIBAL_INFERENCE__RELATION__BASE_URL=${TRIBAL_INFERENCE__RELATION__BASE_URL:-http://host.docker.internal:11434}
       # Opt-in agentic execution, per stage; the default reproduces the
       # launched one-shot behaviour exactly. Set a stage to loop to run its
       # in-process turn loop instead. Only triage carries a verifier (default
       # on under its loop, disabled with TRIBAL_AGENTS__TRIAGE__VERIFIER=false);
-      # the extraction and relation verifiers are inert in this release. The
-      # per-stage turn, token, and deadline budgets are shown in .env.example.
-      TRIBAL_AGENTS__EXTRACTION__EXECUTOR: "${TRIBAL_AGENTS__EXTRACTION__EXECUTOR:-one_shot}"
-      TRIBAL_AGENTS__TRIAGE__EXECUTOR: "${TRIBAL_AGENTS__TRIAGE__EXECUTOR:-one_shot}"
-      TRIBAL_AGENTS__RELATION__EXECUTOR: "${TRIBAL_AGENTS__RELATION__EXECUTOR:-one_shot}"
-      TRIBAL_PROJECT_NAME: ${TRIBAL_PROJECT_NAME:-tribal-docker-local}
-      TRIBAL_PROJECT_REMOTE: ${TRIBAL_PROJECT_REMOTE:-https://example.com/local/tribal-docker.git}
+      # the extraction and relation verifiers are inert in this release.
+      - TRIBAL_AGENTS__EXTRACTION__EXECUTOR=${TRIBAL_AGENTS__EXTRACTION__EXECUTOR:-one_shot}
+      - TRIBAL_AGENTS__TRIAGE__EXECUTOR=${TRIBAL_AGENTS__TRIAGE__EXECUTOR:-one_shot}
+      - TRIBAL_AGENTS__RELATION__EXECUTOR=${TRIBAL_AGENTS__RELATION__EXECUTOR:-one_shot}
+      # Optional overrides: the triage verifier toggle and each stage's turn,
+      # token, and deadline budgets. Bare pass-throughs, so an unset one is
+      # omitted from the container and the binary's default stands. Set any of
+      # them in .env to override (see .env.example).
+      - TRIBAL_AGENTS__TRIAGE__VERIFIER
+      - TRIBAL_AGENTS__EXTRACTION__MAX_TURNS
+      - TRIBAL_AGENTS__EXTRACTION__MAX_TOTAL_TOKENS
+      - TRIBAL_AGENTS__EXTRACTION__EXECUTION_DEADLINE_SECONDS
+      - TRIBAL_AGENTS__TRIAGE__MAX_TURNS
+      - TRIBAL_AGENTS__TRIAGE__MAX_TOTAL_TOKENS
+      - TRIBAL_AGENTS__TRIAGE__EXECUTION_DEADLINE_SECONDS
+      - TRIBAL_AGENTS__RELATION__MAX_TURNS
+      - TRIBAL_AGENTS__RELATION__MAX_TOTAL_TOKENS
+      - TRIBAL_AGENTS__RELATION__EXECUTION_DEADLINE_SECONDS
+      - TRIBAL_PROJECT_NAME=${TRIBAL_PROJECT_NAME:-tribal-docker-local}
+      - TRIBAL_PROJECT_REMOTE=${TRIBAL_PROJECT_REMOTE:-https://example.com/local/tribal-docker.git}
       # Scopes container-side commands (the healthcheck and any
       # `docker compose exec tribal ...`) to the bootstrapped project. Leave
       # empty for the first `up`; once bootstrap prints the project id, set it
       # in .env so exec'd commands resolve that project instead of warning.
       # The server always serves the project recorded in the state volume, so
       # a stale value here cannot mis-scope serving.
-      TRIBAL_PROJECT_ID: ${TRIBAL_PROJECT_ID:-}
+      - TRIBAL_PROJECT_ID=${TRIBAL_PROJECT_ID:-}
       # Provider env vars passed through from the host shell. Optional;
       # required only for real ingest against the listed cloud providers.
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
       - tribal_state:/var/lib/tribal
     entrypoint: ["/usr/local/bin/tribal-entrypoint"]

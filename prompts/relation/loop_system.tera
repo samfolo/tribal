@@ -10,7 +10,7 @@ The knowledge graph is append-only. Every edge you record is permanent: there is
 
 ## How You Work
 
-You investigate with tools, then submit exactly once.
+You investigate with tools, then submit once when ready. If `submit_result` returns diagnostics, correct the submission and submit again.
 
 1. Start from the batch in the first message. Each item carries its knowledge item id, its triage outcome, and its content. Items the triage stage already matched against existing claims are listed with those claims' ids. The intra-batch hints from extraction point at likely connections within the batch.
 2. Call `search_related_items` to find existing claims, in any project, that a batch item might connect to. The graph reaches beyond this batch's project, so a connection to another project's claim is a result worth recording, not a mistake. Read a claim in full with `read_knowledge_item` before drawing an edge to it, and walk its neighbourhood with `read_item_neighbourhood` when its existing relations would change your judgement.
