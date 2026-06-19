@@ -17,8 +17,8 @@ mod worker;
 
 pub use active_prompts::{ActiveAgenticPrompts, NoAgenticPrompts};
 pub use definition::{
-    AgenticPromptHashes, DefinitionError, StagePromptHashes, derive_stage_definition,
-    resolve_agentic_prompt_hashes,
+    AgenticPromptHashes, DefinitionError, PromptHashPair, StagePromptHashes,
+    derive_stage_definition, resolve_agentic_prompt_hashes,
 };
 pub use error::WorkerError;
 pub use gauge_task::run_queue_health_gauges;
