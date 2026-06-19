@@ -17,8 +17,9 @@ use tribal_db::{
     PgPromptVersionRepository, PgTaskRepository, PromptVersionRepository, TaskRepository as _,
 };
 use tribal_domain::{
-    AgentDefinition, AgentThread, AgentThreadStatus, Job, JobOutcome, JobState, PromptClass,
-    PromptRole, PromptVersionId, Task, TaskErrorKind, TaskType, normalise_endpoint_url,
+    AgentDefinition, AgentThread, AgentThreadStatus, Job, JobOutcome, JobState, ProjectScope,
+    PromptClass, PromptRole, PromptVersionId, StageExecutorKind, Task, TaskErrorKind, TaskType,
+    ToolBinding, normalise_endpoint_url,
 };
 use tribal_inference::{CompletionStageSpec, CompletionStageSpecs};
 
@@ -29,6 +30,7 @@ use crate::{
     },
     error::StageError,
     stages::prompt_version_ids_for_task,
+    tools::stage_tool_bindings,
     worker::{Worker, coupling},
 };
 
@@ -70,7 +72,7 @@ impl Worker {
             .await
             .map_err(|source| map_runtime_error(stage, "establishing the thread", source))?;
 
-        guard_route(
+        guard_binding(
             stage,
             stage_thread.binding.definition(),
             stage_spec(self.stage_specs(), task.task_type()),
@@ -345,32 +347,71 @@ impl Worker {
     }
 }
 
-/// Fails a resumed thread or driver child whose recorded binding names a
-/// different route than the gateway now resolves for its stage.
-///
-/// The gateway routes by stage, so a divergent resume would run under an
-/// endpoint the recorded binding and attribution do not name; failing
-/// fast preserves the recorded-binding-names-what-ran invariant. A fresh
-/// thread pairs the current spec, so its route matches by construction.
-pub(super) fn guard_route(
+/// Fails a resumed thread or driver child whose recorded binding diverges
+/// from the current configuration in an aspect execution takes live: the
+/// gateway's route, or the tool surface the turn loop projects from the live
+/// registry. Either would run the thread under a contract its recorded
+/// binding does not name, so failing fast preserves the
+/// recorded-binding-names-what-ran invariant. Aspects the runtime reads back
+/// from the recorded binding (its sampling parameters) need no guard; a fresh
+/// thread pairs the current configuration, so it matches by construction.
+pub(super) fn guard_binding(
     stage: &str,
     recorded: &AgentDefinition,
     spec: &CompletionStageSpec,
 ) -> Result<(), StageError> {
-    if recorded.provider == spec.provider
+    if !(recorded.provider == spec.provider
         && recorded.model == spec.model
-        && base_urls_match(&recorded.base_url, &spec.base_url)
+        && base_urls_match(&recorded.base_url, &spec.base_url))
     {
-        return Ok(());
+        return Err(StageError::ResumeBindingDivergence {
+            stage: stage.to_owned(),
+            aspect: "route",
+            recorded: format!(
+                "{}/{}@{}",
+                recorded.provider, recorded.model, recorded.base_url
+            ),
+            current: format!("{}/{}@{}", spec.provider, spec.model, spec.base_url),
+        });
     }
-    Err(StageError::ResumeRouteDivergence {
-        stage: stage.to_owned(),
-        recorded: format!(
-            "{}/{}@{}",
-            recorded.provider, recorded.model, recorded.base_url
-        ),
-        current: format!("{}/{}@{}", spec.provider, spec.model, spec.base_url),
-    })
+
+    // The turn loop projects the tool surface from the live registry, not the
+    // recorded binding, so a binary that reshaped a tool descriptor or its
+    // reach must fail rather than resume under a surface the recorded binding
+    // does not name. Only the loop executor projects tools; a one-shot (a
+    // verifier child included) projects none, so it cannot diverge here.
+    if recorded.executor == StageExecutorKind::BuiltInLoop {
+        let current_tools = stage_tool_bindings(recorded.pipeline_stage);
+        if recorded.tools != current_tools {
+            return Err(StageError::ResumeBindingDivergence {
+                stage: stage.to_owned(),
+                aspect: "tool surface",
+                recorded: render_tool_surface(&recorded.tools),
+                current: render_tool_surface(&current_tools),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Renders a tool surface as a stable, readable summary for a divergence
+/// diagnostic: each tool's name and reach, in wire order. The binding hash
+/// covers more than this (descriptions and schemas too), so two surfaces can
+/// differ while this summary reads alike; the terminal failure stands either
+/// way.
+fn render_tool_surface(tools: &[ToolBinding]) -> String {
+    tools
+        .iter()
+        .map(|tool| {
+            let scope = match tool.project_scope {
+                ProjectScope::Fenced => "fenced",
+                ProjectScope::CrossProject => "cross",
+            };
+            format!("{}[{scope}]", tool.descriptor.name)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Whether two base URLs name the same endpoint. Canonicalises both (the
@@ -510,7 +551,7 @@ mod tests {
         // A fresh thread pairs the current spec, so the recorded and
         // current routes are identical and the guard is a no-op.
         let recorded = an_agent_definition().build();
-        assert!(guard_route("relation", &recorded, &a_stage_spec("llama3")).is_ok());
+        assert!(guard_binding("relation", &recorded, &a_stage_spec("llama3")).is_ok());
     }
 
     #[test]
@@ -520,8 +561,8 @@ mod tests {
         // recorded binding still names the old one.
         let recorded = an_agent_definition().build();
         assert!(matches!(
-            guard_route("relation", &recorded, &a_stage_spec("a-different-model")),
-            Err(StageError::ResumeRouteDivergence { .. }),
+            guard_binding("relation", &recorded, &a_stage_spec("a-different-model")),
+            Err(StageError::ResumeBindingDivergence { .. }),
         ));
     }
 
@@ -537,7 +578,7 @@ mod tests {
             base_url: "http://localhost:11434/".to_owned(),
             ..a_completion_stage_spec()
         };
-        assert!(guard_route("relation", &recorded, &respelled).is_ok());
+        assert!(guard_binding("relation", &recorded, &respelled).is_ok());
 
         // A genuinely different host is still a divergence.
         let elsewhere = CompletionStageSpec {
@@ -545,8 +586,50 @@ mod tests {
             ..a_completion_stage_spec()
         };
         assert!(matches!(
-            guard_route("relation", &recorded, &elsewhere),
-            Err(StageError::ResumeRouteDivergence { .. }),
+            guard_binding("relation", &recorded, &elsewhere),
+            Err(StageError::ResumeBindingDivergence { .. }),
         ));
+    }
+
+    #[test]
+    fn test_guard_fails_a_diverged_tool_surface() {
+        // A loop thread resumes after a binary dropped a relation tool: the
+        // recorded surface no longer matches what the live registry projects,
+        // so the resume fails rather than running under the changed contract.
+        let mut diverged = stage_tool_bindings(TaskType::Relation);
+        diverged.pop();
+        let recorded = an_agent_definition()
+            .pipeline_stage(TaskType::Relation)
+            .executor(StageExecutorKind::BuiltInLoop)
+            .tools(diverged)
+            .build();
+        assert!(matches!(
+            guard_binding("relation", &recorded, &a_stage_spec("llama3")),
+            Err(StageError::ResumeBindingDivergence { aspect, .. }) if aspect == "tool surface",
+        ));
+    }
+
+    #[test]
+    fn test_guard_passes_a_matching_loop_tool_surface() {
+        // A loop thread whose recorded surface matches the live registry
+        // resumes: the tool guard fires only on an actual change.
+        let recorded = an_agent_definition()
+            .pipeline_stage(TaskType::Relation)
+            .executor(StageExecutorKind::BuiltInLoop)
+            .tools(stage_tool_bindings(TaskType::Relation))
+            .build();
+        assert!(guard_binding("relation", &recorded, &a_stage_spec("llama3")).is_ok());
+    }
+
+    #[test]
+    fn test_guard_skips_the_tool_surface_for_a_one_shot() {
+        // A one-shot (a verifier child included) projects no tools, so an
+        // empty recorded surface must not read as diverging from the stage's
+        // loop surface: the tool guard is a loop-only concern.
+        let recorded = an_agent_definition()
+            .pipeline_stage(TaskType::Relation)
+            .executor(StageExecutorKind::OneShot)
+            .build();
+        assert!(guard_binding("relation", &recorded, &a_stage_spec("llama3")).is_ok());
     }
 }

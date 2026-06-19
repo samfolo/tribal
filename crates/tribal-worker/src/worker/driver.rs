@@ -38,7 +38,7 @@ use crate::{
     worker::{
         Worker,
         heartbeat::spawn_driver_heartbeat,
-        thread::{guard_route, stage_spec},
+        thread::{guard_binding, stage_spec},
     },
 };
 
@@ -217,7 +217,7 @@ impl Worker {
         // edit that moved the stage's route after the child was admitted
         // would run it under an endpoint its recorded binding does not
         // name; fail terminal before the call, as the stage path does.
-        guard_route(
+        guard_binding(
             child.pipeline_stage().as_str(),
             binding.definition(),
             stage_spec(self.stage_specs(), child.pipeline_stage()),
