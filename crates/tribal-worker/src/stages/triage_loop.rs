@@ -1,13 +1,15 @@
 //! The agentic triage stage: the loop executor's wiring.
 //!
-//! Context assembly is the one-shot's (the candidate, the opening
-//! semantic search, the tag registry), rendered through the loop
-//! templates the thread's recorded binding pins. The runtime drives the
-//! turns; this module supplies the tools, the submission pipeline, and
-//! the mapping from an accepted submission onto the existing commit
-//! machinery. The committed shapes (knowledge items, observations,
-//! similar-item decisions) are the one-shot's own constructors, so the
-//! two executors cannot drift on what they write.
+//! Context assembly opens with the candidate and the tag registry;
+//! candidate similarity is acquired through the durable search tool the
+//! loop exposes, which the must-search rule requires before a
+//! classification, rendered through the loop templates the thread's
+//! recorded binding pins. The runtime drives the turns; this module
+//! supplies the tools, the submission pipeline, and the mapping from an
+//! accepted submission onto the existing commit machinery. The committed
+//! shapes (knowledge items, observations, similar-item decisions) are the
+//! one-shot's own constructors, so the two executors cannot drift on what
+//! they write.
 
 use std::{collections::HashMap, sync::Arc};
 
