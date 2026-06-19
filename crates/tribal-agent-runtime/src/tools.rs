@@ -22,7 +22,7 @@ use sqlx::PgConnection;
 use tribal_domain::{RecoverableToolFailure, ToolDescriptor, ToolExecutionMode, ToolFailure};
 
 /// The marker appended to a result trimmed to its declared bound.
-const TRIM_MARKER_PREFIX: &str = "\n[result trimmed to ";
+const TRIM_MARKER_PREFIX: &str = "\n[truncated: over the ";
 
 /// A successful tool execution's product.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,7 +176,7 @@ impl ToolRegistry {
         if content.len() <= bound {
             return content;
         }
-        let marker = format!("{TRIM_MARKER_PREFIX}{bound} bytes]");
+        let marker = format!("{TRIM_MARKER_PREFIX}{bound}-byte limit]");
         if marker.len() >= bound {
             let mut end = bound;
             while end > 0 && !marker.is_char_boundary(end) {
@@ -191,6 +191,15 @@ impl ToolRegistry {
         let mut trimmed = content[..cut].to_owned();
         trimmed.push_str(&marker);
         trimmed
+    }
+
+    /// Bounds a result to its tool's declared size, returning the output and
+    /// whether it overflowed, so the caller records an overflow as a
+    /// model-recoverable failure (§10.1), never a silent truncated success.
+    #[must_use]
+    pub fn bound_result(descriptor: &ToolDescriptor, content: String) -> (String, bool) {
+        let oversized = content.len() > descriptor.response_size_bound as usize;
+        (Self::trim_to_bound(descriptor, content), oversized)
     }
 }
 
@@ -324,12 +333,29 @@ mod tests {
 
         let long = ToolRegistry::trim_to_bound(&descriptor, "x".repeat(100));
         assert!(long.starts_with('x'), "the payload prefix is kept");
-        assert!(long.contains("[result trimmed to 64 bytes]"));
+        assert!(long.contains("over the 64-byte limit"));
         assert!(
             long.len() <= bound,
             "the marker's room is reserved inside the bound: {} > {bound}",
             long.len(),
         );
+    }
+
+    #[test]
+    fn test_bound_result_flags_only_an_overflow() {
+        let descriptor = a_descriptor("search", ToolExecutionMode::Immediate, ToolSafetyTier::Pure);
+
+        let (output, oversized) = ToolRegistry::bound_result(&descriptor, "short".to_owned());
+        assert_eq!(output, "short");
+        assert!(!oversized, "a result within bound is whole and not flagged");
+
+        let (output, oversized) = ToolRegistry::bound_result(&descriptor, "x".repeat(100));
+        assert!(
+            oversized,
+            "an overflow is flagged so the caller marks it an error"
+        );
+        assert!(output.contains("over the 64-byte limit"));
+        assert!(output.len() <= descriptor.response_size_bound as usize);
     }
 
     #[test]
@@ -339,7 +365,7 @@ mod tests {
         // marker) can fall mid-character, so the cut backs up to the
         // boundary rather than splitting it.
         let trimmed = ToolRegistry::trim_to_bound(&descriptor, "£".repeat(40));
-        assert!(trimmed.contains("[result trimmed to 64 bytes]"));
+        assert!(trimmed.contains("over the 64-byte limit"));
         assert!(!trimmed.starts_with('\u{fffd}'));
         assert!(trimmed.len() <= descriptor.response_size_bound as usize);
     }

@@ -933,3 +933,149 @@ async fn test_the_loop_executor_completes_an_extraction_job_end_to_end() {
 
     teardown(ctx).await;
 }
+
+/// A deterministic validator bounce drives a second turn before fan-out:
+/// the first submission carries an out-of-range relation hint and bounces
+/// with diagnostics, the loop re-prompts, and the corrected resubmission
+/// commits and fans out one triage task per candidate. The bounce never
+/// reaches the database; only the accepted submission does.
+#[tokio::test]
+async fn test_a_bounced_extraction_resubmits_then_fans_out() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "agentic-extraction-bounce").await;
+    let mut conn = raw_conn(ctx).await;
+    let prompts = seed_extraction_loop_prompts(&mut conn).await;
+    let (job_id, task_id) = seed_extraction_job(
+        &mut conn,
+        principal_id,
+        project_id,
+        system_pv_id,
+        user_pv_id,
+    )
+    .await;
+    drop(conn);
+
+    let candidate = |content: &str| serde_json::json!({"kind": "fact", "content": content, "suggested_tags": []});
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            // Turn one: a single candidate with a relation hint pointing at a
+            // candidate that does not exist; the validator bounces it.
+            .on_complete(
+                a_tool_call_response(&[(
+                    "call_0",
+                    SUBMIT_RESULT_TOOL,
+                    serde_json::json!({
+                        "candidates": [candidate("first claim")],
+                        "relation_hints": [{
+                            "source_index": 0,
+                            "target_index": 5,
+                            "hint_type": "derived_from",
+                        }],
+                    }),
+                )]),
+                None,
+            )
+            // Turn two: the corrected submission, two candidates and no
+            // dangling hint, which the validator accepts.
+            .on_complete(
+                a_tool_call_response(&[(
+                    "call_1",
+                    SUBMIT_RESULT_TOOL,
+                    serde_json::json!({
+                        "candidates": [candidate("first claim"), candidate("second claim")],
+                        "relation_hints": [],
+                    }),
+                )]),
+                None,
+            )
+            .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
+                tribal_inference::InferenceError::provider_unavailable("mock", "test stub")
+            })))
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let (worker, _) = build_agentic_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+        extraction_loop_agents_config(),
+        Arc::new(prompts),
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    let _ = poll_job_status(&pool, job_id, JobStatus::Triaging, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    let mut conn = raw_conn(ctx).await;
+
+    // Only the accepted resubmission committed: two candidates, two triage
+    // tasks, never the bounced single-candidate submission.
+    let result = PgExtractionResultRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find extraction result")
+        .expect("the loop committed an extraction result");
+    let candidates: Vec<serde_json::Value> =
+        serde_json::from_value(result.candidates().clone()).expect("candidates are an array");
+    assert_eq!(candidates.len(), 2, "the corrected submission committed");
+    let triage_tasks = PgTaskRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find the job's tasks")
+        .into_iter()
+        .filter(|t| t.task_type() == tribal_domain::TaskType::Triage)
+        .count();
+    assert_eq!(
+        triage_tasks, 2,
+        "one triage task fanned out per accepted candidate"
+    );
+
+    // The log records the bounce as an error tool result between the two
+    // submit calls: a turn the validator drove without a database write.
+    let thread = PgAgentThreadRepository
+        .find_by_stage_task_id(&mut conn, task_id)
+        .await
+        .expect("find thread")
+        .expect("present");
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread_id(&mut conn, thread.id())
+        .await
+        .expect("log");
+    let kinds: Vec<_> = records.iter().map(|r| r.kind()).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            AgentThreadRecordKind::Input,
+            AgentThreadRecordKind::AssistantMessage,
+            AgentThreadRecordKind::ToolResult,
+            AgentThreadRecordKind::AssistantMessage,
+            AgentThreadRecordKind::Submission,
+        ],
+        "the bounce is a tool result, then the corrected submit is accepted",
+    );
+    let bounce = &records[2];
+    assert_eq!(bounce.content()["is_error"], true);
+    assert!(
+        bounce.content()["output"]
+            .as_str()
+            .expect("the bounce output is a string")
+            .contains("reference no candidate"),
+        "the bounce diagnostics teach the model what to fix",
+    );
+
+    teardown(ctx).await;
+}

@@ -20,12 +20,17 @@ use std::{collections::HashSet, sync::Arc};
 pub(crate) use common::{ReadJobContextTool, ReadSiblingThreadsTool};
 pub(crate) use relation::submit_relations_descriptor;
 use serde::{Serialize, de::DeserializeOwned};
+use sqlx::PgConnection;
 pub(crate) use triage::{
     ListTagRegistryTool, ReadItemNeighbourhoodTool, ReadKnowledgeItemTool,
     SearchCandidateSimilarItemsTool, submit_result_descriptor,
 };
 use tribal_agent_runtime::{
     SUBMIT_RESULT_TOOL, StageTool, ToolOutcome, ToolRegistry, ToolRegistryError,
+};
+use tribal_db::{
+    DbError, KnowledgeItemRepository, PgKnowledgeItemRepository, SemanticSearchParams,
+    SemanticSearchResponse,
 };
 use tribal_domain::{
     AgentThreadId, EmbeddingProfile, JobId, ProjectId, ProjectScope, RecoverableToolFailure,
@@ -271,6 +276,54 @@ fn serialise_outcome<T: Serialize>(context: &str, payload: &T) -> Result<ToolOut
 fn db_failure(context: &str, source: &tribal_db::DbError) -> ToolFailure {
     ToolFailure::System {
         context: format!("{context}: {source}"),
+    }
+}
+
+/// A stale or malformed page cursor is the model's own input, so it returns
+/// recoverable; every other search failure is a system fault.
+fn search_failure(tool: &str, context: &str, source: DbError) -> ToolFailure {
+    if let DbError::InvalidCursor { detail } = source {
+        return ToolFailure::Recoverable(RecoverableToolFailure::InvalidArguments {
+            tool: tool.to_owned(),
+            detail: format!(
+                "the page cursor is no longer valid ({detail}); omit the cursor to search \
+                 again from the first page"
+            ),
+        });
+    }
+    db_failure(context, &source)
+}
+
+/// A cursor-paginated semantic search whose rendered page always fits the
+/// tool's size bound (oversized pages re-run for fewer rows), so the result
+/// the model reads and the provenance harvested from it are one whole, valid
+/// page rather than a truncated one a re-parse would silently mangle.
+async fn paged_search_within_bound<P, R>(
+    conn: &mut PgConnection,
+    tool: &str,
+    context: &str,
+    mut params: SemanticSearchParams,
+    bound: u32,
+    render: R,
+) -> Result<ToolOutcome, ToolFailure>
+where
+    P: Serialize,
+    R: Fn(&SemanticSearchResponse) -> P,
+{
+    let bound = bound as usize;
+    loop {
+        let response = PgKnowledgeItemRepository
+            .semantic_search(conn, &params)
+            .await
+            .map_err(|source| search_failure(tool, context, source))?;
+        let page =
+            serde_json::to_string(&render(&response)).map_err(|source| ToolFailure::System {
+                context: format!("{context}: {source}"),
+            })?;
+        if page.len() <= bound || params.limit <= 1 {
+            return Ok(ToolOutcome { content: page });
+        }
+        params.limit /= 2;
     }
 }
 
