@@ -1,26 +1,12 @@
 //! The relation submission pipeline: the deterministic validators behind
 //! `submit_result` for the relation loop.
 //!
-//! Schema parse first, then the checks, in order, never a model call.
-//! Every rejection bounces with diagnostics held to the prompt bar so the
-//! loop's model corrects its own output. Endpoint existence is rechecked at
-//! the commit boundary, not here, so a claim that vanished between the
-//! model's read and its submission drops the edge rather than failing the
-//! stage; this pipeline validates only what the model controls: the shape,
-//! the bounds, that no edge is a self-edge or a duplicate, and that every
-//! endpoint is a claim the system actually offered as a citable reference.
-//!
-//! Provenance is checked against a structured set of trusted ids, not the
-//! substring corpus: the batch's committed items and the existing claims
-//! triage surfaced (seeded from the stage's loaded context), extended only
-//! through grounded tool results harvested from the thread log at submission
-//! time. A search result is grounded by construction; an id-addressed read
-//! extends the set only when the id it was given was already citable, so the
-//! set grows by walking out from grounded anchors. An id that appears only
-//! inside externally-derived content (a candidate's body, an item's body)
-//! cannot enter the set, whether cited directly or read back out of a read's
-//! own echoed id field, so it cannot be laundered into a permanent
-//! cross-project edge.
+//! Schema parse first, then the per-edge checks, never a model call. Endpoint
+//! existence is rechecked at the commit boundary, not here, so an edge to a
+//! claim that vanished is dropped rather than failing the stage. Provenance is
+//! a structured trusted-id set (the batch items, the claims triage surfaced,
+//! and the ids grounded tool results returned), so an id seen only inside
+//! content cannot become an edge endpoint.
 
 use std::collections::{HashMap, HashSet};
 
@@ -38,7 +24,7 @@ use tribal_domain::{
 
 use crate::{
     parsing::{RELATION_JUSTIFICATION_MAX_CHARS, RelationSubmission, RelationSubmissionEdge},
-    tools::{RelationToolGrounding, relation_tool_grounding},
+    tools::RelationToolGrounding,
 };
 
 /// The relation stage's submission pipeline. Cross-project by nature, so it
@@ -108,8 +94,8 @@ impl SubmissionPipeline for RelationSubmissionPipeline {
         _thread: &AgentThread,
         _payload: &serde_json::Value,
     ) -> Result<Option<VerifierLaunch>, ToolFailure> {
-        // The relation loop ships without a verifier in this release; an
-        // accepted submission commits on the validators alone.
+        // The relation loop has no verifier; an accepted submission commits
+        // on the validators alone.
         Ok(None)
     }
 }
@@ -138,8 +124,8 @@ fn check_relation_edges(
             && justification.chars().count() > RELATION_JUSTIFICATION_MAX_CHARS
         {
             return Err(format!(
-                "an edge justification is too long ({} characters against a bound of \
-                 {RELATION_JUSTIFICATION_MAX_CHARS}); keep it to the reasoning for the edge",
+                "a relationship justification is too long ({} characters against a bound of \
+                 {RELATION_JUSTIFICATION_MAX_CHARS}); keep it to the reasoning for the relationship",
                 justification.chars().count(),
             ));
         }
@@ -165,21 +151,21 @@ fn check_relation_edges(
             ));
         }
 
-        // No self-edge: an edge connects two different claims.
+        // No self-edge: a relationship connects two different claims.
         if source_id == target_id {
             return Err(format!(
-                "the edge from {source_id} to itself is not a relationship; an edge connects two \
-                 different claims",
+                "the relationship from {source_id} to itself is not valid; a relationship \
+                 connects two different claims",
             ));
         }
 
-        // No duplicate triple: each directed, typed edge is listed at most
-        // once.
+        // No duplicate triple: each directed, typed relationship is listed at
+        // most once.
         let relation_type: RelationKind = edge.relation_type.into();
         if !seen.insert((source_id, target_id, relation_type)) {
             return Err(format!(
-                "the edge from {source_id} to {target_id} ({}) is listed more than once; list \
-                 each directed, typed edge at most once",
+                "the relationship from {source_id} to {target_id} ({}) is listed more than once; \
+                 list each directed, typed relationship at most once",
                 relation_type.as_str(),
             ));
         }
@@ -244,11 +230,11 @@ async fn harvest_tool_result_ids(
         let Some(call) = record.tool_call_id().and_then(|id| calls.get(id)) else {
             continue;
         };
-        if !call_grounds_provenance(call, ids) {
+        if !RelationToolGrounding::call_grounds(call, ids) {
             continue;
         }
-        // A grounded result is whole, valid JSON (§10.1); a parse failure is
-        // an internal inconsistency, not a skip.
+        // A grounded result is whole, valid JSON; a parse failure is an
+        // internal inconsistency, not a skip.
         let value =
             serde_json::from_str::<serde_json::Value>(&content.output).map_err(|source| {
                 ToolFailure::System {
@@ -266,24 +252,6 @@ async fn harvest_tool_result_ids(
 struct AssistantToolCalls {
     #[serde(default)]
     tool_calls: Vec<RecordedToolCall>,
-}
-
-/// Whether a call's result may extend the citable set, given the set as it
-/// stands. A search is grounded by construction; an id-addressed read grounds
-/// its result only when the id it was given is already citable, so an id seen
-/// only inside content cannot bootstrap trust by being read back out of the
-/// read's own echoed id field.
-fn call_grounds_provenance(call: &RecordedToolCall, citable: &HashSet<KnowledgeItemId>) -> bool {
-    match relation_tool_grounding(call.name.as_str()) {
-        RelationToolGrounding::Search => true,
-        RelationToolGrounding::IdAddressedRead => call
-            .arguments
-            .get("item_id")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|raw| raw.parse::<KnowledgeItemId>().ok())
-            .is_some_and(|id| citable.contains(&id)),
-        RelationToolGrounding::NotProvenance => false,
-    }
 }
 
 /// Walks a tool result's JSON, collecting every well-formed knowledge item id
@@ -477,7 +445,7 @@ mod tests {
         assert!(ids.is_empty());
     }
 
-    // -- call_grounds_provenance: which results extend the citable set --
+    // -- call_grounds: which results extend the citable set --
 
     fn a_call(name: &str, item_id: Option<&str>) -> RecordedToolCall {
         RecordedToolCall {
@@ -494,7 +462,7 @@ mod tests {
     fn test_a_search_result_is_grounded_by_construction() {
         // A search ranks real items, so its result grounds whatever the
         // citable set holds.
-        assert!(call_grounds_provenance(
+        assert!(RelationToolGrounding::call_grounds(
             &a_call("search_related_items", None),
             &HashSet::new(),
         ));
@@ -507,15 +475,15 @@ mod tests {
         let citable = HashSet::from([anchor]);
         // The anchor is citable, so reading it grounds; the foreign id, seen
         // only inside content, does not become citable by being read.
-        assert!(call_grounds_provenance(
+        assert!(RelationToolGrounding::call_grounds(
             &a_call("read_knowledge_item", Some(&anchor.to_string())),
             &citable,
         ));
-        assert!(!call_grounds_provenance(
+        assert!(!RelationToolGrounding::call_grounds(
             &a_call("read_knowledge_item", Some(&foreign.to_string())),
             &citable,
         ));
-        assert!(call_grounds_provenance(
+        assert!(RelationToolGrounding::call_grounds(
             &a_call("read_item_neighbourhood", Some(&anchor.to_string())),
             &citable,
         ));
@@ -524,11 +492,11 @@ mod tests {
     #[test]
     fn test_a_read_of_a_malformed_or_absent_id_does_not_ground() {
         let citable = HashSet::from([ki("aaaa")]);
-        assert!(!call_grounds_provenance(
+        assert!(!RelationToolGrounding::call_grounds(
             &a_call("read_knowledge_item", Some("not-an-id")),
             &citable,
         ));
-        assert!(!call_grounds_provenance(
+        assert!(!RelationToolGrounding::call_grounds(
             &a_call("read_knowledge_item", None),
             &citable,
         ));
@@ -536,7 +504,7 @@ mod tests {
 
     #[test]
     fn test_an_unknown_tool_grounds_nothing() {
-        assert!(!call_grounds_provenance(
+        assert!(!RelationToolGrounding::call_grounds(
             &a_call("submit_result", None),
             &HashSet::from([ki("aaaa")]),
         ));

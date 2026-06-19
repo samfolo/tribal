@@ -18,9 +18,7 @@ mod triage;
 use std::{collections::HashSet, sync::Arc};
 
 pub(crate) use common::{ReadJobContextTool, ReadSiblingThreadsTool};
-pub(crate) use relation::{
-    RelationToolGrounding, relation_tool_grounding, submit_relations_descriptor,
-};
+pub(crate) use relation::{RelationToolGrounding, submit_relations_descriptor};
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::PgConnection;
 pub(crate) use triage::{
@@ -101,8 +99,8 @@ pub(crate) fn submit_candidates_descriptor() -> ToolDescriptor {
         .name(SUBMIT_RESULT_TOOL.to_owned())
         .description(
             "Submit the knowledge items you extracted from the input. This is the only way to \
-             complete the task: the candidates, and any intra-batch relation hints between them \
-             by index. Submit an empty list when the input holds no extractable knowledge. A \
+             complete the task: the candidates, and any intra-batch relationship hints between \
+             them by index. Submit an empty list when the input holds no extractable knowledge. A \
              rejected submission comes back with diagnostics; correct it and resubmit."
                 .to_owned(),
         )
@@ -297,12 +295,7 @@ fn search_failure(tool: &str, context: &str, source: DbError) -> ToolFailure {
 }
 
 /// How a search page renders an item's variable-size fields: in full, or
-/// elided when the item alone exceeds the page's size bound. The item's id,
-/// score, and the page cursor ride the page either way, so an elided item
-/// stays citable and the page stays parseable, where a truncated result would
-/// drop the item from provenance entirely. Elision strips every unbounded
-/// field (the content and the tags), so an elided single-item page is within
-/// bound by construction rather than by luck of the item's size.
+/// elided when the item alone exceeds the page's size bound.
 #[derive(Clone, Copy)]
 pub(crate) enum ContentRendering {
     Full,
