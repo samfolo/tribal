@@ -75,6 +75,12 @@ pub const RELATION_VERIFIER_UNAVAILABLE_ADVISORY: &str = "agents.relation.verifi
 pub const EXTRACTION_VERIFIER_UNAVAILABLE_ADVISORY: &str = "agents.extraction.verifier is set, but the extraction stage has no verifier in this release, \
      so this setting is inert";
 
+/// Advisory raised when a one-shot stage sets a turn or deadline budget.
+/// Those caps bound a turn loop; the one-shot executor enforces only the
+/// token cap, so its binding records neither and the setting is inert.
+pub const ONE_SHOT_BUDGET_INERT_ADVISORY: &str = "a one-shot stage sets max_turns or execution_deadline_seconds, which only the loop \
+     executor enforces, so the setting is inert";
+
 // ---------------------------------------------------------------------------
 // Executor choice
 // ---------------------------------------------------------------------------
@@ -234,6 +240,16 @@ impl AgentsConfig {
         if self.extraction.verifier.is_some_and(|v| v.enabled) {
             advisories.push(EXTRACTION_VERIFIER_UNAVAILABLE_ADVISORY);
         }
+        let inert_one_shot_budget = |c: &StageAgentConfig| {
+            c.executor == ExecutorChoice::OneShot
+                && (c.max_turns.is_some() || c.execution_deadline_seconds.is_some())
+        };
+        if [&self.extraction, &self.triage, &self.relation]
+            .into_iter()
+            .any(inert_one_shot_budget)
+        {
+            advisories.push(ONE_SHOT_BUDGET_INERT_ADVISORY);
+        }
         advisories
     }
 }
@@ -318,6 +334,28 @@ mod tests {
             "an inert verifier must not fail validation"
         );
         assert_eq!(config.advisories(), vec![VERIFIER_INERT_ADVISORY]);
+    }
+
+    #[test]
+    fn test_turn_or_deadline_budget_under_one_shot_is_an_inert_advisory() {
+        // A turn cap on a one-shot stage is enforced by nothing, so it warns
+        // rather than failing validation.
+        let config: AgentsConfig =
+            serde_yaml::from_str("relation:\n  max_turns: 6\n").expect("parse");
+        let mut diags = Diagnostics::default();
+        config.validate(&mut diags);
+        assert!(diags.is_empty(), "an inert budget must not fail validation");
+        assert_eq!(config.advisories(), vec![ONE_SHOT_BUDGET_INERT_ADVISORY]);
+    }
+
+    #[test]
+    fn test_turn_or_deadline_budget_under_loop_raises_no_advisory() {
+        let config: AgentsConfig =
+            serde_yaml::from_str("relation:\n  executor: loop\n  max_turns: 6\n").expect("parse");
+        assert!(
+            config.advisories().is_empty(),
+            "the loop executor enforces these caps"
+        );
     }
 
     #[test]
