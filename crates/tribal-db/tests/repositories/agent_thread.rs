@@ -1840,3 +1840,63 @@ async fn test_cascade_to_children_skips_terminal_and_already_marked_children() {
         .expect("cascade again");
     assert_eq!(again, 0);
 }
+
+#[tokio::test]
+async fn test_orphan_cascade_marks_a_child_whose_driver_task_is_terminal() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    // A live parent (so the parent clause does not fire) with a live child
+    // whose driver task has gone terminal: the deferred-death orphan no other
+    // sweep converges. The deferred circular reference admits the thread
+    // before its driver row.
+    let parent = insert_thread(&mut txn, "dt-orphan-parent").await;
+    let mut child_prereq = setup_thread_prerequisites(&mut txn, "dt-orphan-child").await;
+    let driver_task_id = uuid::Uuid::new_v4();
+    child_prereq.new_thread.parent_thread_id = Some(parent.id());
+    child_prereq.new_thread.driving_task =
+        DrivingTaskRef::Driver(AgentDriverTaskId::from(driver_task_id));
+    let child = PgAgentThreadRepository
+        .insert(&mut txn, &child_prereq.new_thread)
+        .await
+        .expect("insert child");
+    sqlx::query("INSERT INTO agent_driver_tasks (id, thread_id, kind) VALUES ($1, $2, 'drive')")
+        .bind(driver_task_id)
+        .bind(child.id().inner())
+        .execute(&mut *txn)
+        .await
+        .expect("insert paired driver task");
+    PgAgentThreadRepository
+        .mark_running(&mut txn, child.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    // Deferred death dead-lettered the driver task but left the child live.
+    let disposed = PgAgentDriverTaskRepository
+        .dispose_unclaimed(
+            &mut txn,
+            AgentDriverTaskId::from(driver_task_id),
+            "the verifier exhausted its retries",
+        )
+        .await
+        .expect("dead-letter the driver task");
+    assert_eq!(disposed, 1);
+
+    let marked = PgAgentThreadRepository
+        .cascade_cancel_to_orphans(&mut txn, 16, "test")
+        .await
+        .expect("cascade");
+    assert_eq!(
+        marked, 1,
+        "the child orphaned by its terminal driver task is marked"
+    );
+
+    let child = PgAgentThreadRepository
+        .find_by_id(&mut txn, child.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert!(
+        child.cancel_requested_at().is_some(),
+        "a live child whose only resolver, its driver task, is terminal is converged",
+    );
+}
