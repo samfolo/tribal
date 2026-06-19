@@ -1,11 +1,10 @@
 //! Agentic execution configuration: the opt-in per-stage executor switch.
 //!
-//! Absent configuration reproduces launched behaviour exactly: every stage
-//! runs one-shot. Setting a stage's executor to `loop` routes it through
-//! the in-process turn loop with finite default budgets, every one of
-//! which is overridable here. Every pipeline stage is configurable;
-//! verifier settings on relation and extraction are inert in this release
-//! and surfaced as advisories.
+//! Absent configuration runs every stage one-shot. Setting a stage's
+//! executor to `loop` routes it through the in-process turn loop with
+//! finite default budgets, every one of which is overridable here. Every
+//! pipeline stage is configurable; verifier settings on relation and
+//! extraction are inert and surfaced as advisories.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +19,8 @@ pub const DEFAULT_AGENTIC_MAX_TURNS: u32 = 8;
 
 /// Default cap on an agentic thread's token spend: input, output, and
 /// cache-write tokens. Cache-read is not counted. No provider populates
-/// cache-read today, so the exclusion is currently a no-op; before
+/// cache-read in the metered counts, so the exclusion is currently a
+/// no-op; before
 /// provider prompt caching is enabled, the cap, the ledger's cache-read
 /// subset check, and the per-provider usage mappings must be reconciled to
 /// one provider-independent cache-accounting model.
@@ -64,15 +64,15 @@ pub const VERIFIER_INERT_ADVISORY: &str = "agents.triage.verifier is set but age
      the verifier runs only under the loop executor, so this setting is inert";
 
 /// Advisory raised when the relation verifier is set. The relation loop
-/// ships without a verifier in this release, so the setting is inert under
-/// either executor. Non-fatal: the stage runs regardless.
-pub const RELATION_VERIFIER_UNAVAILABLE_ADVISORY: &str = "agents.relation.verifier is set, but the relation stage has no verifier in this release, \
+/// has no verifier, so the setting is inert under either executor.
+/// Non-fatal: the stage runs regardless.
+pub const RELATION_VERIFIER_UNAVAILABLE_ADVISORY: &str = "agents.relation.verifier is set, but the relation stage has no verifier toggle that takes effect, \
      so this setting is inert";
 
 /// The extraction-stage counterpart of
-/// [`RELATION_VERIFIER_UNAVAILABLE_ADVISORY`]: the extraction loop's
-/// verifier binding is deferred, so any setting is inert.
-pub const EXTRACTION_VERIFIER_UNAVAILABLE_ADVISORY: &str = "agents.extraction.verifier is set, but the extraction stage has no verifier in this release, \
+/// [`RELATION_VERIFIER_UNAVAILABLE_ADVISORY`]: the extraction loop has no
+/// verifier, so any setting is inert.
+pub const EXTRACTION_VERIFIER_UNAVAILABLE_ADVISORY: &str = "agents.extraction.verifier is set, but the extraction stage has no verifier toggle that takes effect, \
      so this setting is inert";
 
 /// Advisory raised when a one-shot stage sets a turn or deadline budget.
@@ -89,7 +89,7 @@ pub const ONE_SHOT_BUDGET_INERT_ADVISORY: &str = "a one-shot stage sets max_turn
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutorChoice {
-    /// The launched single-call behaviour.
+    /// The single completion call, with no tools.
     #[default]
     OneShot,
     /// The in-process turn loop with stage-scoped tools.
@@ -101,11 +101,10 @@ pub enum ExecutorChoice {
 // ---------------------------------------------------------------------------
 
 /// Whether an accepted submission is checked by a fresh-context child
-/// execution, and (in time) under what model and budget.
+/// execution.
 ///
-/// A struct rather than a bare bool so the verifier's model and budget can
-/// be added as fields without a config-type break. A bare bool still
-/// deserialises (`verifier: false`), so the launched ergonomics hold.
+/// A struct rather than a bare bool, with a bare bool still deserialising
+/// (`verifier: false`), so a bare bool still parses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct VerifierConfig {
     /// Whether the verifier runs.
@@ -232,7 +231,7 @@ impl AgentsConfig {
         {
             advisories.push(VERIFIER_INERT_ADVISORY);
         }
-        // The relation and extraction stages have no verifier yet, so any
+        // The relation and extraction stages have no verifier, so any
         // setting on them is inert.
         if self.relation.verifier.is_some_and(|v| v.enabled) {
             advisories.push(RELATION_VERIFIER_UNAVAILABLE_ADVISORY);
@@ -259,7 +258,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_defaults_reproduce_launched_behaviour() {
+    fn test_defaults_are_one_shot_with_no_overrides() {
         let config = AgentsConfig::default();
         assert_eq!(config.triage.executor, ExecutorChoice::OneShot);
         assert_eq!(config.triage.max_turns, None);
@@ -280,9 +279,8 @@ mod tests {
 
     #[test]
     fn test_verifier_accepts_both_the_bare_bool_and_the_struct_form() {
-        // The bare bool is the launched ergonomics; the struct form is the
-        // shape #213 extends with model and budget. Both must parse to the
-        // same value, and an unknown field in the struct form is rejected.
+        // Both the bare-bool and struct forms must parse to the same value,
+        // and an unknown field in the struct form is rejected.
         let bare: AgentsConfig =
             serde_yaml::from_str("triage:\n  verifier: true\n").expect("bare bool parses");
         let structured: AgentsConfig =
@@ -418,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_relation_verifier_is_inert_under_either_executor() {
-        // The relation loop has no verifier yet, so the setting is inert
+        // The relation loop has no verifier, so the setting is inert
         // whether the stage runs one-shot or under the loop.
         for yaml in [
             "relation:\n  verifier: true\n",
