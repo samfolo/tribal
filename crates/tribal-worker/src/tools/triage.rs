@@ -24,7 +24,7 @@ use tribal_inference::{
     EmbeddingRequest, EmbeddingTarget, InferenceGateway, PermitWait, UsageAttribution,
 };
 
-use super::{db_failure, parse_arguments, serialise_outcome};
+use super::{db_failure, paged_search_within_bound, parse_arguments, serialise_outcome};
 use crate::{parsing::triage_submission_schema, prompt::LoopSimilarItemContext};
 
 // ---------------------------------------------------------------------------
@@ -280,23 +280,24 @@ impl StageTool for SearchCandidateSimilarItemsTool {
             .limit(self.search_limit)
             .cursor(prepared.cursor)
             .build();
-        let response = PgKnowledgeItemRepository
-            .semantic_search(conn, &params)
-            .await
-            .map_err(|source| db_failure("candidate similar-item search", &source))?;
-        let results: Vec<LoopSimilarItemContext> = response
-            .results
-            .iter()
-            .map(LoopSimilarItemContext::from)
-            .collect();
-        serialise_outcome(
+        let profile_id = self.profile.id().to_string();
+        paged_search_within_bound(
+            conn,
+            SEARCH_NAME,
             "serialising candidate similar-item search results",
-            &CandidateSearchResults {
-                results,
-                embedding_profile_id: self.profile.id().to_string(),
-                next_cursor: response.next_cursor,
+            params,
+            self.descriptor.response_size_bound,
+            |response| CandidateSearchResults {
+                results: response
+                    .results
+                    .iter()
+                    .map(LoopSimilarItemContext::from)
+                    .collect(),
+                embedding_profile_id: profile_id.clone(),
+                next_cursor: response.next_cursor.clone(),
             },
         )
+        .await
     }
 }
 
@@ -875,6 +876,108 @@ mod tests {
             profile.id().to_string(),
             "the profile marks the result so the commit can reconstruct its scores",
         );
+    }
+
+    #[tokio::test]
+    async fn test_candidate_search_shrinks_an_oversized_page_to_fit_its_bound() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let (principal_id, project) = seed_actors(&mut txn, "search-oversized").await;
+        let profile = ensure_genesis_profile(&mut txn, EMBEDDING_MODEL, DIMENSIONS).await;
+
+        // Several large items all match the query, so a full page overflows
+        // the size bound: the search must return fewer rows whole rather than
+        // a byte-trimmed, unparseable page.
+        let big = "x".repeat(5_000);
+        for i in 0..6 {
+            let item = seed_item(&mut txn, principal_id, project, &format!("{big} {i}")).await;
+            insert_embedding_for_profile(
+                &mut txn,
+                item.id(),
+                profile.id(),
+                EMBEDDING_MODEL,
+                basis_vector(0),
+            )
+            .await;
+        }
+
+        let embedding = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed(an_embedding_response(basis_vector(0)), None)
+                .build(),
+        );
+        let tool = SearchCandidateSimilarItemsTool::new(
+            "does this claim already exist".to_owned(),
+            project,
+            profile.clone(),
+            embed_gateway(profile.id(), Arc::clone(&embedding)),
+            unowned_attribution(),
+            10,
+            a_deadline(),
+        );
+
+        let arguments = serde_json::json!({});
+        let prepared = tool.prepare(&arguments).await.expect("prepare embeds");
+        let outcome = tool
+            .execute(&mut txn, prepared, &arguments)
+            .await
+            .expect("execute searches");
+
+        assert!(
+            outcome.content.len() <= SEARCH_RESPONSE_SIZE_BOUND as usize,
+            "the page fits the bound: {} > {SEARCH_RESPONSE_SIZE_BOUND}",
+            outcome.content.len(),
+        );
+        // A complete page parses; the trimmed bug would have produced invalid
+        // JSON here, losing every score the model was shown.
+        let view = parsed(&outcome);
+        let results = view["results"].as_array().expect("results array");
+        assert!(
+            !results.is_empty() && results.len() < 6,
+            "the page shrank to fewer whole rows, got {}",
+            results.len(),
+        );
+        assert!(
+            !view["next_cursor"].is_null(),
+            "the rows that did not fit are reachable by cursor",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_candidate_search_maps_a_stale_cursor_to_a_recoverable_failure() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let profile = an_embedding_profile().build();
+        let embedding = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed(an_embedding_response(basis_vector(0)), None)
+                .build(),
+        );
+        let tool = SearchCandidateSimilarItemsTool::new(
+            "a candidate".to_owned(),
+            tribal_domain::ProjectId::new(),
+            profile.clone(),
+            embed_gateway(profile.id(), Arc::clone(&embedding)),
+            unowned_attribution(),
+            10,
+            a_deadline(),
+        );
+
+        // A malformed page cursor is the model's own input, so it returns
+        // recoverable rather than failing the stage as a system fault.
+        let arguments = serde_json::json!({"cursor": "not-a-valid-cursor"});
+        let prepared = tool.prepare(&arguments).await.expect("prepare embeds");
+        let err = tool
+            .execute(&mut txn, prepared, &arguments)
+            .await
+            .expect_err("a malformed cursor is a recoverable input fault");
+        assert!(matches!(
+            err,
+            ToolFailure::Recoverable(RecoverableToolFailure::InvalidArguments { ref tool, .. })
+                if tool == SEARCH_NAME
+        ));
     }
 
     #[tokio::test]

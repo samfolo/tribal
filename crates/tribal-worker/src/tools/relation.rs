@@ -26,7 +26,7 @@ use tribal_inference::{
     EmbeddingRequest, EmbeddingTarget, InferenceGateway, PermitWait, UsageAttribution,
 };
 
-use super::{db_failure, parse_arguments, serialise_outcome};
+use super::{db_failure, paged_search_within_bound, parse_arguments, serialise_outcome};
 use crate::parsing::relation_submission_schema;
 
 // ---------------------------------------------------------------------------
@@ -252,28 +252,28 @@ impl StageTool for SearchRelatedItemsTool {
             .limit(self.search_limit)
             .cursor(prepared.cursor)
             .build();
-        let response = PgKnowledgeItemRepository
-            .semantic_search(conn, &params)
-            .await
-            .map_err(|source| db_failure("relation cross-project search", &source))?;
-        let results = response
-            .results
-            .iter()
-            .map(|result| SearchResultView {
-                item_id: result.item.id().to_string(),
-                kind: result.item.kind(),
-                content: result.item.content().to_owned(),
-                tags: result.item.tags().to_vec(),
-                similarity_score: result.similarity,
-            })
-            .collect();
-        serialise_outcome(
+        paged_search_within_bound(
+            conn,
+            SEARCH_NAME,
             "serialising relation search results",
-            &SearchResults {
-                results,
-                next_cursor: response.next_cursor,
+            params,
+            self.descriptor.response_size_bound,
+            |response| SearchResults {
+                results: response
+                    .results
+                    .iter()
+                    .map(|result| SearchResultView {
+                        item_id: result.item.id().to_string(),
+                        kind: result.item.kind(),
+                        content: result.item.content().to_owned(),
+                        tags: result.item.tags().to_vec(),
+                        similarity_score: result.similarity,
+                    })
+                    .collect(),
+                next_cursor: response.next_cursor.clone(),
             },
         )
+        .await
     }
 }
 

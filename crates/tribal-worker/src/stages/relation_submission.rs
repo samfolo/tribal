@@ -220,9 +220,16 @@ async fn harvest_tool_result_ids(
         if content.is_error {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content.output) else {
-            continue;
-        };
+        // A successful result is whole, valid JSON (§10.1); a parse failure
+        // is an internal inconsistency, not a skip.
+        let value =
+            serde_json::from_str::<serde_json::Value>(&content.output).map_err(|source| {
+                ToolFailure::System {
+                    context: format!(
+                        "a successful relation tool result is not valid JSON: {source}"
+                    ),
+                }
+            })?;
         collect_item_id_fields(&value, ids);
     }
     Ok(())

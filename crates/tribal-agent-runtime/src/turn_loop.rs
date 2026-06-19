@@ -1604,9 +1604,13 @@ async fn execute_ordinary(
 
     match tool.execute(&mut txn, prepared, &call.arguments).await {
         Ok(outcome) => {
+            // An over-bound result is a recoverable failure (§10.1), not a
+            // silent success: a harvester then reads only whole results.
+            let (output, oversized) =
+                ToolRegistry::bound_result(tool.descriptor(), outcome.content);
             let content = ToolResultContent {
-                output: ToolRegistry::trim_to_bound(tool.descriptor(), outcome.content),
-                is_error: false,
+                output,
+                is_error: oversized,
             };
             let value = serde_json::to_value(&content)
                 .map_err(|source| serialisation(deps.thread, "a tool result", source))?;
