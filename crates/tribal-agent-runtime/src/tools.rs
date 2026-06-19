@@ -82,16 +82,15 @@ pub enum ToolRegistryError {
         /// The contested name.
         name: String,
     },
-    /// The deferred execution mode has no loop-side dispatch path yet;
-    /// it activates with the first plain deferred tool.
-    #[error("tool '{name}' declares deferred execution, which no dispatch path serves yet")]
+    /// The deferred execution mode has no loop-side dispatch path.
+    #[error("tool '{name}' declares deferred execution, which no dispatch path serves")]
     DeferredUnsupported {
         /// The refused tool.
         name: String,
     },
-    /// The external safety tier needs intent rows, which no tool has
-    /// produced yet; it activates with the first external-tier tool.
-    #[error("tool '{name}' declares the external safety tier, which no intent store serves yet")]
+    /// The external safety tier needs intent rows, which no intent store
+    /// serves.
+    #[error("tool '{name}' declares the external safety tier, which no intent store serves")]
     ExternalTierUnsupported {
         /// The refused tool.
         name: String,
@@ -195,7 +194,7 @@ impl ToolRegistry {
 
     /// Bounds a result to its tool's declared size, returning the output and
     /// whether it overflowed, so the caller records an overflow as a
-    /// model-recoverable failure (§10.1), never a silent truncated success.
+    /// model-recoverable failure, never a silent truncated success.
     #[must_use]
     pub fn bound_result(descriptor: &ToolDescriptor, content: String) -> (String, bool) {
         let oversized = content.len() > descriptor.response_size_bound as usize;
@@ -249,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn test_register_rejects_deferred_mode_until_a_producer_exists() {
+    fn test_register_rejects_the_deferred_execution_mode() {
         let mut registry = ToolRegistry::new();
         let err = registry
             .register(echo(
@@ -265,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn test_register_rejects_the_external_tier_until_intents_exist() {
+    fn test_register_rejects_the_external_safety_tier() {
         let mut registry = ToolRegistry::new();
         let err = registry
             .register(echo(

@@ -512,7 +512,7 @@ impl std::fmt::Display for BudgetFailure {
 // ---------------------------------------------------------------------------
 
 /// Everything one loop execution runs against, captured at claim.
-pub struct TurnLoopDeps<'a> {
+pub struct TurnLoopDependencies<'a> {
     /// The pool the loop's per-step transactions draw from.
     pub pool: &'a sqlx::PgPool,
     /// The gateway the loop's streamed calls route through.
@@ -568,7 +568,9 @@ pub struct TurnLoopDeps<'a> {
 /// [`AgentRuntimeError::ToolExecution`] on a tool's system failure
 /// (all of which route to the stage-error path, never the conversation),
 /// plus the serialisation and database errors of the parts.
-pub async fn run_turn_loop(deps: TurnLoopDeps<'_>) -> Result<LoopOutcome, AgentRuntimeError> {
+pub async fn run_turn_loop(
+    deps: TurnLoopDependencies<'_>,
+) -> Result<LoopOutcome, AgentRuntimeError> {
     let mut conn = acquire(deps.pool).await?;
 
     // The committed log decides whether this attempt renders the
@@ -715,7 +717,7 @@ pub async fn run_turn_loop(deps: TurnLoopDeps<'_>) -> Result<LoopOutcome, AgentR
 /// conversation-bearing input here.
 async fn resolve_verdict(
     conn: &mut PgConnection,
-    deps: &TurnLoopDeps<'_>,
+    deps: &TurnLoopDependencies<'_>,
     projection: &mut Projection,
     resolved: ResolvedSubmission,
 ) -> Result<Option<AcceptedSubmission>, AgentRuntimeError> {
@@ -762,7 +764,7 @@ async fn resolve_verdict(
 /// its verified submission could not commit.
 async fn commit_drift_input(
     conn: &mut PgConnection,
-    deps: &TurnLoopDeps<'_>,
+    deps: &TurnLoopDependencies<'_>,
     projection: &mut Projection,
     diagnostics: &str,
 ) -> Result<(), AgentRuntimeError> {
@@ -1043,7 +1045,7 @@ fn injected_message(content: &serde_json::Value) -> Option<String> {
 }
 
 impl Projection {
-    fn build_request(&self, deps: &TurnLoopDeps<'_>) -> CompletionRequest {
+    fn build_request(&self, deps: &TurnLoopDependencies<'_>) -> CompletionRequest {
         let mut tools: Vec<ToolWireDefinition> = deps
             .registry
             .descriptors()
@@ -1127,7 +1129,7 @@ fn wire_definition(descriptor: &ToolDescriptor) -> ToolWireDefinition {
 // ---------------------------------------------------------------------------
 
 async fn stream_to_terminal(
-    deps: &TurnLoopDeps<'_>,
+    deps: &TurnLoopDependencies<'_>,
     request: CompletionRequest,
 ) -> Result<CompletionResponse, AgentRuntimeError> {
     let remaining = deps
@@ -1182,7 +1184,7 @@ async fn stream_to_terminal(
 /// one transaction.
 async fn commit_assistant_turn(
     conn: &mut PgConnection,
-    deps: &TurnLoopDeps<'_>,
+    deps: &TurnLoopDependencies<'_>,
     response: &CompletionResponse,
 ) -> Result<(AgentThreadRecord, Vec<RecordedToolCall>), AgentRuntimeError> {
     let calls: Vec<RecordedToolCall> = response
@@ -1275,7 +1277,7 @@ enum ResultCommit {
 /// effect shares the commit.
 async fn commit_result_record(
     conn: &mut PgConnection,
-    deps: &TurnLoopDeps<'_>,
+    deps: &TurnLoopDependencies<'_>,
     requesting_seq: AgentThreadRecordSeq,
     call_id: &str,
     content: &ToolResultContent,
@@ -1413,7 +1415,7 @@ enum BatchOutcome {
 /// or budget spent) or the verifier suspension.
 async fn execute_batch(
     conn: &mut PgConnection,
-    deps: &TurnLoopDeps<'_>,
+    deps: &TurnLoopDependencies<'_>,
     projection: &mut Projection,
     batch: PendingBatch,
 ) -> Result<BatchOutcome, AgentRuntimeError> {
@@ -1556,7 +1558,7 @@ async fn execute_batch(
 /// progress reset.
 async fn execute_ordinary(
     conn: &mut PgConnection,
-    deps: &TurnLoopDeps<'_>,
+    deps: &TurnLoopDependencies<'_>,
     projection: &mut Projection,
     requesting_seq: AgentThreadRecordSeq,
     call: &RecordedToolCall,
@@ -1604,7 +1606,7 @@ async fn execute_ordinary(
 
     match tool.execute(&mut txn, prepared, &call.arguments).await {
         Ok(outcome) => {
-            // An over-bound result is a recoverable failure (§10.1), not a
+            // An over-bound result is a recoverable failure, not a
             // silent success: a harvester then reads only whole results.
             let (output, oversized) =
                 ToolRegistry::bound_result(tool.descriptor(), outcome.content);
@@ -1668,7 +1670,7 @@ async fn execute_ordinary(
 /// Commits an error-shaped result and mirrors it into the projection.
 async fn error_result(
     conn: &mut PgConnection,
-    deps: &TurnLoopDeps<'_>,
+    deps: &TurnLoopDependencies<'_>,
     projection: &mut Projection,
     requesting_seq: AgentThreadRecordSeq,
     call: &RecordedToolCall,
@@ -1705,7 +1707,7 @@ async fn acquire(
 
 async fn guard_claim(
     txn: &mut PgConnection,
-    deps: &TurnLoopDeps<'_>,
+    deps: &TurnLoopDependencies<'_>,
 ) -> Result<(), AgentRuntimeError> {
     // The triage loop is stage-driven; the shared guard verifies its
     // stage lease.
@@ -1716,7 +1718,7 @@ async fn guard_claim(
 
 async fn reset_progress(
     txn: &mut PgConnection,
-    deps: &TurnLoopDeps<'_>,
+    deps: &TurnLoopDependencies<'_>,
 ) -> Result<(), AgentRuntimeError> {
     PgTaskRepository
         .reset_retry_count(txn, deps.task_id, deps.claim_token)

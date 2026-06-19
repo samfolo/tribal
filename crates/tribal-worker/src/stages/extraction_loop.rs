@@ -2,17 +2,17 @@
 //!
 //! Extraction investigates nothing, so the loop is degenerate: the opening
 //! is the raw input, the registry is empty, and the model submits its
-//! candidates in one turn. The loop earns its place as the seam the
-//! deferred source-grounding verifier plugs into (the `verifier_launch`
-//! hook lives only in the turn loop), and as the bounce-and-retry path the
-//! predicate validators correct a malformed submission through. The
-//! committed shape (the extraction result and the triage fan-out) is the
-//! one-shot's, so the two executors cannot drift on what they write.
+//! candidates in one turn. The loop earns its place as the seam a
+//! source-grounding verifier plugs into (the `verifier_launch` hook lives
+//! only in the turn loop), and as the bounce-and-retry path the predicate
+//! validators correct a malformed submission through. The committed shape
+//! (the extraction result and the triage fan-out) is the one-shot's, so
+//! the two executors cannot drift on what they write.
 
 use tracing::Instrument;
 use tribal_agent_runtime::{
     LoopOutcome, RecheckPolicy, RecordedMessage, RenderedConversation, StageThread, ToolRegistry,
-    TurnLoopDeps, recorded_conversation, run_turn_loop,
+    TurnLoopDependencies, recorded_conversation, run_turn_loop,
 };
 use tribal_common::clamp_to_u32;
 use tribal_config::{DEFAULT_AGENTIC_RECHECK_BOUND, DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS};
@@ -25,9 +25,10 @@ use tribal_domain::{
 use super::{StageCommit, StageTerminal, common::attribution_with_prompts};
 use crate::{
     common::PARSE_PREVIEW_LENGTH,
+    definition::current_stage_budgets,
     error::{STAGE_EXTRACTION, StageError},
     parsing::ExtractionSubmission,
-    prompt::assemble_extraction_loop_opening,
+    prompt::{assemble_extraction_loop_opening, narrow_temperature},
     stages::ExtractionSubmissionPipeline,
     tools::submit_candidates_descriptor,
     worker::{Worker, heartbeat::WorkerHeartbeatPump, map_runtime_error},
@@ -93,7 +94,7 @@ impl Worker {
             let submit_descriptor = submit_candidates_descriptor();
             let parameters = &stage_thread.binding.definition().parameters;
 
-            let outcome = run_turn_loop(TurnLoopDeps {
+            let outcome = run_turn_loop(TurnLoopDependencies {
                 pool: self.pool(),
                 gateway: self.gateway(),
                 stage: TaskType::Extraction,
@@ -107,7 +108,7 @@ impl Worker {
                 pipeline: &pipeline,
                 pump,
                 rendered: opening_rendered,
-                budgets: crate::definition::current_stage_budgets(
+                budgets: current_stage_budgets(
                     TaskType::Extraction,
                     stage_thread.binding.definition().executor,
                     self.agents(),
@@ -116,7 +117,7 @@ impl Worker {
                     delay_seconds: DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS,
                     bound: DEFAULT_AGENTIC_RECHECK_BOUND,
                 },
-                temperature: crate::prompt::narrow_temperature(parameters.temperature),
+                temperature: narrow_temperature(parameters.temperature),
                 max_tokens: parameters.max_tokens,
                 permit_deadline: deadline,
             })

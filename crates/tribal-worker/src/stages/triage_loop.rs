@@ -16,7 +16,7 @@ use std::{collections::HashMap, sync::Arc};
 use tracing::Instrument;
 use tribal_agent_runtime::{
     LoopOutcome, RecheckPolicy, RecordedMessage, RenderedConversation, StageThread, ToolRegistry,
-    TurnLoopDeps, recorded_conversation, run_turn_loop,
+    TurnLoopDependencies, recorded_conversation, run_turn_loop,
 };
 use tribal_config::{DEFAULT_AGENTIC_RECHECK_BOUND, DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS};
 use tribal_db::{NewTriageSimilarItemDecision, PgPromptVersionRepository, PromptVersionRepository};
@@ -33,9 +33,10 @@ use super::{
 };
 use crate::{
     common::{EXPECT_BATCH_INDEX, PARSE_PREVIEW_LENGTH},
+    definition::{current_stage_budgets, verifier_definition},
     error::{STAGE_TRIAGE, StageError},
     parsing::{TriageSubmission, TriageSubmissionDecision},
-    prompt::assemble_loop_opening,
+    prompt::{assemble_loop_opening, narrow_temperature},
     stages::{TriageSubmissionPipeline, VerifierContext, reconstruct_candidate_scores},
     tag_resolution,
     tools::{TriageToolset, build_triage_registry, submit_result_descriptor},
@@ -133,7 +134,7 @@ impl Worker {
             let submit_descriptor = submit_result_descriptor();
             let parameters = &stage_thread.binding.definition().parameters;
 
-            let outcome = run_turn_loop(TurnLoopDeps {
+            let outcome = run_turn_loop(TurnLoopDependencies {
                 pool: self.pool(),
                 gateway: self.gateway(),
                 stage: TaskType::Triage,
@@ -150,7 +151,7 @@ impl Worker {
                 // Enforcement re-resolves from the current configuration
                 // at every claim; the binding records admission-time
                 // intent.
-                budgets: crate::definition::current_stage_budgets(
+                budgets: current_stage_budgets(
                     TaskType::Triage,
                     stage_thread.binding.definition().executor,
                     self.agents(),
@@ -159,7 +160,7 @@ impl Worker {
                     delay_seconds: DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS,
                     bound: DEFAULT_AGENTIC_RECHECK_BOUND,
                 },
-                temperature: crate::prompt::narrow_temperature(parameters.temperature),
+                temperature: narrow_temperature(parameters.temperature),
                 max_tokens: parameters.max_tokens,
                 permit_deadline: deadline,
             })
@@ -469,7 +470,7 @@ impl Worker {
                 .await?;
         let user = resolve_verifier_prompt(&mut conn, PromptRole::User, &verifier.user_prompt_hash)
             .await?;
-        let definition = crate::definition::verifier_definition(
+        let definition = verifier_definition(
             binding.definition(),
             system.content_hash().to_owned(),
             user.content_hash().to_owned(),
