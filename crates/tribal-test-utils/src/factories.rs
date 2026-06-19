@@ -13,7 +13,7 @@
 //! ```
 
 // ---------------------------------------------------------------------------
-// define_factory! macro — must precede submodule declarations so child
+// define_factory! macro: must precede submodule declarations so child
 // modules inherit it.
 // ---------------------------------------------------------------------------
 
@@ -69,7 +69,7 @@ macro_rules! define_factory {
 }
 
 // ---------------------------------------------------------------------------
-// Submodules — one per domain entity file, mirroring tribal-domain structure.
+// Submodules: one per domain entity file, mirroring tribal-domain structure.
 // ---------------------------------------------------------------------------
 
 mod agent_binding;
@@ -77,7 +77,6 @@ mod agent_driver_task;
 mod agent_thread;
 mod auth_token;
 mod candidate;
-mod completion_stage_spec;
 mod embedding;
 mod embedding_profile;
 mod extraction_result;
@@ -103,7 +102,6 @@ pub use agent_driver_task::*;
 pub use agent_thread::*;
 pub use auth_token::*;
 pub use candidate::*;
-pub use completion_stage_spec::*;
 pub use embedding::*;
 pub use embedding_profile::*;
 pub use extraction_result::*;
@@ -125,7 +123,7 @@ pub use token_usage::*;
 pub use triage::*;
 
 // ---------------------------------------------------------------------------
-// Macro-level smoke test — verifies that generated setters override defaults.
+// Macro-level smoke test: verifies that generated setters override defaults.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]

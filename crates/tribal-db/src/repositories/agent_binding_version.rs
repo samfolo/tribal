@@ -168,3 +168,43 @@ fn decode_failure(hash: &str, detail: String) -> DbError {
         source: sqlx::Error::Decode(detail.into()),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Test helpers (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "test-helpers")]
+impl PgAgentBindingVersionRepository {
+    /// Inserts a version with a caller-supplied id and a raw definition,
+    /// so a test can plant a legacy or malformed row the production
+    /// `record()` could not encode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn insert_raw_for_test(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentBindingVersionId,
+        hash: &str,
+        pipeline_stage: TaskType,
+        definition: serde_json::Value,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO agent_binding_versions (id, hash, pipeline_stage, definition) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(id.inner())
+        .bind(hash)
+        .bind(pipeline_stage.as_str())
+        .bind(definition)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "inserting binding version (test helper)".to_owned(),
+            source: e,
+        })?;
+
+        Ok(())
+    }
+}

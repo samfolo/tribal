@@ -36,17 +36,16 @@ async fn test_find_by_id_loads_a_legacy_bare_tool_binding_with_fenced_scope() {
         serde_json::json!([serde_json::to_value(&descriptor).expect("serialise descriptor")]);
 
     let id = AgentBindingVersionId::new();
-    sqlx::query(
-        "INSERT INTO agent_binding_versions (id, hash, pipeline_stage, definition) \
-         VALUES ($1, $2, $3, $4)",
-    )
-    .bind(id.inner())
-    .bind("c".repeat(64))
-    .bind(TaskType::Relation.as_str())
-    .bind(&definition)
-    .execute(&mut *txn)
-    .await
-    .expect("insert legacy row");
+    PgAgentBindingVersionRepository
+        .insert_raw_for_test(
+            &mut txn,
+            id,
+            &"c".repeat(64),
+            TaskType::Relation,
+            definition,
+        )
+        .await
+        .expect("insert legacy row");
 
     let loaded = PgAgentBindingVersionRepository
         .find_by_id(&mut txn, id)
@@ -70,17 +69,16 @@ async fn test_find_by_id_fails_closed_on_a_malformed_definition() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
 
     let id = AgentBindingVersionId::new();
-    sqlx::query(
-        "INSERT INTO agent_binding_versions (id, hash, pipeline_stage, definition) \
-         VALUES ($1, $2, $3, $4)",
-    )
-    .bind(id.inner())
-    .bind("d".repeat(64))
-    .bind(TaskType::Relation.as_str())
-    .bind(serde_json::json!({"unexpected": "shape"}))
-    .execute(&mut *txn)
-    .await
-    .expect("insert malformed row");
+    PgAgentBindingVersionRepository
+        .insert_raw_for_test(
+            &mut txn,
+            id,
+            &"d".repeat(64),
+            TaskType::Relation,
+            serde_json::json!({"unexpected": "shape"}),
+        )
+        .await
+        .expect("insert malformed row");
 
     let result = PgAgentBindingVersionRepository
         .find_by_id(&mut txn, id)

@@ -1,12 +1,9 @@
 //! Agent driver task repository: the lease protocol for the driver family.
 //!
-//! Derived from the reindex task lease behaviour: claim via `FOR UPDATE
-//! SKIP LOCKED`, claim-token CAS on every worker-held mutation. Unlike the
-//! launched families, no retry-or-dead-letter CASE lives in SQL: the
-//! disposition decision is a domain function, and the runtime calls the
-//! explicit outcome method it decided on (`complete`, `requeue`,
-//! `dead_letter`). Uses runtime `sqlx::query()` for the CTE-based claim
-//! and TEXT-encoded domain enums.
+//! Claim via `FOR UPDATE SKIP LOCKED`, claim-token CAS on every worker-held
+//! mutation. No retry-or-dead-letter CASE lives in SQL: the disposition is a
+//! domain decision, and the runtime calls the explicit outcome method
+//! (`complete`, `requeue`, `dead_letter`).
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -53,20 +50,17 @@ const MAX_ATTEMPTS_OVERFLOW: &str = "negative max_attempts in database: data cor
 
 /// Input for enrolling a driver task.
 ///
-/// `state`, `attempt`, `max_attempts`, `available_at`, and the
-/// timestamps are server-defaulted: a new row is pending and immediately
-/// available with the standard retry budget. The id is server-defaulted
-/// too unless the caller supplies one. The thread/driver pair writer
-/// must, because the thread row names the driver task's id under the
-/// deferred foreign key before the task exists.
+/// State, counters, availability, and timestamps are server-defaulted to a
+/// pending, immediately available row. The id is server-defaulted unless the
+/// caller supplies one: the thread/driver pair writer must, because the thread
+/// row names the driver task's id under the deferred foreign key before the
+/// task exists.
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct NewAgentDriverTask {
     /// A client-generated id, for the pair writer's deferred reference.
     #[builder(default)]
     pub id: Option<AgentDriverTaskId>,
-    /// The thread this row drives or works for.
     pub thread_id: AgentThreadId,
-    /// What this row executes.
     pub kind: AgentDriverTaskKind,
 }
 
@@ -208,11 +202,11 @@ pub trait AgentDriverTaskRepository {
         timeout_seconds: u32,
     ) -> Result<Option<AgentDriverTask>, DbError>;
 
-    /// Terminally dispositions an unclaimed live row under a row lock —
-    /// the cancel transaction's disposal of pending deferred work. The
-    /// `claim_token IS NULL` requirement is the locked-unclaimed guard:
-    /// a row a worker holds is never disposed of from outside. Returns
-    /// the affected row count.
+    /// Terminally dispositions an unclaimed live row under a row lock, the
+    /// cancel transaction's disposal of pending deferred work. The
+    /// `claim_token IS NULL` requirement is the locked-unclaimed guard: a row a
+    /// worker holds is never disposed of from outside. Returns the affected row
+    /// count.
     ///
     /// # Errors
     ///
@@ -492,9 +486,8 @@ impl AgentDriverTaskRepository for PgAgentDriverTaskRepository {
         id: AgentDriverTaskId,
         error_message: &str,
     ) -> Result<u64, DbError> {
-        // The inner SELECT ... FOR UPDATE is the locked-unclaimed guard:
-        // the row is locked before the state write, and a claimed row
-        // (token held by a live worker) is never selected.
+        // The inner SELECT ... FOR UPDATE locks the row before the state write,
+        // so a claimed row (token held by a live worker) is never selected.
         let terminal = terminal_driver_state_literals().join(", ");
         let sql = format!(
             "WITH target AS ( \
@@ -523,17 +516,51 @@ impl AgentDriverTaskRepository for PgAgentDriverTaskRepository {
     }
 }
 
-/// The quoted SQL literals for the terminal driver-task states, derived
-/// from `ALL` so a new state joins the set by construction. Interpolated,
-/// not bound, so the planner matches a partial index's literal predicate;
-/// the single source the disposal and the sweep's orphan and stuck-relating
-/// scans share.
+/// The quoted SQL literals for the terminal driver-task states, derived from
+/// `ALL` so a new state joins the set by construction. Interpolated, not bound,
+/// so the planner matches a partial index's literal predicate. The single
+/// source the disposal and sweep scans share.
 pub(super) fn terminal_driver_state_literals() -> Vec<String> {
     AgentDriverTaskState::ALL
         .iter()
         .filter(|state| state.is_terminal())
         .map(|state| format!("'{}'", state.as_str()))
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Test helpers (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "test-helpers")]
+impl PgAgentDriverTaskRepository {
+    /// Inserts a `drive` row against an existing thread, for tests that
+    /// satisfy a thread's deferred driver reference without driving the
+    /// pair writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn insert_drive_for_test(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentDriverTaskId,
+        thread_id: AgentThreadId,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO agent_driver_tasks (id, thread_id, kind) VALUES ($1, $2, 'drive')",
+        )
+        .bind(id.inner())
+        .bind(thread_id.inner())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("inserting drive task for thread {thread_id} (test helper)"),
+            source: e,
+        })?;
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

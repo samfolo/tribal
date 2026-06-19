@@ -654,7 +654,7 @@ async fn test_executed_tool_results_are_exactly_once_per_call() {
     assert_eq!(count, 1);
 
     // The violation aborts the enclosing transaction (Postgres 25P02), so
-    // it is the test's final act — and the reason a runtime conflict
+    // it is the test's final act, and the reason a runtime conflict
     // loser retries its whole transaction rather than reconciling inside
     // the aborted one.
     let err = PgAgentThreadRecordRepository
@@ -997,10 +997,12 @@ async fn test_timer_wake_scan_selects_only_due_intentless_stage_threads() {
         .insert(&mut txn, &driver_new)
         .await
         .expect("insert driver-driven thread");
-    sqlx::query("INSERT INTO agent_driver_tasks (id, thread_id, kind) VALUES ($1, $2, 'drive')")
-        .bind(driver_task_id)
-        .bind(driver_driven.id().inner())
-        .execute(&mut *txn)
+    PgAgentDriverTaskRepository
+        .insert_drive_for_test(
+            &mut txn,
+            AgentDriverTaskId::from(driver_task_id),
+            driver_driven.id(),
+        )
         .await
         .expect("insert paired driver task");
     PgAgentThreadRepository
@@ -1724,7 +1726,7 @@ async fn test_stuck_relating_scan_spares_a_budget_suspended_thread() {
 }
 
 // ---------------------------------------------------------------------------
-// Cancellation cascade (§10.3)
+// Cancellation cascade
 // ---------------------------------------------------------------------------
 
 /// Marks an inserted thread terminal (running then failed), so it can
@@ -1860,10 +1862,12 @@ async fn test_orphan_cascade_marks_a_child_whose_driver_task_is_terminal() {
         .insert(&mut txn, &child_prereq.new_thread)
         .await
         .expect("insert child");
-    sqlx::query("INSERT INTO agent_driver_tasks (id, thread_id, kind) VALUES ($1, $2, 'drive')")
-        .bind(driver_task_id)
-        .bind(child.id().inner())
-        .execute(&mut *txn)
+    PgAgentDriverTaskRepository
+        .insert_drive_for_test(
+            &mut txn,
+            AgentDriverTaskId::from(driver_task_id),
+            child.id(),
+        )
         .await
         .expect("insert paired driver task");
     PgAgentThreadRepository
