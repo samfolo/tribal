@@ -1018,8 +1018,8 @@ async fn fail_run(
 /// When more than one in this many enumerated items is quarantined, the run is
 /// producing a corpus too degraded to activate, so it fails rather than flipping
 /// to a profile in which a large fraction of items is unsearchable. A divisor of
-/// four caps silent quarantine at a quarter of the backlog; it is a conservative
-/// scale-invariant default, intended to become configurable.
+/// four caps silent quarantine at a quarter of the backlog: a conservative,
+/// scale-invariant default.
 const REINDEX_QUARANTINE_CAP_DIVISOR: u32 = 4;
 
 /// Reports whether a run's item quarantine has exceeded the cap (more than a

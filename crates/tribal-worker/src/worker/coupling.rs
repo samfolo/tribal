@@ -1,7 +1,7 @@
 //! The job-coupling seam: how task-level outcomes touch job state.
 //!
-//! Transaction-composable by construction — every function takes the
-//! caller's connection and commits nothing itself — so the worker's
+//! Transaction-composable by construction (every function takes the
+//! caller's connection and commits nothing itself), so the worker's
 //! commit and failure paths, the healing sweeps, and the runtime's
 //! thread-terminal transactions all couple through the same code. This is
 //! the only path by which any actor outside dispatch touches job state.
@@ -18,9 +18,9 @@ use tribal_domain::{
     TaskId, TaskType,
 };
 
-/// The requester recorded on a cancellation intent the §10.3 cascade
-/// writes, distinguishing a cascaded intent from an operator's in the
-/// durable record.
+/// The requester recorded on a cancellation intent the parent-terminal
+/// cascade writes, distinguishing a cascaded intent from an operator's in
+/// the durable record.
 pub(crate) const CANCEL_CASCADE_REQUESTED_BY: &str = "parent-terminal cascade";
 
 /// A notification a committed coupling owes its caller: sent to the
@@ -28,20 +28,18 @@ pub(crate) const CANCEL_CASCADE_REQUESTED_BY: &str = "parent-terminal cascade";
 /// never from inside it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OwedNotification {
-    /// The job whose watchers are notified.
     pub job_id: JobId,
-    /// The state the coupling moved the job towards.
     pub state: JobState,
 }
 
 /// Fires the triage fan-in when the current task is the last live triage
 /// sibling: upserts the relation task and advances the job to `Relating`.
-/// Returns whether the job actually moved — a terminal job makes this
+/// Returns whether the job actually moved; a terminal job makes this
 /// `false` even when the relation task was upserted, so callers never
 /// publish a transition that did not commit.
 ///
-/// A `blocked` sibling counts as live — the count is NOT-in-terminal by
-/// construction — so relation never fires while a triage thread is
+/// A `blocked` sibling counts as live (the count is NOT-in-terminal by
+/// construction), so relation never fires while a triage thread is
 /// suspended. This in-commit count is a latency optimisation over the
 /// authoritative convergence mechanism, the stuck-triaging healing sweep,
 /// which must converge the job on its own.
@@ -91,7 +89,7 @@ pub async fn triage_fan_in(
 /// dead-letter does: the triage fan-in for a triage task, the job-failed
 /// transition for extraction and relation (whose dead-letter means the
 /// job cannot progress). Returns the notification the caller owes its
-/// watchers once the transaction commits — none when the job was already
+/// watchers once the transaction commits, none when the job was already
 /// terminal, so a late coupling never publishes a state that did not
 /// commit.
 ///
@@ -139,7 +137,6 @@ pub enum CancelThreadOutcome {
     /// The cancellation committed; the caller sends the owed
     /// notification now that the transaction has returned.
     Cancelled {
-        /// The job coupling's notification, for a thread with a job.
         notification: Option<OwedNotification>,
     },
 }
@@ -215,7 +212,7 @@ async fn dispose_cancelled_driving_task(
 
 /// Cancels an unclaimed thread and couples its job, in one transaction:
 /// the locked-unclaimed driving-task disposal, the cancellation record and
-/// status, and the launched job coupling. The sweep's cancel fallback and
+/// status, and the resulting job coupling. The sweep's cancel fallback and
 /// the control plane share this seam.
 ///
 /// A claimed driving task means a live worker observes the intent at its
@@ -224,7 +221,7 @@ async fn dispose_cancelled_driving_task(
 /// whichever transaction made it terminal fired its coupling, and coupling
 /// a completed task as if dead-lettered would fail a healthy job. A
 /// cancelled root thread cascades the intent to its live descendants once
-/// the transaction commits (§10.3).
+/// the transaction commits.
 ///
 /// # Errors
 ///
@@ -274,10 +271,11 @@ pub async fn cancel_thread(
         )
     })?;
 
-    // The fast path of the §10.3 cascade: a cancelled root writes intents
-    // to its live descendants post-commit. Best-effort; the sweep's orphan
-    // janitor heals a crash in this window. Only a root has descendants (a
-    // child binding is flat by construction), so the gate skips children.
+    // The fast path of the cancellation cascade: a cancelled root writes
+    // intents to its live descendants post-commit. Best-effort; the sweep's
+    // orphan janitor heals a crash in this window. Only a root has
+    // descendants (a child binding is flat by construction), so the gate
+    // skips children.
     if thread.parent_thread_id().is_none() {
         cascade_cancel_to_children(conn, thread.id()).await;
     }

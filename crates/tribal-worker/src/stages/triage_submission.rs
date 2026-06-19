@@ -1,11 +1,9 @@
-//! The triage submission pipeline: the deterministic validators behind
-//! `submit_result`.
+//! The deterministic validators behind `submit_result`: never a model call.
 //!
-//! Schema parse first, then the checks, in order, never a model call.
-//! Every model-addressable rejection bounces with diagnostics held to
-//! the prompt bar (the loop's model corrects its own output), and the
-//! graph re-checks run at evaluation time so the optimistic reads the
-//! agent's tools established are re-validated at the commit boundary.
+//! A model-addressable rejection bounces with diagnostics the loop's model
+//! can correct against. The graph re-checks run at evaluation time, so the
+//! optimistic reads the agent's tools established are re-validated at the
+//! commit boundary.
 
 use std::collections::{HashMap, HashSet};
 
@@ -31,11 +29,10 @@ use crate::{
     prompt::{VerifierConsideredItem, VerifierSubmissionContext, assemble_verifier_input},
 };
 
-/// One candidate-search result page, as the reconstruction reads it back
-/// from the thread log. The `embedding_profile_id` both selects the page (it
-/// is present only on a candidate-search record) and pins its scores to one
-/// embedding geometry, so a profile cutover mid-thread does not merge scores
-/// across incomparable vector spaces.
+/// One candidate-search result page from the thread log. The
+/// `embedding_profile_id` both selects the page (only a candidate-search
+/// record carries it) and pins its scores to one embedding geometry, so a
+/// profile cutover does not merge scores across incomparable vector spaces.
 #[derive(Deserialize)]
 struct CandidateSearchPage {
     results: Vec<CandidateScoreItem>,
@@ -61,22 +58,14 @@ pub(crate) struct CandidateSearchProvenance {
 }
 
 /// Reconstructs the candidate-search provenance from a thread's tool
-/// results: the highest candidate-to-item similarity recorded per item, and
-/// whether any search executed at all.
+/// results, reading it from the committed record log so it survives a resume
+/// intact. A successful search records a page even when it returned no items,
+/// so `searched` tracks the page's presence, not the score count.
 ///
-/// This is the durable provenance the decision rows read and the
-/// must-search rule checks, reconstructed from the committed record log
-/// rather than a write-once resolution context that cannot accumulate it,
-/// so it survives a resume intact. A successful search records a page even
-/// when it returned no items, so `searched` tracks the page's presence, not
-/// the score count.
-///
-/// Scores are pinned to a single embedding profile: an embedding-profile
-/// cutover mid-thread forces the search to restart pagination under the new
-/// profile, leaving the pre-cutover pages durable but under an incomparable
-/// geometry. The reconstruction drops the superseded pages on a profile
-/// change rather than merging scores across profiles, so an item the new
-/// profile does not surface cannot ground a decision on a stale score.
+/// Scores are pinned to a single embedding profile: a profile change drops
+/// the superseded pages rather than merging scores across incomparable
+/// geometries, so an item the new profile does not surface cannot ground a
+/// decision on a stale score.
 ///
 /// # Errors
 ///
@@ -102,9 +91,8 @@ pub(crate) async fn reconstruct_candidate_scores(
         if result.is_error {
             continue;
         }
-        // A successful result is whole, valid JSON (§10.1); only a
-        // candidate-search page carries the embedding_profile_id marker, so
-        // any other tool's result legitimately does not parse here.
+        // Only a candidate-search page carries the embedding_profile_id
+        // marker, so any other tool's result legitimately does not parse here.
         let Ok(page) = serde_json::from_str::<CandidateSearchPage>(&result.output) else {
             continue;
         };
@@ -132,21 +120,15 @@ pub(crate) async fn reconstruct_candidate_scores(
     Ok(CandidateSearchProvenance { searched, scores })
 }
 
-/// The verifier configuration one stage execution carries: the resolved
-/// verifier binding, its templates, and the candidate the submission
-/// classifies: everything the launch needs to render a fresh-context
-/// child without reaching back into worker state.
+/// The verifier configuration one stage execution carries: everything the
+/// launch needs to render a fresh-context child without reaching back into
+/// worker state.
 pub(crate) struct VerifierContext {
-    /// The content-addressed verifier binding the child runs under.
     pub binding_version_id: AgentBindingVersionId,
-    /// The rubric system prompt and its version, for rendering and
-    /// attribution.
     pub system_template: String,
     pub system_prompt_version_id: PromptVersionId,
-    /// The submission-under-review user prompt and its version.
     pub user_template: String,
     pub user_prompt_version_id: PromptVersionId,
-    /// The candidate under triage, rendered into the verifier's prompt.
     pub candidate: Candidate,
 }
 

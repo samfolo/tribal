@@ -33,11 +33,8 @@ const HINTS_SERIALISE: &str = "relation hints serialise to JSON";
 
 /// Context assembled before running the extraction stage.
 pub(crate) struct ExtractionContext<'a> {
-    /// The parent job.
     pub job: &'a Job,
-    /// The claimed task.
     pub task: &'a Task,
-    /// The current global tag registry.
     pub tag_registry: Vec<TagRegistryEntry>,
 }
 
@@ -49,12 +46,6 @@ impl Worker {
     /// Runs the extraction stage for a task, routed by the thread's
     /// recorded binding: the executor follows the binding, not the current
     /// configuration, so a resumed thread continues the way it started.
-    ///
-    /// # Errors
-    ///
-    /// Propagates the routed executor's [`StageError`]s; an external
-    /// executor on the recorded binding is a derivation fault. Nothing can
-    /// produce one in this release.
     pub(crate) async fn run_extraction(
         &self,
         job: &Job,
@@ -74,7 +65,7 @@ impl Worker {
             }
             tribal_domain::StageExecutorKind::ExternalAgent => Err(StageError::BindingDerivation {
                 stage: STAGE_EXTRACTION.into(),
-                context: "the external-agent executor has no runner in this release".into(),
+                context: "the external-agent executor has no runner".into(),
             }),
         }
     }
@@ -229,11 +220,11 @@ fn parse_with_diagnostics(
     parse_extraction_response(response).inspect_err(|_| {
         if include_llm_content {
             let preview: String = response.text.chars().take(PARSE_PREVIEW_LENGTH).collect();
-            tracing::debug!(preview = %preview, "parse failure — raw LLM response");
+            tracing::debug!(preview = %preview, "parse failure: raw LLM response");
         } else {
             tracing::debug!(
                 response_length = response.text.len(),
-                "parse failure — response details redacted",
+                "parse failure: response details redacted",
             );
         }
     })
