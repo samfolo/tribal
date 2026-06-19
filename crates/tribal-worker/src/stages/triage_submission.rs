@@ -96,6 +96,9 @@ pub(crate) async fn reconstruct_candidate_scores(
         if result.is_error {
             continue;
         }
+        // A successful result is whole, valid JSON (§10.1); only a
+        // candidate-search page carries the embedding_profile_id marker, so
+        // any other tool's result legitimately does not parse here.
         let Ok(page) = serde_json::from_str::<CandidateSearchPage>(&result.output) else {
             continue;
         };
@@ -258,6 +261,24 @@ impl SubmissionPipeline for TriageSubmissionPipeline {
             });
         }
 
+        // 2b. One assessment per item: a repeat resolves to the same id and
+        //     collides on the decision table's per-item uniqueness at commit,
+        //     which no retry clears, so reject it here.
+        let mut assessed: HashSet<KnowledgeItemId> = HashSet::new();
+        for item in &submission.considered_items {
+            if let Ok(id) = item.item_id.parse::<KnowledgeItemId>()
+                && !assessed.insert(id)
+            {
+                return Ok(SubmissionOutcome::Bounced {
+                    diagnostics: format!(
+                        "the submission assesses {} more than once; give each examined claim a \
+                         single assessment",
+                        item.item_id,
+                    ),
+                });
+            }
+        }
+
         // 3. ID membership: every referenced id must appear in something
         //    the model was actually shown.
         let mut referenced: Vec<&str> = submission
@@ -311,8 +332,9 @@ impl SubmissionPipeline for TriageSubmissionPipeline {
         if !ungrounded.is_empty() {
             return Ok(SubmissionOutcome::Bounced {
                 diagnostics: format!(
-                    "these ids carry no candidate-similarity score: {}; only items returned by \
-                     search_candidate_similar_items can be cited, so search for them first",
+                    "these ids carry no candidate-similarity score: {}; cite only items a \
+                     candidate search returned (a superseded item, which the search does not \
+                     surface, cannot be cited even after reading it)",
                     ungrounded.join(", "),
                 ),
             });
@@ -663,6 +685,39 @@ mod tests {
             SubmissionOutcome::Bounced { ref diagnostics }
                 if diagnostics.contains("ki_00000000-0000-0000-0000-00000000beef")
                     && diagnostics.contains("copy item ids exactly")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_a_repeated_assessment_bounces_before_commit() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let pipeline = TriageSubmissionPipeline::new(ProjectId::new());
+        let thread = an_agent_thread().build();
+        let id = "ki_00000000-0000-0000-0000-0000000000a1";
+
+        // Two assessments of one claim would collide on the decision table's
+        // per-item uniqueness at commit; the validator bounces it first.
+        let outcome = pipeline
+            .evaluate(
+                &mut txn,
+                &thread,
+                &corpus_with(&[]),
+                &serde_json::json!({
+                    "decision": {"decision": "created"},
+                    "considered_items": [
+                        {"item_id": id, "suggested_relation": "supports", "justification": "a"},
+                        {"item_id": id, "suggested_relation": "unrelated", "justification": "b"},
+                    ],
+                }),
+            )
+            .await
+            .expect("evaluates");
+        assert!(matches!(
+            outcome,
+            SubmissionOutcome::Bounced { ref diagnostics }
+                if diagnostics.contains(id) && diagnostics.contains("more than once")
         ));
     }
 
