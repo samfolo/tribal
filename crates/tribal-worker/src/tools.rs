@@ -18,7 +18,9 @@ mod triage;
 use std::{collections::HashSet, sync::Arc};
 
 pub(crate) use common::{ReadJobContextTool, ReadSiblingThreadsTool};
-pub(crate) use relation::submit_relations_descriptor;
+pub(crate) use relation::{
+    RelationToolGrounding, relation_tool_grounding, submit_relations_descriptor,
+};
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::PgConnection;
 pub(crate) use triage::{

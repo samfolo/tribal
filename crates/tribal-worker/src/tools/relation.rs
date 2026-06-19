@@ -291,9 +291,9 @@ struct ReadItemArguments {
     item_id: String,
 }
 
-/// Reads one knowledge item in full, in any project. The model can only
-/// supply ids it has already seen, so the read offers no existence oracle
-/// it did not already have from its search.
+/// Reads one knowledge item in full, in any project. The read resolves any
+/// id; grounding a read result so it can back an edge is the submission
+/// pipeline's provenance rule, not this tool's, so the reader stays plain.
 pub(crate) struct ReadKnowledgeItemTool {
     descriptor: ToolDescriptor,
 }
@@ -443,6 +443,31 @@ impl ReadItemNeighbourhoodTool {
             descriptor: Self::describe(),
             batch_projects,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Submission provenance grounding
+// ---------------------------------------------------------------------------
+
+/// How a relation tool's result contributes to submission provenance. A
+/// search ranks real items, so its results are grounded by construction; an
+/// id-addressed read echoes the id it was given, so it grounds its result
+/// only when that id was already citable; any other tool grounds nothing.
+pub(crate) enum RelationToolGrounding {
+    Search,
+    IdAddressedRead,
+    NotProvenance,
+}
+
+/// Classifies a relation tool by name so the submission pipeline can decide
+/// which results extend the citable set. Co-located with the tool names so
+/// the two cannot drift.
+pub(crate) fn relation_tool_grounding(tool_name: &str) -> RelationToolGrounding {
+    match tool_name {
+        SEARCH_NAME => RelationToolGrounding::Search,
+        READ_ITEM_NAME | NEIGHBOURHOOD_NAME => RelationToolGrounding::IdAddressedRead,
+        _ => RelationToolGrounding::NotProvenance,
     }
 }
 
