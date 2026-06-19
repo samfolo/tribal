@@ -616,6 +616,11 @@ async fn test_relation_stage_all_edges_dropped() {
 /// submission record surfaces its handoff keyed by the candidate's batch
 /// index, and a thread with no submission record contributes nothing, so
 /// the one-shot path (which commits none) reaches today's context exactly.
+///
+/// The read is keyed on the durable submission records, never the current
+/// triage executor config, so a handoff a loop triage committed survives a
+/// later flip back to one-shot before relation claims (the provenance the
+/// recorded binding exists to keep).
 #[tokio::test]
 async fn test_find_triage_submissions_by_job_surfaces_agentic_handoffs() {
     let _guard = serial_lock().await;
