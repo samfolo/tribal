@@ -32,15 +32,13 @@ use crate::{
 };
 
 /// One candidate-search result page, as the reconstruction reads it back
-/// from the thread log. The `embedding_profile_id` marker is present only
-/// on a candidate-search page, so requiring it makes the parse reject
-/// every other tool's record.
+/// from the thread log. The `embedding_profile_id` both selects the page (it
+/// is present only on a candidate-search record) and pins its scores to one
+/// embedding geometry, so a profile cutover mid-thread does not merge scores
+/// across incomparable vector spaces.
 #[derive(Deserialize)]
 struct CandidateSearchPage {
     results: Vec<CandidateScoreItem>,
-    // Required so the parse selects only candidate-search records; the
-    // value itself is not read here.
-    #[allow(dead_code, reason = "presence is the marker; the value is unused")]
     embedding_profile_id: String,
 }
 
@@ -73,6 +71,13 @@ pub(crate) struct CandidateSearchProvenance {
 /// when it returned no items, so `searched` tracks the page's presence, not
 /// the score count.
 ///
+/// Scores are pinned to a single embedding profile: an embedding-profile
+/// cutover mid-thread forces the search to restart pagination under the new
+/// profile, leaving the pre-cutover pages durable but under an incomparable
+/// geometry. The reconstruction drops the superseded pages on a profile
+/// change rather than merging scores across profiles, so an item the new
+/// profile does not surface cannot ground a decision on a stale score.
+///
 /// # Errors
 ///
 /// Returns [`DbError`] when the records cannot be read.
@@ -84,6 +89,7 @@ pub(crate) async fn reconstruct_candidate_scores(
         .find_by_thread_id(conn, thread.id())
         .await?;
     let mut searched = false;
+    let mut profile: Option<String> = None;
     let mut scores: HashMap<String, f64> = HashMap::new();
     for record in records {
         if record.kind() != AgentThreadRecordKind::ToolResult {
@@ -104,6 +110,14 @@ pub(crate) async fn reconstruct_candidate_scores(
         };
         // A candidate-search page parsed: a search ran, whatever it returned.
         searched = true;
+        // A profile change supersedes the earlier pages' geometry. Cutover is
+        // monotone (the rejected cursor forces a restart under the new
+        // profile), so dropping the prior scores leaves the run under the
+        // current profile alone.
+        if profile.as_deref() != Some(page.embedding_profile_id.as_str()) {
+            scores.clear();
+            profile = Some(page.embedding_profile_id);
+        }
         for item in page.results {
             scores
                 .entry(item.item_id)
@@ -580,12 +594,24 @@ mod tests {
             .await
             .expect("insert thread");
 
-        // The candidate search the model ran: the assistant call, then its
-        // result page scoring the cited items.
+        append_candidate_search_page(conn, &thread, "ep_marker", scored).await;
+        thread
+    }
+
+    /// Appends one candidate-search call/result pair: the assistant call, then
+    /// a result page under `profile_id` scoring `scored`, mirroring the search
+    /// tool's output so the reconstruction reads these scores back.
+    async fn append_candidate_search_page(
+        conn: &mut sqlx::PgConnection,
+        thread: &AgentThread,
+        profile_id: &str,
+        scored: &[(String, f64)],
+    ) {
         let call_seq = PgAgentThreadRecordRepository
             .next_seq(conn, thread.id())
             .await
             .expect("call seq");
+        let call_id = format!("call_{call_seq}");
         PgAgentThreadRecordRepository
             .append(
                 conn,
@@ -596,7 +622,7 @@ mod tests {
                     .content(serde_json::json!({
                         "text": "",
                         "tool_calls": [{
-                            "id": "call_search",
+                            "id": call_id,
                             "name": "search_candidate_similar_items",
                             "arguments": {},
                         }],
@@ -613,7 +639,7 @@ mod tests {
                     "similarity_score": score,
                 }))
                 .collect::<Vec<_>>(),
-            "embedding_profile_id": "ep_marker",
+            "embedding_profile_id": profile_id,
         });
         let result_seq = PgAgentThreadRecordRepository
             .next_seq(conn, thread.id())
@@ -627,7 +653,7 @@ mod tests {
                     .seq(result_seq)
                     .kind(AgentThreadRecordKind::ToolResult)
                     .requesting_seq(Some(call_seq))
-                    .tool_call_id(Some("call_search".to_owned()))
+                    .tool_call_id(Some(call_id))
                     .content(serde_json::json!({
                         "output": serde_json::to_string(&page).expect("serialise page"),
                         "is_error": false,
@@ -636,8 +662,68 @@ mod tests {
             )
             .await
             .expect("append search result");
+    }
 
-        thread
+    #[tokio::test]
+    async fn test_reconstruct_pins_scores_to_the_latest_embedding_profile() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let principal = PgPrincipalRepository
+            .insert(
+                &mut txn,
+                &a_new_principal()
+                    .principal_key("user:profile-cutover".to_owned())
+                    .build(),
+            )
+            .await
+            .expect("principal");
+        let project = PgProjectRepository
+            .insert(
+                &mut txn,
+                &a_new_project()
+                    .git_remote(GitRemote::from_parts(
+                        "github.com",
+                        "test/profile-cutover",
+                        None,
+                    ))
+                    .build(),
+            )
+            .await
+            .expect("project");
+
+        let superseded = "ki_00000000-0000-0000-0000-0000000000c1".to_owned();
+        let carried = "ki_00000000-0000-0000-0000-0000000000d2".to_owned();
+        // The pre-cutover search scored both items under the old profile.
+        let thread = thread_with_scored_search(
+            &mut txn,
+            principal.id(),
+            project.id(),
+            &[(superseded.clone(), 0.95), (carried.clone(), 0.80)],
+        )
+        .await;
+        // A profile cutover restarts the search under a new profile that
+        // re-scores only `carried` and never surfaces `superseded`.
+        append_candidate_search_page(&mut txn, &thread, "ep_next", &[(carried.clone(), 0.60)])
+            .await;
+
+        let provenance = reconstruct_candidate_scores(&mut txn, &thread)
+            .await
+            .expect("reconstruct");
+        assert!(provenance.searched);
+        let carried_score = provenance
+            .scores
+            .get(&carried)
+            .copied()
+            .expect("the carried item is scored");
+        assert!(
+            (carried_score - 0.60).abs() < 1e-9,
+            "the carried item keeps its current-profile score (0.60), not the superseded 0.80",
+        );
+        assert!(
+            !provenance.scores.contains_key(&superseded),
+            "a score only under the superseded profile is dropped, not merged",
+        );
     }
 
     #[tokio::test]
