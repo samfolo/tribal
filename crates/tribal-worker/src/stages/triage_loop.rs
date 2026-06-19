@@ -429,26 +429,25 @@ impl Worker {
         Ok(RecordedLoopPrompts { system, user })
     }
 
-    /// Resolves the verifier the binding configures, when the toggle is
-    /// on: the active verifier templates and the one-shot verifier binding
-    /// the child runs under, on the parent's model and endpoint. `None`
-    /// when verification is disabled, leaving an accepted submission to
-    /// commit on the validators alone.
+    /// Resolves the verifier the recorded binding names, with the one-shot
+    /// verifier binding the child runs under on the parent's model and
+    /// endpoint. `None` when the binding records no verifier, leaving an
+    /// accepted submission to commit on the validators alone.
     ///
-    /// The verifier prompts follow the active set rather than the parent's
-    /// recorded binding, they are no part of its hash (the parent binds
-    /// the loop pair only), and each launch pins its own verifier binding
-    /// on the child it creates, so the child is resume-stable thereafter.
+    /// The verifier follows the parent's recorded binding, not live
+    /// configuration: its prompts are part of the parent's hash, so a
+    /// resumed parent runs the verifier it was admitted with and a config
+    /// change between admission and resume cannot add, drop, or re-prompt
+    /// it. Each launch pins its own verifier binding on the child it
+    /// creates, so the child is resume-stable thereafter.
     async fn verifier_context(
         &self,
         binding: &AgentBinding,
         candidate: &Candidate,
     ) -> Result<Option<VerifierContext>, StageError> {
-        // Unset enables the verifier: it is the loop's default safety net,
-        // disabled only by an explicit `verifier: false`.
-        if !self.agents().triage.verifier_enabled(true) {
+        let Some(verifier) = binding.definition().verifier.clone() else {
             return Ok(None);
-        }
+        };
 
         let mut conn = self
             .pool()
@@ -463,11 +462,10 @@ impl Worker {
                 },
             })?;
 
-        let system = self
-            .active_verifier_prompt(&mut conn, PromptRole::System)
-            .await?;
-        let user = self
-            .active_verifier_prompt(&mut conn, PromptRole::User)
+        let system =
+            resolve_verifier_prompt(&mut conn, PromptRole::System, &verifier.system_prompt_hash)
+                .await?;
+        let user = resolve_verifier_prompt(&mut conn, PromptRole::User, &verifier.user_prompt_hash)
             .await?;
         let definition = crate::definition::verifier_definition(
             binding.definition(),
@@ -489,32 +487,6 @@ impl Worker {
             candidate: candidate.clone(),
         }))
     }
-
-    /// Resolves the active verifier template for a role, erroring when the
-    /// verifier is on but no template is live: a wiring fault, not a
-    /// configuration the binding can run.
-    async fn active_verifier_prompt(
-        &self,
-        conn: &mut sqlx::PgConnection,
-        role: PromptRole,
-    ) -> Result<PromptVersion, StageError> {
-        let id = self
-            .active_prompts()
-            .version_id(PromptStage::Triage, PromptClass::Verifier, role)
-            .await
-            .ok_or_else(|| StageError::BindingDerivation {
-                stage: STAGE_TRIAGE.into(),
-                context: format!("no active triage verifier {} prompt", role.as_str()),
-            })?;
-        PgPromptVersionRepository
-            .find_by_id(conn, id)
-            .await
-            .map_err(|source| StageError::Database {
-                stage: STAGE_TRIAGE.into(),
-                context: "loading an active verifier prompt".into(),
-                source,
-            })
-    }
 }
 
 /// Resolves one recorded loop prompt by its slot and content hash.
@@ -523,18 +495,40 @@ async fn resolve_loop_prompt(
     role: PromptRole,
     hash: &str,
 ) -> Result<PromptVersion, StageError> {
+    resolve_recorded_prompt(conn, PromptClass::Loop, role, hash).await
+}
+
+/// Resolves one recorded verifier prompt by its slot and content hash, the
+/// hash the parent binding pins, so the verifier runs exactly the rubric
+/// the binding names.
+async fn resolve_verifier_prompt(
+    conn: &mut sqlx::PgConnection,
+    role: PromptRole,
+    hash: &str,
+) -> Result<PromptVersion, StageError> {
+    resolve_recorded_prompt(conn, PromptClass::Verifier, role, hash).await
+}
+
+/// Resolves one recorded triage prompt by its class, role, and the content
+/// hash the binding pins.
+async fn resolve_recorded_prompt(
+    conn: &mut sqlx::PgConnection,
+    class: PromptClass,
+    role: PromptRole,
+    hash: &str,
+) -> Result<PromptVersion, StageError> {
     PgPromptVersionRepository
-        .find_by_slot_and_hash(conn, PromptStage::Triage, PromptClass::Loop, role, hash)
+        .find_by_slot_and_hash(conn, PromptStage::Triage, class, role, hash)
         .await
         .map_err(|source| StageError::Database {
             stage: STAGE_TRIAGE.into(),
-            context: "resolving a recorded loop prompt".into(),
+            context: "resolving a recorded prompt".into(),
             source,
         })?
         .ok_or_else(|| StageError::BindingDerivation {
             stage: STAGE_TRIAGE.into(),
             context: format!(
-                "no stored triage loop {} prompt matches the binding's hash",
+                "no stored triage {class:?} {} prompt matches the binding's hash",
                 role.as_str(),
             ),
         })

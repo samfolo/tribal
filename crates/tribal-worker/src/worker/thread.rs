@@ -7,6 +7,8 @@
 //! execution resolves. The default binding is one-shot with no tools and
 //! no budget caps, reproducing launched behaviour exactly.
 
+use std::collections::HashMap;
+
 use tribal_agent_runtime::{
     AgentRuntimeError, StageThread, cancel_thread_in_txn, ensure_stage_thread, resolve_binding,
 };
@@ -16,12 +18,15 @@ use tribal_db::{
 };
 use tribal_domain::{
     AgentDefinition, AgentThread, AgentThreadStatus, Job, JobOutcome, JobState, PromptClass,
-    PromptRole, PromptStage, PromptVersionId, Task, TaskErrorKind, TaskType,
+    PromptRole, PromptVersionId, Task, TaskErrorKind, TaskType, normalise_endpoint_url,
 };
 use tribal_inference::{CompletionStageSpec, CompletionStageSpecs};
 
 use crate::{
-    definition::{StagePromptHashes, derive_stage_definition},
+    definition::{
+        AgenticPromptHashes, StagePromptHashes, derive_stage_definition, prompt_stage_of,
+        resolve_agentic_prompt_hashes,
+    },
     error::StageError,
     stages::prompt_version_ids_for_task,
     worker::{Worker, coupling},
@@ -265,7 +270,7 @@ impl Worker {
         let prompts = StagePromptHashes {
             system: system_hash,
             user: user_hash,
-            loop_pair: self.active_loop_hashes(conn, task).await?,
+            agentic: self.active_agentic_hashes(conn, task).await?,
         };
         derive_stage_definition(task.task_type(), spec, &prompts, self.agents()).map_err(|source| {
             StageError::BindingDerivation {
@@ -275,47 +280,68 @@ impl Worker {
         })
     }
 
-    /// Resolves the active loop templates' content hashes for a stage
-    /// whose configuration selects the loop executor: the binding-hash
-    /// half of claim-time prompt resolution. `None` everywhere else, so
+    /// Resolves the active loop and verifier prompt-hash pairs for a stage
+    /// whose configuration selects the loop executor: the claim-time half of
+    /// the agentic-slot resolution the ingest fingerprint also runs through
+    /// [`resolve_agentic_prompt_hashes`], so the two cannot disagree on which
+    /// slots a stage's binding needs. Empty under the one-shot executor, so
     /// the default path reads nothing.
-    async fn active_loop_hashes(
+    async fn active_agentic_hashes(
         &self,
         conn: &mut sqlx::PgConnection,
         task: &Task,
-    ) -> Result<Option<(String, String)>, StageError> {
-        let (prompt_stage, executor) = match task.task_type() {
-            TaskType::Extraction => (PromptStage::Extraction, self.agents().extraction.executor),
-            TaskType::Triage => (PromptStage::Triage, self.agents().triage.executor),
-            TaskType::Relation => (PromptStage::Relation, self.agents().relation.executor),
+    ) -> Result<AgenticPromptHashes, StageError> {
+        let stage = task.task_type();
+        let executor = match stage {
+            TaskType::Extraction => self.agents().extraction.executor,
+            TaskType::Triage => self.agents().triage.executor,
+            TaskType::Relation => self.agents().relation.executor,
         };
         if executor != ExecutorChoice::Loop {
-            return Ok(None);
+            return Ok(AgenticPromptHashes::default());
         }
-        let stage = task.task_type().as_str();
-        let mut hashes = Vec::with_capacity(2);
-        for role in [PromptRole::System, PromptRole::User] {
-            let id = self
+
+        // Make available the active loop and verifier slots this stage might
+        // need; the shared resolver selects from them by the same decision
+        // the fingerprint uses. A slot with no active prompt is omitted, and
+        // the resolver errors only if its decision actually requires it.
+        let prompt_stage = prompt_stage_of(stage);
+        let mut resolved: HashMap<(PromptClass, PromptRole), String> = HashMap::new();
+        for (class, role) in [
+            (PromptClass::Loop, PromptRole::System),
+            (PromptClass::Loop, PromptRole::User),
+            (PromptClass::Verifier, PromptRole::System),
+            (PromptClass::Verifier, PromptRole::User),
+        ] {
+            if let Some(id) = self
                 .active_prompts()
-                .version_id(prompt_stage, PromptClass::Loop, role)
+                .version_id(prompt_stage, class, role)
                 .await
-                .ok_or_else(|| StageError::BindingDerivation {
-                    stage: stage.into(),
-                    context: format!("no active {stage} loop {} prompt", role.as_str()),
-                })?;
-            let version = PgPromptVersionRepository
-                .find_by_id(conn, id)
-                .await
-                .map_err(|source| StageError::Database {
-                    stage: stage.into(),
-                    context: "loading an active loop prompt".into(),
-                    source,
-                })?;
-            hashes.push(version.content_hash().to_owned());
+            {
+                let version = PgPromptVersionRepository
+                    .find_by_id(conn, id)
+                    .await
+                    .map_err(|source| StageError::Database {
+                        stage: stage.as_str().into(),
+                        context: "loading an active agentic prompt".into(),
+                        source,
+                    })?;
+                resolved.insert((class, role), version.content_hash().to_owned());
+            }
         }
-        let user = hashes.pop().expect("two roles were pushed");
-        let system = hashes.pop().expect("two roles were pushed");
-        Ok(Some((system, user)))
+
+        resolve_agentic_prompt_hashes(stage, self.agents(), |_stage, class, role| {
+            resolved
+                .get(&(class, role))
+                .cloned()
+                .ok_or_else(|| StageError::BindingDerivation {
+                    stage: stage.as_str().into(),
+                    context: format!(
+                        "the {} binding needs a {class:?} {role:?} prompt, but none is active",
+                        stage.as_str(),
+                    ),
+                })
+        })
     }
 }
 
@@ -333,7 +359,7 @@ pub(super) fn guard_route(
 ) -> Result<(), StageError> {
     if recorded.provider == spec.provider
         && recorded.model == spec.model
-        && recorded.base_url == spec.base_url
+        && base_urls_match(&recorded.base_url, &spec.base_url)
     {
         return Ok(());
     }
@@ -345,6 +371,21 @@ pub(super) fn guard_route(
         ),
         current: format!("{}/{}@{}", spec.provider, spec.model, spec.base_url),
     })
+}
+
+/// Whether two base URLs name the same endpoint. Canonicalises both (the
+/// normalisation the gateway routes by) so a benign re-spelling (trailing
+/// slash, case, default port) is not read as a route change; an unparseable
+/// URL, which never booted a gateway, falls back to an exact compare rather
+/// than collapsing two unparseable spellings together.
+fn base_urls_match(recorded: &str, current: &str) -> bool {
+    match (
+        normalise_endpoint_url(recorded),
+        normalise_endpoint_url(current),
+    ) {
+        (Ok(recorded), Ok(current)) => recorded == current,
+        _ => recorded == current,
+    }
 }
 
 /// Selects the boot-time endpoint spec for a stage.
@@ -451,8 +492,7 @@ fn stage_db(stage: &str, context: &str, source: tribal_db::DbError) -> StageErro
 
 #[cfg(test)]
 mod tests {
-    use tribal_domain::{ProviderKind, StageParameters};
-    use tribal_test_utils::an_agent_definition;
+    use tribal_test_utils::{a_completion_stage_spec, an_agent_definition};
 
     use super::*;
 
@@ -460,11 +500,8 @@ mod tests {
     /// the divergence axis.
     fn a_stage_spec(model: &str) -> CompletionStageSpec {
         CompletionStageSpec {
-            provider: ProviderKind::Ollama,
             model: model.to_owned(),
-            base_url: "http://localhost:11434".to_owned(),
-            api_key: String::new(),
-            parameters: StageParameters::default(),
+            ..a_completion_stage_spec()
         }
     }
 
@@ -484,6 +521,31 @@ mod tests {
         let recorded = an_agent_definition().build();
         assert!(matches!(
             guard_route("relation", &recorded, &a_stage_spec("a-different-model")),
+            Err(StageError::ResumeRouteDivergence { .. }),
+        ));
+    }
+
+    #[test]
+    fn test_guard_treats_a_re_spelled_base_url_as_the_same_route() {
+        // A trailing-slash re-spelling of the same endpoint is not a route
+        // change: the guard canonicalises both sides, so a benign config
+        // re-write does not fail an otherwise-resumable thread.
+        let recorded = an_agent_definition()
+            .base_url("http://localhost:11434".to_owned())
+            .build();
+        let respelled = CompletionStageSpec {
+            base_url: "http://localhost:11434/".to_owned(),
+            ..a_completion_stage_spec()
+        };
+        assert!(guard_route("relation", &recorded, &respelled).is_ok());
+
+        // A genuinely different host is still a divergence.
+        let elsewhere = CompletionStageSpec {
+            base_url: "http://elsewhere:11434".to_owned(),
+            ..a_completion_stage_spec()
+        };
+        assert!(matches!(
+            guard_route("relation", &recorded, &elsewhere),
             Err(StageError::ResumeRouteDivergence { .. }),
         ));
     }

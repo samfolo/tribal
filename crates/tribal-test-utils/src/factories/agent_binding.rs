@@ -1,7 +1,7 @@
 use chrono::Utc;
 use tribal_domain::{
     AgentBinding, AgentBindingVersionId, AgentDefinition, ExecutionBudgets, ProviderKind,
-    StageExecutorKind, StageParameters, TaskType, ToolBinding,
+    StageExecutorKind, StageParameters, TaskType, ToolBinding, VerifierBinding,
 };
 
 /// A well-formed placeholder content address (64 hex characters).
@@ -19,6 +19,7 @@ define_factory! {
         prompt_hashes: Vec<String> = vec![PLACEHOLDER_HASH.to_owned()],
         budgets: ExecutionBudgets = ExecutionBudgets::default(),
         tools: Vec<ToolBinding> = Vec::new(),
+        verifier: Option<VerifierBinding> = None,
     }
 }
 
