@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use tracing::Instrument;
 use tribal_agent_runtime::{StageThread, SubmissionContent};
 use tribal_common::clamp_to_u32;
-use tribal_config::ExecutorChoice;
 use tribal_db::{
     AgentThreadRecordRepository, ExtractionResultRepository, JobTriageSubmission,
     KnowledgeItemRepository, NewKnowledgeItemRelation, PgAgentThreadRecordRepository,
@@ -114,14 +113,11 @@ impl Worker {
         let similar_item_decision_contexts =
             build_similar_item_decision_contexts(&mut conn, &similar_item_decisions, batch_size)
                 .await?;
-        // Only the agentic triage path commits submission records with a
-        // handoff, so the read is gated on the configured executor and the
-        // default path issues no query at all.
-        let handoffs = if self.agents().triage.executor == ExecutorChoice::Loop {
-            load_triage_handoffs(&mut conn, job.id()).await?
-        } else {
-            HashMap::new()
-        };
+        // Handoffs are durable triage submission records, the truth of what
+        // this job's triage committed; a one-shot job has none, so the read
+        // returns empty without depending on the current executor config
+        // (which a mid-job change would make a false witness).
+        let handoffs = load_triage_handoffs(&mut conn, job.id()).await?;
 
         drop(conn);
 

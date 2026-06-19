@@ -176,8 +176,7 @@ pub trait AgentThreadRecordRepository {
     /// Lists the submission records of a job's triage threads, each with
     /// its candidate's batch index: the relation stage's handoff lookup.
     /// Only agentic threads commit submission records, so a one-shot job
-    /// yields an empty list and the caller gates the call on the
-    /// configured executor so the default path issues no query at all.
+    /// yields an empty list.
     ///
     /// # Errors
     ///
