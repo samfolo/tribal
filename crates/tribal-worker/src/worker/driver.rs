@@ -51,7 +51,7 @@ const DRIVER_WORKER: &str = "driver-loop";
 /// The deferred-death message for a child the §10.3 cancellation cascade
 /// reached before the driver could run it.
 const CHILD_CASCADE_CANCELLED: &str =
-    "the parent's cancellation cascaded to this verifier child before it ran";
+    "the parent's cancellation cascaded to this child before it ran";
 
 impl Worker {
     /// Drives the driver family until cancellation: each cycle reclaims
@@ -78,7 +78,7 @@ impl Worker {
     /// bounded concurrency.
     ///
     /// The batch runs concurrently, not in series: a single lane would
-    /// funnel every stage's verifier child through one model call at a
+    /// funnel every stage's child through one model call at a
     /// time, and relation's terminal hand-back, on the job-completion
     /// critical path, would wait behind all of them. The claim count is
     /// the concurrency bound; the gateway's per-provider permits bound the
