@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
-use tribal_agent_runtime::{StageTool, ToolOutcome};
+use tribal_agent_runtime::{RecordedToolCall, StageTool, ToolOutcome};
 use tribal_db::{
     DbError, KnowledgeItemRepository, PgKnowledgeItemRepository, PgRelationRepository,
     RelationRepository, SemanticSearchParams,
@@ -145,11 +145,11 @@ impl SearchRelatedItemsTool {
         ToolDescriptor::builder()
             .name(SEARCH_NAME.to_owned())
             .description(
-                "Search the whole knowledge graph, across every project, for claims similar to \
+                "Search what is already known, across every project, for claims similar to \
                  your query text. Returns items with their ids, kinds, content, tags, and \
                  similarity scores, most similar first, plus a next-page cursor. Use it to find \
                  existing claims the batch's items might relate to. Only items returned here, or \
-                 shown in your batch, can be cited in an edge."
+                 shown in your batch, can be cited in a relationship."
                     .to_owned(),
             )
             .input_schema(serde_json::json!({
@@ -417,8 +417,8 @@ impl ReadItemNeighbourhoodTool {
             .name(NEIGHBOURHOOD_NAME.to_owned())
             .description(
                 "Read a knowledge item's committed relations and the neighbouring items they \
-                 connect within the batch's projects. Use it to see how a claim already sits in \
-                 the graph before adding an edge to it."
+                 connect within the batch's projects. Use it to see how a claim already relates \
+                 to what is already known before adding a relationship to it."
                     .to_owned(),
             )
             .input_schema(serde_json::json!({
@@ -460,14 +460,32 @@ pub(crate) enum RelationToolGrounding {
     NotProvenance,
 }
 
-/// Classifies a relation tool by name so the submission pipeline can decide
-/// which results extend the citable set. Co-located with the tool names so
-/// the two cannot drift.
-pub(crate) fn relation_tool_grounding(tool_name: &str) -> RelationToolGrounding {
-    match tool_name {
-        SEARCH_NAME => RelationToolGrounding::Search,
-        READ_ITEM_NAME | NEIGHBOURHOOD_NAME => RelationToolGrounding::IdAddressedRead,
-        _ => RelationToolGrounding::NotProvenance,
+impl RelationToolGrounding {
+    fn of(tool_name: &str) -> Self {
+        match tool_name {
+            SEARCH_NAME => Self::Search,
+            READ_ITEM_NAME | NEIGHBOURHOOD_NAME => Self::IdAddressedRead,
+            _ => Self::NotProvenance,
+        }
+    }
+
+    /// Whether the call's result may extend the citable set, given the set as
+    /// it stands. An id seen only inside content cannot bootstrap trust by
+    /// being read back out of the read's own echoed id field.
+    pub(crate) fn call_grounds(
+        call: &RecordedToolCall,
+        citable: &HashSet<KnowledgeItemId>,
+    ) -> bool {
+        match Self::of(&call.name) {
+            Self::Search => true,
+            Self::IdAddressedRead => call
+                .arguments
+                .get("item_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|raw| raw.parse::<KnowledgeItemId>().ok())
+                .is_some_and(|id| citable.contains(&id)),
+            Self::NotProvenance => false,
+        }
     }
 }
 
@@ -563,9 +581,9 @@ pub(crate) fn submit_relations_descriptor() -> ToolDescriptor {
     ToolDescriptor::builder()
         .name(tribal_agent_runtime::SUBMIT_RESULT_TOOL.to_owned())
         .description(
-            "Submit the relationship edges for this batch. This is the only way to \
-             complete the task: a list of directed edges, each connecting two claims by the \
-             exact item ids you were shown or that a tool returned. Submit an empty list when \
+            "Submit the relationships for this batch. This is the only way to \
+             complete the task: a list of directed relationships, each connecting two claims by \
+             the exact item ids you were shown or that a tool returned. Submit an empty list when \
              nothing genuinely relates. A rejected submission comes back with diagnostics; \
              correct it and resubmit."
                 .to_owned(),

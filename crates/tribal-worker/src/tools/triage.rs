@@ -160,8 +160,8 @@ impl SearchCandidateSimilarItemsTool {
         ToolDescriptor::builder()
             .name(SEARCH_NAME.to_owned())
             .description(
-                "Search this project's knowledge graph for items similar to the candidate \
-                 under triage. Returns items with their ids, kinds, content, tags, and \
+                "Search what is already known in this project for items similar to the \
+                 candidate under triage. Returns items with their ids, kinds, content, tags, and \
                  candidate-similarity scores, most similar first, plus a next-page cursor. \
                  Call it with no cursor for the first page, then pass the returned cursor to \
                  walk further. You must search before you can classify: only items returned \
@@ -442,8 +442,8 @@ impl ReadItemNeighbourhoodTool {
             .name(NEIGHBOURHOOD_NAME.to_owned())
             .description(
                 "Read a knowledge item's committed relations and the neighbouring items they \
-                 connect within this project. Use it to see how an item already sits in the \
-                 graph before deciding the candidate's relationship to it."
+                 connect within this project. Use it to see how an item already relates to what \
+                 is already known before deciding the candidate's relationship to it."
                     .to_owned(),
             )
             .input_schema(serde_json::json!({
