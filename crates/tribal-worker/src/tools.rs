@@ -296,11 +296,13 @@ fn search_failure(tool: &str, context: &str, source: DbError) -> ToolFailure {
     db_failure(context, &source)
 }
 
-/// How a search page renders an item's content: in full, or elided to a
-/// marker when the item's full content alone exceeds the page's size bound.
-/// The item's id, score, and the page cursor ride the page either way, so an
-/// elided item stays citable and the page stays parseable, where a truncated
-/// result would drop the item from provenance entirely.
+/// How a search page renders an item's variable-size fields: in full, or
+/// elided when the item alone exceeds the page's size bound. The item's id,
+/// score, and the page cursor ride the page either way, so an elided item
+/// stays citable and the page stays parseable, where a truncated result would
+/// drop the item from provenance entirely. Elision strips every unbounded
+/// field (the content and the tags), so an elided single-item page is within
+/// bound by construction rather than by luck of the item's size.
 #[derive(Clone, Copy)]
 pub(crate) enum ContentRendering {
     Full,
@@ -321,12 +323,23 @@ impl ContentRendering {
             ),
         }
     }
+
+    /// The tags a page carries under this rendering: the item's tags in full,
+    /// dropped under elision so the page's last unbounded field cannot push an
+    /// already-oversized single-item page past its bound.
+    pub(crate) fn tags(self, tags: &[String]) -> Vec<String> {
+        match self {
+            Self::Full => tags.to_vec(),
+            Self::Elided => Vec::new(),
+        }
+    }
 }
 
 /// A cursor-paginated semantic search whose rendered page fits the tool's
 /// size bound: an oversized page re-runs for fewer rows, and a lone result
-/// still over the bound is rendered [`ContentRendering::Elided`] (its id,
-/// score, and the cursor preserved), so the page the model reads and the
+/// still over the bound is rendered [`ContentRendering::Elided`], which keeps
+/// its id, score, and the cursor while stripping the unbounded fields, so the
+/// page is within bound by construction. The page the model reads and the
 /// provenance harvested from it stay one whole, valid page rather than a
 /// truncated one a re-parse would silently mangle.
 async fn paged_search_within_bound<P, R>(

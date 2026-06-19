@@ -294,6 +294,7 @@ impl StageTool for SearchCandidateSimilarItemsTool {
                     .map(|result| {
                         let mut context = LoopSimilarItemContext::from(result);
                         context.content = rendering.apply(&context.content);
+                        context.tags = rendering.tags(&context.tags);
                         context
                     })
                     .collect(),
@@ -1020,6 +1021,75 @@ mod tests {
             !content.contains(huge.as_str()),
             "the full content is not inlined",
         );
+    }
+
+    #[tokio::test]
+    async fn test_candidate_search_elides_an_item_with_oversized_tags() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let (principal_id, project) = seed_actors(&mut txn, "search-elide-tags").await;
+        let profile = ensure_genesis_profile(&mut txn, EMBEDDING_MODEL, DIMENSIONS).await;
+
+        // A single item whose content fits but whose tags alone push the page
+        // past the bound: eliding must drop the tags too, or the "protected"
+        // page still overflows and falls to the error path that strands the
+        // candidate with nothing to cite.
+        let many_tags: Vec<String> = (0..4_000).map(|i| format!("tag-{i:08}")).collect();
+        let item = PgKnowledgeItemRepository
+            .insert(
+                &mut txn,
+                &a_new_knowledge_item()
+                    .project_id(project)
+                    .principal_id(principal_id)
+                    .content("a short claim".to_owned())
+                    .tags(many_tags)
+                    .build(),
+            )
+            .await
+            .expect("insert item");
+        insert_embedding_for_profile(
+            &mut txn,
+            item.id(),
+            profile.id(),
+            EMBEDDING_MODEL,
+            basis_vector(0),
+        )
+        .await;
+
+        let embedding = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed(an_embedding_response(basis_vector(0)), None)
+                .build(),
+        );
+        let tool = SearchCandidateSimilarItemsTool::new(
+            "does this claim already exist".to_owned(),
+            project,
+            profile.clone(),
+            embed_gateway(profile.id(), Arc::clone(&embedding)),
+            unowned_attribution(),
+            10,
+            a_deadline(),
+        );
+
+        let arguments = serde_json::json!({});
+        let prepared = tool.prepare(&arguments).await.expect("prepare embeds");
+        let outcome = tool
+            .execute(&mut txn, prepared, &arguments)
+            .await
+            .expect("execute searches");
+
+        assert!(
+            outcome.content.len() <= SEARCH_RESPONSE_SIZE_BOUND as usize,
+            "the elided page fits the bound even with oversized tags: {}",
+            outcome.content.len(),
+        );
+        let view = parsed(&outcome);
+        let results = view["results"].as_array().expect("results array");
+        assert_eq!(results.len(), 1, "the single item is still returned");
+        assert_eq!(results[0]["item_id"], item.id().to_string());
+        let tags = results[0]["tags"].as_array().expect("tags array");
+        assert!(tags.is_empty(), "the oversized tags are dropped on elision");
     }
 
     #[tokio::test]

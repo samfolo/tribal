@@ -266,7 +266,7 @@ impl StageTool for SearchRelatedItemsTool {
                         item_id: result.item.id().to_string(),
                         kind: result.item.kind(),
                         content: rendering.apply(result.item.content()),
-                        tags: result.item.tags().to_vec(),
+                        tags: rendering.tags(result.item.tags()),
                         similarity_score: result.similarity,
                     })
                     .collect(),
