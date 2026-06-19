@@ -1,7 +1,6 @@
-//! Integration tests for the agentic turn loop, driven directly through
-//! the runtime against a live job: the same harness shape as the
-//! suspend/resolve tests. The worker's dispatch does not route to the
-//! loop yet; these pin the loop contract the stage wiring will inherit.
+//! Integration tests for the agentic turn loop, driven directly through the
+//! runtime against a live job, pinning the loop contract the stage executors
+//! run under.
 
 use std::sync::{
     Arc,
@@ -14,9 +13,9 @@ use tribal_agent_runtime::{
     AcceptedSubmission, Admission, BUDGET_RECHECK_CAUSE, BudgetFailure, ChildTerminalOutcome,
     HeartbeatPump, LoopOutcome, ParentResolution, RecheckPolicy, RecordedMessage,
     RenderedConversation, SUBMIT_RESULT_TOOL, SeenCorpus, StageTool, SubmissionOutcome,
-    SubmissionPipeline, ToolOutcome, ToolRegistry, TurnLoopDeps, VerifierLaunch, admit_inference,
-    commit_child_terminal, commit_deferred_death, commit_loop_terminal, resolve_stage_thread,
-    run_turn_loop, verdict_schema,
+    SubmissionPipeline, ToolOutcome, ToolRegistry, TurnLoopDependencies, VerifierLaunch,
+    admit_inference, commit_child_terminal, commit_deferred_death, commit_loop_terminal,
+    resolve_stage_thread, run_turn_loop, verdict_schema,
 };
 use tribal_db::{
     AgentDriverTaskRepository, AgentThreadRecordRepository, AgentThreadRepository,
@@ -304,8 +303,8 @@ impl LoopHarness {
         attribution: &'a UsageAttribution,
         pipeline: &'a dyn SubmissionPipeline,
         budgets: ExecutionBudgets,
-    ) -> TurnLoopDeps<'a> {
-        TurnLoopDeps {
+    ) -> TurnLoopDependencies<'a> {
+        TurnLoopDependencies {
             pool: &self.pool,
             gateway: &self.gateway,
             stage: TaskType::Extraction,

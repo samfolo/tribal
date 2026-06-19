@@ -14,7 +14,7 @@ use std::{collections::HashSet, sync::Arc};
 use tracing::Instrument;
 use tribal_agent_runtime::{
     LoopOutcome, RecheckPolicy, RecordedMessage, RenderedConversation, StageThread, ToolRegistry,
-    TurnLoopDeps, recorded_conversation, run_turn_loop,
+    TurnLoopDependencies, recorded_conversation, run_turn_loop,
 };
 use tribal_config::{DEFAULT_AGENTIC_RECHECK_BOUND, DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS};
 use tribal_db::{
@@ -34,9 +34,10 @@ use super::{
 };
 use crate::{
     common::PARSE_PREVIEW_LENGTH,
+    definition::current_stage_budgets,
     error::{STAGE_RELATION, StageError},
     parsing::{RelationSubmission, RelationSubmissionEdge},
-    prompt::assemble_relation_loop_opening,
+    prompt::{assemble_relation_loop_opening, narrow_temperature},
     stages::RelationSubmissionPipeline,
     tools::{RelationToolset, build_relation_registry, submit_relations_descriptor},
     worker::{Worker, heartbeat::WorkerHeartbeatPump, map_runtime_error},
@@ -116,7 +117,7 @@ impl Worker {
             let submit_descriptor = submit_relations_descriptor();
             let parameters = &stage_thread.binding.definition().parameters;
 
-            let outcome = run_turn_loop(TurnLoopDeps {
+            let outcome = run_turn_loop(TurnLoopDependencies {
                 pool: self.pool(),
                 gateway: self.gateway(),
                 stage: TaskType::Relation,
@@ -130,7 +131,7 @@ impl Worker {
                 pipeline: &pipeline,
                 pump,
                 rendered: opening_rendered,
-                budgets: crate::definition::current_stage_budgets(
+                budgets: current_stage_budgets(
                     TaskType::Relation,
                     stage_thread.binding.definition().executor,
                     self.agents(),
@@ -139,7 +140,7 @@ impl Worker {
                     delay_seconds: DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS,
                     bound: DEFAULT_AGENTIC_RECHECK_BOUND,
                 },
-                temperature: crate::prompt::narrow_temperature(parameters.temperature),
+                temperature: narrow_temperature(parameters.temperature),
                 max_tokens: parameters.max_tokens,
                 permit_deadline: deadline,
             })
