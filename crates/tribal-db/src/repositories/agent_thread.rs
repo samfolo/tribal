@@ -328,10 +328,13 @@ pub trait AgentThreadRepository {
         limit: u32,
     ) -> Result<Vec<AgentThread>, DbError>;
 
-    /// Records cancellation intents on a terminal parent's live
-    /// descendants, the post-commit fast path of the §10.3 cascade.
-    /// Idempotent and seq-free: only non-terminal descendants without an
-    /// intent are touched. Returns the count written.
+    /// Records cancellation intents on a terminal parent's live direct
+    /// children, the post-commit fast path of the §10.3 cascade. One level is
+    /// exhaustive because a verifier binding is flat (a one-shot launches no
+    /// child of its own), so a parent has no grandchildren here; the orphan
+    /// janitor heals any deeper tree a future nested delegation might add.
+    /// Idempotent and seq-free: only non-terminal children without an intent
+    /// are touched. Returns the count written.
     ///
     /// # Errors
     ///
@@ -746,8 +749,8 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         // intent-carrying threads to the cancel fallback. The job-relating
         // check rides the driving task rather than the thread row, which
         // carries no job id.
-        let thread_terminal = terminal_status_literals();
-        let driver_terminal = terminal_driver_state_literals();
+        let child_live = thread_is_live("child");
+        let descendant_driver_live = driver_task_is_live("dt");
         let sql = format!(
             "SELECT {COLUMNS} FROM agent_threads \
              WHERE pipeline_stage = 'relation' \
@@ -762,19 +765,17 @@ impl AgentThreadRepository for PgAgentThreadRepository {
                AND NOT EXISTS ( \
                    SELECT 1 FROM agent_threads child \
                    WHERE child.parent_thread_id = agent_threads.id \
-                     AND child.status NOT IN ({thread_terminal}) \
+                     AND {child_live} \
                ) \
                AND NOT EXISTS ( \
                    SELECT 1 FROM agent_driver_tasks dt \
                    JOIN agent_threads child ON child.driver_task_id = dt.id \
                    WHERE child.parent_thread_id = agent_threads.id \
-                     AND dt.state NOT IN ({driver_terminal}) \
+                     AND {descendant_driver_live} \
                ) \
              ORDER BY updated_at \
              LIMIT $1 \
              FOR UPDATE SKIP LOCKED",
-            thread_terminal = thread_terminal.join(", "),
-            driver_terminal = driver_terminal.join(", "),
         );
         let rows = sqlx::query(&sql)
             .bind(i64::from(limit))
@@ -822,27 +823,27 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         limit: u32,
         requested_by: &str,
     ) -> Result<u64, DbError> {
-        // A non-terminal thread is orphaned when its only resolver has gone
-        // terminal: its parent (the §10.3 cascade), or its own driver task
-        // (a deferred death that dead-lettered the task but could not wake an
+        // A live thread is orphaned when its only resolver has gone terminal:
+        // its parent (the §10.3 cascade), or its own driver task (a deferred
+        // death that dead-lettered the task but could not wake an
         // unmodelled-state parent, leaving the child for the janitor rather
         // than a sweep that does not exist). Either way no live actor will
         // resolve it, so the intent is written and the cancel fallback
-        // disposes it. The CTE locks only the child rows it writes under
-        // `SKIP LOCKED`; the terminal sets are interpolated literals derived
-        // from `ALL`, the single-source contract every status predicate here
-        // keeps.
-        let thread_terminal = terminal_status_literals().join(", ");
-        let driver_terminal = terminal_driver_state_literals().join(", ");
+        // disposes it. The orphan test is the negation of the same liveness
+        // predicate the stuck-relating sweep composes, so the two share one
+        // definition of "live". The CTE locks only the child rows it writes
+        // under `SKIP LOCKED`.
+        let child_live = thread_is_live("child");
+        let parent_live = thread_is_live("parent");
+        let driver_live = driver_task_is_live("dt");
         let sql = format!(
             "WITH orphan AS ( \
                  SELECT child.id FROM agent_threads child \
                  LEFT JOIN agent_threads parent ON parent.id = child.parent_thread_id \
                  LEFT JOIN agent_driver_tasks dt ON dt.id = child.driver_task_id \
                  WHERE child.cancel_requested_at IS NULL \
-                   AND child.status NOT IN ({thread_terminal}) \
-                   AND (parent.status IN ({thread_terminal}) \
-                        OR dt.state IN ({driver_terminal})) \
+                   AND {child_live} \
+                   AND (NOT ({parent_live}) OR NOT ({driver_live})) \
                  ORDER BY child.updated_at \
                  LIMIT $1 \
                  FOR UPDATE OF child SKIP LOCKED \
@@ -995,6 +996,27 @@ fn terminal_status_literals() -> Vec<String> {
         .filter(|status| status.is_terminal())
         .map(|status| format!("'{}'", status.as_str()))
         .collect()
+}
+
+/// SQL predicate: the aliased `agent_threads` row holds a live (non-terminal)
+/// status. The single definition of thread liveness, composed by both the
+/// stuck-relating sweep (which selects a thread with no live descendant) and
+/// the orphan cascade (which selects a child whose resolver is not live), so
+/// the two cannot drift on what "live" means.
+fn thread_is_live(alias: &str) -> String {
+    format!(
+        "{alias}.status NOT IN ({})",
+        terminal_status_literals().join(", ")
+    )
+}
+
+/// SQL predicate: the aliased `agent_driver_tasks` row holds a live
+/// (non-terminal) state, the driver-task companion to [`thread_is_live`].
+fn driver_task_is_live(alias: &str) -> String {
+    format!(
+        "{alias}.state NOT IN ({})",
+        terminal_driver_state_literals().join(", ")
+    )
 }
 
 fn map_agent_thread_row(r: &sqlx::postgres::PgRow) -> AgentThread {
