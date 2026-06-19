@@ -148,14 +148,16 @@ fn stage_agent_config(stage: TaskType, agents: &AgentsConfig) -> &StageAgentConf
     }
 }
 
-/// A one-shot's budgets: overrides only, absent caps stay absent. This is
-/// the launched no-limit behaviour, and the launched binding hash with it.
+/// A one-shot's budgets: the token cap it enforces, nothing more. The turn
+/// and deadline caps bound a turn loop, so a one-shot binding does not record
+/// a contract it would not honour. Absent caps stay absent, reproducing the
+/// launched binding hash.
 fn one_shot_budgets(stage_config: &StageAgentConfig) -> ExecutionBudgets {
     ExecutionBudgets {
         max_total_tokens: stage_config.max_total_tokens,
-        max_turns: stage_config.max_turns,
+        max_turns: None,
         max_child_launches: None,
-        execution_deadline_seconds: stage_config.execution_deadline_seconds,
+        execution_deadline_seconds: None,
     }
 }
 
@@ -293,6 +295,31 @@ mod tests {
         assert_eq!(
             derived.budgets.max_turns, None,
             "unset one-shot caps stay absent, never the agentic defaults",
+        );
+    }
+
+    #[test]
+    fn test_a_one_shot_drops_the_turn_and_deadline_caps_it_cannot_honour() {
+        // An operator sets the loop-only caps on a one-shot stage; the
+        // one-shot bracket enforces neither, so the binding records neither
+        // rather than a contract it would not honour. Only the token cap,
+        // which the one-shot does enforce, survives.
+        let mut agents = AgentsConfig::default();
+        agents.triage.max_total_tokens = Some(50_000);
+        agents.triage.max_turns = Some(8);
+        agents.triage.execution_deadline_seconds = Some(120);
+
+        let derived = derive_stage_definition(TaskType::Triage, &a_spec(), &hashes(None), &agents)
+            .expect("derives");
+        assert_eq!(derived.executor, StageExecutorKind::OneShot);
+        assert_eq!(derived.budgets.max_total_tokens, Some(50_000));
+        assert_eq!(
+            derived.budgets.max_turns, None,
+            "a one-shot records no turn cap it would not enforce",
+        );
+        assert_eq!(
+            derived.budgets.execution_deadline_seconds, None,
+            "a one-shot records no deadline it would not enforce",
         );
     }
 
