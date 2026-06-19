@@ -495,11 +495,7 @@ impl AgentDriverTaskRepository for PgAgentDriverTaskRepository {
         // The inner SELECT ... FOR UPDATE is the locked-unclaimed guard:
         // the row is locked before the state write, and a claimed row
         // (token held by a live worker) is never selected.
-        let terminal: Vec<String> = AgentDriverTaskState::ALL
-            .iter()
-            .filter(|state| state.is_terminal())
-            .map(|state| format!("'{}'", state.as_str()))
-            .collect();
+        let terminal = terminal_driver_state_literals().join(", ");
         let sql = format!(
             "WITH target AS ( \
                  SELECT id FROM agent_driver_tasks \
@@ -512,7 +508,6 @@ impl AgentDriverTaskRepository for PgAgentDriverTaskRepository {
                  completed_at = now(), updated_at = now() \
              FROM target \
              WHERE t.id = target.id",
-            terminal = terminal.join(", "),
         );
         let result = sqlx::query(&sql)
             .bind(id.inner())
@@ -526,6 +521,19 @@ impl AgentDriverTaskRepository for PgAgentDriverTaskRepository {
 
         Ok(result.rows_affected())
     }
+}
+
+/// The quoted SQL literals for the terminal driver-task states, derived
+/// from `ALL` so a new state joins the set by construction. Interpolated,
+/// not bound, so the planner matches a partial index's literal predicate;
+/// the single source the disposal and the sweep's orphan and stuck-relating
+/// scans share.
+pub(super) fn terminal_driver_state_literals() -> Vec<String> {
+    AgentDriverTaskState::ALL
+        .iter()
+        .filter(|state| state.is_terminal())
+        .map(|state| format!("'{}'", state.as_str()))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

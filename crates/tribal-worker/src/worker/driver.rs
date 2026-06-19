@@ -434,8 +434,9 @@ impl Worker {
                 // hand-back cannot wake it and a reclaim would re-drive the
                 // dead child forever, each cycle a fresh model call.
                 // Dead-letter the driver task to terminate the loop; the
-                // orphaned child is left for a sweep, but no further spend
-                // accrues.
+                // now-terminal driver task makes the still-live child an
+                // orphan the cancel cascade's janitor converges, so no
+                // further spend accrues.
                 self.dispose_driver_task(task, message).await;
             } else {
                 tracing::warn!(

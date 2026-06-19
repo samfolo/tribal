@@ -14,13 +14,16 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
-    AgentBindingVersionId, AgentDriverTaskId, AgentDriverTaskState, AgentThread, AgentThreadId,
-    AgentThreadStatus, AgentThreadSuspension, AgentThreadTerminal, ExecutionSpend, JobId,
-    PrincipalId, TaskId, TaskType,
+    AgentBindingVersionId, AgentDriverTaskId, AgentThread, AgentThreadId, AgentThreadStatus,
+    AgentThreadSuspension, AgentThreadTerminal, ExecutionSpend, JobId, PrincipalId, TaskId,
+    TaskType,
 };
 use typed_builder::TypedBuilder;
 
-use super::common::{columns::Columns, constraint::try_into_unique_violation};
+use super::{
+    agent_driver_task::terminal_driver_state_literals,
+    common::{columns::Columns, constraint::try_into_unique_violation},
+};
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
@@ -340,11 +343,12 @@ pub trait AgentThreadRepository {
         requested_by: &str,
     ) -> Result<u64, DbError>;
 
-    /// Records cancellation intents on non-terminal threads whose parent is
-    /// terminal, the sweep's orphan janitor: the convergent half of the
-    /// §10.3 cascade that heals a crash between a parent's terminal commit
-    /// and its fast-path cascade. Rows are locked with `SKIP LOCKED`.
-    /// Returns the count written.
+    /// Records cancellation intents on non-terminal threads whose only
+    /// resolver has gone terminal: the parent (the convergent half of the
+    /// §10.3 cascade, healing a crash between a parent's terminal commit and
+    /// its fast-path cascade) or the thread's own driver task (a deferred
+    /// death that could not wake an unmodelled-state parent). Rows are locked
+    /// with `SKIP LOCKED`. Returns the count written.
     ///
     /// # Errors
     ///
@@ -743,11 +747,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         // check rides the driving task rather than the thread row, which
         // carries no job id.
         let thread_terminal = terminal_status_literals();
-        let driver_terminal: Vec<String> = AgentDriverTaskState::ALL
-            .iter()
-            .filter(|state| state.is_terminal())
-            .map(|state| format!("'{}'", state.as_str()))
-            .collect();
+        let driver_terminal = terminal_driver_state_literals();
         let sql = format!(
             "SELECT {COLUMNS} FROM agent_threads \
              WHERE pipeline_stage = 'relation' \
@@ -822,19 +822,27 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         limit: u32,
         requested_by: &str,
     ) -> Result<u64, DbError> {
-        // The CTE locks the orphan rows it will write under `SKIP LOCKED`,
-        // so concurrent sweeps never contend; the terminal sets are
-        // interpolated literals derived from `ALL`, the single-source
-        // contract every status predicate here keeps.
-        let terminal = terminal_status_literals();
-        let terminal = terminal.join(", ");
+        // A non-terminal thread is orphaned when its only resolver has gone
+        // terminal: its parent (the §10.3 cascade), or its own driver task
+        // (a deferred death that dead-lettered the task but could not wake an
+        // unmodelled-state parent, leaving the child for the janitor rather
+        // than a sweep that does not exist). Either way no live actor will
+        // resolve it, so the intent is written and the cancel fallback
+        // disposes it. The CTE locks only the child rows it writes under
+        // `SKIP LOCKED`; the terminal sets are interpolated literals derived
+        // from `ALL`, the single-source contract every status predicate here
+        // keeps.
+        let thread_terminal = terminal_status_literals().join(", ");
+        let driver_terminal = terminal_driver_state_literals().join(", ");
         let sql = format!(
             "WITH orphan AS ( \
                  SELECT child.id FROM agent_threads child \
-                 JOIN agent_threads parent ON parent.id = child.parent_thread_id \
-                 WHERE parent.status IN ({terminal}) \
-                   AND child.cancel_requested_at IS NULL \
-                   AND child.status NOT IN ({terminal}) \
+                 LEFT JOIN agent_threads parent ON parent.id = child.parent_thread_id \
+                 LEFT JOIN agent_driver_tasks dt ON dt.id = child.driver_task_id \
+                 WHERE child.cancel_requested_at IS NULL \
+                   AND child.status NOT IN ({thread_terminal}) \
+                   AND (parent.status IN ({thread_terminal}) \
+                        OR dt.state IN ({driver_terminal})) \
                  ORDER BY child.updated_at \
                  LIMIT $1 \
                  FOR UPDATE OF child SKIP LOCKED \
