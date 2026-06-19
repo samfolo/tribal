@@ -294,10 +294,39 @@ fn search_failure(tool: &str, context: &str, source: DbError) -> ToolFailure {
     db_failure(context, &source)
 }
 
-/// A cursor-paginated semantic search whose rendered page always fits the
-/// tool's size bound (oversized pages re-run for fewer rows), so the result
-/// the model reads and the provenance harvested from it are one whole, valid
-/// page rather than a truncated one a re-parse would silently mangle.
+/// How a search page renders an item's content: in full, or elided to a
+/// marker when the item's full content alone exceeds the page's size bound.
+/// The item's id, score, and the page cursor ride the page either way, so an
+/// elided item stays citable and the page stays parseable, where a truncated
+/// result would drop the item from provenance entirely.
+#[derive(Clone, Copy)]
+pub(crate) enum ContentRendering {
+    Full,
+    Elided,
+}
+
+impl ContentRendering {
+    /// The content a page carries under this rendering. `Full` is the content
+    /// unchanged, so a renderer applies this to every item unconditionally
+    /// rather than branching on the mode itself.
+    pub(crate) fn apply(self, content: &str) -> String {
+        match self {
+            Self::Full => content.to_owned(),
+            Self::Elided => format!(
+                "[content omitted: {} bytes exceed the search page bound; read it in full \
+                 with read_knowledge_item]",
+                content.len(),
+            ),
+        }
+    }
+}
+
+/// A cursor-paginated semantic search whose rendered page fits the tool's
+/// size bound: an oversized page re-runs for fewer rows, and a lone result
+/// still over the bound is rendered [`ContentRendering::Elided`] (its id,
+/// score, and the cursor preserved), so the page the model reads and the
+/// provenance harvested from it stay one whole, valid page rather than a
+/// truncated one a re-parse would silently mangle.
 async fn paged_search_within_bound<P, R>(
     conn: &mut PgConnection,
     tool: &str,
@@ -308,20 +337,29 @@ async fn paged_search_within_bound<P, R>(
 ) -> Result<ToolOutcome, ToolFailure>
 where
     P: Serialize,
-    R: Fn(&SemanticSearchResponse) -> P,
+    R: Fn(&SemanticSearchResponse, ContentRendering) -> P,
 {
     let bound = bound as usize;
+    let serialise = |page: &P| {
+        serde_json::to_string(page).map_err(|source| ToolFailure::System {
+            context: format!("{context}: {source}"),
+        })
+    };
     loop {
         let response = PgKnowledgeItemRepository
             .semantic_search(conn, &params)
             .await
             .map_err(|source| search_failure(tool, context, source))?;
-        let page =
-            serde_json::to_string(&render(&response)).map_err(|source| ToolFailure::System {
-                context: format!("{context}: {source}"),
-            })?;
-        if page.len() <= bound || params.limit <= 1 {
+        let page = serialise(&render(&response, ContentRendering::Full))?;
+        if page.len() <= bound {
             return Ok(ToolOutcome { content: page });
+        }
+        if params.limit <= 1 {
+            // A single result's content alone exceeds the bound: eliding it
+            // keeps the page parseable and the item citable, where a trimmed
+            // result would lose its provenance to the error path.
+            let elided = serialise(&render(&response, ContentRendering::Elided))?;
+            return Ok(ToolOutcome { content: elided });
         }
         params.limit /= 2;
     }
