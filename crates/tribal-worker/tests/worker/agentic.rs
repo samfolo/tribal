@@ -89,7 +89,7 @@ async fn seed_loop_prompts(conn: &mut sqlx::PgConnection) -> FixedAgenticPrompts
 fn loop_agents_config() -> tribal_config::AgentsConfig {
     let mut agents = tribal_config::AgentsConfig::default();
     agents.triage.executor = tribal_config::ExecutorChoice::Loop;
-    agents.triage.verifier = Some(tribal_config::VerifierConfig { enabled: false });
+    agents.triage.verifier = Some(false);
     agents
 }
 
