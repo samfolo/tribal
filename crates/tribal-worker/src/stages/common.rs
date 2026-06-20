@@ -467,26 +467,35 @@ impl Worker {
             delay_seconds: DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS,
             bound: DEFAULT_AGENTIC_RECHECK_BOUND,
         };
-        match decide_admission(conn, thread, &budgets, recheck, carried)
+        let decision = decide_admission(conn, thread, &budgets, recheck, carried)
             .await
-            .map_err(|source| map_runtime_error(stage, "admitting the call", source))?
-        {
+            .map_err(|source| map_runtime_error(stage, "admitting the call", source))?;
+        self.metrics()
+            .record_agent_budget_admission(decision.label());
+        match decision {
             AdmissionDecision::Proceed => Ok(false),
             AdmissionDecision::Suspend { unchanged_rechecks } => {
                 let wake_at = chrono::Utc::now()
                     + chrono::Duration::seconds(i64::from(recheck.delay_seconds));
+                let suspension = AgentThreadSuspension::BudgetExhaustion { unchanged_rechecks };
                 let outcome = suspend_stage_thread(
                     conn,
                     thread,
                     task.id(),
                     claim_token,
-                    &AgentThreadSuspension::BudgetExhaustion { unchanged_rechecks },
+                    &suspension,
                     Some(wake_at),
                 )
                 .await
                 .map_err(|source| map_runtime_error(stage, "suspending on the budget", source))?;
-                if matches!(outcome, SuspendOutcome::CancelIntervened) {
-                    self.dispose_intervened(task, thread).await?;
+                match outcome {
+                    SuspendOutcome::Suspended => {
+                        self.metrics()
+                            .record_agent_suspension(suspension.reason_label());
+                    }
+                    SuspendOutcome::CancelIntervened => {
+                        self.dispose_intervened(task, thread).await?;
+                    }
                 }
                 Ok(true)
             }

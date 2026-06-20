@@ -361,8 +361,10 @@ pub enum AdmissionDecision {
 }
 
 impl AdmissionDecision {
-    /// The telemetry label for a pre-call admission decision.
-    fn label(&self) -> &'static str {
+    /// The telemetry label for a pre-call admission decision, shared by the
+    /// loop and the one-shot bracket so both count the same wire strings.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
         match self {
             Self::Proceed => span_attrs::BUDGET_DECISION_ADMITTED,
             Self::Suspend { .. } => span_attrs::BUDGET_DECISION_SUSPEND,
