@@ -13,15 +13,17 @@ use tribal_domain::{
 
 use super::{
     CandidateOutcome, RelationPromptContext, SimilarItemContext, SimilarItemDecisionContext,
-    VerifierConsideredItem, VerifierSubmissionContext, extraction_user_context,
+    VerifierConsideredItem, VerifierEndpoint, VerifierRelationEdge, VerifierSubmissionContext,
+    extraction_user_context,
     legends::SimilarityBand,
-    loop_user_context, relation_user_context, triage_user_context,
+    loop_user_context, relation_user_context, relation_verifier_user_context, triage_user_context,
     variables::{
         extraction_system_context, inject_validation_defaults, relation_system_context,
-        triage_system_context,
+        relation_verifier_system_context, triage_system_context,
     },
     verifier_user_context,
 };
+use crate::parsing::IngestionRelationKind;
 
 /// Builds a [`tera::Context`] matching the production context shape for
 /// the given (stage, role) pair.
@@ -44,7 +46,7 @@ pub fn synthetic_validation_context(
 ) -> tera::Context {
     let mut ctx = match class {
         PromptClass::Loop => loop_validation_context(stage, role),
-        PromptClass::Verifier => verifier_validation_context(role),
+        PromptClass::Verifier => verifier_validation_context(stage, role),
         PromptClass::OneShot => one_shot_validation_context(stage, role),
     };
 
@@ -148,10 +150,21 @@ fn relation_loop_validation_context(role: PromptRole) -> tera::Context {
     }
 }
 
-/// The verifier's synthetic contexts: the system prompt is static, the
-/// user prompt consumes the same production builder the submission
+/// The verifier's synthetic contexts, by stage: triage reviews a
+/// classification, relation reviews a set of edges. Extraction has no
+/// verifier slot in the vocabulary, so its arm is never reached.
+fn verifier_validation_context(stage: PromptStage, role: PromptRole) -> tera::Context {
+    match stage {
+        PromptStage::Triage => triage_verifier_validation_context(role),
+        PromptStage::Relation => relation_verifier_validation_context(role),
+        PromptStage::Extraction => tera::Context::new(),
+    }
+}
+
+/// The triage verifier's synthetic contexts: the system prompt is static,
+/// the user prompt consumes the same production builder the submission
 /// pipeline renders through, so a variable added there is reflected here.
-fn verifier_validation_context(role: PromptRole) -> tera::Context {
+fn triage_verifier_validation_context(role: PromptRole) -> tera::Context {
     match role {
         PromptRole::System => tera::Context::new(),
         PromptRole::User => {
@@ -175,6 +188,30 @@ fn verifier_validation_context(role: PromptRole) -> tera::Context {
             };
 
             verifier_user_context(&candidate, &submission, &[considered])
+        }
+    }
+}
+
+/// The relation verifier's synthetic contexts: the system prompt renders the
+/// relation-kind legend, the user prompt the edges-under-review shape through
+/// the same production builder the submission pipeline renders through.
+fn relation_verifier_validation_context(role: PromptRole) -> tera::Context {
+    match role {
+        PromptRole::System => relation_verifier_system_context(),
+        PromptRole::User => {
+            let endpoint = |content: &str| VerifierEndpoint {
+                item_id: KnowledgeItemId::new().to_string(),
+                kind: KnowledgeKind::Fact,
+                content: content.to_owned(),
+            };
+            let edge = VerifierRelationEdge {
+                relation_type: IngestionRelationKind::Supports,
+                justification: Some("x".to_owned()),
+                source: endpoint("x"),
+                target: endpoint("y"),
+            };
+
+            relation_verifier_user_context(&[edge])
         }
     }
 }
@@ -267,7 +304,7 @@ mod tests {
     /// context. Mirrors the server's hot-reload validation path.
     #[test]
     fn test_synthetic_context_renders_all_embedded_defaults() {
-        let pairs: [(PromptStage, PromptClass, PromptRole, &str); 14] = [
+        let pairs: [(PromptStage, PromptClass, PromptRole, &str); 16] = [
             (
                 PromptStage::Extraction,
                 PromptClass::OneShot,
@@ -351,6 +388,18 @@ mod tests {
                 PromptClass::Verifier,
                 PromptRole::User,
                 include_str!("../../../../prompts/triage/verifier_user.tera"),
+            ),
+            (
+                PromptStage::Relation,
+                PromptClass::Verifier,
+                PromptRole::System,
+                include_str!("../../../../prompts/relation/verifier_system.tera"),
+            ),
+            (
+                PromptStage::Relation,
+                PromptClass::Verifier,
+                PromptRole::User,
+                include_str!("../../../../prompts/relation/verifier_user.tera"),
             ),
         ];
         for (stage, class, role, content) in &pairs {

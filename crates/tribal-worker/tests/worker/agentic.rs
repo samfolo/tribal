@@ -94,10 +94,12 @@ fn loop_agents_config() -> tribal_config::AgentsConfig {
 }
 
 /// The loop config for relation: relation on the loop executor, triage
-/// left one-shot so the seeded job reaches an agentic relation stage.
+/// left one-shot so the seeded job reaches an agentic relation stage. The
+/// verifier is off here so the config exercises only the loop's commit path.
 fn relation_loop_agents_config() -> tribal_config::AgentsConfig {
     let mut agents = tribal_config::AgentsConfig::default();
     agents.relation.executor = tribal_config::ExecutorChoice::Loop;
+    agents.relation.verifier = Some(false);
     agents
 }
 

@@ -61,8 +61,9 @@ impl ReadJobContextTool {
             .name(JOB_CONTEXT_NAME.to_owned())
             .description(
                 "Read this ingestion job's extraction batch: every candidate it produced, \
-                 with the batch index under triage named. Use it to spot near-duplicates \
-                 arriving together in the same ingest."
+                 with the batch index under triage named, to spot near-duplicates arriving \
+                 together in the same ingest. Optional: reach for it only when a sibling \
+                 candidate looks like the same claim."
                     .to_owned(),
             )
             .input_schema(serde_json::json!({
@@ -208,8 +209,8 @@ impl ReadSiblingThreadsTool {
             .name(SIBLING_THREADS_NAME.to_owned())
             .description(
                 "List this job's other agent threads, or read one thread's record log a page \
-                 at a time by passing its thread_id (resume with the returned next_from_seq). \
-                 Use it to see what earlier stages observed and decided."
+                 at a time by passing its thread_id (resume with the returned next_from_seq), \
+                 to see what earlier stages observed and decided. Optional and rarely needed."
                     .to_owned(),
             )
             .input_schema(serde_json::json!({

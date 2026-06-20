@@ -34,11 +34,11 @@ use super::{
 };
 use crate::{
     common::PARSE_PREVIEW_LENGTH,
-    definition::current_stage_budgets,
+    definition::{current_stage_budgets, verifier_definition},
     error::{STAGE_RELATION, StageError},
     parsing::{RelationSubmission, RelationSubmissionEdge},
     prompt::{assemble_relation_loop_opening, narrow_temperature},
-    stages::RelationSubmissionPipeline,
+    stages::{RelationSubmissionPipeline, RelationVerifierContext},
     tools::{RelationToolset, build_relation_registry, submit_relations_descriptor},
     worker::{Worker, heartbeat::WorkerHeartbeatPump, map_runtime_error},
 };
@@ -113,7 +113,11 @@ impl Worker {
 
             let registry =
                 self.relation_tool_registry(job, &active_profile, attribution.clone(), deadline)?;
-            let pipeline = RelationSubmissionPipeline::new(relation_citable_seed(&ctx));
+            let verifier = self
+                .relation_verifier_context(&stage_thread.binding)
+                .await?;
+            let pipeline = RelationSubmissionPipeline::new(relation_citable_seed(&ctx))
+                .with_verifier(verifier);
             let submit_descriptor = submit_relations_descriptor();
             let parameters = &stage_thread.binding.definition().parameters;
 
@@ -378,6 +382,80 @@ impl Worker {
         let user = resolve_relation_loop_prompt(&mut conn, PromptRole::User, user_hash).await?;
         Ok(RecordedLoopPrompts { system, user })
     }
+
+    /// Resolves the verifier the recorded binding names, with the one-shot
+    /// verifier binding the child runs under on the parent's model and
+    /// endpoint. `None` when the binding records no verifier, leaving an
+    /// accepted submission to commit on the validators alone.
+    ///
+    /// The verifier follows the parent's recorded binding, not live
+    /// configuration: its prompts are part of the parent's hash, so a
+    /// resumed parent runs the verifier it was admitted with, and a config
+    /// change between admission and resume cannot add, drop, or re-prompt
+    /// it. Each launch pins its own verifier binding on the child it creates.
+    async fn relation_verifier_context(
+        &self,
+        binding: &AgentBinding,
+    ) -> Result<Option<RelationVerifierContext>, StageError> {
+        let Some(verifier) = binding.definition().verifier.clone() else {
+            return Ok(None);
+        };
+
+        let mut conn = self
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| StageError::Database {
+                stage: STAGE_RELATION.into(),
+                context: "acquiring connection for the verifier binding".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "pool acquire".into(),
+                    source: e,
+                },
+            })?;
+
+        let system = resolve_relation_verifier_prompt(
+            &mut conn,
+            PromptRole::System,
+            &verifier.system_prompt_hash,
+        )
+        .await?;
+        let user = resolve_relation_verifier_prompt(
+            &mut conn,
+            PromptRole::User,
+            &verifier.user_prompt_hash,
+        )
+        .await?;
+        let definition = verifier_definition(
+            binding.definition(),
+            system.content_hash().to_owned(),
+            user.content_hash().to_owned(),
+        );
+        let verifier_binding = tribal_agent_runtime::resolve_binding(&mut conn, &definition)
+            .await
+            .map_err(|source| {
+                map_runtime_error(STAGE_RELATION, "resolving the verifier binding", source)
+            })?;
+
+        Ok(Some(RelationVerifierContext {
+            binding_version_id: verifier_binding.id(),
+            system_template: system.content().to_owned(),
+            system_prompt_version_id: system.id(),
+            user_template: user.content().to_owned(),
+            user_prompt_version_id: user.id(),
+        }))
+    }
+}
+
+/// Resolves one recorded relation verifier prompt by its slot and content
+/// hash, the hash the parent binding pins, so the verifier runs exactly the
+/// rubric the binding names.
+async fn resolve_relation_verifier_prompt(
+    conn: &mut sqlx::PgConnection,
+    role: PromptRole,
+    hash: &str,
+) -> Result<PromptVersion, StageError> {
+    resolve_recorded_relation_prompt(conn, PromptClass::Verifier, role, hash).await
 }
 
 /// Resolves one recorded relation loop prompt by its slot and content hash.
@@ -386,18 +464,29 @@ async fn resolve_relation_loop_prompt(
     role: PromptRole,
     hash: &str,
 ) -> Result<PromptVersion, StageError> {
+    resolve_recorded_relation_prompt(conn, PromptClass::Loop, role, hash).await
+}
+
+/// Resolves one recorded relation prompt by its class, role, and the content
+/// hash the binding pins.
+async fn resolve_recorded_relation_prompt(
+    conn: &mut sqlx::PgConnection,
+    class: PromptClass,
+    role: PromptRole,
+    hash: &str,
+) -> Result<PromptVersion, StageError> {
     PgPromptVersionRepository
-        .find_by_slot_and_hash(conn, PromptStage::Relation, PromptClass::Loop, role, hash)
+        .find_by_slot_and_hash(conn, PromptStage::Relation, class, role, hash)
         .await
         .map_err(|source| StageError::Database {
             stage: STAGE_RELATION.into(),
-            context: "resolving a recorded loop prompt".into(),
+            context: "resolving a recorded prompt".into(),
             source,
         })?
         .ok_or_else(|| StageError::BindingDerivation {
             stage: STAGE_RELATION.into(),
             context: format!(
-                "no stored relation loop {} prompt matches the binding's hash",
+                "no stored relation {class:?} {} prompt matches the binding's hash",
                 role.as_str(),
             ),
         })
