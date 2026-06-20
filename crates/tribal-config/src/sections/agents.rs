@@ -17,8 +17,7 @@ use crate::validation::{ConfigPath, Diagnostics, ValidationError};
 
 /// Default cap on an agentic thread's turns. A runaway guard, not a thinking
 /// budget: set high enough that only a model stuck in a loop reaches it, so
-/// the token cap is the real economic limit. The remaining turns are surfaced
-/// to the model each turn so it self-paces rather than being cut off blind.
+/// the token cap is the real economic limit.
 pub const DEFAULT_AGENTIC_MAX_TURNS: u32 = 25;
 
 /// Default cap on an agentic thread's token spend: input, output, and
