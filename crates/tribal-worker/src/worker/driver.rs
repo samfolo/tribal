@@ -1,16 +1,14 @@
 //! The driver loop: a sibling worker loop executing the driver family.
 //!
-//! It claims `Drive` tasks, executes their child threads as one-shots
-//! under the driver-claim guard and a driver-task heartbeat, and hands
-//! each child's result back to its parent through the child-terminal
-//! transaction. A child's permanent failure crosses into the parent as
-//! deferred death. The `DeferredTool` kind has no producer in this
-//! release: the claim loop matches it exhaustively and dead-letters it
-//! loudly, so an unmodelled enqueue can never sit unexecuted in silence.
-//!
-//! Reclaim mirrors the stage families': a lapsed-heartbeat claim is
-//! re-queued within its attempt budget, and the final attempt drives the
-//! deferred-death transaction so the child never strands its lineage.
+//! It claims `Drive` tasks, executes their child threads as one-shots under
+//! the driver-claim guard and a driver-task heartbeat, and hands each child's
+//! result back to its parent through the child-terminal transaction. A
+//! child's permanent failure crosses into the parent as deferred death.
+//! Reclaim mirrors the stage families': a lapsed-heartbeat claim is re-queued
+//! within its attempt budget, and the final attempt drives the deferred-death
+//! transaction so the child never strands its lineage.
+
+use std::sync::Arc;
 
 use tribal_agent_runtime::{
     AgentRuntimeError, ChildTerminalOutcome, ParentResolution, RenderedConversation,
@@ -33,7 +31,11 @@ use tribal_inference::{
 use crate::{
     error::StageError,
     prompt::narrow_temperature,
-    worker::{Worker, heartbeat::spawn_driver_heartbeat},
+    worker::{
+        Worker,
+        heartbeat::spawn_driver_heartbeat,
+        thread::{guard_binding, stage_spec},
+    },
 };
 
 /// How many driver tasks one cycle claims and executes.
@@ -42,12 +44,15 @@ const DRIVER_CLAIM_BATCH: u32 = 4;
 /// The claimer identity recorded on a driver task's lease.
 const DRIVER_WORKER: &str = "driver-loop";
 
+/// The deferred-death message for a child the cancellation cascade reached
+/// before the driver could run it.
+const CHILD_CASCADE_CANCELLED: &str =
+    "the parent's cancellation cascaded to this child before it ran";
+
 impl Worker {
-    /// Drives the driver family until cancellation: each cycle reclaims
-    /// stale leases, then claims and executes a batch of pending tasks.
-    /// Sibling to the reclaim and reindex loops; [`Worker::run`] spawns
-    /// it, and it is a standalone entry point for tests and tooling.
-    pub async fn run_driver_loop(&self) {
+    /// Drives the driver family until cancellation: each cycle reclaims stale
+    /// leases, then claims and executes a batch of pending tasks.
+    pub async fn run_driver_loop(self: &Arc<Self>) {
         let mut ticker = tokio::time::interval(self.config().poll_interval());
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ticker.tick().await; // skip the immediate first tick
@@ -63,8 +68,11 @@ impl Worker {
         }
     }
 
-    /// Claims and executes one batch of pending driver tasks.
-    async fn drive_pending_tasks(&self) {
+    /// Claims one batch of pending driver tasks and drives them concurrently:
+    /// a serial lane would stall relation's terminal hand-back, on the
+    /// job-completion critical path, behind every other stage's child. The
+    /// claim count bounds concurrency; the gateway's permits bound inference.
+    async fn drive_pending_tasks(self: &Arc<Self>) {
         let claimed = {
             let Ok(mut conn) = self.pool().acquire().await else {
                 tracing::warn!("driver loop pool acquire failed");
@@ -82,21 +90,30 @@ impl Worker {
             }
         };
 
+        let mut batch = tokio::task::JoinSet::new();
         for task in claimed {
-            match task.kind() {
-                AgentDriverTaskKind::Drive => self.drive_child(&task).await,
-                // No v1 producer enqueues a deferred tool; matching it
-                // exhaustively and dead-lettering loudly means an
-                // unmodelled enqueue surfaces, never sits unexecuted.
-                AgentDriverTaskKind::DeferredTool => {
-                    tracing::error!(
-                        driver_task_id = %task.id(),
-                        "claimed a deferred-tool driver task, which no producer creates in this \
-                         release; dead-lettering it",
-                    );
-                    self.dispose_driver_task(&task, "deferred-tool execution is unsupported")
-                        .await;
+            let worker = Arc::clone(self);
+            batch.spawn(async move {
+                match task.kind() {
+                    AgentDriverTaskKind::Drive => worker.drive_child(&task).await,
+                    AgentDriverTaskKind::DeferredTool => {
+                        tracing::error!(
+                            driver_task_id = %task.id(),
+                            "claimed a deferred-tool driver task, which has no executor; \
+                             dead-lettering it",
+                        );
+                        worker
+                            .dispose_driver_task(&task, "deferred-tool execution is unsupported")
+                            .await;
+                    }
                 }
+            });
+        }
+        // Tasks handle their own errors and return unit, so a join error is a
+        // panic or cancellation: surface it rather than lose it silently.
+        while let Some(joined) = batch.join_next().await {
+            if let Err(error) = joined {
+                tracing::error!(error = %error, "a driver batch task failed to complete");
             }
         }
     }
@@ -124,9 +141,8 @@ impl Worker {
         }
     }
 
-    /// The child's one-shot: adopt its committed conversation, call the
-    /// model under thread-keyed attribution, and commit the child
-    /// terminal handing the result back to the parent.
+    /// Adopts the child's committed conversation, calls the model, and commits
+    /// the terminal hand-back to its parent.
     async fn execute_child(
         &self,
         task: &AgentDriverTask,
@@ -136,6 +152,18 @@ impl Worker {
         let mut conn = self.acquire_driver_conn().await?;
 
         let child = self.run_child_thread(&mut conn, task, claim_token).await?;
+
+        // A cancellation intent supersedes the run: the cascade (or an
+        // operator) marked this child while it queued. Hand the
+        // cancellation back through deferred death rather than spend a paid
+        // model call; a parent already terminal discards it under the
+        // orphan guard.
+        if child.cancel_requested_at().is_some() {
+            drop(conn);
+            self.deferred_death(task, CHILD_CASCADE_CANCELLED).await;
+            return Ok(());
+        }
+
         let parent_id = child
             .parent_thread_id()
             .ok_or_else(|| StageError::Runtime {
@@ -169,6 +197,16 @@ impl Worker {
                     },
                 )
             })?;
+        // The gateway routes the call by the child's stage, so a config
+        // edit that moved the stage's route after the child was admitted
+        // would run it under an endpoint its recorded binding does not
+        // name; fail terminal before the call, as the stage path does.
+        guard_binding(
+            child.pipeline_stage().as_str(),
+            binding.definition(),
+            stage_spec(self.stage_specs(), child.pipeline_stage()),
+        )?;
+
         let request = request_from(&conversation, &binding.definition().parameters);
         let attribution = child_attribution(&child, task.attempt());
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -271,7 +309,7 @@ impl Worker {
         Ok(child)
     }
 
-    /// Reads the parent's launching suspension from its durable log — the
+    /// Reads the parent's launching suspension from its durable log. The
     /// record persists even when a cancellation has cleared the live
     /// suspension column, so a child resolving into a terminal parent
     /// still finds the call it answers.
@@ -380,8 +418,9 @@ impl Worker {
                 // hand-back cannot wake it and a reclaim would re-drive the
                 // dead child forever, each cycle a fresh model call.
                 // Dead-letter the driver task to terminate the loop; the
-                // orphaned child is left for a sweep, but no further spend
-                // accrues.
+                // now-terminal driver task makes the still-live child an
+                // orphan the cancel cascade's janitor converges, so no
+                // further spend accrues.
                 self.dispose_driver_task(task, message).await;
             } else {
                 tracing::warn!(
@@ -524,6 +563,7 @@ fn request_from(
 fn child_attribution(child: &AgentThread, attempt: u32) -> UsageAttribution {
     UsageAttribution {
         owner: UsageOwner::Thread {
+            job_id: child.job_id(),
             thread_id: child.id(),
             record_id: None,
             attempt: clamp_to_i32(attempt),

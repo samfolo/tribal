@@ -7,8 +7,7 @@
 //! Zero-row CAS misses, deadlock aborts, and serialisation failures are
 //! transient: a caller treats them as lost ownership or leaves
 //! convergence to the next sweep cycle, and a terminal status ends every
-//! path. No production caller suspends a thread yet; these transitions
-//! are exercised by the runtime's own tests until one does.
+//! path.
 
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -129,7 +128,7 @@ pub enum SuspendOutcome {
 /// Every resolution locks the thread row before evaluating state, so two
 /// concurrent resolutions cannot both judge themselves final without one
 /// waking the thread. An arrival at a terminal thread is recorded and
-/// discarded — it never re-enqueues work.
+/// discarded: it never re-enqueues work.
 ///
 /// # Errors
 ///

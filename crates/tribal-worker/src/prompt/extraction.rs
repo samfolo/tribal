@@ -78,6 +78,38 @@ pub(crate) fn assemble_extraction_prompt(
     })
 }
 
+/// Renders the extraction loop's opening: the system prompt and the initial
+/// user message carrying the raw input, under one renderer so both share the
+/// turn's pinned nonce.
+///
+/// # Errors
+///
+/// Returns [`StageError::TemplateRender`] if either template cannot be
+/// rendered.
+pub(crate) fn assemble_extraction_loop_opening(
+    system_template: &str,
+    user_template: &str,
+    raw_input: &str,
+    tag_registry: &[TagRegistryEntry],
+) -> Result<(String, String), StageError> {
+    let renderer = PromptRenderer::new();
+
+    let rendered_system = renderer.render(
+        system_template,
+        extraction_system_context(),
+        "rendering the extraction loop system prompt",
+    )?;
+
+    let tags: Vec<&str> = tag_registry.iter().map(TagRegistryEntry::tag).collect();
+    let rendered_user = renderer.render(
+        user_template,
+        extraction_user_context(raw_input, &tags),
+        "rendering the extraction loop user prompt",
+    )?;
+
+    Ok((rendered_system, rendered_user))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

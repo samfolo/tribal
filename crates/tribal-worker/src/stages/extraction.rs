@@ -33,11 +33,8 @@ const HINTS_SERIALISE: &str = "relation hints serialise to JSON";
 
 /// Context assembled before running the extraction stage.
 pub(crate) struct ExtractionContext<'a> {
-    /// The parent job.
     pub job: &'a Job,
-    /// The claimed task.
     pub task: &'a Task,
-    /// The current global tag registry.
     pub tag_registry: Vec<TagRegistryEntry>,
 }
 
@@ -46,33 +43,35 @@ pub(crate) struct ExtractionContext<'a> {
 // ---------------------------------------------------------------------------
 
 impl Worker {
-    /// Runs the extraction stage for a task.
-    ///
-    /// Loads the prompt template and tag registry from the database,
-    /// acquires a semaphore permit, assembles the prompt via Tera,
-    /// calls the LLM, parses the response, caps candidates, and
-    /// builds the stage commit and the response for the thread terminal.
-    ///
-    /// The `deadline` is the absolute instant by which the outer task
-    /// timeout will fire.  Semaphore acquisition uses the remaining
-    /// time budget so that `SemaphoreTimeout` is reported instead of
-    /// a generic `Timeout` when permits are exhausted.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`StageError`] variant matching the failure mode:
-    /// - [`StageError::Database`] for pool/repository failures.
-    /// - [`StageError::SemaphoreTimeout`] if the provider semaphore
-    ///   cannot be acquired within the remaining time budget.
-    /// - [`StageError::TemplateRender`] if the prompt template is invalid.
-    /// - [`StageError::Provider`] if the LLM call fails.
-    /// - [`StageError::Parse`] if the LLM response cannot be parsed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the extraction provider key is not registered in the
-    /// provider registry or if the semaphore is unexpectedly closed.
+    /// Runs the extraction stage for a task, routed by the thread's
+    /// recorded binding: the executor follows the binding, not the current
+    /// configuration, so a resumed thread continues the way it started.
     pub(crate) async fn run_extraction(
+        &self,
+        job: &Job,
+        task: &Task,
+        deadline: tokio::time::Instant,
+        stage_thread: &StageThread,
+        pump: &crate::worker::heartbeat::WorkerHeartbeatPump,
+    ) -> Result<Option<(StageCommit, StageTerminal)>, StageError> {
+        match stage_thread.binding.definition().executor {
+            tribal_domain::StageExecutorKind::OneShot => {
+                self.run_extraction_one_shot(job, task, deadline, stage_thread)
+                    .await
+            }
+            tribal_domain::StageExecutorKind::BuiltInLoop => {
+                self.run_extraction_loop(job, task, deadline, stage_thread, pump)
+                    .await
+            }
+            tribal_domain::StageExecutorKind::ExternalAgent => Err(StageError::BindingDerivation {
+                stage: STAGE_EXTRACTION.into(),
+                context: "the external-agent executor has no runner".into(),
+            }),
+        }
+    }
+
+    /// Runs the one-shot extraction turn for a task.
+    async fn run_extraction_one_shot(
         &self,
         job: &Job,
         task: &Task,
@@ -221,11 +220,11 @@ fn parse_with_diagnostics(
     parse_extraction_response(response).inspect_err(|_| {
         if include_llm_content {
             let preview: String = response.text.chars().take(PARSE_PREVIEW_LENGTH).collect();
-            tracing::debug!(preview = %preview, "parse failure — raw LLM response");
+            tracing::debug!(preview = %preview, "parse failure: raw LLM response");
         } else {
             tracing::debug!(
                 response_length = response.text.len(),
-                "parse failure — response details redacted",
+                "parse failure: response details redacted",
             );
         }
     })

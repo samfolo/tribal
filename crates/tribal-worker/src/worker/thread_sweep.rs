@@ -29,14 +29,23 @@ const SWEEP_BATCH: u32 = 32;
 pub(crate) struct ThreadSweepStats {
     /// Suspended threads woken by an elapsed timer.
     pub(crate) timer_wakes: u32,
+    /// Orphaned descendants of a terminal parent given the cancellation
+    /// intent by the cascade janitor.
+    pub(crate) cascaded: u32,
     /// Threads cancelled through the fallback (unclaimed, intent pending).
     pub(crate) cancelled: u32,
+    /// Stranded relation threads failed: their job had no live resolver.
+    pub(crate) stuck_relating: u32,
 }
 
 impl Worker {
-    /// Runs one availability-sweep cycle: the timer-wake predicate, then
-    /// the cancel-fallback predicate. Best-effort like every sweep — a
-    /// failing predicate warns and leaves convergence to the next cycle.
+    /// Runs one availability-sweep cycle: the timer-wake predicate, the
+    /// orphan-cascade janitor, the cancel-fallback predicate, then the
+    /// stuck-relating predicate. Best-effort like every sweep: a failing
+    /// predicate warns and leaves convergence to the next cycle.
+    ///
+    /// The janitor runs before the cancel fallback so an orphan it marks
+    /// this cycle is disposed the same cycle rather than the next.
     pub(crate) async fn run_thread_sweep(&self) -> ThreadSweepStats {
         let mut stats = ThreadSweepStats::default();
         let Ok(mut conn) = self.pool().acquire().await else {
@@ -45,14 +54,16 @@ impl Worker {
         };
 
         stats.timer_wakes = sweep_timer_wakes(self.agents(), &mut conn).await;
+        stats.cascaded = sweep_orphan_cascade(&mut conn).await;
         stats.cancelled = sweep_cancel_fallback(self, &mut conn).await;
+        stats.stuck_relating = sweep_stuck_relating(self, &mut conn).await;
         stats
     }
 }
 
 /// The timer-wake predicate: suspended threads whose `wake_at` elapsed
-/// get the full resolve transaction — a timer-fired input record, the
-/// running status, and the driving task re-queued.
+/// get the full resolve transaction (a timer-fired input record, the
+/// running status, and the driving task re-queued).
 async fn sweep_timer_wakes(agents: &AgentsConfig, conn: &mut sqlx::PgConnection) -> u32 {
     let due = match PgAgentThreadRepository
         .find_due_timer_wakes(conn, SWEEP_BATCH)
@@ -119,13 +130,41 @@ async fn wake_budgets_basis(
     serde_json::to_value(budgets).unwrap_or(serde_json::Value::Null)
 }
 
+/// The orphan-cascade janitor: a non-terminal thread whose parent is
+/// terminal receives the cancellation intent, the convergent half of the
+/// cancellation cascade. It heals a crash between a parent's terminal
+/// commit and its post-commit fast-path cascade, and stands in for that
+/// fast path on every terminal transition that does not run it. Writing
+/// the intent is all it does; the cancel fallback (next, same cycle)
+/// disposes the unclaimed ones, and a claimed child's driver observes the
+/// intent at its own boundary.
+async fn sweep_orphan_cascade(conn: &mut sqlx::PgConnection) -> u32 {
+    match PgAgentThreadRepository
+        .cascade_cancel_to_orphans(conn, SWEEP_BATCH, coupling::CANCEL_CASCADE_REQUESTED_BY)
+        .await
+    {
+        Ok(count) => {
+            if count > 0 {
+                tracing::info!(
+                    count,
+                    "orphan cascade marked descendants of terminal parents"
+                );
+            }
+            u32::try_from(count).unwrap_or(u32::MAX)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "orphan-cascade scan failed");
+            0
+        }
+    }
+}
+
 /// The cancel-fallback predicate: live threads carrying a durable intent
 /// whose driving task is unclaimed (a suspended thread with no live
 /// worker) get the cancel transaction. A claimed task means a live
 /// worker will observe the intent at its own boundary, so the fallback
-/// skips it. The orphan-spotting janitor that writes intents to
-/// abandoned descendants arrives with the first parent-thread producer;
-/// until then every intent is operator-written.
+/// skips it. Intents are written by an operator, by a parent's
+/// cancellation cascade, or by the orphan janitor above.
 async fn sweep_cancel_fallback(worker: &Worker, conn: &mut sqlx::PgConnection) -> u32 {
     let intents = match PgAgentThreadRepository
         .find_cancel_intents(conn, SWEEP_BATCH)
@@ -166,6 +205,53 @@ async fn sweep_cancel_fallback(worker: &Worker, conn: &mut sqlx::PgConnection) -
         }
     }
     cancelled
+}
+
+/// The stuck-relating predicate: a suspended relation thread whose job is
+/// still relating but whose resolver has died (no live child thread, no
+/// live descendant driver task) gets the disposal seam, failing its
+/// stranded job. Relation is job-terminal with no fan-in, so this is the
+/// one suspension that cannot otherwise converge.
+///
+/// Convergence is normally the driver family reclaiming the verifier
+/// child; this sweep is the authority only when the driver loop itself is
+/// gone, which the liveness predicate is what detects. It shares the same
+/// transaction-composable seam as the cancel fallback, so the job
+/// coupling and its owed notification ride the one disposal.
+async fn sweep_stuck_relating(worker: &Worker, conn: &mut sqlx::PgConnection) -> u32 {
+    let stuck = match PgAgentThreadRepository
+        .find_stuck_relating_threads(conn, SWEEP_BATCH)
+        .await
+    {
+        Ok(stuck) => stuck,
+        Err(e) => {
+            tracing::warn!(error = %e, "stuck-relating scan failed");
+            return 0;
+        }
+    };
+
+    let mut failed = 0;
+    for thread in stuck {
+        match coupling::cancel_thread(conn, &thread).await {
+            Ok(coupling::CancelThreadOutcome::Cancelled { notification }) => {
+                failed += 1;
+                if let Some(notice) = notification {
+                    worker.notify_job_state(notice.job_id, notice.state);
+                }
+                tracing::warn!(
+                    thread_id = %thread.id(),
+                    "stuck-relating sweep failed a stranded job",
+                );
+            }
+            Ok(coupling::CancelThreadOutcome::Skipped) => {
+                tracing::debug!(thread_id = %thread.id(), "stuck-relating sweep skipped");
+            }
+            Err(e) => {
+                tracing::warn!(thread_id = %thread.id(), error = %e, "stuck-relating sweep failed");
+            }
+        }
+    }
+    failed
 }
 
 #[cfg(test)]

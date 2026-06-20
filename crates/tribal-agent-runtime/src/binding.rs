@@ -1,7 +1,7 @@
 //! Binding resolution: content-addressing what a thread runs.
 //!
-//! The hash covers the canonically serialised definition — tool
-//! descriptors included — so a prompt edit, a model change, or a
+//! The hash covers the canonically serialised definition (tool
+//! descriptors included), so a prompt edit, a model change, or a
 //! tool-surface change is a new version even when everything else is
 //! identical. Canonical means compact JSON with fields in declaration
 //! order; the definition's serialisation is pinned byte-for-byte by a

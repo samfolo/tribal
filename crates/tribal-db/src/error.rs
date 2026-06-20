@@ -77,9 +77,49 @@ pub enum DbError {
     },
 }
 
+impl DbError {
+    /// Whether the failure is a transient serialisation or deadlock abort
+    /// that re-running the whole transaction can clear. Postgres raises
+    /// SQLSTATE `40001` (`serialization_failure`) and `40P01`
+    /// (`deadlock_detected`), and rolls the transaction back cleanly in
+    /// both cases, so the caller's bounded retry is safe rather than a
+    /// guess.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        let Self::QueryFailed { source, .. } = self else {
+            return false;
+        };
+        source
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .is_some_and(|code| code == "40001" || code == "40P01")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_non_database_failures_are_not_retryable() {
+        // Only a serialisation or deadlock abort is retryable; a logical
+        // failure re-run identically would fail identically.
+        assert!(
+            !DbError::NotFound {
+                entity: "job",
+                id: "job_x".to_owned(),
+            }
+            .is_retryable()
+        );
+        assert!(
+            !DbError::QueryFailed {
+                context: "fetching".to_owned(),
+                source: sqlx::Error::RowNotFound,
+            }
+            .is_retryable(),
+            "a row-not-found is a logical failure, never a transient abort",
+        );
+    }
 
     #[test]
     fn test_display_query_failed() {

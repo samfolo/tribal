@@ -99,6 +99,10 @@ fn completion_stage_spec(stage: &str, config: &StageInferenceConfig) -> Completi
     CompletionStageSpec {
         provider: config.provider,
         model: config.model.clone(),
+        // The spec keeps the configured spelling so the binding hash is
+        // unchanged by normalisation; the resume-route guard canonicalises
+        // both sides when it compares, and the gateway normalises when it
+        // routes.
         base_url: resolve_base_url(config.provider, config.base_url.as_ref()),
         api_key: api_key_str(config.api_key.as_ref()).to_owned(),
         parameters: effective_stage_parameters(

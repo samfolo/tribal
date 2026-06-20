@@ -279,9 +279,14 @@ pub enum UsageOwner {
         /// The run the embedding belongs to.
         run_id: ReindexRunId,
     },
-    /// A driver-driven thread's execution (a child run): no stage task or
-    /// job to reference, so the thread alone carries the attribution.
+    /// A driver-driven thread's execution (a child run): no stage task to
+    /// reference, so the thread carries the attribution, with its job
+    /// captured at launch so child spend meters to the job without a
+    /// lineage walk.
     Thread {
+        /// The job the child's run belongs to, captured at launch; absent
+        /// for a thread launched outside a pipeline job.
+        job_id: Option<JobId>,
         /// The thread the execution runs under.
         thread_id: AgentThreadId,
         /// The committed record the request produced, attributed after
@@ -301,7 +306,8 @@ impl UsageOwner {
     pub fn job_id(&self) -> Option<JobId> {
         match self {
             Self::Pipeline { job_id, .. } => Some(*job_id),
-            Self::Unowned | Self::Reindex { .. } | Self::Thread { .. } => None,
+            Self::Thread { job_id, .. } => *job_id,
+            Self::Unowned | Self::Reindex { .. } => None,
         }
     }
 
@@ -359,6 +365,7 @@ mod tests {
     fn test_thread_owner_maps_thread_columns_only() {
         let thread_id = AgentThreadId::new();
         let owner = UsageOwner::Thread {
+            job_id: None,
             thread_id,
             record_id: None,
             attempt: 2,
@@ -370,6 +377,21 @@ mod tests {
         assert_eq!(owner.agent_thread_id(), Some(thread_id));
         assert_eq!(owner.agent_thread_record_id(), None);
         assert_eq!(owner.attempt(), 2);
+    }
+
+    #[test]
+    fn test_thread_owner_meters_its_captured_job() {
+        // A child run captures its parent's job at launch, so its spend
+        // meters to the job without referencing a stage task.
+        let job_id = JobId::new();
+        let owner = UsageOwner::Thread {
+            job_id: Some(job_id),
+            thread_id: AgentThreadId::new(),
+            record_id: None,
+            attempt: 0,
+        };
+        assert_eq!(owner.job_id(), Some(job_id));
+        assert_eq!(owner.task_id(), None, "a child has no stage task");
     }
 
     #[test]

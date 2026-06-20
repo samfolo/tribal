@@ -1,16 +1,10 @@
-//! System fingerprint computation: hash derivation and construction.
+//! System fingerprint computation: a content-addressed SHA-256 over the
+//! inference-affecting configuration.
 //!
-//! The system fingerprint captures all inference-affecting configuration
-//! values as a content-addressed SHA-256 hash. Per-stage configuration
-//! (prompts, provider, model, sampling parameters, executor, budgets,
-//! tools) is subsumed by that stage's content-addressed binding version,
-//! derived here through the same derivation the worker uses at claim.
-//! The composite names ingest-time intent: a configuration or prompt
-//! flip between ingest and first claim leaves it naming a binding
-//! version no thread ran, and the thread's recorded binding — not this
-//! composite — is the truth of what executed. The composite adds what no
-//! stage binding carries: the build version, the job-level pipeline
-//! parameters, and the embedding identity with its dimensions.
+//! The composite names ingest-time intent: a configuration or prompt flip
+//! between ingest and first claim leaves it naming a binding version no
+//! thread ran, and the thread's recorded binding (not this composite) is the
+//! truth of what executed.
 
 use std::collections::HashMap;
 
@@ -23,7 +17,9 @@ use tribal_domain::{
     PromptVersionId, TaskType,
 };
 use tribal_inference::{CompletionStageSpec, CompletionStageSpecs, ProviderIdentity};
-use tribal_worker::{DefinitionError, StagePromptHashes, derive_stage_definition};
+use tribal_worker::{
+    DefinitionError, StagePromptHashes, derive_stage_definition, resolve_agentic_prompt_hashes,
+};
 
 use crate::{
     error::{IntoMcpError, McpToolError},
@@ -41,69 +37,64 @@ pub(crate) const MISSING_PROMPT_VERSIONS: &str =
 // PromptContentHashes
 // ---------------------------------------------------------------------------
 
-/// Named prompt content hashes in canonical ordering.
-///
-/// Maps each (stage, role) pair to its content hash, making the
-/// ordering self-documenting and preventing silent ordering bugs
-/// between call sites.
+/// Each stage's prompt content hashes, resolved the way the worker resolves
+/// them at claim so the fingerprint cannot drift from the recorded binding.
 pub(crate) struct PromptContentHashes {
-    pub extraction_system: String,
-    pub extraction_user: String,
-    pub triage_system: String,
-    pub triage_user: String,
-    pub relation_system: String,
-    pub relation_user: String,
-    /// The triage loop pair's `(system, user)` hashes, when the active
-    /// set carries the agentic slots.
-    pub triage_loop: Option<(String, String)>,
+    pub extraction: StagePromptHashes,
+    pub triage: StagePromptHashes,
+    pub relation: StagePromptHashes,
 }
 
 impl PromptContentHashes {
-    /// Constructs content hashes from active prompt version IDs and the
-    /// corresponding `PromptVersion` records looked up from the database.
-    ///
-    /// Returns `None` if any of the 6 required versions is missing.
+    /// Resolves each stage's hashes from the active version IDs and their
+    /// `PromptVersion` records, returning `None` when a required version (a
+    /// one-shot pair, or a slot the stage's executor needs) is absent.
     pub(crate) fn from_active(
         active: &ActivePromptVersions,
         versions: &[PromptVersion],
+        agents: &AgentsConfig,
     ) -> Option<Self> {
         let by_id: HashMap<PromptVersionId, &str> = versions
             .iter()
             .map(|v| (v.id(), v.content_hash()))
             .collect();
 
-        let loop_ids = (
-            active.get_version(PromptStage::Triage, PromptClass::Loop, PromptRole::System),
-            active.get_version(PromptStage::Triage, PromptClass::Loop, PromptRole::User),
-        );
-        let triage_loop = match loop_ids {
-            (Some(system_id), Some(user_id)) => Some((
-                (*by_id.get(&system_id)?).to_owned(),
-                (*by_id.get(&user_id)?).to_owned(),
-            )),
-            _ => None,
+        let stage = |stage: TaskType,
+                     system_id: PromptVersionId,
+                     user_id: PromptVersionId|
+         -> Option<StagePromptHashes> {
+            let agentic =
+                resolve_agentic_prompt_hashes(stage, agents, |prompt_stage, class, role| {
+                    active
+                        .get_version(prompt_stage, class, role)
+                        .and_then(|id| by_id.get(&id))
+                        .map(|hash| (*hash).to_owned())
+                        .ok_or(())
+                })
+                .ok()?;
+            Some(StagePromptHashes {
+                system: by_id.get(&system_id)?.to_string(),
+                user: by_id.get(&user_id)?.to_string(),
+                agentic,
+            })
         };
 
         Some(Self {
-            extraction_system: by_id
-                .get(&active.extraction_system_prompt_version_id)?
-                .to_string(),
-            extraction_user: by_id
-                .get(&active.extraction_user_prompt_version_id)?
-                .to_string(),
-            triage_system: by_id
-                .get(&active.triage_system_prompt_version_id)?
-                .to_string(),
-            triage_user: by_id
-                .get(&active.triage_user_prompt_version_id)?
-                .to_string(),
-            relation_system: by_id
-                .get(&active.relation_system_prompt_version_id)?
-                .to_string(),
-            relation_user: by_id
-                .get(&active.relation_user_prompt_version_id)?
-                .to_string(),
-            triage_loop,
+            extraction: stage(
+                TaskType::Extraction,
+                active.extraction_system_prompt_version_id,
+                active.extraction_user_prompt_version_id,
+            )?,
+            triage: stage(
+                TaskType::Triage,
+                active.triage_system_prompt_version_id,
+                active.triage_user_prompt_version_id,
+            )?,
+            relation: stage(
+                TaskType::Relation,
+                active.relation_system_prompt_version_id,
+                active.relation_user_prompt_version_id,
+            )?,
         })
     }
 }
@@ -114,21 +105,14 @@ impl PromptContentHashes {
 
 /// The boot-static fingerprint inputs.
 ///
-/// The stage specs carry post-reconcile sampling parameters, so the
-/// binding hashes derived from them record the effective request shape;
-/// the embedding identity and pipeline parameters are the inputs no
-/// stage binding subsumes.
+/// The stage specs carry post-reconcile sampling parameters, so the binding
+/// hashes derived from them record the effective request shape.
 #[derive(Debug, Clone)]
 pub(crate) struct FingerprintInputs {
-    /// The three stage endpoint specs.
     pub specs: CompletionStageSpecs,
-    /// The agentic execution configuration the bindings derive from.
     pub agents: AgentsConfig,
-    /// The active embedding identity.
     pub embedding: ProviderIdentity,
-    /// The active embedding dimensionality.
     pub embedding_dimensions: u32,
-    /// The job-level pipeline parameters.
     pub pipeline: PipelineParameters,
 }
 
@@ -151,25 +135,14 @@ fn stage_binding_hashes(
         extraction: binding_hash(
             TaskType::Extraction,
             &specs.extraction,
-            &hashes.extraction_system,
-            &hashes.extraction_user,
-            None,
+            &hashes.extraction,
             agents,
         )?,
-        triage: binding_hash(
-            TaskType::Triage,
-            &specs.triage,
-            &hashes.triage_system,
-            &hashes.triage_user,
-            hashes.triage_loop.clone(),
-            agents,
-        )?,
+        triage: binding_hash(TaskType::Triage, &specs.triage, &hashes.triage, agents)?,
         relation: binding_hash(
             TaskType::Relation,
             &specs.relation,
-            &hashes.relation_system,
-            &hashes.relation_user,
-            None,
+            &hashes.relation,
             agents,
         )?,
     })
@@ -180,17 +153,10 @@ fn stage_binding_hashes(
 fn binding_hash(
     stage: TaskType,
     spec: &CompletionStageSpec,
-    system_prompt_hash: &str,
-    user_prompt_hash: &str,
-    loop_pair: Option<(String, String)>,
+    prompts: &StagePromptHashes,
     agents: &AgentsConfig,
 ) -> Result<String, FingerprintError> {
-    let prompts = StagePromptHashes {
-        system: system_prompt_hash.to_owned(),
-        user: user_prompt_hash.to_owned(),
-        loop_pair,
-    };
-    let definition = derive_stage_definition(stage, spec, &prompts, agents)?;
+    let definition = derive_stage_definition(stage, spec, prompts, agents)?;
     Ok(sha256_hex(&definition.canonical_json()?))
 }
 
@@ -198,11 +164,10 @@ fn binding_hash(
 // Hash computation
 // ---------------------------------------------------------------------------
 
-/// Computes the system fingerprint SHA-256 hash.
-///
-/// Input fields are concatenated with newline separators: the three
-/// stage binding hashes, the build version, the embedding identity with
-/// its dimensions, then canonical JSON of the pipeline parameters.
+/// Hashes the stage binding hashes together with the inputs no stage binding
+/// subsumes: the build version, the embedding identity and dimensions, and
+/// the pipeline parameters. Newline separation keeps the concatenation
+/// unambiguous so two distinct input sets cannot collide.
 fn compute_fingerprint_hash(
     bindings: &StageBindingHashes,
     build_version: &str,
@@ -306,9 +271,24 @@ pub(crate) async fn compute_and_upsert_fingerprint(
     inputs: &FingerprintInputs,
 ) -> Result<String, FingerprintError> {
     let mut version_ids = active_prompts.version_ids().to_vec();
-    for role in [PromptRole::System, PromptRole::User] {
-        if let Some(id) = active_prompts.get_version(PromptStage::Triage, PromptClass::Loop, role) {
-            version_ids.push(id);
+    // Every active agentic slot any stage might bind, so the looked-up
+    // records cover whatever the shared resolver decides each stage needs.
+    // A slot with no active prompt is simply absent; the resolver errors
+    // only if a stage's executor actually requires the missing one.
+    for stage in [
+        PromptStage::Extraction,
+        PromptStage::Triage,
+        PromptStage::Relation,
+    ] {
+        for (class, role) in [
+            (PromptClass::Loop, PromptRole::System),
+            (PromptClass::Loop, PromptRole::User),
+            (PromptClass::Verifier, PromptRole::System),
+            (PromptClass::Verifier, PromptRole::User),
+        ] {
+            if let Some(id) = active_prompts.get_version(stage, class, role) {
+                version_ids.push(id);
+            }
         }
     }
 
@@ -319,13 +299,14 @@ pub(crate) async fn compute_and_upsert_fingerprint(
 
     let expected = version_ids.len();
     let found = prompt_versions.len();
-    let content_hashes = PromptContentHashes::from_active(active_prompts, &prompt_versions).ok_or(
-        FingerprintError::MissingPromptVersions {
-            message: MISSING_PROMPT_VERSIONS,
-            expected,
-            found,
-        },
-    )?;
+    let content_hashes =
+        PromptContentHashes::from_active(active_prompts, &prompt_versions, &inputs.agents).ok_or(
+            FingerprintError::MissingPromptVersions {
+                message: MISSING_PROMPT_VERSIONS,
+                expected,
+                found,
+            },
+        )?;
 
     let bindings = stage_binding_hashes(&inputs.specs, &content_hashes, &inputs.agents)?;
     let fingerprint_hash = compute_fingerprint_hash(&bindings, build_version, inputs);
@@ -357,32 +338,48 @@ pub(crate) async fn compute_and_upsert_fingerprint(
 #[cfg(test)]
 mod tests {
     use tribal_common::SHA256_HEX_LENGTH;
-    use tribal_domain::{ProviderKind, StageParameters};
+    use tribal_domain::StageParameters;
+    use tribal_test_utils::a_completion_stage_spec;
+    use tribal_worker::{AgenticPromptHashes, PromptHashPair};
 
     use super::*;
 
+    fn a_loop_pair(system: &str, user: &str) -> AgenticPromptHashes {
+        AgenticPromptHashes {
+            loop_pair: Some(PromptHashPair {
+                system: system.repeat(64),
+                user: user.repeat(64),
+            }),
+            verifier_pair: None,
+        }
+    }
+
+    fn a_stage(system: &str, user: &str, loop_system: &str, loop_user: &str) -> StagePromptHashes {
+        StagePromptHashes {
+            system: system.repeat(64),
+            user: user.repeat(64),
+            agentic: a_loop_pair(loop_system, loop_user),
+        }
+    }
+
+    // Every stage carries a loop pair, so a test that flips any stage to the
+    // loop executor finds its prompts; a one-shot stage ignores them.
     fn test_hashes() -> PromptContentHashes {
         PromptContentHashes {
-            extraction_system: "a".repeat(64),
-            extraction_user: "b".repeat(64),
-            triage_system: "c".repeat(64),
-            triage_user: "d".repeat(64),
-            relation_system: "e".repeat(64),
-            relation_user: "f".repeat(64),
-            triage_loop: Some(("1".repeat(64), "2".repeat(64))),
+            extraction: a_stage("a", "b", "1", "2"),
+            triage: a_stage("c", "d", "3", "4"),
+            relation: a_stage("e", "f", "5", "6"),
         }
     }
 
     fn a_spec(model: &str, temperature: Option<f64>) -> CompletionStageSpec {
         CompletionStageSpec {
-            provider: ProviderKind::Ollama,
             model: model.to_owned(),
-            base_url: "http://localhost:11434".to_owned(),
-            api_key: String::new(),
             parameters: StageParameters {
                 temperature,
                 max_tokens: Some(2048),
             },
+            ..a_completion_stage_spec()
         }
     }
 
@@ -443,7 +440,7 @@ mod tests {
         let a = hash_of(&inputs, "v0.1.0");
 
         let mut hashes = test_hashes();
-        hashes.extraction_system = "0".repeat(64);
+        hashes.extraction.system = "0".repeat(64);
         let bindings = stage_binding_hashes(&inputs.specs, &hashes, &inputs.agents)
             .expect("definitions serialise");
         let b = compute_fingerprint_hash(&bindings, "v0.1.0", &inputs);
@@ -512,6 +509,74 @@ mod tests {
         assert_ne!(bindings_before.triage, bindings_after.triage);
         assert_eq!(bindings_before.extraction, bindings_after.extraction);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_enabling_the_extraction_loop_derives_and_moves_only_its_binding() {
+        // The ingest-path regression guard: enabling the extraction loop must
+        // derive (not fail for want of loop prompts, as it once did) and move
+        // the extraction binding alone.
+        let inputs = test_inputs();
+        let before =
+            stage_binding_hashes(&inputs.specs, &test_hashes(), &inputs.agents).expect("derives");
+
+        let mut flipped = inputs.clone();
+        flipped.agents.extraction.executor = tribal_config::ExecutorChoice::Loop;
+        let after = stage_binding_hashes(&flipped.specs, &test_hashes(), &flipped.agents)
+            .expect("the extraction loop derives");
+
+        assert_ne!(before.extraction, after.extraction);
+        assert_eq!(before.triage, after.triage);
+        assert_eq!(before.relation, after.relation);
+    }
+
+    #[test]
+    fn test_enabling_the_relation_loop_derives_and_moves_only_its_binding() {
+        let inputs = test_inputs();
+        let before =
+            stage_binding_hashes(&inputs.specs, &test_hashes(), &inputs.agents).expect("derives");
+
+        let mut flipped = inputs.clone();
+        flipped.agents.relation.executor = tribal_config::ExecutorChoice::Loop;
+        let after = stage_binding_hashes(&flipped.specs, &test_hashes(), &flipped.agents)
+            .expect("the relation loop derives");
+
+        assert_ne!(before.relation, after.relation);
+        assert_eq!(before.extraction, after.extraction);
+        assert_eq!(before.triage, after.triage);
+    }
+
+    #[test]
+    fn test_the_verifier_pair_is_part_of_the_triage_loop_binding() {
+        // The verifier the binding runs is named in its hash: a triage loop
+        // with a verifier binds differently from one without, and a verifier
+        // rubric edit is a new binding version.
+        let mut inputs = test_inputs();
+        inputs.agents.triage.executor = tribal_config::ExecutorChoice::Loop;
+
+        let triage_binding = |verifier_pair: Option<PromptHashPair>| {
+            let mut hashes = test_hashes();
+            hashes.triage.agentic.verifier_pair = verifier_pair;
+            stage_binding_hashes(&inputs.specs, &hashes, &inputs.agents)
+                .expect("derives")
+                .triage
+        };
+
+        let without = triage_binding(None);
+        let with = triage_binding(Some(PromptHashPair {
+            system: "7".repeat(64),
+            user: "8".repeat(64),
+        }));
+        let edited = triage_binding(Some(PromptHashPair {
+            system: "9".repeat(64),
+            user: "8".repeat(64),
+        }));
+
+        assert_ne!(without, with, "the verifier is part of the binding");
+        assert_ne!(
+            with, edited,
+            "a verifier prompt edit is a new binding version"
+        );
     }
 
     #[test]

@@ -24,7 +24,7 @@ pub trait ActiveAgenticPrompts: Send + Sync {
 }
 
 /// The inert source: no agentic slot is ever live. For executions with
-/// no agentic prompt state behind them — tests, and harnesses that never
+/// no agentic prompt state behind them: tests, and harnesses that never
 /// select a loop executor.
 pub struct NoAgenticPrompts;
 

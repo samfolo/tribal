@@ -123,7 +123,7 @@ pub(crate) enum StageError {
 
     /// The stage's binding could not be derived at claim: a configured
     /// shape the supplied inputs cannot produce (a missing active loop
-    /// prompt). Retryable — a prompt reload or configuration fix
+    /// prompt). Retryable: a prompt reload or configuration fix
     /// restores it.
     #[error("binding derivation failed in {stage}: {context}")]
     BindingDerivation {
@@ -135,7 +135,7 @@ pub(crate) enum StageError {
 
     /// An execution budget exhausted in a way no retry can change: the
     /// turn cap, the execution deadline, or the bounded budget
-    /// re-checks running dry. Terminal — the thread fails with its task.
+    /// re-checks running dry. Terminal: the thread fails with its task.
     #[error("execution budget exhausted in {stage}: {context}")]
     BudgetExhausted {
         /// The stage whose thread exhausted its budget.
@@ -155,6 +155,27 @@ pub(crate) enum StageError {
         #[source]
         source: tribal_db::DbError,
     },
+
+    /// A resumed thread's recorded binding diverges from the current stage
+    /// configuration in an aspect execution takes live: the gateway's route,
+    /// or the tool surface the turn loop projects. Terminal: executing would
+    /// run the thread under a route or tool contract its recorded binding
+    /// does not name, and no retry reconciles a configuration or binary
+    /// change. A fresh thread pairs the current configuration by
+    /// construction, so it never diverges.
+    #[error(
+        "resume binding diverged in {stage} ({aspect}): recorded {recorded}, current {current}"
+    )]
+    ResumeBindingDivergence {
+        /// The stage whose resumed thread diverged.
+        stage: String,
+        /// Which aspect diverged: the route, or the tool surface.
+        aspect: &'static str,
+        /// The recorded binding's value for the diverged aspect.
+        recorded: String,
+        /// The value the current configuration resolves for that aspect.
+        current: String,
+    },
 }
 
 impl StageError {
@@ -172,6 +193,7 @@ impl StageError {
             }
             Self::BudgetExhausted { .. } => TaskErrorKind::BudgetExhausted,
             Self::Database { .. } => TaskErrorKind::DatabaseError,
+            Self::ResumeBindingDivergence { .. } => TaskErrorKind::BindingDivergence,
         }
     }
 }
@@ -231,6 +253,15 @@ mod tests {
                     },
                 },
                 TaskErrorKind::DatabaseError,
+            ),
+            (
+                StageError::ResumeBindingDivergence {
+                    stage: "relation".into(),
+                    aspect: "route",
+                    recorded: "ollama/llama3".into(),
+                    current: "openai/gpt".into(),
+                },
+                TaskErrorKind::BindingDivergence,
             ),
         ];
 

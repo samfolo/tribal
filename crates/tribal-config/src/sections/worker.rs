@@ -30,8 +30,9 @@ pub const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 100_000;
 /// Default milliseconds between stale-task reclaim sweeps.
 pub const DEFAULT_RECLAIM_INTERVAL_MS: u64 = 10_000;
 
-/// Default maximum candidate count per job.
-pub const DEFAULT_MAX_CANDIDATES_PER_JOB: u32 = 20;
+/// Default maximum candidate count per job: a high runaway guard, not a
+/// parity cap. Normal large inputs pass; only a genuine runaway is caught.
+pub const DEFAULT_MAX_CANDIDATES_PER_JOB: u32 = 1000;
 
 /// Default number of similar items returned during triage search.
 pub const DEFAULT_TRIAGE_SEARCH_LIMIT: u32 = 10;

@@ -2,7 +2,8 @@ use chrono::Utc;
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentBindingVersionId, AgentDriverTaskId, AgentThread,
     AgentThreadId, AgentThreadRecord, AgentThreadRecordId, AgentThreadRecordKind,
-    AgentThreadRecordSeq, AgentThreadStatus, AgentThreadSuspension, PrincipalId, TaskId, TaskType,
+    AgentThreadRecordSeq, AgentThreadStatus, AgentThreadSuspension, JobId, PrincipalId, TaskId,
+    TaskType,
 };
 
 define_factory! {
@@ -19,6 +20,7 @@ define_factory! {
         stage_task_id: Option<TaskId> = Some(TaskId::new()),
         driver_task_id: Option<AgentDriverTaskId> = None,
         principal_id: PrincipalId = PrincipalId::new(),
+        job_id: Option<JobId> = None,
         status: AgentThreadStatus = AgentThreadStatus::Queued,
         suspension: Option<AgentThreadSuspension> = None,
         cancel_requested_at: Option<chrono::DateTime<Utc>> = None,

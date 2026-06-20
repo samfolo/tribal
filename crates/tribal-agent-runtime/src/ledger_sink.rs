@@ -3,7 +3,7 @@
 //! Implements the gateway's [`LedgerSink`] port: one `token_usage` row and
 //! the `GenAI` client metrics per request, from the same data, so the
 //! ledger and the telemetry cannot disagree. Writes are best-effort on a
-//! freshly acquired connection — never inside a domain commit, and never
+//! freshly acquired connection, never inside a domain commit, and never
 //! failing the request being recorded.
 
 use std::sync::Arc;

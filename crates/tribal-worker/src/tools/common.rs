@@ -53,7 +53,7 @@ pub(crate) struct ReadJobContextTool {
 }
 
 impl ReadJobContextTool {
-    /// The tool's declared contract — the binding-hash input the
+    /// The tool's declared contract: the binding-hash input the
     /// lockstep definition derivation reads without constructing the
     /// tool.
     pub(crate) fn describe() -> ToolDescriptor {
@@ -107,7 +107,7 @@ impl StageTool for ReadJobContextTool {
             .map_err(|source| db_failure("reading the job's extraction result", &source))?
             .ok_or_else(|| ToolFailure::System {
                 context: format!(
-                    "no extraction result exists for job {} — triage runs after extraction",
+                    "no extraction result exists for job {}: triage runs after extraction",
                     self.job_id,
                 ),
             })?;
@@ -200,7 +200,7 @@ pub(crate) struct ReadSiblingThreadsTool {
 }
 
 impl ReadSiblingThreadsTool {
-    /// The tool's declared contract — the binding-hash input the
+    /// The tool's declared contract: the binding-hash input the
     /// lockstep definition derivation reads without constructing the
     /// tool.
     pub(crate) fn describe() -> ToolDescriptor {

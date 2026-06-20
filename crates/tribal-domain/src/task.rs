@@ -102,6 +102,13 @@ pub enum TaskErrorKind {
     /// turn cap, the execution deadline, or the bounded budget
     /// re-checks running dry.
     BudgetExhausted,
+    /// A durable thread resumed under a binding that no longer matches the
+    /// current stage configuration in an aspect execution takes live: the
+    /// gateway's route, or the tool surface the turn loop projects. Executing
+    /// would run the thread under a route or tool contract its recorded
+    /// binding does not name; no retry reconciles a configuration or binary
+    /// change, so the thread fails explicitly.
+    BindingDivergence,
 }
 
 /// Whether a failure class can succeed on retry.
@@ -122,7 +129,9 @@ impl TaskErrorKind {
     #[must_use]
     pub fn outcome(self) -> ErrorOutcome {
         match self {
-            Self::ContextOverflow | Self::BudgetExhausted => ErrorOutcome::Terminal,
+            Self::ContextOverflow | Self::BudgetExhausted | Self::BindingDivergence => {
+                ErrorOutcome::Terminal
+            }
             Self::ProviderError
             | Self::SemaphoreTimeout
             | Self::ParseError
@@ -162,6 +171,7 @@ enum_text_conversions!(TaskErrorKind {
     TaskErrorKind::InternalError => "internal_error",
     TaskErrorKind::ContextOverflow => "context_overflow",
     TaskErrorKind::BudgetExhausted => "budget_exhausted",
+    TaskErrorKind::BindingDivergence => "binding_divergence",
 });
 
 /// A task in the ingest pipeline.
@@ -324,6 +334,7 @@ mod tests {
         TaskErrorKind::InternalError => "internal_error",
         TaskErrorKind::ContextOverflow => "context_overflow",
         TaskErrorKind::BudgetExhausted => "budget_exhausted",
+        TaskErrorKind::BindingDivergence => "binding_divergence",
     });
 
     enum_text_tests!(test_task_type_text_roundtrip, TaskType {
@@ -352,6 +363,7 @@ mod tests {
         TaskErrorKind::InternalError => "internal_error",
         TaskErrorKind::ContextOverflow => "context_overflow",
         TaskErrorKind::BudgetExhausted => "budget_exhausted",
+        TaskErrorKind::BindingDivergence => "binding_divergence",
     });
 
     #[test]

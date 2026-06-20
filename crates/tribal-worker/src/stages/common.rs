@@ -24,6 +24,7 @@ use tribal_inference::{
 };
 
 use crate::{
+    definition::current_stage_budgets,
     error::StageError,
     tag_resolution::NewTagWithEmbedding,
     worker::{Worker, map_runtime_error},
@@ -36,29 +37,21 @@ use crate::{
 /// Domain effects produced by a stage, committed transactionally after
 /// the stage completes.
 pub(crate) enum StageCommit {
-    /// Extraction stage effects.
     Extraction {
-        /// The extraction result to insert.
         extraction_result: NewExtractionResult,
-        /// Triage tasks to create (one per candidate in the batch).
+        /// One triage task per candidate in the batch.
         triage_tasks: Vec<NewTask>,
         /// Capped candidate count.
         batch_size: u32,
         /// Pre-cap candidate count.
         original_count: u32,
     },
-    /// Triage stage effects.
     Triage {
-        /// The project this triage belongs to.
         project_id: ProjectId,
-        /// The triage decision with associated data.
         decision: TriageCommitDecision,
-        /// Per-similar-item decisions for audit persistence.
         similar_item_decisions: Vec<NewTriageSimilarItemDecision>,
     },
-    /// Relation stage effects.
     Relation {
-        /// The relation decision with associated commit data.
         decision: super::relation::RelationCommitDecision,
     },
 }
@@ -72,11 +65,8 @@ pub(crate) enum StageCommit {
 /// (`None` for idempotency no-ops). The commit path composes all three
 /// into one transaction.
 pub(crate) struct StageRun {
-    /// The thread the stage executed under.
     pub(crate) thread: AgentThread,
-    /// The domain effects to commit.
     pub(crate) commit: StageCommit,
-    /// How the thread reaches its terminal in the commit transaction.
     pub(crate) terminal: StageTerminal,
 }
 
@@ -92,29 +82,21 @@ pub(crate) struct StageRun {
 pub(crate) enum TriageCommitDecision {
     /// Novel candidate: create a new knowledge item with embedding and references.
     Novel {
-        /// The knowledge item to insert.
         knowledge_item: Box<NewKnowledgeItem>,
-        /// The candidate's embedding vector.
         embedding_vector: Vec<f32>,
-        /// The embedding model used.
         embedding_model: String,
         /// The active profile the candidate was embedded against. The commit
         /// flip-check compares it to the active read under the cutover lock, so
         /// a cutover between the pre-embed and the write re-embeds rather than
         /// storing an old-space vector under the new profile.
         embedding_profile_id: EmbeddingProfileId,
-        /// References suggested by the extraction stage.
         suggested_references: Vec<SuggestedReference>,
-        /// New tags with pre-computed embedding vectors for storage.
         new_tags: Vec<NewTagWithEmbedding>,
         /// Tags resolved to existing entries, for `usage_count` increment.
         resolved_tags: Vec<String>,
     },
     /// Duplicate candidate: record an observation against the matched item.
-    Duplicate {
-        /// The observation to insert.
-        observation: NewItemObservation,
-    },
+    Duplicate { observation: NewItemObservation },
     /// Idempotency skip: result already exists for this `(job_id, batch_index)`.
     NoOp,
 }
@@ -123,19 +105,11 @@ pub(crate) enum TriageCommitDecision {
 // Active embedding profile
 // ---------------------------------------------------------------------------
 
-/// Loads the active embedding profile against the given connection.
-///
-/// Reads and writes embed against the active profile, so the read site, the
-/// commit transaction, and tag resolution all resolve it through here. Taking
+/// Loads the active embedding profile against the given connection. Taking
 /// an explicit connection lets the commit path resolve it inside the
-/// transaction's snapshot. First-boot provisioning completes a genesis profile
-/// before the worker serves any task, so its absence is a consistency fault,
-/// not an expected outcome.
-///
-/// # Errors
-///
-/// Returns [`StageError::Database`] on query failure or when no profile is
-/// active.
+/// transaction's snapshot. First-boot provisioning completes a genesis
+/// profile before the worker serves any task, so its absence is a
+/// consistency fault, not an expected outcome.
 pub(crate) async fn load_active_embedding_profile(
     conn: &mut sqlx::PgConnection,
     stage: &str,
@@ -185,18 +159,9 @@ pub(crate) fn record_prompt_version_ids(
 impl Worker {
     /// Resolves the active embedding profile on a freshly acquired
     /// connection, so a live read or write embeds in the space it targets
-    /// rather than a boot-time snapshot's.
-    ///
-    /// The returned profile id is the producing identity carried to the
-    /// commit, whose flip-check compares it against the active read under
-    /// the cutover lock; its provider resolves through the gateway's
-    /// per-profile cache, so the common no-flip path is a cache hit.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StageError::Database`] if the active profile cannot be
-    /// read, or [`StageError::Provider`] if its provider cannot be built
-    /// or its credential resolved.
+    /// rather than a boot-time snapshot's. The returned profile id is the
+    /// producing identity carried to the commit, whose flip-check compares
+    /// it against the active read under the cutover lock.
     pub(crate) async fn resolve_active_embedding(
         &self,
         stage: &str,
@@ -238,7 +203,7 @@ pub(crate) fn stage_attribution(job: &Job, task: &Task, thread: &AgentThread) ->
     attribution_with_prompts(job, task, thread, system_pv_id, user_pv_id)
 }
 
-/// Builds the ledger attribution with an explicit prompt version pair —
+/// Builds the ledger attribution with an explicit prompt version pair:
 /// the loop path attributes its calls to the binding's loop prompts,
 /// not the job's stamped one-shot pair.
 pub(crate) fn attribution_with_prompts(
@@ -307,10 +272,6 @@ pub(crate) fn map_gateway_error(context: &str, error: InferenceError) -> StageEr
 
 impl Worker {
     /// Loads the full tag registry from the database.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StageError::Database`] on pool or query failure.
     pub(crate) async fn load_tag_registry(
         &self,
         stage: &str,
@@ -338,10 +299,6 @@ impl Worker {
     }
 
     /// Loads a prompt version by ID from the database.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StageError::Database`] on pool or query failure.
     pub(crate) async fn load_prompt_version(
         &self,
         stage: &str,
@@ -377,21 +334,19 @@ impl Worker {
 impl Worker {
     /// Brackets a stage's single completion call with the thread log:
     /// commits the input record (first attempt) or adopts the committed
-    /// one (resume), enforces the binding's token budget, and returns
-    /// the turn to send — the committed conversation verbatim, with this
-    /// attempt's runtime parameters, plus the recorded resolution
-    /// context the caller's positional references must resolve against.
+    /// one (resume), enforces the binding's token budget, and returns the
+    /// turn to send: the committed conversation verbatim with this
+    /// attempt's runtime parameters, plus the recorded resolution context
+    /// the caller's positional references must resolve against.
     ///
-    /// Parameters (temperature, token caps, response format) ride the
-    /// fresh request: they are binding-pinned behaviour, not conversation
-    /// content, so the log stays byte-stable while parameters follow the
-    /// thread's recorded binding.
+    /// Parameters (temperature, token caps, response format) ride the fresh
+    /// request rather than the log: they are binding-pinned behaviour, not
+    /// conversation content, so the log stays byte-stable while parameters
+    /// follow the thread's recorded binding.
     ///
     /// Returns `None` when no turn runs this claim: the budget admission
-    /// suspended the thread (or its bounded re-checks ran dry, or a
-    /// cancellation intervened) — the caller propagates the no-terminal
-    /// outcome up through dispatch. Under the default cap-less binding
-    /// the admission issues no query at all.
+    /// suspended the thread, its bounded re-checks ran dry, or a
+    /// cancellation intervened.
     pub(crate) async fn bracket_one_shot(
         &self,
         stage: &str,
@@ -460,9 +415,9 @@ impl Worker {
                     .into_iter()
                     .map(|m| {
                         // The one-shot bracket only ever records the two
-                        // launched wire roles; an unrecognised string (a
-                        // future format's role) downgrades to User rather
-                        // than dropping the message, keeping resume total.
+                        // the recorded wire roles; an unrecognised string
+                        // downgrades to User rather than dropping the
+                        // message, keeping resume total.
                         if m.role.as_str() == Role::Assistant.as_str() {
                             Message::Assistant {
                                 content: m.content,
@@ -496,7 +451,7 @@ impl Worker {
     ) -> Result<bool, StageError> {
         // Enforcement reads the current configuration, never the recorded
         // binding: headroom can return through a configuration change.
-        let budgets = crate::definition::current_stage_budgets(
+        let budgets = current_stage_budgets(
             task.task_type(),
             stage_thread.binding.definition().executor,
             self.agents(),
@@ -588,10 +543,9 @@ impl Worker {
     }
 }
 
-/// The one-shot bracket's product: the request to send — the committed
-/// conversation on resume — and the resolution context recorded with it.
+/// The one-shot bracket's product: the request to send (the committed
+/// conversation on resume) and the resolution context recorded with it.
 pub(crate) struct BracketedTurn {
-    /// The request to send.
     pub request: CompletionRequest,
     /// The recorded context the response's positional references resolve
     /// against; `None` for stages with no positional references, or for
