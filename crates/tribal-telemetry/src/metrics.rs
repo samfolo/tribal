@@ -32,6 +32,20 @@ pub const SEMAPHORE_ACQUIRE_WAIT_MS: &str = "tribal.semaphore.acquire_wait_ms";
 pub const JOB_DURATION_MS: &str = "tribal.job.duration_ms";
 /// Histogram: individual task duration in milliseconds.
 pub const TASK_DURATION_MS: &str = "tribal.task.duration_ms";
+/// Counter: agentic thread suspensions, by reason.
+pub const AGENT_SUSPENSIONS: &str = "tribal.agent.suspensions";
+/// Counter: pre-call budget admission decisions, by decision.
+pub const AGENT_BUDGET_ADMISSIONS: &str = "tribal.agent.budget.admissions";
+/// Counter: verifier child launches.
+pub const AGENT_CHILD_LAUNCHES: &str = "tribal.agent.child.launches";
+/// Counter: verifier child terminals, by outcome.
+pub const AGENT_CHILD_TERMINALS: &str = "tribal.agent.child.terminals";
+/// Counter: thread resumes from a committed log.
+pub const AGENT_THREAD_RESUMES: &str = "tribal.agent.thread.resumes";
+/// Counter: in-place child-terminal conflict retries.
+pub const AGENT_CONFLICT_RETRIES: &str = "tribal.agent.conflict_retries";
+/// Counter: availability-sweep actions converged, by kind.
+pub const AGENT_SWEEP_ACTIONS: &str = "tribal.agent.sweep.actions";
 
 // ---------------------------------------------------------------------------
 // Label key constants
@@ -79,6 +93,21 @@ pub struct Metrics {
     /// Client operation duration. Unit: seconds, per the `GenAI` client
     /// conventions.
     pub gen_ai_operation_duration: Histogram<f64>,
+    /// Agentic thread suspensions, labelled by `tribal.suspension.reason`.
+    pub agent_suspensions: Counter<u64>,
+    /// Pre-call budget admission decisions, labelled by `tribal.budget.decision`.
+    pub agent_budget_admissions: Counter<u64>,
+    /// Verifier child launches.
+    pub agent_child_launches: Counter<u64>,
+    /// Verifier child terminals, labelled by `tribal.child.terminal_outcome`
+    /// and `tribal.terminal.is_error`.
+    pub agent_child_terminals: Counter<u64>,
+    /// Thread resumes from a committed log.
+    pub agent_thread_resumes: Counter<u64>,
+    /// In-place child-terminal conflict retries.
+    pub agent_conflict_retries: Counter<u64>,
+    /// Availability-sweep actions converged, labelled by `tribal.sweep.action`.
+    pub agent_sweep_actions: Counter<u64>,
 }
 
 impl Metrics {
@@ -104,6 +133,13 @@ impl Metrics {
                 .f64_histogram(gen_ai::CLIENT_OPERATION_DURATION)
                 .with_unit("s")
                 .build(),
+            agent_suspensions: meter.u64_counter(AGENT_SUSPENSIONS).build(),
+            agent_budget_admissions: meter.u64_counter(AGENT_BUDGET_ADMISSIONS).build(),
+            agent_child_launches: meter.u64_counter(AGENT_CHILD_LAUNCHES).build(),
+            agent_child_terminals: meter.u64_counter(AGENT_CHILD_TERMINALS).build(),
+            agent_thread_resumes: meter.u64_counter(AGENT_THREAD_RESUMES).build(),
+            agent_conflict_retries: meter.u64_counter(AGENT_CONFLICT_RETRIES).build(),
+            agent_sweep_actions: meter.u64_counter(AGENT_SWEEP_ACTIONS).build(),
         }
     }
 
