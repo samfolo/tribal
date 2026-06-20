@@ -155,11 +155,14 @@ pub(crate) fn prompt_stage_of(stage: TaskType) -> PromptStage {
     }
 }
 
-/// Whether a stage's loop runs a verifier. Only triage carries one; the
-/// extraction and relation verifier toggles are inert, so no verifier pair
-/// enters their bindings and no verifier prompt is required of them.
+/// Whether a stage's loop runs a verifier. Triage and relation each carry
+/// one and verify by default; an explicit toggle disables either. Extraction
+/// has no verifier, so its toggle stays inert.
 fn stage_runs_verifier(stage: TaskType, config: &StageAgentConfig) -> bool {
-    stage == TaskType::Triage && config.verifier_enabled(true)
+    match stage {
+        TaskType::Triage | TaskType::Relation => config.verifier_enabled(true),
+        TaskType::Extraction => false,
+    }
 }
 
 /// The verifier child's binding definition: a one-shot on the parent's
@@ -492,6 +495,52 @@ mod tests {
                 .iter()
                 .all(|tool| tool.project_scope == tribal_domain::ProjectScope::CrossProject),
             "every relation tool reaches across projects",
+        );
+    }
+
+    /// A lookup that synthesises a hash per slot, so the resolved pairs
+    /// reflect which slots the configuration asked for, not their content.
+    /// A non-capturing closure (so it is `Copy` and reusable), returning the
+    /// `Result` the resolver's lookup signature requires.
+    fn slot_lookup()
+    -> impl Fn(PromptStage, PromptClass, PromptRole) -> Result<String, std::convert::Infallible> + Copy
+    {
+        |_stage, class: PromptClass, role: PromptRole| {
+            Ok(format!("{}-{}", class.as_str(), role.as_str()))
+        }
+    }
+
+    #[test]
+    fn test_triage_loop_resolves_a_verifier_pair_by_default() {
+        let mut agents = AgentsConfig::default();
+        agents.triage.executor = ExecutorChoice::Loop;
+        let resolved = resolve_agentic_prompt_hashes(TaskType::Triage, &agents, slot_lookup())
+            .expect("resolves");
+        assert!(
+            resolved.verifier_pair.is_some(),
+            "triage verifies by default, so the loop resolves its verifier pair",
+        );
+    }
+
+    #[test]
+    fn test_relation_loop_verifies_by_default() {
+        // The relation loop resolves its verifier pair by default, like
+        // triage; an explicit toggle is what disables it.
+        let mut agents = AgentsConfig::default();
+        agents.relation.executor = ExecutorChoice::Loop;
+        let default_on = resolve_agentic_prompt_hashes(TaskType::Relation, &agents, slot_lookup())
+            .expect("resolves");
+        assert!(
+            default_on.verifier_pair.is_some(),
+            "the relation verifier is on by default",
+        );
+
+        agents.relation.verifier = Some(false);
+        let disabled = resolve_agentic_prompt_hashes(TaskType::Relation, &agents, slot_lookup())
+            .expect("resolves");
+        assert!(
+            disabled.verifier_pair.is_none(),
+            "an explicit toggle disables the relation verifier",
         );
     }
 }

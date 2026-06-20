@@ -18,7 +18,7 @@ pub(crate) use common::{
 };
 pub(crate) use extraction_submission::ExtractionSubmissionPipeline;
 pub(crate) use relation::RelationCommitDecision;
-pub(crate) use relation_submission::RelationSubmissionPipeline;
+pub(crate) use relation_submission::{RelationSubmissionPipeline, RelationVerifierContext};
 pub(crate) use triage_submission::{
     TriageSubmissionPipeline, VerifierContext, reconstruct_candidate_scores,
 };
