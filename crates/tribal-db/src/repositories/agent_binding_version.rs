@@ -175,9 +175,9 @@ fn decode_failure(hash: &str, detail: String) -> DbError {
 
 #[cfg(feature = "test-helpers")]
 impl PgAgentBindingVersionRepository {
-    /// Inserts a version with a caller-supplied id and a raw definition,
-    /// so a test can plant a legacy or malformed row the production
-    /// `record()` could not encode.
+    /// Inserts a version with a caller-supplied id and a raw definition, so a
+    /// test can plant a malformed row the production `record()` could not
+    /// encode.
     ///
     /// # Errors
     ///
