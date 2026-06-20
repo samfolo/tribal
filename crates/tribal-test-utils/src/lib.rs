@@ -21,6 +21,7 @@ mod setup;
 // in its expansion, which requires the module path to be public.
 pub mod snapshot;
 pub mod text;
+mod tracing_capture;
 
 pub use db::{TestContext, TestTransaction, lazy_pool, serial_lock, test_context};
 pub use error::TestDbError;
@@ -31,3 +32,4 @@ pub use mock::async_dispatch::*;
 pub use render::render_to_string;
 pub use seeding::*;
 pub use setup::*;
+pub use tracing_capture::{CapturedEvent, CapturedSpan, TracingCapture};

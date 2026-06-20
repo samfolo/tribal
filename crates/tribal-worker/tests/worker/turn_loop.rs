@@ -9,6 +9,7 @@ use std::sync::{
 
 use async_trait::async_trait;
 use sqlx::PgConnection;
+use tracing::Instrument;
 use tribal_agent_runtime::{
     AcceptedSubmission, Admission, BUDGET_RECHECK_CAUSE, BudgetFailure, ChildTerminalOutcome,
     HeartbeatPump, LoopOutcome, ParentResolution, RecheckPolicy, RecordedMessage,
@@ -24,10 +25,10 @@ use tribal_db::{
 use tribal_domain::{
     AgentBindingVersionId, AgentThread, AgentThreadId, AgentThreadRecordKind, AgentThreadStatus,
     AgentThreadSuspension, ExecutionBudgets, ExecutionSpend, RecoverableToolFailure,
-    ToolDescriptor, ToolExecutionMode, ToolFailure, ToolSafetyTier, UsageOwner,
+    ToolDescriptor, ToolExecutionMode, ToolFailure, ToolSafetyTier, UsageOwner, gen_ai, span_attrs,
 };
 use tribal_inference::UsageAttribution;
-use tribal_test_utils::a_tool_call_response;
+use tribal_test_utils::{TracingCapture, a_tool_call_response};
 
 use super::common::*;
 
@@ -2049,6 +2050,239 @@ async fn test_post_acceptance_drift_injects_diagnostics_and_continues() {
                 tribal_inference::Message::User { content } if content.contains("superseded")
             )),
         "the drift diagnostics reach the model's re-decision as a user turn",
+    );
+
+    teardown(ctx).await;
+}
+
+// ---------------------------------------------------------------------------
+// Observability
+// ---------------------------------------------------------------------------
+
+/// A fresh claim opens one `invoke_agent` span carrying the thread id and
+/// the loop executor, emits a turn-committed event per turn and a single
+/// loop-outcome event, and nests an `execute_tool` span under it per call.
+#[tokio::test]
+async fn test_observability_instruments_a_fresh_claim() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let harness = loop_harness(
+        ctx,
+        "obs-fresh",
+        vec![
+            a_tool_call_response(&[("call_0", "lookup_note", serde_json::json!({}))]),
+            submit_response("call_1", TOOL_ITEM_ID),
+        ],
+    )
+    .await;
+
+    let attribution = harness.attribution();
+    let (capture, _capture) = TracingCapture::install();
+    // The worker runs the loop inside its per-claim stage span; mirror that
+    // so the nesting can be asserted.
+    let stage_span = tracing::info_span!("tribal.task.extraction");
+    let outcome = run_turn_loop(harness.deps(
+        an_opening(),
+        &attribution,
+        &MembershipPipeline,
+        ExecutionBudgets::default(),
+    ))
+    .instrument(stage_span)
+    .await
+    .expect("the loop runs");
+    assert!(matches!(outcome, LoopOutcome::Submitted(_)));
+
+    let invoke = capture
+        .span("invoke_agent")
+        .expect("a fresh claim opens an invoke_agent span");
+    let thread_id = harness.thread.id().to_string();
+    assert_eq!(
+        invoke.field(gen_ai::CONVERSATION_ID),
+        Some(thread_id.as_str()),
+    );
+    assert_eq!(invoke.field(span_attrs::EXECUTOR), Some("built_in_loop"));
+    assert_eq!(invoke.field(span_attrs::THREAD_RESUMED), Some("false"));
+    assert_eq!(
+        invoke.parent.as_deref(),
+        Some("tribal.task.extraction"),
+        "invoke_agent nests under the per-claim stage span",
+    );
+
+    let turns = capture
+        .events()
+        .into_iter()
+        .filter(|event| event.message == "agentic turn committed")
+        .count();
+    assert_eq!(turns, 2, "one turn-committed event per committed turn");
+
+    let outcome_event = capture
+        .event("agentic loop reached an outcome")
+        .expect("a loop-outcome event fires once");
+    assert_eq!(
+        outcome_event.field(span_attrs::LOOP_OUTCOME),
+        Some("submitted"),
+    );
+
+    let tools = capture.spans_named("execute_tool");
+    assert!(
+        tools
+            .iter()
+            .any(|span| span.field(span_attrs::TOOL_NAME) == Some("lookup_note")),
+        "the ordinary tool call opens an execute_tool span",
+    );
+    assert!(
+        tools
+            .iter()
+            .any(|span| span.field(span_attrs::TOOL_IS_SUBMIT) == Some("true")),
+        "the submit call is flagged on its execute_tool span",
+    );
+    assert!(
+        tools
+            .iter()
+            .all(|span| span.parent.as_deref() == Some("invoke_agent")),
+        "every execute_tool span nests under invoke_agent",
+    );
+
+    teardown(ctx).await;
+}
+
+/// The verifier round trip is observable end to end: the launch and its
+/// deferred suspension on the way out, the hand-back and child-terminal on
+/// the way in, and a second `invoke_agent` flagged as a resume.
+#[tokio::test]
+async fn test_observability_instruments_the_verifier_round_trip_and_resume() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let child_binding = a_child_binding(ctx).await;
+    let harness = loop_harness(
+        ctx,
+        "obs-verify",
+        vec![submit_response("call_0", OPENING_ITEM_ID)],
+    )
+    .await;
+    let pipeline = VerifyingPipeline { child_binding };
+
+    let (capture, _capture) = TracingCapture::install();
+
+    let attribution = harness.attribution();
+    let outcome = run_turn_loop(harness.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop runs");
+    assert!(matches!(outcome, LoopOutcome::Suspended));
+
+    let launched = capture
+        .event("agentic verifier child launched")
+        .expect("a child-launched event fires");
+    assert_eq!(launched.field(span_attrs::CHILD_STAGE), Some("extraction"));
+    assert!(
+        launched.field(span_attrs::CHILD_BINDING_VERSION).is_some(),
+        "the launch event carries the child binding version",
+    );
+    let deferred = capture
+        .event("agentic thread suspended on a deferred tool result")
+        .expect("the deferred suspension is observable");
+    assert_eq!(
+        deferred.field(span_attrs::SUSPENSION_REASON),
+        Some("deferred_tool_results"),
+    );
+
+    {
+        let mut conn = raw_conn(ctx).await;
+        hand_back_verdict(&mut conn, harness.thread.id(), r#"{"accepted": true}"#).await;
+    }
+
+    let terminal = capture
+        .event("agentic child terminal committed")
+        .expect("a child-terminal-committed event fires post-commit");
+    assert_eq!(
+        terminal.field(span_attrs::CHILD_TERMINAL_OUTCOME),
+        Some("handed_back"),
+    );
+    assert_eq!(terminal.field(span_attrs::TERMINAL_IS_ERROR), Some("false"));
+
+    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let resumed = LoopHarness {
+        task,
+        thread,
+        ..harness
+    };
+    let attribution = resumed.attribution();
+    let outcome = run_turn_loop(resumed.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop resumes");
+    assert!(matches!(outcome, LoopOutcome::Submitted(_)));
+
+    let invokes = capture.spans_named("invoke_agent");
+    assert_eq!(invokes.len(), 2, "one invoke_agent span per claim");
+    assert_eq!(invokes[0].field(span_attrs::THREAD_RESUMED), Some("false"));
+    assert_eq!(invokes[1].field(span_attrs::THREAD_RESUMED), Some("true"));
+    assert!(
+        capture
+            .event("agentic thread resumed from its committed log")
+            .is_some(),
+        "the resume boundary emits one event",
+    );
+
+    teardown(ctx).await;
+}
+
+/// A spend exhaustion is observable as a budget-admission decision and a
+/// typed suspension with its wake instant.
+#[tokio::test]
+async fn test_observability_instruments_a_budget_suspension() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let harness = loop_harness(
+        ctx,
+        "obs-budget",
+        vec![a_completion_response("an expensive thought")],
+    )
+    .await;
+
+    let attribution = harness.attribution();
+    let (capture, _capture) = TracingCapture::install();
+    let outcome = run_turn_loop(
+        harness.deps(
+            an_opening(),
+            &attribution,
+            &MembershipPipeline,
+            ExecutionBudgets::builder()
+                .max_total_tokens(Some(1))
+                .build(),
+        ),
+    )
+    .await
+    .expect("the loop runs");
+    assert!(matches!(outcome, LoopOutcome::Suspended));
+
+    let admission = capture
+        .event("budget exhausted; suspending")
+        .expect("a budget-admission event fires");
+    assert_eq!(
+        admission.field(span_attrs::BUDGET_DECISION),
+        Some("suspend")
+    );
+
+    let suspended = capture
+        .event("agentic thread suspended")
+        .expect("a suspension-committed event fires");
+    assert_eq!(
+        suspended.field(span_attrs::SUSPENSION_REASON),
+        Some("budget_exhausted"),
+    );
+    assert!(
+        suspended.field(span_attrs::WAKE_AT).is_some(),
+        "a budget suspension carries its wake instant",
     );
 
     teardown(ctx).await;

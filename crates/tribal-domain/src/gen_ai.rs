@@ -31,6 +31,11 @@ pub const PROVIDER_NAME: &str = "gen_ai.provider.name";
 /// Attribute key for the model named in the request.
 pub const REQUEST_MODEL: &str = "gen_ai.request.model";
 
+/// Attribute key correlating spans of one conversation. Carries the agent
+/// thread id, so a thread's traces stitch across the fresh root each claim
+/// opens.
+pub const CONVERSATION_ID: &str = "gen_ai.conversation.id";
+
 /// Attribute key for the sampling temperature sent in the request.
 pub const REQUEST_TEMPERATURE: &str = "gen_ai.request.temperature";
 
@@ -62,6 +67,12 @@ pub const OPERATION_CHAT: &str = "chat";
 
 /// [`OPERATION_NAME`] value for an embedding call.
 pub const OPERATION_EMBEDDINGS: &str = "embeddings";
+
+/// [`OPERATION_NAME`] value for a thread-advancing agent execution.
+pub const OPERATION_INVOKE_AGENT: &str = "invoke_agent";
+
+/// [`OPERATION_NAME`] value for a single tool call.
+pub const OPERATION_EXECUTE_TOOL: &str = "execute_tool";
 
 // ---------------------------------------------------------------------------
 // Token-type values
