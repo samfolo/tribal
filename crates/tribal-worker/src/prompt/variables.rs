@@ -26,6 +26,10 @@ pub(crate) const VAR_SUBMISSION: &str = "submission";
 /// Tera context variable: the claims a verifier's submission assessed.
 pub(crate) const VAR_CONSIDERED_ITEMS: &str = "considered_items";
 
+/// Tera context variable: the edges a relation submission proposes, as the
+/// relation verifier reviews them.
+pub(crate) const VAR_EDGES: &str = "edges";
+
 /// Tera context variable: the verbatim raw input text.
 pub(crate) const VAR_RAW_INPUT: &str = "raw_input";
 
@@ -126,6 +130,18 @@ pub(crate) fn triage_system_context() -> tera::Context {
 pub(crate) fn relation_system_context() -> tera::Context {
     let mut ctx = tera::Context::new();
     ctx.insert(VAR_SIMILARITY_SCORE_LEGEND, &similarity_score_legend());
+    ctx.insert(
+        VAR_INGESTION_RELATION_KIND_LEGEND,
+        &ingestion_relation_kind_legend(),
+    );
+    ctx
+}
+
+/// System prompt context for the relation verifier: the relation-kind
+/// legend alone, so the verifier judges an edge's type and direction
+/// against the same definitions the submitting agent saw.
+pub(crate) fn relation_verifier_system_context() -> tera::Context {
+    let mut ctx = tera::Context::new();
     ctx.insert(
         VAR_INGESTION_RELATION_KIND_LEGEND,
         &ingestion_relation_kind_legend(),

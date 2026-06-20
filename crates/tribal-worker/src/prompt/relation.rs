@@ -3,18 +3,19 @@
 use schemars::schema_for;
 use serde::Serialize;
 use tribal_domain::{
-    Candidate, KnowledgeItemId, RelationHint, RelationSuggestion, StageParameters,
+    Candidate, KnowledgeItemId, KnowledgeKind, RelationHint, RelationSuggestion, StageParameters,
 };
 use tribal_inference::{CompletionRequest, Message, ResponseFormat};
 
 use super::renderer::PromptRenderer;
 use crate::{
     error::StageError,
-    parsing::RelationOutput,
+    parsing::{IngestionRelationKind, RelationOutput},
     prompt::{
         narrow_temperature,
         variables::{
-            VAR_CANDIDATES, VAR_RELATION_HINTS, VAR_SIMILAR_ITEM_DECISIONS, relation_system_context,
+            VAR_CANDIDATES, VAR_EDGES, VAR_RELATION_HINTS, VAR_SIMILAR_ITEM_DECISIONS,
+            relation_system_context, relation_verifier_system_context,
         },
     },
 };
@@ -176,6 +177,79 @@ pub(crate) fn assemble_relation_loop_opening(
         user_template,
         user_ctx,
         "rendering the relation loop user prompt",
+    )?;
+
+    Ok((rendered_system, rendered_user))
+}
+
+// ---------------------------------------------------------------------------
+// Verifier context
+// ---------------------------------------------------------------------------
+
+/// One edge a relation submission proposes, as the verifier reviews it:
+/// the asserted type and the two claims it connects, each resolved to its
+/// content so the verifier judges against the same text both endpoints hold.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct VerifierRelationEdge {
+    /// The asserted relationship type, serialised to its wire form for the
+    /// template, so the rubric reads the same name the submission carried.
+    pub relation_type: IngestionRelationKind,
+    /// The submission's reasoning for the edge, when it gave one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+    /// The claim asserting the relationship.
+    pub source: VerifierEndpoint,
+    /// The claim the relationship is asserted about.
+    pub target: VerifierEndpoint,
+}
+
+/// One edge endpoint resolved to its content.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct VerifierEndpoint {
+    /// The claim's item id.
+    pub item_id: String,
+    /// The claim's classification.
+    pub kind: KnowledgeKind,
+    /// The claim's content.
+    pub content: String,
+}
+
+/// Builds the relation verifier's user prompt context.
+///
+/// Both the production assembly and the validation tests call this, so a
+/// variable added here is reflected in both paths.
+pub(crate) fn relation_verifier_user_context(edges: &[VerifierRelationEdge]) -> tera::Context {
+    let mut ctx = tera::Context::new();
+    ctx.insert(VAR_EDGES, edges);
+    ctx
+}
+
+/// Renders the relation verifier child's opening: the rubric system prompt
+/// (carrying the relation-kind legend) and the edges-under-review user
+/// message, under one renderer so both share the turn's pinned nonce.
+///
+/// # Errors
+///
+/// Returns [`StageError::TemplateRender`] if either template cannot be
+/// rendered.
+pub(crate) fn assemble_relation_verifier_input(
+    system_template: &str,
+    user_template: &str,
+    edges: &[VerifierRelationEdge],
+) -> Result<(String, String), StageError> {
+    let renderer = PromptRenderer::new();
+
+    let rendered_system = renderer.render(
+        system_template,
+        relation_verifier_system_context(),
+        "rendering the relation verifier system prompt",
+    )?;
+
+    let user_ctx = relation_verifier_user_context(edges);
+    let rendered_user = renderer.render(
+        user_template,
+        user_ctx,
+        "rendering the relation verifier user prompt",
     )?;
 
     Ok((rendered_system, rendered_user))
