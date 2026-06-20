@@ -8,13 +8,14 @@
 //! wake-at deadline this sweep drives, or a terminal outcome whose
 //! cancel-fallback this sweep performs.
 
+use tracing::Instrument;
 use tribal_agent_runtime::{BUDGET_RECHECK_CAUSE, ResolveOutcome, resolve_stage_thread};
 use tribal_config::AgentsConfig;
 use tribal_db::{
     AgentBindingVersionRepository, AgentThreadRepository, PgAgentBindingVersionRepository,
     PgAgentThreadRepository,
 };
-use tribal_domain::{AgentThread, AgentThreadSuspension, StageExecutorKind};
+use tribal_domain::{AgentThread, AgentThreadSuspension, StageExecutorKind, span_attrs};
 
 use crate::{
     definition::current_stage_budgets,
@@ -47,9 +48,17 @@ impl Worker {
     /// The janitor runs before the cancel fallback so an orphan it marks
     /// this cycle is disposed the same cycle rather than the next.
     pub(crate) async fn run_thread_sweep(&self) -> ThreadSweepStats {
+        self.run_thread_sweep_inner()
+            .instrument(thread_sweep_span())
+            .await
+    }
+
+    async fn run_thread_sweep_inner(&self) -> ThreadSweepStats {
         let mut stats = ThreadSweepStats::default();
         let Ok(mut conn) = self.pool().acquire().await else {
             tracing::warn!("pool acquire failed for the thread sweep");
+            // The cycle still carries its (zero) counts on the span.
+            record_sweep_outcome(&stats);
             return stats;
         };
 
@@ -57,7 +66,49 @@ impl Worker {
         stats.cascaded = sweep_orphan_cascade(&mut conn).await;
         stats.cancelled = sweep_cancel_fallback(self, &mut conn).await;
         stats.stuck_relating = sweep_stuck_relating(self, &mut conn).await;
+
+        record_sweep_outcome(&stats);
         stats
+    }
+}
+
+/// The availability sweep's per-cycle span. Its convergence counts are
+/// recorded as the cycle completes, so they read off one coherent span.
+fn thread_sweep_span() -> tracing::Span {
+    tracing::info_span!(
+        "tribal.thread_sweep",
+        { span_attrs::SWEEP_TIMER_WAKES } = tracing::field::Empty,
+        { span_attrs::SWEEP_CASCADED } = tracing::field::Empty,
+        { span_attrs::SWEEP_CANCELLED } = tracing::field::Empty,
+        { span_attrs::SWEEP_STUCK_RELATING } = tracing::field::Empty,
+    )
+}
+
+/// Records the cycle's counts on the enclosing sweep span and emits a
+/// per-action event for each predicate that converged anything.
+fn record_sweep_outcome(stats: &ThreadSweepStats) {
+    let span = tracing::Span::current();
+    span.record(span_attrs::SWEEP_TIMER_WAKES, stats.timer_wakes);
+    span.record(span_attrs::SWEEP_CASCADED, stats.cascaded);
+    span.record(span_attrs::SWEEP_CANCELLED, stats.cancelled);
+    span.record(span_attrs::SWEEP_STUCK_RELATING, stats.stuck_relating);
+    emit_sweep_action(span_attrs::SWEEP_ACTION_TIMER_WAKE, stats.timer_wakes);
+    emit_sweep_action(span_attrs::SWEEP_ACTION_ORPHAN_CASCADE, stats.cascaded);
+    emit_sweep_action(span_attrs::SWEEP_ACTION_CANCEL_FALLBACK, stats.cancelled);
+    emit_sweep_action(
+        span_attrs::SWEEP_ACTION_STUCK_RELATING,
+        stats.stuck_relating,
+    );
+}
+
+/// Emits a per-action sweep event when the predicate converged anything.
+fn emit_sweep_action(action: &'static str, count: u32) {
+    if count > 0 {
+        tracing::info!(
+            { span_attrs::SWEEP_ACTION } = action,
+            { span_attrs::SWEEP_ACTION_COUNT } = count,
+            "thread sweep converged an action",
+        );
     }
 }
 
@@ -104,9 +155,6 @@ async fn sweep_timer_wakes(agents: &AgentsConfig, conn: &mut sqlx::PgConnection)
             }
         }
     }
-    if woken > 0 {
-        tracing::info!(woken, "timer wakes resolved");
-    }
     woken
 }
 
@@ -143,15 +191,7 @@ async fn sweep_orphan_cascade(conn: &mut sqlx::PgConnection) -> u32 {
         .cascade_cancel_to_orphans(conn, SWEEP_BATCH, coupling::CANCEL_CASCADE_REQUESTED_BY)
         .await
     {
-        Ok(count) => {
-            if count > 0 {
-                tracing::info!(
-                    count,
-                    "orphan cascade marked descendants of terminal parents"
-                );
-            }
-            u32::try_from(count).unwrap_or(u32::MAX)
-        }
+        Ok(count) => u32::try_from(count).unwrap_or(u32::MAX),
         Err(e) => {
             tracing::warn!(error = %e, "orphan-cascade scan failed");
             0
@@ -265,9 +305,9 @@ mod tests {
     };
     use tribal_domain::{AGENT_THREAD_FORMAT_VERSION, AgentThreadRecordKind, GitRemote, TaskType};
     use tribal_test_utils::{
-        a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_system_fingerprint,
-        a_new_task, an_agent_definition, insert_prompt_version, serial_lock, test_context,
-        upsert_system_fingerprint,
+        TracingCapture, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
+        a_new_system_fingerprint, a_new_task, an_agent_definition, insert_prompt_version,
+        serial_lock, test_context, upsert_system_fingerprint,
     };
 
     use super::*;
@@ -427,5 +467,43 @@ mod tests {
         assert!(timer_wake.content().get("unchanged_rechecks").is_none());
 
         tribal_test_utils::truncate_all_tables(&mut conn).await;
+    }
+
+    /// The sweep cycle records its four convergence counts on one
+    /// `tribal.thread_sweep` span and emits a per-action event only for the
+    /// predicates that converged anything.
+    #[tokio::test]
+    async fn test_sweep_cycle_records_counts_and_non_zero_actions() {
+        let (capture, _capture) = TracingCapture::install();
+        let stats = ThreadSweepStats {
+            timer_wakes: 2,
+            cascaded: 0,
+            cancelled: 1,
+            stuck_relating: 0,
+        };
+        thread_sweep_span().in_scope(|| record_sweep_outcome(&stats));
+
+        let span = capture
+            .span("tribal.thread_sweep")
+            .expect("the sweep opens one span");
+        assert_eq!(span.field(span_attrs::SWEEP_TIMER_WAKES), Some("2"));
+        assert_eq!(span.field(span_attrs::SWEEP_CASCADED), Some("0"));
+        assert_eq!(span.field(span_attrs::SWEEP_CANCELLED), Some("1"));
+        assert_eq!(span.field(span_attrs::SWEEP_STUCK_RELATING), Some("0"));
+
+        let actions: Vec<_> = capture
+            .events()
+            .into_iter()
+            .filter(|event| event.message == "thread sweep converged an action")
+            .collect();
+        assert_eq!(actions.len(), 2, "only non-zero actions emit an event");
+        assert!(actions.iter().any(|event| {
+            event.field(span_attrs::SWEEP_ACTION) == Some("timer_wake")
+                && event.field(span_attrs::SWEEP_ACTION_COUNT) == Some("2")
+        }));
+        assert!(actions.iter().any(|event| {
+            event.field(span_attrs::SWEEP_ACTION) == Some("cancel_fallback")
+                && event.field(span_attrs::SWEEP_ACTION_COUNT) == Some("1")
+        }));
     }
 }

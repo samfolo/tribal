@@ -224,6 +224,37 @@ pub fn parent_span_from_trace_id(span: &tracing::Span, trace_id: &str) -> TraceL
     TraceLink::Linked
 }
 
+/// Adds a best-effort `OTel` span link from `span` to a (trace, span) a
+/// prior execution recorded, when both ids parse.
+///
+/// Unlike the parenting helpers, this leaves `span` rooted in its own
+/// trace and merely records a link to the other: a verifier child links
+/// to its launching parent without reparenting, since a suspension can
+/// outlive the parent's trace window and the durable parent linkage is
+/// the authority. The link is silently dropped when no OpenTelemetry
+/// layer is installed, so [`TraceLink::Linked`] reports only that the ids
+/// were valid.
+#[must_use]
+pub fn link_span_to_ids(span: &tracing::Span, trace_id: &str, span_id: &str) -> TraceLink {
+    if trace_id.len() != 32 || span_id.len() != 16 {
+        return TraceLink::Invalid;
+    }
+    let (Ok(tid), Ok(sid)) = (TraceId::from_hex(trace_id), SpanId::from_hex(span_id)) else {
+        return TraceLink::Invalid;
+    };
+    if tid == TraceId::INVALID || sid == SpanId::INVALID {
+        return TraceLink::Invalid;
+    }
+    span.add_link(SpanContext::new(
+        tid,
+        sid,
+        TraceFlags::SAMPLED,
+        true,
+        TraceState::default(),
+    ));
+    TraceLink::Linked
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -430,6 +461,65 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("test_invalid_tid");
             assert!(parent_span_from_trace_id(&span, "not-a-trace-id").is_invalid());
+        });
+    }
+
+    // -- span linking -------------------------------------------------------
+
+    #[test]
+    fn test_link_span_to_valid_ids() {
+        let (subscriber, _provider) = otel_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("test_link");
+            let result = link_span_to_ids(
+                &span,
+                "4bf92f3577b34da6a3ce929d0e0e4736",
+                "00f067aa0ba902b7",
+            );
+            assert_eq!(result, TraceLink::Linked);
+        });
+    }
+
+    #[test]
+    fn test_link_span_to_short_ids_is_invalid() {
+        let (subscriber, _provider) = otel_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("test_link_short");
+            assert!(link_span_to_ids(&span, "4bf92f35", "00f067aa").is_invalid());
+        });
+    }
+
+    #[test]
+    fn test_link_span_to_non_hex_ids_is_invalid() {
+        let (subscriber, _provider) = otel_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("test_link_non_hex");
+            // 32 and 16 characters, so the length guard passes and the
+            // hex parse is what rejects them.
+            assert!(
+                link_span_to_ids(
+                    &span,
+                    "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+                    "zzzzzzzzzzzzzzzz",
+                )
+                .is_invalid(),
+            );
+        });
+    }
+
+    #[test]
+    fn test_link_span_to_all_zero_ids_is_invalid() {
+        let (subscriber, _provider) = otel_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("test_link_zero");
+            assert!(
+                link_span_to_ids(
+                    &span,
+                    "00000000000000000000000000000000",
+                    "0000000000000000",
+                )
+                .is_invalid(),
+            );
         });
     }
 }
