@@ -13,7 +13,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     AgentBindingVersionId, AgentDriverTaskId, AgentThreadId, AgentThreadRecordId, JobId,
-    PrincipalId, TaskId, TaskType,
+    PrincipalId, TaskId, TaskType, span_attrs,
 };
 
 /// The serialisation shape of thread-owned structures (record `content`
@@ -153,6 +153,21 @@ pub enum AgentThreadSuspension {
         /// exhausted.
         unchanged_rechecks: u32,
     },
+}
+
+impl AgentThreadSuspension {
+    /// The stable telemetry label for the suspension cause: the value a
+    /// suspension-committed event carries on its
+    /// [`span_attrs::SUSPENSION_REASON`] field.
+    #[must_use]
+    pub fn reason_label(&self) -> &'static str {
+        match self {
+            Self::HumanInput { .. } => span_attrs::SUSPENSION_REASON_HUMAN,
+            Self::DeferredToolResults { .. } => span_attrs::SUSPENSION_REASON_DEFERRED,
+            Self::Timer => span_attrs::SUSPENSION_REASON_TIMER,
+            Self::BudgetExhaustion { .. } => span_attrs::SUSPENSION_REASON_BUDGET,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

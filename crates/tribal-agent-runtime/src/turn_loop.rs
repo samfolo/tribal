@@ -25,6 +25,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::StreamExt;
 use sqlx::PgConnection;
+use tracing::Instrument;
 use tribal_db::{
     AgentThreadRecordRepository, AgentThreadRepository, DbError, NewAgentThreadRecord,
     PgAgentThreadRecordRepository, PgAgentThreadRepository, PgTaskRepository,
@@ -33,7 +34,8 @@ use tribal_db::{
 use tribal_domain::{
     AgentThread, AgentThreadRecord, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus,
     AgentThreadSuspension, AgentThreadTerminal, CompletionResponse, ExecutionBudgets,
-    ExecutionSpend, InferenceEvent, TaskId, TaskType, ToolDescriptor, ToolFailure,
+    ExecutionSpend, InferenceEvent, StageExecutorKind, TaskId, TaskType, ToolDescriptor,
+    ToolFailure, gen_ai, span_attrs,
 };
 use tribal_inference::{
     CompletionRequest, InferenceGateway, Message, PermitWait, ToolWireDefinition, UsageAttribution,
@@ -170,6 +172,16 @@ pub enum SubmissionOutcome {
         /// The model-facing rejection, held to the prompt bar.
         diagnostics: String,
     },
+}
+
+impl SubmissionOutcome {
+    /// The telemetry label for a submission evaluation, content-free.
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Accepted { .. } => span_attrs::SUBMISSION_OUTCOME_ACCEPTED,
+            Self::Bounced { .. } => span_attrs::SUBMISSION_OUTCOME_BOUNCED,
+        }
+    }
 }
 
 /// The stage's submission pipeline: schema parse, then the deterministic
@@ -348,6 +360,17 @@ pub enum AdmissionDecision {
     Exhausted(BudgetFailure),
 }
 
+impl AdmissionDecision {
+    /// The telemetry label for a pre-call admission decision.
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Proceed => span_attrs::BUDGET_DECISION_ADMITTED,
+            Self::Suspend { .. } => span_attrs::BUDGET_DECISION_SUSPEND,
+            Self::Exhausted(_) => span_attrs::BUDGET_DECISION_FAILED,
+        }
+    }
+}
+
 /// Runs the token admission and folds in the bounded-recheck
 /// accounting: the decision both executors share before an inference
 /// call. The caller commits the suspension (or the failure), so each
@@ -451,6 +474,18 @@ pub enum LoopOutcome {
         /// Which budget, with its numbers.
         cause: BudgetFailure,
     },
+}
+
+impl LoopOutcome {
+    /// The telemetry label for the loop's concluding outcome.
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Submitted(_) => span_attrs::LOOP_OUTCOME_SUBMITTED,
+            Self::Suspended => span_attrs::LOOP_OUTCOME_SUSPENDED,
+            Self::CancelIntent => span_attrs::LOOP_OUTCOME_CANCEL_INTENT,
+            Self::BudgetFailed { .. } => span_attrs::LOOP_OUTCOME_BUDGET_FAILED,
+        }
+    }
 }
 
 /// The budget exhaustions that fail a thread rather than suspend it.
@@ -571,6 +606,26 @@ pub struct TurnLoopDependencies<'a> {
 pub async fn run_turn_loop(
     deps: TurnLoopDependencies<'_>,
 ) -> Result<LoopOutcome, AgentRuntimeError> {
+    // The runtime root for one thread-advancing execution: the per-claim
+    // stage span (created in the worker) encloses this, and the inference,
+    // tool, and embedding spans nest under it. The thread id rides
+    // `gen_ai.conversation.id`, stitching a thread's fresh-per-claim traces.
+    let span = tracing::info_span!(
+        "invoke_agent",
+        { gen_ai::OPERATION_NAME } = gen_ai::OPERATION_INVOKE_AGENT,
+        { gen_ai::CONVERSATION_ID } = %deps.thread.id(),
+        { span_attrs::STAGE } = deps.stage.as_str(),
+        { span_attrs::TASK_ID } = %deps.task_id,
+        { span_attrs::RETRY_COUNT } = deps.attempt,
+        { span_attrs::EXECUTOR } = StageExecutorKind::BuiltInLoop.as_str(),
+        { span_attrs::THREAD_RESUMED } = tracing::field::Empty,
+    );
+    run_turn_loop_inner(deps).instrument(span).await
+}
+
+async fn run_turn_loop_inner(
+    deps: TurnLoopDependencies<'_>,
+) -> Result<LoopOutcome, AgentRuntimeError> {
     let mut conn = acquire(deps.pool).await?;
 
     // The committed log decides whether this attempt renders the
@@ -578,10 +633,23 @@ pub async fn run_turn_loop(
     // a resumed entry can never write a duplicate whatever the caller
     // believes about prior attempts.
     let mut records = read_log(&mut conn, deps.thread).await?;
-    if !records
+    let resumed = records
         .iter()
-        .any(|record| is_rendered_conversation(record.content()))
-    {
+        .any(|record| is_rendered_conversation(record.content()));
+    tracing::Span::current().record(span_attrs::THREAD_RESUMED, resumed);
+    if resumed {
+        // The committed log is a re-derivation, not a re-execution, so the
+        // replay is one event at the boundary, never one per replayed turn.
+        tracing::info!(
+            { span_attrs::RESUMED_AT_SEQ } =
+                records.last().map_or(0, |record| record.seq().inner()),
+            { span_attrs::TURNS_REPLAYED } = records
+                .iter()
+                .filter(|record| record.kind() == AgentThreadRecordKind::AssistantMessage)
+                .count(),
+            "agentic thread resumed from its committed log",
+        );
+    } else {
         begin_turn(
             &mut conn,
             deps.thread,
@@ -594,7 +662,7 @@ pub async fn run_turn_loop(
     }
     let mut projection = project(deps.thread, &records)?;
 
-    loop {
+    let outcome = loop {
         // A returned verifier verdict resolves before the unanswered tail
         // and before any boundary: an accepted-and-still-valid submission
         // terminates without a further call, and any call the model issued
@@ -609,7 +677,7 @@ pub async fn run_turn_loop(
             if let Some(accepted) =
                 resolve_verdict(&mut conn, &deps, &mut projection, resolved).await?
             {
-                return Ok(LoopOutcome::Submitted(accepted));
+                break LoopOutcome::Submitted(accepted);
             }
             continue;
         }
@@ -617,9 +685,9 @@ pub async fn run_turn_loop(
         if let Some(batch) = projection.tail.take() {
             match execute_batch(&mut conn, &deps, &mut projection, batch).await? {
                 BatchOutcome::Completed => {}
-                BatchOutcome::Submitted(accepted) => return Ok(LoopOutcome::Submitted(accepted)),
-                BatchOutcome::Suspended => return Ok(LoopOutcome::Suspended),
-                BatchOutcome::CancelIntervened => return Ok(LoopOutcome::CancelIntent),
+                BatchOutcome::Submitted(accepted) => break LoopOutcome::Submitted(accepted),
+                BatchOutcome::Suspended => break LoopOutcome::Suspended,
+                BatchOutcome::CancelIntervened => break LoopOutcome::CancelIntent,
                 BatchOutcome::Reproject => {
                     projection = read_projection(&mut conn, deps.thread).await?;
                 }
@@ -641,61 +709,66 @@ pub async fn run_turn_loop(
                 task_id: deps.task_id,
             })?;
         if current.cancel_requested_at().is_some() {
-            return Ok(LoopOutcome::CancelIntent);
+            break LoopOutcome::CancelIntent;
         }
 
         // 2. The turn cap, against committed turns.
         if let Some(cap) = deps.budgets.max_turns
             && projection.assistant_turns >= cap
         {
-            return Ok(LoopOutcome::BudgetFailed {
+            break LoopOutcome::BudgetFailed {
                 cause: BudgetFailure::TurnCap {
                     turns: projection.assistant_turns,
                     cap,
                 },
-            });
+            };
         }
 
         // 3. The execution deadline, against thread age.
         if let Some(seconds) = deps.budgets.execution_deadline_seconds
             && Utc::now() - deps.thread.created_at() > chrono::Duration::seconds(i64::from(seconds))
         {
-            return Ok(LoopOutcome::BudgetFailed {
+            break LoopOutcome::BudgetFailed {
                 cause: BudgetFailure::Deadline { seconds },
-            });
+            };
         }
 
         // 4. Ledger-side token admission, with the bounded re-check
         //    accounting.
-        match decide_admission(
+        let decision = decide_admission(
             &mut conn,
             deps.thread,
             &deps.budgets,
             deps.recheck,
             carried_rechecks,
         )
-        .await?
-        {
+        .await?;
+        emit_budget_admission(decision);
+        match decision {
             AdmissionDecision::Proceed => {}
             AdmissionDecision::Exhausted(cause) => {
-                return Ok(LoopOutcome::BudgetFailed { cause });
+                break LoopOutcome::BudgetFailed { cause };
             }
             AdmissionDecision::Suspend { unchanged_rechecks } => {
                 deps.pump.abort();
                 let wake_at =
                     Utc::now() + chrono::Duration::seconds(i64::from(deps.recheck.delay_seconds));
-                return match suspend_stage_thread(
+                let suspension = AgentThreadSuspension::BudgetExhaustion { unchanged_rechecks };
+                break match suspend_stage_thread(
                     &mut conn,
                     deps.thread,
                     deps.task_id,
                     deps.claim_token,
-                    &AgentThreadSuspension::BudgetExhaustion { unchanged_rechecks },
+                    &suspension,
                     Some(wake_at),
                 )
                 .await?
                 {
-                    SuspendOutcome::Suspended => Ok(LoopOutcome::Suspended),
-                    SuspendOutcome::CancelIntervened => Ok(LoopOutcome::CancelIntent),
+                    SuspendOutcome::Suspended => {
+                        emit_suspension(&suspension, Some(wake_at), Some(unchanged_rechecks));
+                        LoopOutcome::Suspended
+                    }
+                    SuspendOutcome::CancelIntervened => LoopOutcome::CancelIntent,
                 };
             }
         }
@@ -708,7 +781,74 @@ pub async fn run_turn_loop(
         //    spend projection, and progress reset.
         let (record, calls) = commit_assistant_turn(&mut conn, &deps, &response).await?;
         projection.append_assistant(&response, record.seq(), calls);
+        tracing::info!(
+            { span_attrs::TURN_INDEX } = record.seq().inner(),
+            { span_attrs::ASSISTANT_TURNS } = projection.assistant_turns,
+            { gen_ai::USAGE_INPUT_TOKENS } = response.usage.input_tokens,
+            { gen_ai::USAGE_OUTPUT_TOKENS } = response.usage.output_tokens,
+            "agentic turn committed",
+        );
+    };
+
+    tracing::info!(
+        { span_attrs::LOOP_OUTCOME } = outcome.label(),
+        "agentic loop reached an outcome",
+    );
+    Ok(outcome)
+}
+
+/// Emits the pre-call budget admission event, carrying the decision and
+/// its numbers (never content).
+fn emit_budget_admission(decision: AdmissionDecision) {
+    match decision {
+        AdmissionDecision::Proceed => {
+            tracing::debug!(
+                { span_attrs::BUDGET_DECISION } = decision.label(),
+                "budget admitted"
+            );
+        }
+        AdmissionDecision::Suspend { unchanged_rechecks } => {
+            tracing::info!(
+                { span_attrs::BUDGET_DECISION } = decision.label(),
+                { span_attrs::UNCHANGED_RECHECKS } = unchanged_rechecks,
+                "budget exhausted; suspending",
+            );
+        }
+        AdmissionDecision::Exhausted(BudgetFailure::RecheckExhausted {
+            spent,
+            cap,
+            rechecks,
+        }) => {
+            tracing::warn!(
+                { span_attrs::BUDGET_DECISION } = decision.label(),
+                { span_attrs::BUDGET_SPENT } = spent,
+                { span_attrs::BUDGET_CAP } = cap,
+                { span_attrs::UNCHANGED_RECHECKS } = rechecks,
+                "budget re-checks ran dry; failing the thread",
+            );
+        }
+        AdmissionDecision::Exhausted(_) => {
+            tracing::warn!(
+                { span_attrs::BUDGET_DECISION } = decision.label(),
+                "budget exhausted; failing the thread",
+            );
+        }
     }
+}
+
+/// Emits a suspension-committed event with the typed reason and, for a
+/// budget wake, its wake instant and re-check count.
+fn emit_suspension(
+    suspension: &AgentThreadSuspension,
+    wake_at: Option<chrono::DateTime<Utc>>,
+    unchanged_rechecks: Option<u32>,
+) {
+    tracing::info!(
+        { span_attrs::SUSPENSION_REASON } = suspension.reason_label(),
+        { span_attrs::WAKE_AT } = wake_at.map(|at| at.to_rfc3339()),
+        { span_attrs::UNCHANGED_RECHECKS } = unchanged_rechecks,
+        "agentic thread suspended",
+    );
 }
 
 /// Dispositions a returned verifier verdict. `Some` terminates the stage;
@@ -1270,6 +1410,7 @@ async fn commit_assistant_turn(
 }
 
 /// What a fenced tool-result commit concluded.
+#[derive(Clone, Copy)]
 enum ResultCommit {
     Committed,
     /// The fence refused the append: another actor answered this call.
@@ -1411,7 +1552,36 @@ enum BatchOutcome {
     Reproject,
 }
 
-/// Executes a batch's unanswered calls sequentially, in call order.
+/// What handling one call concluded, before the batch maps it to its own
+/// outcome.
+enum CallStep {
+    /// A result committed (ordinary, bounce, or error); the batch continues.
+    Committed,
+    /// The fence refused the append; the in-memory reading is stale.
+    FenceConflict,
+    /// `submit_result` was accepted with no verifier; exit to the terminal.
+    Submitted(AcceptedSubmission),
+    /// `submit_result` was accepted and a verifier launched; suspended.
+    Suspended,
+    /// A durable cancellation intent intervened at the verifier suspend.
+    CancelIntervened,
+}
+
+impl CallStep {
+    /// The telemetry label for an `execute_tool` span's outcome.
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Committed => span_attrs::TOOL_OUTCOME_COMMITTED,
+            Self::FenceConflict => span_attrs::TOOL_OUTCOME_FENCE_CONFLICT,
+            Self::Submitted(_) => span_attrs::TOOL_OUTCOME_SUBMITTED,
+            Self::Suspended => span_attrs::TOOL_OUTCOME_SUSPENDED,
+            Self::CancelIntervened => span_attrs::TOOL_OUTCOME_CANCEL_INTERVENED,
+        }
+    }
+}
+
+/// Executes a batch's unanswered calls sequentially, in call order, each
+/// under its own `execute_tool` span.
 ///
 /// A bounced submission commits its diagnostics and the batch continues;
 /// an accepted submission stops the batch, so any calls the model issued
@@ -1428,105 +1598,106 @@ async fn execute_batch(
         if batch.answered.contains(&call.id) {
             continue;
         }
-        let commit = if call.name == SUBMIT_RESULT_TOOL {
+        let is_submit = call.name == SUBMIT_RESULT_TOOL;
+        // The model authors the call name, so an unrecognised one is
+        // arbitrary text that must never reach telemetry. Record the fixed
+        // submit name, a matched registered name (a fixed identifier), or a
+        // constant `unknown` classification, never the raw name.
+        let tool_label = if is_submit {
+            SUBMIT_RESULT_TOOL
+        } else if deps.registry.lookup(&call.name).is_ok() {
+            call.name.as_str()
+        } else {
+            "unknown"
+        };
+        let span = tracing::info_span!(
+            "execute_tool",
+            { gen_ai::OPERATION_NAME } = gen_ai::OPERATION_EXECUTE_TOOL,
+            { span_attrs::OTEL_NAME } = %format!("execute_tool {tool_label}"),
+            { span_attrs::TOOL_NAME } = tool_label,
+            { span_attrs::TOOL_CALL_ID } = %call.id,
+            { span_attrs::TOOL_IS_SUBMIT } = is_submit,
+            { span_attrs::TOOL_OUTCOME } = tracing::field::Empty,
+        );
+        let step = handle_call(conn, deps, projection, &batch, call)
+            .instrument(span)
+            .await?;
+        match step {
+            CallStep::Committed => {}
+            CallStep::FenceConflict => {
+                tracing::warn!(
+                    thread_id = %deps.thread.id(),
+                    call_id = %call.id,
+                    "the tool-result fence refused an append; re-reading the log",
+                );
+                return Ok(BatchOutcome::Reproject);
+            }
+            CallStep::Submitted(accepted) => return Ok(BatchOutcome::Submitted(accepted)),
+            CallStep::Suspended => return Ok(BatchOutcome::Suspended),
+            CallStep::CancelIntervened => return Ok(BatchOutcome::CancelIntervened),
+        }
+    }
+    projection.tail = None;
+    Ok(BatchOutcome::Completed)
+}
+
+/// Handles one unanswered call, recording its outcome on the enclosing
+/// `execute_tool` span: the submission pipeline for `submit_result`, the
+/// two-phase ordinary path otherwise.
+async fn handle_call(
+    conn: &mut PgConnection,
+    deps: &TurnLoopDependencies<'_>,
+    projection: &mut Projection,
+    batch: &PendingBatch,
+    call: &RecordedToolCall,
+) -> Result<CallStep, AgentRuntimeError> {
+    let step = if call.name == SUBMIT_RESULT_TOOL {
+        handle_submission(conn, deps, projection, batch, call).await?
+    } else {
+        commit_to_step(execute_ordinary(conn, deps, projection, batch.requesting_seq, call).await?)
+    };
+    tracing::Span::current().record(span_attrs::TOOL_OUTCOME, step.label());
+    Ok(step)
+}
+
+/// Evaluates a `submit_result` call through the submission pipeline, then
+/// either commits, launches a verifier child, or returns the diagnostics
+/// in-band. Emits the submission-evaluated event at the pipeline boundary.
+async fn handle_submission(
+    conn: &mut PgConnection,
+    deps: &TurnLoopDependencies<'_>,
+    projection: &mut Projection,
+    batch: &PendingBatch,
+    call: &RecordedToolCall,
+) -> Result<CallStep, AgentRuntimeError> {
+    let evaluation = deps
+        .pipeline
+        .evaluate(conn, deps.thread, &projection.corpus, &call.arguments)
+        .await;
+    if let Ok(outcome) = &evaluation {
+        tracing::info!(
+            { span_attrs::SUBMISSION_OUTCOME } = outcome.label(),
+            "submission evaluated",
+        );
+    }
+    match evaluation {
+        Ok(SubmissionOutcome::Accepted { payload }) => {
+            // Validators passed; the binding decides whether a verifier
+            // child must agree before the commit.
             match deps
                 .pipeline
-                .evaluate(conn, deps.thread, &projection.corpus, &call.arguments)
+                .verifier_launch(conn, deps.thread, &payload)
                 .await
             {
-                Ok(SubmissionOutcome::Accepted { payload }) => {
-                    // Validators passed; the binding decides whether a
-                    // verifier child must agree before the commit.
-                    match deps
-                        .pipeline
-                        .verifier_launch(conn, deps.thread, &payload)
-                        .await
-                    {
-                        Ok(None) => {
-                            return Ok(BatchOutcome::Submitted(AcceptedSubmission {
-                                payload,
-                                requesting_seq: batch.requesting_seq,
-                                tool_call_id: call.id.clone(),
-                            }));
-                        }
-                        Ok(Some(launch)) => {
-                            // The verify budget bounds how many verifier
-                            // children one thread launches. Once spent, the
-                            // validated submission commits on the validators
-                            // alone: they are the correctness gate and the
-                            // verifier the quality lever, so a spent budget
-                            // degrades to a direct commit rather than
-                            // failing the thread.
-                            if deps
-                                .budgets
-                                .max_child_launches
-                                .is_some_and(|cap| projection.child_launches >= cap)
-                            {
-                                return Ok(BatchOutcome::Submitted(AcceptedSubmission {
-                                    payload,
-                                    requesting_seq: batch.requesting_seq,
-                                    tool_call_id: call.id.clone(),
-                                }));
-                            }
-                            // The heartbeat stops before the suspension
-                            // clears the claim, lest a beat in flight race
-                            // a spurious ownership-lost signal.
-                            deps.pump.abort();
-                            let child = ChildLaunch {
-                                pipeline_stage: launch.pipeline_stage,
-                                binding_version_id: launch.binding_version_id,
-                                principal_id: deps.thread.principal_id(),
-                                // The parent's job, so the child's spend
-                                // meters to it without a lineage walk.
-                                job_id: deps.attribution.owner.job_id(),
-                                format_version: deps.thread.format_version(),
-                            };
-                            return match suspend_with_child(
-                                conn,
-                                deps.thread,
-                                deps.task_id,
-                                deps.claim_token,
-                                batch.requesting_seq,
-                                &call.id,
-                                child,
-                                &launch.child_input,
-                            )
-                            .await?
-                            {
-                                SuspendWithChildOutcome::Launched(_) => Ok(BatchOutcome::Suspended),
-                                SuspendWithChildOutcome::CancelIntervened => {
-                                    Ok(BatchOutcome::CancelIntervened)
-                                }
-                            };
-                        }
-                        Err(ToolFailure::Recoverable(recoverable)) => {
-                            error_result(
-                                conn,
-                                deps,
-                                projection,
-                                batch.requesting_seq,
-                                call,
-                                recoverable.render(),
-                            )
-                            .await?
-                        }
-                        Err(ToolFailure::System { context }) => {
-                            return Err(AgentRuntimeError::ToolExecution { context });
-                        }
-                    }
+                Ok(None) => Ok(CallStep::Submitted(AcceptedSubmission {
+                    payload,
+                    requesting_seq: batch.requesting_seq,
+                    tool_call_id: call.id.clone(),
+                })),
+                Ok(Some(launch)) => {
+                    launch_verifier(conn, deps, projection, batch, call, payload, launch).await
                 }
-                Ok(SubmissionOutcome::Bounced { diagnostics }) => {
-                    error_result(
-                        conn,
-                        deps,
-                        projection,
-                        batch.requesting_seq,
-                        call,
-                        diagnostics,
-                    )
-                    .await?
-                }
-                Err(ToolFailure::Recoverable(recoverable)) => {
+                Err(ToolFailure::Recoverable(recoverable)) => Ok(commit_to_step(
                     error_result(
                         conn,
                         deps,
@@ -1535,26 +1706,100 @@ async fn execute_batch(
                         call,
                         recoverable.render(),
                     )
-                    .await?
-                }
+                    .await?,
+                )),
                 Err(ToolFailure::System { context }) => {
-                    return Err(AgentRuntimeError::ToolExecution { context });
+                    Err(AgentRuntimeError::ToolExecution { context })
                 }
             }
-        } else {
-            execute_ordinary(conn, deps, projection, batch.requesting_seq, call).await?
-        };
-        if matches!(commit, ResultCommit::FenceConflict) {
-            tracing::warn!(
-                thread_id = %deps.thread.id(),
-                call_id = %call.id,
-                "the tool-result fence refused an append; re-reading the log",
-            );
-            return Ok(BatchOutcome::Reproject);
         }
+        Ok(SubmissionOutcome::Bounced { diagnostics }) => Ok(commit_to_step(
+            error_result(
+                conn,
+                deps,
+                projection,
+                batch.requesting_seq,
+                call,
+                diagnostics,
+            )
+            .await?,
+        )),
+        Err(ToolFailure::Recoverable(recoverable)) => Ok(commit_to_step(
+            error_result(
+                conn,
+                deps,
+                projection,
+                batch.requesting_seq,
+                call,
+                recoverable.render(),
+            )
+            .await?,
+        )),
+        Err(ToolFailure::System { context }) => Err(AgentRuntimeError::ToolExecution { context }),
     }
-    projection.tail = None;
-    Ok(BatchOutcome::Completed)
+}
+
+/// Launches a validators-accepted submission's verifier child, or commits
+/// the validated `payload` directly when the verify budget is spent (the
+/// validators are the correctness gate; the verifier is the quality lever).
+// The launch's full pipeline context; a params struct would only move the
+// same arguments behind a name.
+#[allow(clippy::too_many_arguments)]
+async fn launch_verifier(
+    conn: &mut PgConnection,
+    deps: &TurnLoopDependencies<'_>,
+    projection: &Projection,
+    batch: &PendingBatch,
+    call: &RecordedToolCall,
+    payload: serde_json::Value,
+    launch: VerifierLaunch,
+) -> Result<CallStep, AgentRuntimeError> {
+    if deps
+        .budgets
+        .max_child_launches
+        .is_some_and(|cap| projection.child_launches >= cap)
+    {
+        return Ok(CallStep::Submitted(AcceptedSubmission {
+            payload,
+            requesting_seq: batch.requesting_seq,
+            tool_call_id: call.id.clone(),
+        }));
+    }
+    // The heartbeat stops before the suspension clears the claim, lest a
+    // beat in flight race a spurious ownership-lost signal.
+    deps.pump.abort();
+    let child = ChildLaunch {
+        pipeline_stage: launch.pipeline_stage,
+        binding_version_id: launch.binding_version_id,
+        principal_id: deps.thread.principal_id(),
+        // The parent's job, so the child's spend meters to it without a
+        // lineage walk.
+        job_id: deps.attribution.owner.job_id(),
+        format_version: deps.thread.format_version(),
+    };
+    match suspend_with_child(
+        conn,
+        deps.thread,
+        deps.task_id,
+        deps.claim_token,
+        batch.requesting_seq,
+        &call.id,
+        child,
+        &launch.child_input,
+    )
+    .await?
+    {
+        SuspendWithChildOutcome::Launched(_) => Ok(CallStep::Suspended),
+        SuspendWithChildOutcome::CancelIntervened => Ok(CallStep::CancelIntervened),
+    }
+}
+
+/// Maps a fenced result commit onto the batch's call step.
+fn commit_to_step(commit: ResultCommit) -> CallStep {
+    match commit {
+        ResultCommit::Committed => CallStep::Committed,
+        ResultCommit::FenceConflict => CallStep::FenceConflict,
+    }
 }
 
 /// Executes one ordinary call under the two-phase contract: provider
