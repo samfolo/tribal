@@ -4,7 +4,7 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
 use async_trait::async_trait;
@@ -28,6 +28,7 @@ use tribal_domain::{
     ToolDescriptor, ToolExecutionMode, ToolFailure, ToolSafetyTier, UsageOwner, gen_ai, span_attrs,
 };
 use tribal_inference::UsageAttribution;
+use tribal_telemetry::{InferenceOperationRecord, MetricsRecorder};
 use tribal_test_utils::{TracingCapture, a_tool_call_response};
 
 use super::common::*;
@@ -74,6 +75,43 @@ impl HeartbeatPump for TestPump {
         self.aborts
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+/// Counts the lifecycle metric calls the loop and driver make, so a test
+/// can prove the metrics fire rather than only that the recorder accepts
+/// them.
+#[derive(Default)]
+struct CountingRecorder {
+    suspensions: AtomicU64,
+    budget_admissions: AtomicU64,
+    child_launches: AtomicU64,
+    thread_resumes: AtomicU64,
+}
+
+impl MetricsRecorder for CountingRecorder {
+    fn record_pool_acquire(&self, _pool: &str, _elapsed: Duration) {}
+    fn record_semaphore_acquire(&self, _provider_key: &str, _elapsed: Duration) {}
+    fn record_inference_operation(&self, _record: &InferenceOperationRecord<'_>) {}
+    fn record_task_completed(&self, _task_type: &str, _duration_ms: f64) {}
+    fn record_task_retried(&self, _task_type: &str) {}
+    fn record_task_dead_lettered(&self, _task_type: &str) {}
+    fn record_job_completed(&self, _outcome: &str, _duration_ms: Option<f64>) {}
+    fn set_queue_gauge(&self, _task_type: &str, _status: &str, _count: i64) {}
+    fn record_agent_suspension(&self, _reason: &str) {
+        self.suspensions.fetch_add(1, Ordering::SeqCst);
+    }
+    fn record_agent_budget_admission(&self, _decision: &str) {
+        self.budget_admissions.fetch_add(1, Ordering::SeqCst);
+    }
+    fn record_agent_child_launch(&self) {
+        self.child_launches.fetch_add(1, Ordering::SeqCst);
+    }
+    fn record_agent_child_terminal(&self, _outcome: &str, _is_error: bool) {}
+    fn record_agent_thread_resume(&self) {
+        self.thread_resumes.fetch_add(1, Ordering::SeqCst);
+    }
+    fn record_agent_conflict_retry(&self) {}
+    fn record_agent_sweep_action(&self, _action: &str, _count: u64) {}
 }
 
 fn a_descriptor(name: &str) -> ToolDescriptor {
@@ -295,6 +333,7 @@ struct LoopHarness {
     submit_descriptor: ToolDescriptor,
     pump: TestPump,
     job_id: tribal_domain::JobId,
+    recorder: Arc<dyn tribal_telemetry::MetricsRecorder>,
 }
 
 impl LoopHarness {
@@ -324,6 +363,7 @@ impl LoopHarness {
             temperature: None,
             max_tokens: None,
             permit_deadline: tokio::time::Instant::now() + Duration::from_secs(30),
+            recorder: self.recorder.as_ref(),
         }
     }
 
@@ -455,6 +495,7 @@ async fn loop_harness(
             .build(),
         pump: TestPump::default(),
         job_id,
+        recorder: noop_recorder(),
     }
 }
 
@@ -1382,6 +1423,7 @@ async fn hand_back_verdict(conn: &mut PgConnection, parent_id: AgentThreadId, ve
             requesting_seq,
             tool_call_id,
         },
+        noop_recorder().as_ref(),
     )
     .await
     .expect("hand the verdict back");
@@ -1447,6 +1489,7 @@ async fn kill_child_via_deferred_death(
             tool_call_id,
         },
         message,
+        noop_recorder().as_ref(),
     )
     .await
     .expect("the deferred death crosses back");
@@ -2154,12 +2197,14 @@ async fn test_observability_instruments_the_verifier_round_trip_and_resume() {
     let _guard = serial_lock().await;
     let ctx = test_context().await;
     let child_binding = a_child_binding(ctx).await;
-    let harness = loop_harness(
+    let mut harness = loop_harness(
         ctx,
         "obs-verify",
         vec![submit_response("call_0", OPENING_ITEM_ID)],
     )
     .await;
+    let counter = Arc::new(CountingRecorder::default());
+    harness.recorder = counter.clone();
     let pipeline = VerifyingPipeline { child_binding };
 
     let (capture, _capture) = TracingCapture::install();
@@ -2189,6 +2234,16 @@ async fn test_observability_instruments_the_verifier_round_trip_and_resume() {
     assert_eq!(
         deferred.field(span_attrs::SUSPENSION_REASON),
         Some("deferred_tool_results"),
+    );
+    assert_eq!(
+        counter.child_launches.load(Ordering::SeqCst),
+        1,
+        "the child launch is counted",
+    );
+    assert_eq!(
+        counter.suspensions.load(Ordering::SeqCst),
+        1,
+        "the deferred suspension is counted",
     );
 
     {
@@ -2232,6 +2287,11 @@ async fn test_observability_instruments_the_verifier_round_trip_and_resume() {
             .is_some(),
         "the resume boundary emits one event",
     );
+    assert_eq!(
+        counter.thread_resumes.load(Ordering::SeqCst),
+        1,
+        "the resume is counted",
+    );
 
     teardown(ctx).await;
 }
@@ -2242,12 +2302,14 @@ async fn test_observability_instruments_the_verifier_round_trip_and_resume() {
 async fn test_observability_instruments_a_budget_suspension() {
     let _guard = serial_lock().await;
     let ctx = test_context().await;
-    let harness = loop_harness(
+    let mut harness = loop_harness(
         ctx,
         "obs-budget",
         vec![a_completion_response("an expensive thought")],
     )
     .await;
+    let counter = Arc::new(CountingRecorder::default());
+    harness.recorder = counter.clone();
 
     let attribution = harness.attribution();
     let (capture, _capture) = TracingCapture::install();
@@ -2284,6 +2346,11 @@ async fn test_observability_instruments_a_budget_suspension() {
         suspended.field(span_attrs::WAKE_AT).is_some(),
         "a budget suspension carries its wake instant",
     );
+
+    // The admitted first turn and the suspend decision both count; the
+    // suspension counts once.
+    assert_eq!(counter.budget_admissions.load(Ordering::SeqCst), 2);
+    assert_eq!(counter.suspensions.load(Ordering::SeqCst), 1);
 
     teardown(ctx).await;
 }

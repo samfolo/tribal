@@ -40,7 +40,7 @@ use tribal_domain::{
 use tribal_inference::{
     CompletionRequest, InferenceGateway, Message, PermitWait, ToolWireDefinition, UsageAttribution,
 };
-use tribal_telemetry::{current_span_id, current_trace_id};
+use tribal_telemetry::{MetricsRecorder, current_span_id, current_trace_id};
 
 use crate::{
     AgentRuntimeError, SuspendOutcome, ToolRegistry,
@@ -587,6 +587,8 @@ pub struct TurnLoopDependencies<'a> {
     pub max_tokens: Option<u32>,
     /// The claim's outer deadline, bounding provider-permit waits.
     pub permit_deadline: tokio::time::Instant,
+    /// The sink for the loop's lifecycle metrics.
+    pub recorder: &'a dyn MetricsRecorder,
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +651,7 @@ async fn run_turn_loop_inner(
                 .count(),
             "agentic thread resumed from its committed log",
         );
+        deps.recorder.record_agent_thread_resume();
     } else {
         begin_turn(
             &mut conn,
@@ -744,6 +747,8 @@ async fn run_turn_loop_inner(
         )
         .await?;
         emit_budget_admission(decision);
+        deps.recorder
+            .record_agent_budget_admission(decision.label());
         match decision {
             AdmissionDecision::Proceed => {}
             AdmissionDecision::Exhausted(cause) => {
@@ -766,6 +771,8 @@ async fn run_turn_loop_inner(
                 {
                     SuspendOutcome::Suspended => {
                         emit_suspension(&suspension, Some(wake_at), Some(unchanged_rechecks));
+                        deps.recorder
+                            .record_agent_suspension(suspension.reason_label());
                         LoopOutcome::Suspended
                     }
                     SuspendOutcome::CancelIntervened => LoopOutcome::CancelIntent,
@@ -1789,7 +1796,12 @@ async fn launch_verifier(
     )
     .await?
     {
-        SuspendWithChildOutcome::Launched(_) => Ok(CallStep::Suspended),
+        SuspendWithChildOutcome::Launched(_) => {
+            deps.recorder.record_agent_child_launch();
+            deps.recorder
+                .record_agent_suspension(span_attrs::SUSPENSION_REASON_DEFERRED);
+            Ok(CallStep::Suspended)
+        }
         SuspendWithChildOutcome::CancelIntervened => Ok(CallStep::CancelIntervened),
     }
 }
