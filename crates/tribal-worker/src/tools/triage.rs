@@ -442,8 +442,10 @@ impl ReadItemNeighbourhoodTool {
             .name(NEIGHBOURHOOD_NAME.to_owned())
             .description(
                 "Read a knowledge item's committed relations and the neighbouring items they \
-                 connect within this project. Use it to see how an item already relates to what \
-                 is already known before deciding the candidate's relationship to it."
+                 connect within this project, to see how an item already relates to what is \
+                 already known before deciding the candidate's relationship to it. Optional and \
+                 rarely needed: reach for it only when those existing relations would change your \
+                 classification."
                     .to_owned(),
             )
             .input_schema(serde_json::json!({
