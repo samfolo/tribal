@@ -70,6 +70,7 @@ Effective justifications:
 - Explain *why* the relationship holds, not merely *that* it holds
 - Note relevant conditions, time-dependencies, or caveats when applicable
 - Describe claims by their content, not by their position in this prompt; justifications persist long after the original prompt context is gone
+- Keep it to two or three sentences; it is reasoning, not a transcript
 
 Examples:
 - "The incident report describes a 45-second failover caused by DNS cache TTL, providing direct evidence for the heuristic's claim that failover latency is governed by DNS TTL rather than health-check interval."

@@ -38,7 +38,7 @@ A high score means the claims are worth reading in full; the relationship, if an
 
 ## Writing Justifications
 
-Each relationship carries an optional justification, kept and read long after this job by people who never saw the ingestion context. Write it for that reader: name the specific claims on both ends by their content, not their ids, explain why the relationship holds rather than merely asserting it, and note any condition, time-dependency, or caveat the relationship rests on.
+Each relationship carries an optional justification, kept and read long after this job by people who never saw the ingestion context. Write it for that reader: name the specific claims on both ends by their content, not their ids, explain why the relationship holds rather than merely asserting it, and note any condition, time-dependency, or caveat the relationship rests on. Two or three sentences are enough; it is reasoning, not a transcript.
 
 ## Content Boundaries
 

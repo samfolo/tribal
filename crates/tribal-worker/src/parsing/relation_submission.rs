@@ -10,29 +10,24 @@ use serde::{Deserialize, Serialize};
 
 use super::IngestionRelationKind;
 
-/// The upper bound on one edge's justification, in characters. The
-/// justification is the agent's reasoning for the edge, not a transcript;
-/// the validator bounces anything longer.
-pub(crate) const RELATION_JUSTIFICATION_MAX_CHARS: usize = 2_000;
-
 /// The agentic relation submission, as `submit_result` accepts it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(
-    description = "The relationship edges to commit for this batch. Empty when no genuine \
-    relationship holds between the claims you examined."
+    description = "The relationships to commit for this batch. Empty when no genuine relationship \
+    holds between the claims you examined."
 )]
 pub(crate) struct RelationSubmission {
-    /// The directed edges to commit, each between two item ids.
+    /// The directed relationships to commit, each between two item ids.
     #[serde(default)]
     #[schemars(
-        description = "Directed edges, each connecting a source claim to a target claim by their \
-        exact item ids. Only edges grounded in the content of both claims."
+        description = "Directed relationships, each connecting a source claim to a target claim \
+        by their exact item ids. Only relationships grounded in the content of both claims."
     )]
     pub relations: Vec<RelationSubmissionEdge>,
 }
 
-/// One directed relationship edge, referencing both endpoints by item id.
+/// One directed relationship, referencing both endpoints by item id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(description = "A directed relationship between two claims, referenced by item id.")]
@@ -52,12 +47,11 @@ pub(crate) struct RelationSubmissionEdge {
     /// The relationship type.
     #[schemars(description = "How the source relates to the target.")]
     pub relation_type: IngestionRelationKind,
-    /// The agent's reasoning for this edge.
+    /// The agent's reasoning for this relationship.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(
-        length(max = 2_000),
-        description = "Why this relationship holds, grounded in the content of both claims. At \
-        most 2000 characters."
+        description = "Why this relationship holds, grounded in the content of both claims. Two \
+        to three sentences."
     )]
     pub justification: Option<String>,
 }

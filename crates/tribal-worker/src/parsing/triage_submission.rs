@@ -9,11 +9,6 @@
 use serde::{Deserialize, Serialize};
 use tribal_domain::RelationSuggestion;
 
-/// The upper bound on the handoff's length, in characters. The handoff
-/// is curated context for the downstream relation stage, not a second
-/// transcript; the validator bounces anything longer.
-pub(crate) const HANDOFF_MAX_CHARS: usize = 2_000;
-
 /// The agentic triage submission, as `submit_result` accepts it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -33,13 +28,11 @@ pub(crate) struct TriageSubmission {
         of the novel/duplicate decision. Reference claims by the exact item id you were shown."
     )]
     pub considered_items: Vec<ConsideredItemAssessment>,
-    /// Bounded notes for the downstream relation stage.
+    /// Short notes for the downstream relation stage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(
-        length(max = 2_000),
         description = "Optional short notes the relation stage should know: connections you \
-        noticed, context that informed the decision. At most 2000 characters; never a \
-        transcript."
+        noticed, context that informed the decision. A few sentences at most, never a transcript."
     )]
     pub handoff: Option<String>,
 }
