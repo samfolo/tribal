@@ -1054,31 +1054,17 @@ impl Projection {
             .collect();
         tools.push(wire_definition(deps.submit_descriptor));
         CompletionRequest {
-            system: self.system_with_budget(&deps.budgets),
+            // The system prompt is byte-stable across a thread's turns: the
+            // loop's request prefix must not churn, or every turn forfeits the
+            // provider cache discount for the whole history. The turn cap is a
+            // silent runaway guard; the loop prompts carry the static budget
+            // guidance the model paces against.
+            system: self.system.clone(),
             messages: self.messages.clone(),
             tools,
             temperature: deps.temperature,
             max_tokens: deps.max_tokens,
             response_format: None,
-        }
-    }
-
-    /// The system prompt with the turn budget appended, so the model can
-    /// self-pace instead of being cut off at the cap with no warning. The
-    /// reminder is recomputed from the committed turn count on every build and
-    /// never enters the durable log or the binding hash, so it stays out of
-    /// what resume replays and what the binding records.
-    fn system_with_budget(&self, budgets: &ExecutionBudgets) -> Option<String> {
-        match (self.system.clone(), budgets.max_turns) {
-            (Some(system), Some(cap)) => {
-                let remaining = cap.saturating_sub(self.assistant_turns);
-                Some(format!(
-                    "{system}\n\n[Budget] {remaining} of {cap} turns remaining. Investigate only \
-                     what would change your decision, then call submit_result; a run that uses \
-                     every turn without submitting fails.",
-                ))
-            }
-            (system, _) => system,
         }
     }
 
@@ -1889,44 +1875,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_system_with_budget_surfaces_remaining_turns() {
-        let thread = an_agent_thread().build();
-        let records = vec![
-            rendered_input(&thread, "the opening"),
-            assistant_record(&thread, 1, "t1", vec![]),
-            assistant_record(&thread, 2, "t2", vec![]),
-            assistant_record(&thread, 3, "t3", vec![]),
-        ];
-        let projection = project(&thread, &records).expect("projects");
-        assert_eq!(projection.assistant_turns, 3);
-
-        // Capped: the model is told how many turns remain, so it self-paces.
-        let capped = ExecutionBudgets {
-            max_turns: Some(25),
-            ..Default::default()
-        };
-        let annotated = projection
-            .system_with_budget(&capped)
-            .expect("a system prompt is present");
-        assert!(
-            annotated.starts_with("system"),
-            "base system leads: {annotated}"
-        );
-        assert!(
-            annotated.contains("22 of 25 turns remaining"),
-            "got: {annotated}"
-        );
-        assert!(annotated.contains("submit_result"));
-
-        // Uncapped: the system passes through untouched.
-        assert_eq!(
-            projection
-                .system_with_budget(&ExecutionBudgets::default())
-                .as_deref(),
-            Some("system"),
-        );
-    }
 
     #[test]
     fn test_projection_routes_an_unanswered_batch_to_tool_execution() {
