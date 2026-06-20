@@ -262,6 +262,7 @@ async fn test_child_terminal_hands_the_verdict_back_to_the_parent() {
         0,
         &response,
         &a_parent_resolution(&sp),
+        noop_recorder().as_ref(),
     )
     .await
     .expect("child terminal");
@@ -339,6 +340,7 @@ async fn test_a_stale_driver_token_rolls_the_whole_terminal_back() {
         0,
         &response,
         &a_parent_resolution(&sp),
+        noop_recorder().as_ref(),
     )
     .await
     .expect_err("a stale driver token is rejected");
@@ -394,6 +396,7 @@ async fn test_a_hand_back_rolls_back_when_the_parent_task_is_not_blocked() {
         0,
         &response,
         &a_parent_resolution(&sp),
+        noop_recorder().as_ref(),
     )
     .await
     .expect_err("a non-blocked parent task rolls the hand-back back");
@@ -456,6 +459,7 @@ async fn test_child_terminal_discards_when_the_parent_is_no_longer_waiting() {
         0,
         &response,
         &a_parent_resolution(&sp),
+        noop_recorder().as_ref(),
     )
     .await
     .expect("child terminal against a terminal parent");
@@ -991,6 +995,7 @@ async fn test_deferred_death_crosses_the_failure_into_the_parent() {
         token,
         &a_parent_resolution(&sp),
         "the verifier exhausted its retries",
+        noop_recorder().as_ref(),
     )
     .await
     .expect("deferred death");

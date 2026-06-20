@@ -16,6 +16,7 @@ use tribal_db::{
     PgAgentThreadRepository,
 };
 use tribal_domain::{AgentThread, AgentThreadSuspension, StageExecutorKind, span_attrs};
+use tribal_telemetry::MetricsRecorder;
 
 use crate::{
     definition::current_stage_budgets,
@@ -58,7 +59,7 @@ impl Worker {
         let Ok(mut conn) = self.pool().acquire().await else {
             tracing::warn!("pool acquire failed for the thread sweep");
             // The cycle still carries its (zero) counts on the span.
-            record_sweep_outcome(&stats);
+            record_sweep_outcome(self.metrics(), &stats);
             return stats;
         };
 
@@ -67,7 +68,7 @@ impl Worker {
         stats.cancelled = sweep_cancel_fallback(self, &mut conn).await;
         stats.stuck_relating = sweep_stuck_relating(self, &mut conn).await;
 
-        record_sweep_outcome(&stats);
+        record_sweep_outcome(self.metrics(), &stats);
         stats
     }
 }
@@ -84,31 +85,47 @@ fn thread_sweep_span() -> tracing::Span {
     )
 }
 
-/// Records the cycle's counts on the enclosing sweep span and emits a
-/// per-action event for each predicate that converged anything.
-fn record_sweep_outcome(stats: &ThreadSweepStats) {
+/// Records the cycle's counts on the enclosing sweep span, emits a
+/// per-action event, and counts a per-action metric for each predicate
+/// that converged anything.
+fn record_sweep_outcome(recorder: &dyn MetricsRecorder, stats: &ThreadSweepStats) {
     let span = tracing::Span::current();
     span.record(span_attrs::SWEEP_TIMER_WAKES, stats.timer_wakes);
     span.record(span_attrs::SWEEP_CASCADED, stats.cascaded);
     span.record(span_attrs::SWEEP_CANCELLED, stats.cancelled);
     span.record(span_attrs::SWEEP_STUCK_RELATING, stats.stuck_relating);
-    emit_sweep_action(span_attrs::SWEEP_ACTION_TIMER_WAKE, stats.timer_wakes);
-    emit_sweep_action(span_attrs::SWEEP_ACTION_ORPHAN_CASCADE, stats.cascaded);
-    emit_sweep_action(span_attrs::SWEEP_ACTION_CANCEL_FALLBACK, stats.cancelled);
     emit_sweep_action(
+        recorder,
+        span_attrs::SWEEP_ACTION_TIMER_WAKE,
+        stats.timer_wakes,
+    );
+    emit_sweep_action(
+        recorder,
+        span_attrs::SWEEP_ACTION_ORPHAN_CASCADE,
+        stats.cascaded,
+    );
+    emit_sweep_action(
+        recorder,
+        span_attrs::SWEEP_ACTION_CANCEL_FALLBACK,
+        stats.cancelled,
+    );
+    emit_sweep_action(
+        recorder,
         span_attrs::SWEEP_ACTION_STUCK_RELATING,
         stats.stuck_relating,
     );
 }
 
-/// Emits a per-action sweep event when the predicate converged anything.
-fn emit_sweep_action(action: &'static str, count: u32) {
+/// Emits a per-action sweep event and counts the metric when the predicate
+/// converged anything.
+fn emit_sweep_action(recorder: &dyn MetricsRecorder, action: &'static str, count: u32) {
     if count > 0 {
         tracing::info!(
             { span_attrs::SWEEP_ACTION } = action,
             { span_attrs::SWEEP_ACTION_COUNT } = count,
             "thread sweep converged an action",
         );
+        recorder.record_agent_sweep_action(action, u64::from(count));
     }
 }
 
@@ -475,13 +492,14 @@ mod tests {
     #[tokio::test]
     async fn test_sweep_cycle_records_counts_and_non_zero_actions() {
         let (capture, _capture) = TracingCapture::install();
+        let recorder = tribal_telemetry::noop_recorder();
         let stats = ThreadSweepStats {
             timer_wakes: 2,
             cascaded: 0,
             cancelled: 1,
             stuck_relating: 0,
         };
-        thread_sweep_span().in_scope(|| record_sweep_outcome(&stats));
+        thread_sweep_span().in_scope(|| record_sweep_outcome(recorder.as_ref(), &stats));
 
         let span = capture
             .span("tribal.thread_sweep")

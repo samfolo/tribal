@@ -42,7 +42,7 @@ use tribal_domain::{
     AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus, AgentThreadSuspension,
     AgentThreadTerminal, CompletionResponse, JobId, PrincipalId, TaskId, TaskType, span_attrs,
 };
-use tribal_telemetry::{current_span_id, current_trace_id};
+use tribal_telemetry::{MetricsRecorder, current_span_id, current_trace_id};
 
 use crate::{
     AgentRuntimeError,
@@ -307,6 +307,7 @@ pub async fn commit_child_terminal(
     attempt: i32,
     child_response: &CompletionResponse,
     parent: &ParentResolution,
+    recorder: &dyn MetricsRecorder,
 ) -> Result<ChildTerminalOutcome, AgentRuntimeError> {
     // `hand_back` locks the parent thread before its task, the sanctioned
     // inversion of the global lock order it needs to read the parent's
@@ -332,6 +333,7 @@ pub async fn commit_child_terminal(
         {
             Err(e) if remaining > 0 && e.is_retryable() => {
                 remaining -= 1;
+                recorder.record_agent_conflict_retry();
                 tracing::warn!(
                     child_thread_id = %child.id(),
                     { span_attrs::CONFLICT_RETRY_REMAINING } = remaining,
@@ -339,6 +341,7 @@ pub async fn commit_child_terminal(
                 );
             }
             Ok(outcome) => {
+                recorder.record_agent_child_terminal(outcome.label(), false);
                 tracing::info!(
                     child_thread_id = %child.id(),
                     { span_attrs::CHILD_TERMINAL_OUTCOME } = outcome.label(),
@@ -411,6 +414,7 @@ pub async fn commit_deferred_death(
     driver_claim_token: uuid::Uuid,
     parent: &ParentResolution,
     error_message: &str,
+    recorder: &dyn MetricsRecorder,
 ) -> Result<ChildTerminalOutcome, AgentRuntimeError> {
     let mut txn = begin(conn, "beginning the deferred-death transaction").await?;
 
@@ -435,6 +439,7 @@ pub async fn commit_deferred_death(
     .await?;
 
     commit(txn, "committing the deferred-death transaction").await?;
+    recorder.record_agent_child_terminal(outcome.label(), true);
     tracing::warn!(
         child_thread_id = %child.id(),
         { span_attrs::CHILD_TERMINAL_OUTCOME } = outcome.label(),

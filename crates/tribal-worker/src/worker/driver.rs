@@ -286,6 +286,7 @@ impl Worker {
             clamp_to_i32(task.attempt()),
             &response,
             &parent,
+            self.metrics(),
         )
         .await
         .map_err(|source| driver_runtime_error("committing the child terminal", source))?;
@@ -453,8 +454,16 @@ impl Worker {
                 return;
             }
         };
-        if let Err(e) =
-            commit_deferred_death(&mut conn, &child, task.id(), claim_token, &parent, message).await
+        if let Err(e) = commit_deferred_death(
+            &mut conn,
+            &child,
+            task.id(),
+            claim_token,
+            &parent,
+            message,
+            self.metrics(),
+        )
+        .await
         {
             if matches!(e, AgentRuntimeError::DrivingTaskNotBlocked { .. }) {
                 // The parent is in an unmodelled non-blocked state, so the
