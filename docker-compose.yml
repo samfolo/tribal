@@ -69,17 +69,19 @@ services:
       - TRIBAL_INFERENCE__RELATION__BASE_URL=${TRIBAL_INFERENCE__RELATION__BASE_URL:-http://host.docker.internal:11434}
       # Opt-in agentic execution, per stage; the default reproduces the
       # launched one-shot behaviour exactly. Set a stage to loop to run its
-      # in-process turn loop instead. Only triage carries a verifier (default
-      # on under its loop, disabled with TRIBAL_AGENTS__TRIAGE__VERIFIER=false);
-      # the extraction and relation verifiers are inert in this release.
+      # in-process turn loop instead. The triage and relation loops carry a
+      # verifier, on by default and disabled per stage with
+      # TRIBAL_AGENTS__TRIAGE__VERIFIER=false or
+      # TRIBAL_AGENTS__RELATION__VERIFIER=false; extraction has no verifier.
       - TRIBAL_AGENTS__EXTRACTION__EXECUTOR=${TRIBAL_AGENTS__EXTRACTION__EXECUTOR:-one_shot}
       - TRIBAL_AGENTS__TRIAGE__EXECUTOR=${TRIBAL_AGENTS__TRIAGE__EXECUTOR:-one_shot}
       - TRIBAL_AGENTS__RELATION__EXECUTOR=${TRIBAL_AGENTS__RELATION__EXECUTOR:-one_shot}
-      # Optional overrides: the triage verifier toggle and each stage's turn,
-      # token, and deadline budgets. Bare pass-throughs, so an unset one is
-      # omitted from the container and the binary's default stands. Set any of
-      # them in .env to override (see .env.example).
+      # Optional overrides: the triage and relation verifier toggles and each
+      # stage's turn, token, and deadline budgets. Bare pass-throughs, so an
+      # unset one is omitted from the container and the binary's default
+      # stands. Set any of them in .env to override (see .env.example).
       - TRIBAL_AGENTS__TRIAGE__VERIFIER
+      - TRIBAL_AGENTS__RELATION__VERIFIER
       - TRIBAL_AGENTS__EXTRACTION__MAX_TURNS
       - TRIBAL_AGENTS__EXTRACTION__MAX_TOTAL_TOKENS
       - TRIBAL_AGENTS__EXTRACTION__EXECUTION_DEADLINE_SECONDS
