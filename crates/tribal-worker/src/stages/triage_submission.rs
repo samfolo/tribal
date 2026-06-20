@@ -25,7 +25,7 @@ use tribal_domain::{
 };
 
 use crate::{
-    parsing::{HANDOFF_MAX_CHARS, TriageSubmission, TriageSubmissionDecision},
+    parsing::{TriageSubmission, TriageSubmissionDecision},
     prompt::{VerifierConsideredItem, VerifierSubmissionContext, assemble_verifier_input},
 };
 
@@ -244,22 +244,9 @@ impl SubmissionPipeline for TriageSubmissionPipeline {
             }
         };
 
-        // 2. The handoff bound: curated notes, never a transcript.
-        if let Some(handoff) = &submission.handoff
-            && handoff.chars().count() > HANDOFF_MAX_CHARS
-        {
-            return Ok(SubmissionOutcome::Bounced {
-                diagnostics: format!(
-                    "the handoff is too long ({} characters against a bound of \
-                     {HANDOFF_MAX_CHARS}); keep it to the few notes the relation stage needs",
-                    handoff.chars().count(),
-                ),
-            });
-        }
-
-        // 2b. One assessment per item: a repeat resolves to the same id and
-        //     collides on the decision table's per-item uniqueness at commit,
-        //     which no retry clears, so reject it here.
+        // 2. One assessment per item: a repeat resolves to the same id and
+        //    collides on the decision table's per-item uniqueness at commit,
+        //    which no retry clears, so reject it here.
         let mut assessed: HashSet<KnowledgeItemId> = HashSet::new();
         for item in &submission.considered_items {
             if let Ok(id) = item.item_id.parse::<KnowledgeItemId>()
@@ -1232,32 +1219,6 @@ mod tests {
                 .is_none(),
             "no verifier configured means no launch",
         );
-    }
-
-    #[tokio::test]
-    async fn test_an_overlong_handoff_bounces() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
-        let pipeline = TriageSubmissionPipeline::new(ProjectId::new());
-        let thread = an_agent_thread().build();
-
-        let outcome = pipeline
-            .evaluate(
-                &mut txn,
-                &thread,
-                &corpus_with(&[]),
-                &serde_json::json!({
-                    "decision": {"decision": "created"},
-                    "handoff": "x".repeat(HANDOFF_MAX_CHARS + 1),
-                }),
-            )
-            .await
-            .expect("evaluates");
-        assert!(matches!(
-            outcome,
-            SubmissionOutcome::Bounced { ref diagnostics } if diagnostics.contains("too long")
-        ));
     }
 
     /// The must-search gate: a submission bounces when nothing has been

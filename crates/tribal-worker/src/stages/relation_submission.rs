@@ -23,7 +23,7 @@ use tribal_domain::{
 };
 
 use crate::{
-    parsing::{RELATION_JUSTIFICATION_MAX_CHARS, RelationSubmission, RelationSubmissionEdge},
+    parsing::{RelationSubmission, RelationSubmissionEdge},
     tools::RelationToolGrounding,
 };
 
@@ -119,17 +119,6 @@ fn check_relation_edges(
 ) -> Result<(), String> {
     let mut seen: HashSet<(KnowledgeItemId, KnowledgeItemId, RelationKind)> = HashSet::new();
     for edge in edges {
-        // The justification bound: curated reasoning, never a transcript.
-        if let Some(justification) = &edge.justification
-            && justification.chars().count() > RELATION_JUSTIFICATION_MAX_CHARS
-        {
-            return Err(format!(
-                "a relationship justification is too long ({} characters against a bound of \
-                 {RELATION_JUSTIFICATION_MAX_CHARS}); keep it to the reasoning for the relationship",
-                justification.chars().count(),
-            ));
-        }
-
         // The id shape: an unparseable endpoint is a copy fault the model
         // can fix by copying the id exactly.
         let source_id = parse_endpoint(&edge.source_id)?;
@@ -379,18 +368,6 @@ mod tests {
             check_relation_edges(&[edge(&a, &b), edge(&b, &a)], &citable).is_ok(),
             "an inverse edge is a distinct triple",
         );
-    }
-
-    #[test]
-    fn test_check_bounces_an_overlong_justification() {
-        let a = ki("aaaa");
-        let b = ki("bbbb");
-        let citable = HashSet::from([a, b]);
-        let mut long = edge(&a, &b);
-        long.justification = Some("x".repeat(RELATION_JUSTIFICATION_MAX_CHARS + 1));
-        let diagnostics =
-            check_relation_edges(&[long], &citable).expect_err("an overlong justification bounces");
-        assert!(diagnostics.contains("too long"));
     }
 
     // -- collect_item_id_fields: the harvest's content immunity --
