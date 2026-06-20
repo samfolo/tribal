@@ -120,6 +120,7 @@ impl Worker {
                 temperature: narrow_temperature(parameters.temperature),
                 max_tokens: parameters.max_tokens,
                 permit_deadline: deadline,
+                recorder: self.metrics(),
             })
             .await
             .map_err(|source| {

@@ -83,6 +83,28 @@ pub trait MetricsRecorder: Send + Sync {
     /// Only `"queued"` and `"claimed"` statuses are recorded; other
     /// values are silently ignored.
     fn set_queue_gauge(&self, task_type: &str, status: &str, count: i64);
+
+    /// Records an agentic thread suspension, classed by reason.
+    fn record_agent_suspension(&self, reason: &str);
+
+    /// Records a pre-call budget admission decision.
+    fn record_agent_budget_admission(&self, decision: &str);
+
+    /// Records a verifier child launch.
+    fn record_agent_child_launch(&self);
+
+    /// Records a verifier child terminal, classed by outcome and whether
+    /// it crossed back an error (a child death).
+    fn record_agent_child_terminal(&self, outcome: &str, is_error: bool);
+
+    /// Records a thread resume from its committed log.
+    fn record_agent_thread_resume(&self);
+
+    /// Records an in-place child-terminal conflict retry.
+    fn record_agent_conflict_retry(&self);
+
+    /// Records `count` availability-sweep actions converged of one kind.
+    fn record_agent_sweep_action(&self, action: &str, count: u64);
 }
 
 /// Delegates through `Arc` so that `Arc<dyn MetricsRecorder>` satisfies
@@ -118,6 +140,34 @@ impl<T: MetricsRecorder + ?Sized> MetricsRecorder for Arc<T> {
 
     fn set_queue_gauge(&self, task_type: &str, status: &str, count: i64) {
         (**self).set_queue_gauge(task_type, status, count);
+    }
+
+    fn record_agent_suspension(&self, reason: &str) {
+        (**self).record_agent_suspension(reason);
+    }
+
+    fn record_agent_budget_admission(&self, decision: &str) {
+        (**self).record_agent_budget_admission(decision);
+    }
+
+    fn record_agent_child_launch(&self) {
+        (**self).record_agent_child_launch();
+    }
+
+    fn record_agent_child_terminal(&self, outcome: &str, is_error: bool) {
+        (**self).record_agent_child_terminal(outcome, is_error);
+    }
+
+    fn record_agent_thread_resume(&self) {
+        (**self).record_agent_thread_resume();
+    }
+
+    fn record_agent_conflict_retry(&self) {
+        (**self).record_agent_conflict_retry();
+    }
+
+    fn record_agent_sweep_action(&self, action: &str, count: u64) {
+        (**self).record_agent_sweep_action(action, count);
     }
 }
 
@@ -237,6 +287,55 @@ impl MetricsRecorder for OtelMetricsRecorder {
             _ => {}
         }
     }
+
+    fn record_agent_suspension(&self, reason: &str) {
+        self.metrics.agent_suspensions.add(
+            1,
+            &[KeyValue::new(
+                span_attrs::SUSPENSION_REASON,
+                reason.to_owned(),
+            )],
+        );
+    }
+
+    fn record_agent_budget_admission(&self, decision: &str) {
+        self.metrics.agent_budget_admissions.add(
+            1,
+            &[KeyValue::new(
+                span_attrs::BUDGET_DECISION,
+                decision.to_owned(),
+            )],
+        );
+    }
+
+    fn record_agent_child_launch(&self) {
+        self.metrics.agent_child_launches.add(1, &[]);
+    }
+
+    fn record_agent_child_terminal(&self, outcome: &str, is_error: bool) {
+        self.metrics.agent_child_terminals.add(
+            1,
+            &[
+                KeyValue::new(span_attrs::CHILD_TERMINAL_OUTCOME, outcome.to_owned()),
+                KeyValue::new(span_attrs::TERMINAL_IS_ERROR, is_error),
+            ],
+        );
+    }
+
+    fn record_agent_thread_resume(&self) {
+        self.metrics.agent_thread_resumes.add(1, &[]);
+    }
+
+    fn record_agent_conflict_retry(&self) {
+        self.metrics.agent_conflict_retries.add(1, &[]);
+    }
+
+    fn record_agent_sweep_action(&self, action: &str, count: u64) {
+        self.metrics.agent_sweep_actions.add(
+            count,
+            &[KeyValue::new(span_attrs::SWEEP_ACTION, action.to_owned())],
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +356,13 @@ impl MetricsRecorder for NoopMetricsRecorder {
     fn record_task_dead_lettered(&self, _task_type: &str) {}
     fn record_job_completed(&self, _outcome: &str, _duration_ms: Option<f64>) {}
     fn set_queue_gauge(&self, _task_type: &str, _status: &str, _count: i64) {}
+    fn record_agent_suspension(&self, _reason: &str) {}
+    fn record_agent_budget_admission(&self, _decision: &str) {}
+    fn record_agent_child_launch(&self) {}
+    fn record_agent_child_terminal(&self, _outcome: &str, _is_error: bool) {}
+    fn record_agent_thread_resume(&self) {}
+    fn record_agent_conflict_retry(&self) {}
+    fn record_agent_sweep_action(&self, _action: &str, _count: u64) {}
 }
 
 /// Creates a no-op recorder for use in tests.
@@ -284,6 +390,13 @@ mod tests {
         recorder.record_job_completed("success", Some(1200.0));
         recorder.record_job_completed("failure", None);
         recorder.set_queue_gauge("extraction", "queued", 5);
+        recorder.record_agent_suspension("budget_exhausted");
+        recorder.record_agent_budget_admission("admitted");
+        recorder.record_agent_child_launch();
+        recorder.record_agent_child_terminal("handed_back", false);
+        recorder.record_agent_thread_resume();
+        recorder.record_agent_conflict_retry();
+        recorder.record_agent_sweep_action("timer_wake", 3);
     }
 
     #[test]
@@ -325,5 +438,12 @@ mod tests {
         recorder.set_queue_gauge("triage", "queued", 3);
         recorder.set_queue_gauge("extraction", "claimed", 1);
         recorder.set_queue_gauge("relation", "completed", 10);
+        recorder.record_agent_suspension("deferred_tool_results");
+        recorder.record_agent_budget_admission("suspend");
+        recorder.record_agent_child_launch();
+        recorder.record_agent_child_terminal("parent_not_waiting", true);
+        recorder.record_agent_thread_resume();
+        recorder.record_agent_conflict_retry();
+        recorder.record_agent_sweep_action("cancel_fallback", 0);
     }
 }
