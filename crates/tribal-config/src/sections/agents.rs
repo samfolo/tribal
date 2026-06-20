@@ -187,9 +187,7 @@ impl AgentsConfig {
         let mut advisories = Vec::new();
         // Triage's verifier runs under the loop, so it is inert only when
         // set under the one-shot executor.
-        if self.triage.verifier == Some(true)
-            && self.triage.executor == ExecutorChoice::OneShot
-        {
+        if self.triage.verifier == Some(true) && self.triage.executor == ExecutorChoice::OneShot {
             advisories.push(VERIFIER_INERT_ADVISORY);
         }
         // The relation and extraction stages have no verifier, so any
