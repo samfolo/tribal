@@ -1875,7 +1875,6 @@ mod tests {
         ));
     }
 
-
     #[test]
     fn test_projection_routes_an_unanswered_batch_to_tool_execution() {
         // A trailing assistant message with one of two calls answered
