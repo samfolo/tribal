@@ -40,7 +40,7 @@ use tribal_db::{
 use tribal_domain::{
     AgentBindingVersionId, AgentDriverTaskId, AgentDriverTaskKind, AgentThread, AgentThreadId,
     AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus, AgentThreadSuspension,
-    AgentThreadTerminal, CompletionResponse, JobId, PrincipalId, TaskId, TaskType,
+    AgentThreadTerminal, CompletionResponse, JobId, PrincipalId, TaskId, TaskType, span_attrs,
 };
 use tribal_telemetry::{current_span_id, current_trace_id};
 
@@ -228,6 +228,17 @@ pub async fn suspend_with_child(
         })?;
 
     commit(txn, "committing the suspend-with-child transaction").await?;
+    tracing::info!(
+        { span_attrs::SUSPENSION_REASON } = suspension.reason_label(),
+        { span_attrs::REQUESTING_SEQ } = requesting_seq.inner(),
+        "agentic thread suspended on a deferred tool result",
+    );
+    tracing::info!(
+        { span_attrs::CHILD_BINDING_VERSION } = %launch.binding_version_id,
+        { span_attrs::CHILD_STAGE } = launch.pipeline_stage.as_str(),
+        { span_attrs::REQUESTING_SEQ } = requesting_seq.inner(),
+        "agentic verifier child launched",
+    );
     Ok(SuspendWithChildOutcome::Launched(LaunchedChild {
         thread_id: child.id(),
         driver_task_id,
@@ -247,6 +258,16 @@ pub enum ChildTerminalOutcome {
     /// the child and driver completed, the hand-back discarded under the
     /// parent row lock.
     ParentNotWaiting,
+}
+
+impl ChildTerminalOutcome {
+    /// The telemetry label for a child terminal's outcome for its parent.
+    fn label(self) -> &'static str {
+        match self {
+            Self::HandedBack => span_attrs::CHILD_TERMINAL_HANDED_BACK,
+            Self::ParentNotWaiting => span_attrs::CHILD_TERMINAL_PARENT_NOT_WAITING,
+        }
+    }
 }
 
 /// The parent a child resolves into: the suspended thread, the call its
@@ -313,10 +334,21 @@ pub async fn commit_child_terminal(
                 remaining -= 1;
                 tracing::warn!(
                     child_thread_id = %child.id(),
+                    { span_attrs::CONFLICT_RETRY_REMAINING } = remaining,
                     "child-terminal commit hit a transient conflict; retrying in place",
                 );
             }
-            outcome => return outcome,
+            Ok(outcome) => {
+                tracing::info!(
+                    child_thread_id = %child.id(),
+                    { span_attrs::CHILD_TERMINAL_OUTCOME } = outcome.label(),
+                    { span_attrs::DRIVER_ATTEMPT } = attempt,
+                    { span_attrs::TERMINAL_IS_ERROR } = false,
+                    "agentic child terminal committed",
+                );
+                return Ok(outcome);
+            }
+            err => return err,
         }
     }
 }
@@ -403,6 +435,12 @@ pub async fn commit_deferred_death(
     .await?;
 
     commit(txn, "committing the deferred-death transaction").await?;
+    tracing::warn!(
+        child_thread_id = %child.id(),
+        { span_attrs::CHILD_TERMINAL_OUTCOME } = outcome.label(),
+        { span_attrs::TERMINAL_IS_ERROR } = true,
+        "agentic child deferred death committed",
+    );
     Ok(outcome)
 }
 

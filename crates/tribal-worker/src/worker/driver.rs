@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use tracing::Instrument;
 use tribal_agent_runtime::{
     AgentRuntimeError, ChildTerminalOutcome, ParentResolution, RenderedConversation,
     adopt_conversation, commit_child_terminal, commit_deferred_death,
@@ -22,11 +23,13 @@ use tribal_db::{
 };
 use tribal_domain::{
     AgentDriverTask, AgentDriverTaskKind, AgentThread, AgentThreadId, AgentThreadRecordKind,
-    AgentThreadStatus, AgentThreadSuspension, ErrorOutcome, StageParameters, UsageOwner,
+    AgentThreadStatus, AgentThreadSuspension, ErrorOutcome, StageExecutorKind, StageParameters,
+    UsageOwner, gen_ai, span_attrs,
 };
 use tribal_inference::{
     CompletionRequest, Message, PermitWait, ResponseFormat, Role, UsageAttribution,
 };
+use tribal_telemetry::link_span_to_ids;
 
 use crate::{
     error::StageError,
@@ -152,6 +155,46 @@ impl Worker {
         let mut conn = self.acquire_driver_conn().await?;
 
         let child = self.run_child_thread(&mut conn, task, claim_token).await?;
+
+        // The runtime root for this one-shot child execution. It opens a
+        // fresh trace; the thread id rides `gen_ai.conversation.id` to
+        // stitch the child's traces, and the durable parent linkage carries
+        // the lineage.
+        let span = tracing::info_span!(
+            "invoke_agent",
+            { gen_ai::OPERATION_NAME } = gen_ai::OPERATION_INVOKE_AGENT,
+            { gen_ai::CONVERSATION_ID } = %child.id(),
+            { span_attrs::STAGE } = child.pipeline_stage().as_str(),
+            { span_attrs::EXECUTOR } = StageExecutorKind::OneShot.as_str(),
+            { span_attrs::PARENT_THREAD_ID } = child.parent_thread_id().map(|id| id.to_string()),
+            { span_attrs::DRIVER_ATTEMPT } = task.attempt(),
+            // A child never replays a committed turn log; a re-drive after a
+            // reclaim is the closest analogue to a resume.
+            { span_attrs::THREAD_RESUMED } = task.attempt() > 0,
+        );
+        self.run_child(conn, task, claim_token, deadline, child)
+            .instrument(span)
+            .await
+    }
+
+    /// Runs one verifier child to its terminal under the child's
+    /// `invoke_agent` span: the cancel-superseded short-circuit, the model
+    /// call, and the hand-back to its parent.
+    async fn run_child(
+        &self,
+        mut conn: sqlx::pool::PoolConnection<sqlx::Postgres>,
+        task: &AgentDriverTask,
+        claim_token: uuid::Uuid,
+        deadline: tokio::time::Instant,
+        child: AgentThread,
+    ) -> Result<(), StageError> {
+        // Best-effort: link this child's root to the parent's enclosing
+        // span context, captured durably on the child's input record at
+        // launch. Never depended on; the parent's trace window may have
+        // closed by the time the driver runs the child.
+        if let Some((trace_id, span_id)) = child_launch_context(&mut conn, &child).await {
+            let _ = link_span_to_ids(&tracing::Span::current(), &trace_id, &span_id);
+        }
 
         // A cancellation intent supersedes the run: the cascade (or an
         // operator) marked this child while it queued. Hand the
@@ -572,6 +615,24 @@ fn child_attribution(child: &AgentThread, attempt: u32) -> UsageAttribution {
         user_prompt_version_id: None,
         trace_id: tribal_telemetry::current_trace_id(),
     }
+}
+
+/// The trace and span ids the parent recorded on the child's input record
+/// at launch: the parent's enclosing `invoke_agent` span context, for a
+/// best-effort link. Both ids must be present; a best-effort read returns
+/// `None` on any miss.
+async fn child_launch_context(
+    conn: &mut sqlx::PgConnection,
+    child: &AgentThread,
+) -> Option<(String, String)> {
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread_id(conn, child.id())
+        .await
+        .ok()?;
+    let input = records
+        .iter()
+        .find(|record| record.kind() == AgentThreadRecordKind::Input)?;
+    Some((input.trace_id()?.to_owned(), input.span_id()?.to_owned()))
 }
 
 fn driver_runtime_error(context: &str, source: AgentRuntimeError) -> StageError {
