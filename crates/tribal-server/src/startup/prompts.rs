@@ -39,6 +39,10 @@ const RELATION_LOOP_USER: &str = include_str!("../../../../prompts/relation/loop
 const TRIAGE_VERIFIER_SYSTEM: &str =
     include_str!("../../../../prompts/triage/verifier_system.tera");
 const TRIAGE_VERIFIER_USER: &str = include_str!("../../../../prompts/triage/verifier_user.tera");
+const RELATION_VERIFIER_SYSTEM: &str =
+    include_str!("../../../../prompts/relation/verifier_system.tera");
+const RELATION_VERIFIER_USER: &str =
+    include_str!("../../../../prompts/relation/verifier_user.tera");
 
 /// Returns the embedded default content for a given location.
 ///
@@ -75,7 +79,9 @@ fn embedded_default(location: PromptTemplateLocation) -> Result<&'static str, Ap
         PromptClass::Verifier => match (location.stage, location.role) {
             (PromptStage::Triage, PromptRole::System) => Ok(TRIAGE_VERIFIER_SYSTEM),
             (PromptStage::Triage, PromptRole::User) => Ok(TRIAGE_VERIFIER_USER),
-            (PromptStage::Extraction | PromptStage::Relation, _) => Err(slot_error()),
+            (PromptStage::Relation, PromptRole::System) => Ok(RELATION_VERIFIER_SYSTEM),
+            (PromptStage::Relation, PromptRole::User) => Ok(RELATION_VERIFIER_USER),
+            (PromptStage::Extraction, _) => Err(slot_error()),
         },
     }
 }
@@ -104,9 +110,9 @@ pub(crate) struct PromptTemplateLocation {
 impl PromptTemplateLocation {
     /// Every template slot in canonical order: the single authority on
     /// which (stage, class) pairings exist. The loop class serves every
-    /// stage, the verifier class triage only in this release; admitting
+    /// stage; the verifier class serves triage and relation; admitting
     /// another stage is an addition here, never a new match arm elsewhere.
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::one_shot(PromptStage::Extraction, PromptRole::System),
         Self::one_shot(PromptStage::Extraction, PromptRole::User),
         Self::one_shot(PromptStage::Triage, PromptRole::System),
@@ -129,6 +135,16 @@ impl PromptTemplateLocation {
             PromptRole::System,
         ),
         Self::new(PromptStage::Triage, PromptClass::Verifier, PromptRole::User),
+        Self::new(
+            PromptStage::Relation,
+            PromptClass::Verifier,
+            PromptRole::System,
+        ),
+        Self::new(
+            PromptStage::Relation,
+            PromptClass::Verifier,
+            PromptRole::User,
+        ),
     ];
 
     /// Builds a location.
@@ -431,7 +447,7 @@ mod tests {
                 .collect()
         };
         // The loop class serves every stage; the verifier class serves
-        // triage only in this release.
+        // triage and relation.
         assert_eq!(
             class_coverage(PromptClass::Loop),
             expected,
@@ -442,13 +458,15 @@ mod tests {
             HashSet::from([
                 (PromptStage::Triage, PromptRole::System),
                 (PromptStage::Triage, PromptRole::User),
+                (PromptStage::Relation, PromptRole::System),
+                (PromptStage::Relation, PromptRole::User),
             ]),
-            "the verifier class serves the triage pair in this release",
+            "the verifier class serves the triage and relation pairs",
         );
         assert_eq!(
             PromptTemplateLocation::ALL.len(),
-            14,
-            "ALL must contain exactly 14 entries"
+            16,
+            "ALL must contain exactly 16 entries"
         );
     }
 

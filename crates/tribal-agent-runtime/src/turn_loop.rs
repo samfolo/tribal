@@ -1054,6 +1054,11 @@ impl Projection {
             .collect();
         tools.push(wire_definition(deps.submit_descriptor));
         CompletionRequest {
+            // The system prompt is byte-stable across a thread's turns: the
+            // loop's request prefix must not churn, or every turn forfeits the
+            // provider cache discount for the whole history. The turn cap is a
+            // silent runaway guard; the loop prompts carry the static budget
+            // guidance the model paces against.
             system: self.system.clone(),
             messages: self.messages.clone(),
             tools,

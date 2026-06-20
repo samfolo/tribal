@@ -14,18 +14,36 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use sqlx::PgConnection;
 use tribal_agent_runtime::{
-    RecordedToolCall, SeenCorpus, SubmissionOutcome, SubmissionPipeline, ToolResultContent,
-    VerifierLaunch,
+    RecordedMessage, RecordedToolCall, RenderedConversation, SeenCorpus, SubmissionOutcome,
+    SubmissionPipeline, ToolResultContent, VerifierLaunch, verdict_schema,
 };
-use tribal_db::{AgentThreadRecordRepository, PgAgentThreadRecordRepository};
+use tribal_db::{
+    AgentThreadRecordRepository, KnowledgeItemRepository, PgAgentThreadRecordRepository,
+    PgKnowledgeItemRepository,
+};
 use tribal_domain::{
-    AgentThread, AgentThreadRecordKind, KnowledgeItemId, RelationKind, ToolFailure,
+    AgentBindingVersionId, AgentThread, AgentThreadRecordKind, KnowledgeItem, KnowledgeItemId,
+    PromptVersionId, RelationKind, TaskType, ToolFailure,
 };
 
 use crate::{
     parsing::{RelationSubmission, RelationSubmissionEdge},
+    prompt::{VerifierEndpoint, VerifierRelationEdge, assemble_relation_verifier_input},
     tools::RelationToolGrounding,
 };
+
+/// The verifier configuration one relation stage execution carries:
+/// everything the launch needs to render a fresh-context child without
+/// reaching back into worker state. It carries no candidate: a relation
+/// submission has none, so the child reads the submitted edges and their
+/// endpoints' content instead.
+pub(crate) struct RelationVerifierContext {
+    pub binding_version_id: AgentBindingVersionId,
+    pub system_template: String,
+    pub system_prompt_version_id: PromptVersionId,
+    pub user_template: String,
+    pub user_prompt_version_id: PromptVersionId,
+}
 
 /// The relation stage's submission pipeline. Cross-project by nature, so it
 /// carries no project fence; provenance is the structured trusted-id set,
@@ -36,13 +54,78 @@ pub(crate) struct RelationSubmissionPipeline {
     /// this at submission time. Seeded from the stage's loaded context rather
     /// than re-queried, because a stage thread carries no job id to query by.
     citable_seed: HashSet<KnowledgeItemId>,
+    /// The verifier, when the binding configures one; absent leaves an
+    /// accepted submission to commit on the validators alone.
+    verifier: Option<RelationVerifierContext>,
 }
 
 impl RelationSubmissionPipeline {
     /// Creates the pipeline seeded with the ids the opening offered as
-    /// citable references.
+    /// citable references, with no verifier.
     pub(crate) fn new(citable_seed: HashSet<KnowledgeItemId>) -> Self {
-        Self { citable_seed }
+        Self {
+            citable_seed,
+            verifier: None,
+        }
+    }
+
+    /// Attaches the verifier the binding resolved, when one is configured.
+    pub(crate) fn with_verifier(mut self, verifier: Option<RelationVerifierContext>) -> Self {
+        self.verifier = verifier;
+        self
+    }
+
+    /// Builds the verifier's view of the submission's edges, resolving each
+    /// endpoint's content cross-project: the relation stage spans projects,
+    /// so no project fence applies and an edge may connect two projects'
+    /// claims. An edge whose endpoint no longer resolves is dropped, the
+    /// same edge the commit-boundary recheck would drop.
+    async fn verifier_edges(
+        &self,
+        conn: &mut PgConnection,
+        submission: &RelationSubmission,
+    ) -> Result<Vec<VerifierRelationEdge>, ToolFailure> {
+        let cited: Vec<KnowledgeItemId> = submission
+            .relations
+            .iter()
+            .flat_map(|edge| [edge.source_id.as_str(), edge.target_id.as_str()])
+            .filter_map(|raw| raw.parse::<KnowledgeItemId>().ok())
+            .collect();
+        if cited.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let items = PgKnowledgeItemRepository
+            .find_by_ids(conn, &cited)
+            .await
+            .map_err(|source| ToolFailure::System {
+                context: format!("resolving relation edge endpoints for verification: {source}"),
+            })?;
+        let by_id: HashMap<KnowledgeItemId, KnowledgeItem> =
+            items.into_iter().map(|item| (item.id(), item)).collect();
+
+        let endpoint = |raw: &str| -> Option<VerifierEndpoint> {
+            let id = raw.parse::<KnowledgeItemId>().ok()?;
+            let item = by_id.get(&id)?;
+            Some(VerifierEndpoint {
+                item_id: raw.to_owned(),
+                kind: item.kind(),
+                content: item.content().to_owned(),
+            })
+        };
+
+        Ok(submission
+            .relations
+            .iter()
+            .filter_map(|edge| {
+                Some(VerifierRelationEdge {
+                    relation_type: edge.relation_type,
+                    justification: edge.justification.clone(),
+                    source: endpoint(&edge.source_id)?,
+                    target: endpoint(&edge.target_id)?,
+                })
+            })
+            .collect())
     }
 }
 
@@ -90,13 +173,64 @@ impl SubmissionPipeline for RelationSubmissionPipeline {
 
     async fn verifier_launch(
         &self,
-        _conn: &mut PgConnection,
+        conn: &mut PgConnection,
         _thread: &AgentThread,
-        _payload: &serde_json::Value,
+        payload: &serde_json::Value,
     ) -> Result<Option<VerifierLaunch>, ToolFailure> {
-        // The relation loop has no verifier; an accepted submission commits
-        // on the validators alone.
-        Ok(None)
+        let Some(verifier) = &self.verifier else {
+            // No verifier configured: the validated submission commits
+            // directly.
+            return Ok(None);
+        };
+
+        // The payload is the submission the validators just accepted, so
+        // it parses; a failure here is a system fault, not a bounce.
+        let submission: RelationSubmission =
+            serde_json::from_value(payload.clone()).map_err(|source| ToolFailure::System {
+                context: format!("re-reading the accepted submission for verification: {source}"),
+            })?;
+
+        // An empty submission asserts nothing for the child to judge, so it
+        // commits on the validators alone rather than launching a verifier
+        // with no edge to review.
+        if submission.relations.is_empty() {
+            return Ok(None);
+        }
+        let edges = self.verifier_edges(conn, &submission).await?;
+        // Every cited endpoint vanished since submission; the commit recheck
+        // will drop every edge, so there is nothing left to verify.
+        if edges.is_empty() {
+            return Ok(None);
+        }
+
+        let (system, user) = assemble_relation_verifier_input(
+            &verifier.system_template,
+            &verifier.user_template,
+            &edges,
+        )
+        .map_err(|source| ToolFailure::System {
+            context: format!("rendering the relation verifier prompt: {source}"),
+        })?;
+
+        Ok(Some(VerifierLaunch {
+            binding_version_id: verifier.binding_version_id,
+            // The verifier child executes under the parent's stage, so its
+            // calls route through the same provider configuration.
+            pipeline_stage: TaskType::Relation,
+            child_input: RenderedConversation {
+                system: Some(system),
+                messages: vec![RecordedMessage {
+                    role: "user".to_owned(),
+                    content: user,
+                }],
+                system_prompt_version_id: Some(verifier.system_prompt_version_id),
+                user_prompt_version_id: Some(verifier.user_prompt_version_id),
+                resolution_context: None,
+                // The verdict envelope the child's call is constrained to;
+                // the driver maps it onto the response format.
+                response_schema: Some(verdict_schema()),
+            },
+        }))
     }
 }
 
@@ -281,9 +415,9 @@ mod tests {
     };
     use tribal_domain::{AGENT_THREAD_FORMAT_VERSION, GitRemote, TaskType};
     use tribal_test_utils::{
-        a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_system_fingerprint,
-        a_new_task, an_agent_definition, an_agent_thread, insert_prompt_version, serial_lock,
-        test_context, upsert_system_fingerprint,
+        a_new_job, a_new_knowledge_item, a_new_principal, a_new_project, a_new_prompt_version,
+        a_new_system_fingerprint, a_new_task, an_agent_definition, an_agent_thread,
+        insert_prompt_version, serial_lock, test_context, upsert_system_fingerprint,
     };
 
     use super::*;
@@ -881,5 +1015,174 @@ mod tests {
             .await
             .expect("evaluates");
         assert!(matches!(outcome, SubmissionOutcome::Accepted { .. }));
+    }
+
+    // -- verifier_launch: the fresh-context child the verifier reviews --
+
+    /// The verifier launch renders a fresh-context child: the rubric system
+    /// prompt with the relation-kind legend, and each edge's two claims
+    /// resolved to their content across projects, constrained to the verdict
+    /// schema. A submission with no verifier, and an empty submission, both
+    /// decline to launch.
+    #[tokio::test]
+    async fn test_the_verifier_launch_renders_the_child_with_the_rubric_and_verdict_schema() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+
+        let principal = PgPrincipalRepository
+            .insert(
+                &mut txn,
+                &a_new_principal()
+                    .principal_key("user:relation-verifier-launch".to_owned())
+                    .build(),
+            )
+            .await
+            .expect("principal");
+        // Two projects: the edge connects a claim in each, so the launch must
+        // resolve both endpoints with no project fence.
+        let project_a = PgProjectRepository
+            .insert(
+                &mut txn,
+                &a_new_project()
+                    .git_remote(GitRemote::from_parts(
+                        "github.com",
+                        "test/relation-verify-a",
+                        None,
+                    ))
+                    .build(),
+            )
+            .await
+            .expect("project a");
+        let project_b = PgProjectRepository
+            .insert(
+                &mut txn,
+                &a_new_project()
+                    .git_remote(GitRemote::from_parts(
+                        "github.com",
+                        "test/relation-verify-b",
+                        None,
+                    ))
+                    .build(),
+            )
+            .await
+            .expect("project b");
+        let source = PgKnowledgeItemRepository
+            .insert(
+                &mut txn,
+                &a_new_knowledge_item()
+                    .project_id(project_a.id())
+                    .principal_id(principal.id())
+                    .content("retries use exponential backoff".to_owned())
+                    .build(),
+            )
+            .await
+            .expect("source item");
+        let target = PgKnowledgeItemRepository
+            .insert(
+                &mut txn,
+                &a_new_knowledge_item()
+                    .project_id(project_b.id())
+                    .principal_id(principal.id())
+                    .content("the gateway caps total retry time at thirty seconds".to_owned())
+                    .build(),
+            )
+            .await
+            .expect("target item");
+
+        let binding_id = AgentBindingVersionId::new();
+        let system_pv_id = PromptVersionId::new();
+        let user_pv_id = PromptVersionId::new();
+        let make_verifier = || RelationVerifierContext {
+            binding_version_id: binding_id,
+            system_template: include_str!("../../../../prompts/relation/verifier_system.tera")
+                .to_owned(),
+            system_prompt_version_id: system_pv_id,
+            user_template: include_str!("../../../../prompts/relation/verifier_user.tera")
+                .to_owned(),
+            user_prompt_version_id: user_pv_id,
+        };
+        let pipeline =
+            RelationSubmissionPipeline::new(HashSet::new()).with_verifier(Some(make_verifier()));
+
+        let payload = serde_json::json!({
+            "relations": [{
+                "source_id": source.id().to_string(),
+                "target_id": target.id().to_string(),
+                "relation_type": "supports",
+                "justification": "the backoff explains the cap",
+            }],
+        });
+        let thread = an_agent_thread().build();
+        let launch = pipeline
+            .verifier_launch(&mut txn, &thread, &payload)
+            .await
+            .expect("launch evaluates")
+            .expect("a verifier is configured");
+
+        assert_eq!(launch.pipeline_stage, TaskType::Relation);
+        assert_eq!(launch.binding_version_id, binding_id);
+        assert_eq!(
+            launch.child_input.response_schema,
+            Some(verdict_schema()),
+            "the child's call is constrained to the verdict schema",
+        );
+        assert_eq!(
+            launch.child_input.system_prompt_version_id,
+            Some(system_pv_id),
+        );
+        assert_eq!(launch.child_input.user_prompt_version_id, Some(user_pv_id));
+
+        let system = launch
+            .child_input
+            .system
+            .as_deref()
+            .expect("a system prompt");
+        assert!(
+            system.contains("verification agent"),
+            "the rubric system prompt rides the child: {system}",
+        );
+        assert!(
+            system.contains("provides evidence for"),
+            "the relation-kind legend reaches the verifier: {system}",
+        );
+        let user = &launch.child_input.messages[0].content;
+        assert!(
+            user.contains("retries use exponential backoff"),
+            "the source claim's content reaches the verifier: {user}",
+        );
+        assert!(
+            user.contains("the gateway caps total retry time at thirty seconds"),
+            "the cross-project target claim's content reaches the verifier: {user}",
+        );
+        assert!(
+            user.contains("the backoff explains the cap"),
+            "the edge's justification reaches the verifier: {user}",
+        );
+
+        // With no verifier configured, the launch declines and the
+        // submission would commit on the validators alone.
+        let plain = RelationSubmissionPipeline::new(HashSet::new());
+        assert!(
+            plain
+                .verifier_launch(&mut txn, &thread, &payload)
+                .await
+                .expect("launch evaluates")
+                .is_none(),
+            "no verifier configured means no launch",
+        );
+
+        // An empty submission asserts nothing to review, so it declines even
+        // with a verifier configured.
+        let with_verifier =
+            RelationSubmissionPipeline::new(HashSet::new()).with_verifier(Some(make_verifier()));
+        assert!(
+            with_verifier
+                .verifier_launch(&mut txn, &thread, &serde_json::json!({ "relations": [] }))
+                .await
+                .expect("launch evaluates")
+                .is_none(),
+            "an empty submission launches no verifier",
+        );
     }
 }

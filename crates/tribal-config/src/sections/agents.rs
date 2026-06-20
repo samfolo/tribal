@@ -3,8 +3,9 @@
 //! Absent configuration runs every stage one-shot. Setting a stage's
 //! executor to `loop` routes it through the in-process turn loop with
 //! finite default budgets, every one of which is overridable here. Every
-//! pipeline stage is configurable; verifier settings on relation and
-//! extraction are inert and surfaced as advisories.
+//! pipeline stage is configurable; the triage and relation verifiers take
+//! effect under the loop, extraction has none, and an inert setting is
+//! surfaced as an advisory.
 
 use serde::{Deserialize, Serialize};
 
@@ -14,8 +15,10 @@ use crate::validation::{ConfigPath, Diagnostics, ValidationError};
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Default cap on an agentic thread's turns.
-pub const DEFAULT_AGENTIC_MAX_TURNS: u32 = 8;
+/// Default cap on an agentic thread's turns. A runaway guard, not a thinking
+/// budget: set high enough that only a model stuck in a loop reaches it, so
+/// the token cap is the real economic limit.
+pub const DEFAULT_AGENTIC_MAX_TURNS: u32 = 25;
 
 /// Default cap on an agentic thread's token spend: input, output, and
 /// cache-write tokens. Cache-read is not counted. No provider populates
@@ -63,15 +66,15 @@ const _: () = assert!(
 pub const VERIFIER_INERT_ADVISORY: &str = "agents.triage.verifier is set but agents.triage.executor is one_shot; \
      the verifier runs only under the loop executor, so this setting is inert";
 
-/// Advisory raised when the relation verifier is set. The relation loop
-/// has no verifier, so the setting is inert under either executor.
-/// Non-fatal: the stage runs regardless.
-pub const RELATION_VERIFIER_UNAVAILABLE_ADVISORY: &str = "agents.relation.verifier is set, but the relation stage has no verifier toggle that takes effect, \
-     so this setting is inert";
+/// Advisory raised when the relation verifier is enabled under the one-shot
+/// executor, where there is no submission loop for it to check, so the
+/// setting is inert. Non-fatal: the stage runs one-shot regardless.
+pub const RELATION_VERIFIER_INERT_ADVISORY: &str = "agents.relation.verifier is set but agents.relation.executor is one_shot; \
+     the verifier runs only under the loop executor, so this setting is inert";
 
-/// The extraction-stage counterpart of
-/// [`RELATION_VERIFIER_UNAVAILABLE_ADVISORY`]: the extraction loop has no
-/// verifier, so any setting is inert.
+/// Advisory raised when the extraction verifier is set. The extraction loop
+/// has no verifier, so any setting is inert under either executor.
+/// Non-fatal: the stage runs regardless.
 pub const EXTRACTION_VERIFIER_UNAVAILABLE_ADVISORY: &str = "agents.extraction.verifier is set, but the extraction stage has no verifier toggle that takes effect, \
      so this setting is inert";
 
@@ -123,10 +126,10 @@ pub struct StageAgentConfig {
     #[serde(default)]
     pub executor: ExecutorChoice,
     /// Whether an accepted submission is verified by a child execution.
-    /// Absent leaves the stage's loop default in force (triage verifies by
-    /// default, relation does not). It is honoured only under the loop
-    /// executor; setting it under one-shot, where there is no submission
-    /// loop to verify, is inert and surfaced as a startup advisory.
+    /// Absent leaves the stage's loop default in force: triage and relation
+    /// verify by default, extraction has no verifier. It is honoured only
+    /// under the loop executor; setting it under one-shot, where there is no
+    /// submission loop to verify, is inert and surfaced as a startup advisory.
     #[serde(default)]
     pub verifier: Option<bool>,
     /// Override for the turn cap; the named default applies when absent.
@@ -185,16 +188,16 @@ impl AgentsConfig {
     /// validation admits but the operator may not have intended.
     pub(crate) fn advisories(&self) -> Vec<&'static str> {
         let mut advisories = Vec::new();
-        // Triage's verifier runs under the loop, so it is inert only when
-        // set under the one-shot executor.
+        // The triage and relation verifiers run under the loop, so each is
+        // inert only when set under the one-shot executor.
         if self.triage.verifier == Some(true) && self.triage.executor == ExecutorChoice::OneShot {
             advisories.push(VERIFIER_INERT_ADVISORY);
         }
-        // The relation and extraction stages have no verifier, so any
-        // setting on them is inert.
-        if self.relation.verifier == Some(true) {
-            advisories.push(RELATION_VERIFIER_UNAVAILABLE_ADVISORY);
+        if self.relation.verifier == Some(true) && self.relation.executor == ExecutorChoice::OneShot
+        {
+            advisories.push(RELATION_VERIFIER_INERT_ADVISORY);
         }
+        // The extraction stage has no verifier, so any setting on it is inert.
         if self.extraction.verifier == Some(true) {
             advisories.push(EXTRACTION_VERIFIER_UNAVAILABLE_ADVISORY);
         }
@@ -351,18 +354,19 @@ mod tests {
     }
 
     #[test]
-    fn test_relation_verifier_is_inert_under_either_executor() {
-        // The relation loop has no verifier, so the setting is inert
-        // whether the stage runs one-shot or under the loop.
-        for yaml in [
-            "relation:\n  verifier: true\n",
-            "relation:\n  executor: loop\n  verifier: true\n",
-        ] {
-            let config: AgentsConfig = serde_yaml::from_str(yaml).expect("parse");
-            assert_eq!(
-                config.advisories(),
-                vec![RELATION_VERIFIER_UNAVAILABLE_ADVISORY],
-            );
-        }
+    fn test_relation_verifier_is_inert_only_under_one_shot() {
+        // The relation verifier runs under the loop, so it is inert only
+        // when set under the one-shot executor; under the loop it raises
+        // nothing.
+        let inert: AgentsConfig =
+            serde_yaml::from_str("relation:\n  verifier: true\n").expect("parse");
+        assert_eq!(inert.advisories(), vec![RELATION_VERIFIER_INERT_ADVISORY]);
+
+        let under_loop: AgentsConfig =
+            serde_yaml::from_str("relation:\n  executor: loop\n  verifier: true\n").expect("parse");
+        assert!(
+            under_loop.advisories().is_empty(),
+            "the relation verifier belongs to the loop",
+        );
     }
 }
