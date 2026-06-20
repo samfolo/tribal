@@ -32,7 +32,7 @@ Notes from triage: <justification-{{ nonce }}>{{ c.handoff }}</justification-{{ 
 ## Similar Claims from Triage
 {%- for d in similar_item_decisions %}
 
-### Item {{ d.batch_index }} ↔ Item {{ d.context_index }} (similarity: {{ d.similarity_score | round(precision=4) }}: {{ d.similarity_label }})
+### Item {{ d.batch_index }} ↔ Item {{ d.context_index }} (similarity: {{ d.similarity_score | round(precision=4) }} — {{ d.similarity_label }})
 Suggested relation: {{ d.suggested_relation }}
 Justification: <justification-{{ nonce }}>{{ d.justification }}</justification-{{ nonce }}>
 
