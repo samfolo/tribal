@@ -527,7 +527,6 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
     worker
         .run_thread_aware_reclaim(
             10,
-            0,
             TaskErrorKind::HeartbeatExpired,
             "heartbeat_expired",
             Some(3600),

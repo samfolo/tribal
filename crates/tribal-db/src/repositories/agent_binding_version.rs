@@ -110,7 +110,7 @@ impl AgentBindingVersionRepository for PgAgentBindingVersionRepository {
                 source: e,
             })?;
 
-        Ok(map_agent_binding_row(&row))
+        map_agent_binding_row(&row)
     }
 
     async fn find_by_id(
@@ -128,7 +128,7 @@ impl AgentBindingVersionRepository for PgAgentBindingVersionRepository {
                 source: e,
             })?;
 
-        Ok(row.as_ref().map(map_agent_binding_row))
+        row.as_ref().map(map_agent_binding_row).transpose()
     }
 }
 
@@ -136,19 +136,75 @@ impl AgentBindingVersionRepository for PgAgentBindingVersionRepository {
 // Row mapping
 // ---------------------------------------------------------------------------
 
-fn map_agent_binding_row(r: &sqlx::postgres::PgRow) -> AgentBinding {
-    AgentBinding::builder()
+/// Maps a row, failing closed rather than panicking on definition drift: a
+/// row whose stored stage or definition no longer matches the current shape
+/// (the tool-reach reshape is one such drift) fails the affected thread with
+/// context instead of taking the worker down.
+fn map_agent_binding_row(r: &sqlx::postgres::PgRow) -> Result<AgentBinding, DbError> {
+    let hash = r.get::<String, _>("hash");
+    let pipeline_stage = r
+        .get::<String, _>("pipeline_stage")
+        .parse::<TaskType>()
+        .map_err(|_| decode_failure(&hash, UNKNOWN_STAGE_IN_DB.to_owned()))?;
+    let definition =
+        serde_json::from_value::<AgentDefinition>(r.get::<serde_json::Value, _>("definition"))
+            .map_err(|source| {
+                decode_failure(&hash, format!("{MALFORMED_DEFINITION_IN_DB}: {source}"))
+            })?;
+    Ok(AgentBinding::builder()
         .id(AgentBindingVersionId::from(r.get::<uuid::Uuid, _>("id")))
-        .hash(r.get::<String, _>("hash"))
-        .pipeline_stage(
-            r.get::<String, _>("pipeline_stage")
-                .parse::<TaskType>()
-                .expect(UNKNOWN_STAGE_IN_DB),
-        )
-        .definition(
-            serde_json::from_value::<AgentDefinition>(r.get::<serde_json::Value, _>("definition"))
-                .expect(MALFORMED_DEFINITION_IN_DB),
-        )
+        .hash(hash)
+        .pipeline_stage(pipeline_stage)
+        .definition(definition)
         .created_at(r.get("created_at"))
-        .build()
+        .build())
+}
+
+/// Wraps a row-decode failure as a non-retryable [`DbError::QueryFailed`],
+/// matching the encode-side error the record path already raises.
+fn decode_failure(hash: &str, detail: String) -> DbError {
+    DbError::QueryFailed {
+        context: format!("decoding binding version {hash}"),
+        source: sqlx::Error::Decode(detail.into()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test helpers (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "test-helpers")]
+impl PgAgentBindingVersionRepository {
+    /// Inserts a version with a caller-supplied id and a raw definition, so a
+    /// test can plant a malformed row the production `record()` could not
+    /// encode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn insert_raw_for_test(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentBindingVersionId,
+        hash: &str,
+        pipeline_stage: TaskType,
+        definition: serde_json::Value,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO agent_binding_versions (id, hash, pipeline_stage, definition) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(id.inner())
+        .bind(hash)
+        .bind(pipeline_stage.as_str())
+        .bind(definition)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "inserting binding version (test helper)".to_owned(),
+            source: e,
+        })?;
+
+        Ok(())
+    }
 }

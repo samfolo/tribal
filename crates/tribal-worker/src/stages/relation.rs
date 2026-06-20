@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use tracing::Instrument;
 use tribal_agent_runtime::{StageThread, SubmissionContent};
 use tribal_common::clamp_to_u32;
-use tribal_config::ExecutorChoice;
 use tribal_db::{
     AgentThreadRecordRepository, ExtractionResultRepository, JobTriageSubmission,
     KnowledgeItemRepository, NewKnowledgeItemRelation, PgAgentThreadRecordRepository,
@@ -38,26 +37,18 @@ use crate::{
 // RelationContext
 // ---------------------------------------------------------------------------
 
-/// Context assembled before running the relation stage.
-///
-/// This is the richest context of any stage — it carries the complete
-/// episode picture for the relation agent.
+/// Context assembled before running the relation stage: the complete
+/// episode picture the relation agent reasons over.
 pub(crate) struct RelationContext<'a> {
-    /// The parent job.
     pub job: &'a Job,
-    /// The job's batch size, extracted once for the entire stage.
     pub batch_size: u32,
-    /// Typed candidates, deserialised from the extraction result.
     pub candidates: Vec<Candidate>,
-    /// Typed relation hints, deserialised from the extraction result.
     pub relation_hints: Vec<RelationHint>,
-    /// All triage results for this job.
     pub triage_results: Vec<TriageResult>,
-    /// Enriched similar item decisions with matched item content.
     pub similar_item_decision_contexts: Vec<SimilarItemDecisionContext>,
     /// The notes agentic triage handed downstream, keyed by candidate
     /// batch index. Empty for the one-shot path, which commits no
-    /// submission records and is never even queried.
+    /// submission records.
     pub handoffs: HashMap<u32, String>,
 }
 
@@ -69,16 +60,13 @@ pub(crate) struct RelationContext<'a> {
 pub(crate) enum RelationCommitDecision {
     /// Relations to commit with the job's terminal status.
     Relate {
-        /// The relations to batch-insert.
         relations: Vec<NewKnowledgeItemRelation>,
-        /// The batch ID sealing this relation commit.
         batch_id: RelationBatchId,
-        /// The computed job outcome.
         outcome: JobOutcome,
         /// Number of edges dropped during normalisation.
         skipped: usize,
     },
-    /// Idempotency skip — `committed_batch_id` already set.
+    /// Idempotency skip: `committed_batch_id` already set.
     NoOp,
 }
 
@@ -89,7 +77,7 @@ pub(crate) enum RelationCommitDecision {
 impl Worker {
     /// Loads all relation stage inputs from the database using a single
     /// pooled connection and returns the assembled context.
-    async fn load_relation_data<'a>(
+    pub(super) async fn load_relation_data<'a>(
         &self,
         job: &'a Job,
     ) -> Result<RelationContext<'a>, StageError> {
@@ -114,14 +102,11 @@ impl Worker {
         let similar_item_decision_contexts =
             build_similar_item_decision_contexts(&mut conn, &similar_item_decisions, batch_size)
                 .await?;
-        // Only the agentic triage path commits submission records with a
-        // handoff, so the read is gated on the configured executor and the
-        // default path issues no query at all.
-        let handoffs = if self.agents().triage.executor == ExecutorChoice::Loop {
-            load_triage_handoffs(&mut conn, job.id()).await?
-        } else {
-            HashMap::new()
-        };
+        // Handoffs are durable triage submission records, the truth of what
+        // this job's triage committed; a one-shot job has none, so the read
+        // returns empty without depending on the current executor config
+        // (which a mid-job change would make a false witness).
+        let handoffs = load_triage_handoffs(&mut conn, job.id()).await?;
 
         drop(conn);
 
@@ -172,31 +157,38 @@ fn handoffs_by_batch_index(submissions: Vec<JobTriageSubmission>) -> HashMap<u32
 // ---------------------------------------------------------------------------
 
 impl Worker {
-    /// Runs the relation stage for a task.
-    ///
-    /// Loads triage results and extraction relation hints, calls the
-    /// relation LLM, normalises and filters edges, and returns a
-    /// stage commit ready for the atomic commit, with the response for
-    /// the thread terminal.
-    ///
-    /// Returns early with a no-op if `committed_batch_id` is already
-    /// set (idempotency guard).
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`StageError`] variant matching the failure mode:
-    /// - [`StageError::Database`] for pool/repository failures.
-    /// - [`StageError::SemaphoreTimeout`] if the provider semaphore
-    ///   cannot be acquired within the remaining time budget.
-    /// - [`StageError::TemplateRender`] if the prompt template is invalid.
-    /// - [`StageError::Provider`] if the LLM call fails.
-    /// - [`StageError::Parse`] if the LLM response cannot be parsed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the relation provider key is not registered in the
-    /// provider registry or if the semaphore is unexpectedly closed.
+    /// Runs the relation stage for a task, routed by the thread's recorded
+    /// binding: the executor follows the binding, not the current
+    /// configuration, so a resumed thread continues the way it started.
     pub(crate) async fn run_relation(
+        &self,
+        job: &Job,
+        task: &Task,
+        deadline: tokio::time::Instant,
+        stage_thread: &StageThread,
+        pump: &crate::worker::heartbeat::WorkerHeartbeatPump,
+    ) -> Result<Option<(StageCommit, StageTerminal)>, StageError> {
+        match stage_thread.binding.definition().executor {
+            tribal_domain::StageExecutorKind::OneShot => {
+                self.run_relation_one_shot(job, task, deadline, stage_thread)
+                    .await
+            }
+            tribal_domain::StageExecutorKind::BuiltInLoop => {
+                self.run_relation_loop(job, task, deadline, stage_thread, pump)
+                    .await
+            }
+            tribal_domain::StageExecutorKind::ExternalAgent => Err(StageError::BindingDerivation {
+                stage: STAGE_RELATION.into(),
+                context: "the external-agent executor has no runner".into(),
+            }),
+        }
+    }
+
+    /// Runs the one-shot relation turn for a job: loads triage results and
+    /// extraction hints, calls the LLM, normalises and filters edges, and
+    /// returns the stage commit with the response for the thread terminal.
+    /// Returns early with a no-op when `committed_batch_id` is already set.
+    async fn run_relation_one_shot(
         &self,
         job: &Job,
         task: &Task,
@@ -259,7 +251,7 @@ impl Worker {
 
             // Relation's positional references resolve against the
             // similar-item decisions, which are immutable once the fan-in
-            // fires and are read in a deterministic order — a resumed
+            // fires and are read in a deterministic order: a resumed
             // attempt re-derives the identical lookup, so no resolution
             // context needs recording.
             let Some(bracketed) = self
@@ -293,11 +285,11 @@ impl Worker {
                     if include_llm_content {
                         let preview: String =
                             response.text.chars().take(PARSE_PREVIEW_LENGTH).collect();
-                        tracing::debug!(preview = %preview, "parse failure — raw LLM response");
+                        tracing::debug!(preview = %preview, "parse failure: raw LLM response");
                     } else {
                         tracing::debug!(
                             response_length = response.text.len(),
-                            "parse failure — response details redacted",
+                            "parse failure: response details redacted",
                         );
                     }
                 })?
@@ -327,7 +319,7 @@ impl Worker {
 }
 
 // ---------------------------------------------------------------------------
-// Private helpers — data loading
+// Private helpers: data loading
 // ---------------------------------------------------------------------------
 
 /// Loads candidates and relation hints from the extraction result.
@@ -440,7 +432,7 @@ async fn build_similar_item_decision_contexts(
             tracing::warn!(
                 matched_item_id = %d.matched_item_id(),
                 batch_index = d.batch_index(),
-                "dropping stale similar-item decision — matched knowledge item no longer exists",
+                "dropping stale similar-item decision: matched knowledge item no longer exists",
             );
             continue;
         };
@@ -465,15 +457,9 @@ async fn build_similar_item_decision_contexts(
 // ---------------------------------------------------------------------------
 
 /// Builds the `RelationPromptContext` from the loaded relation data.
-///
-/// This is a pure, synchronous transformation — no database access.
-/// Borrows from the `RelationContext` to avoid cloning.
-///
-/// # Errors
-///
-/// Returns [`StageError::Database`] if `batch_size` exceeds the
-/// candidates array length (data corruption).
-fn build_prompt_context<'a>(
+/// Fails when `batch_size` exceeds the candidates array length, which
+/// signals corruption between the extraction result and the job's count.
+pub(super) fn build_prompt_context<'a>(
     ctx: &'a RelationContext<'_>,
     batch_size: u32,
 ) -> Result<RelationPromptContext<'a>, StageError> {
@@ -491,18 +477,45 @@ fn build_prompt_context<'a>(
     })
 }
 
+/// The ids the relation opening offers as citable references up front: each
+/// in-batch candidate's committed id (created, or the item a duplicate
+/// matched) and the existing claims triage surfaced. The loop's tool results
+/// extend this set at submission time; together they are the provenance the
+/// submission pipeline grounds endpoints against. Sourced from the loaded
+/// context rather than the thread's job id, which a stage thread does not
+/// carry.
+pub(super) fn relation_citable_seed(ctx: &RelationContext<'_>) -> HashSet<KnowledgeItemId> {
+    let mut seed = HashSet::new();
+    for result in &ctx.triage_results {
+        if result.batch_index() >= ctx.batch_size {
+            continue;
+        }
+        match result.outcome() {
+            TriageOutcome::Created { item_id } => {
+                seed.insert(*item_id);
+            }
+            TriageOutcome::Duplicate {
+                matched_item_id, ..
+            } => {
+                seed.insert(*matched_item_id);
+            }
+            TriageOutcome::Failed { .. } => {}
+        }
+    }
+    for decision in &ctx.similar_item_decision_contexts {
+        seed.insert(decision.matched_item_id);
+    }
+    seed
+}
+
 // ---------------------------------------------------------------------------
 // Candidate outcomes
 // ---------------------------------------------------------------------------
 
 /// Builds the `CandidateOutcome` list by joining candidates with triage
-/// results by batch index.
-///
-/// # Errors
-///
-/// Returns [`StageError::Database`] if `batch_size` exceeds the
-/// candidates array length — this indicates data corruption between
-/// the extraction result and the job's `batch_size` field.
+/// results by batch index. Fails when `batch_size` exceeds the candidates
+/// array length, which signals corruption between the extraction result
+/// and the job's `batch_size` field.
 fn build_candidate_outcomes<'a>(
     candidates: &'a [Candidate],
     triage_results: &[TriageResult],
@@ -601,12 +614,10 @@ fn build_commit_decision(
 // Unified lookup table
 // ---------------------------------------------------------------------------
 
-/// Builds a unified index-to-ID lookup covering all referenceable items.
-///
-/// Indices `0..batch_size` resolve via triage outcomes (the same
-/// semantics as the previous `resolve_target` for batch indices).
-/// Indices `batch_size..` resolve directly from similar-item decision
-/// targets — these are existing knowledge items whose IDs are known.
+/// Builds a unified index-to-ID lookup covering all referenceable items:
+/// indices `0..batch_size` resolve through triage outcomes, indices
+/// `batch_size..` resolve directly from similar-item decision targets,
+/// which are existing knowledge items whose IDs are already known.
 fn build_unified_lookup(
     triage_results: &[TriageResult],
     similar_item_decisions: &[SimilarItemDecisionContext],
@@ -616,7 +627,6 @@ fn build_unified_lookup(
     let total = n_candidates + similar_item_decisions.len();
     let mut lookup = vec![None; total];
 
-    // Candidate indices: resolve through triage outcomes.
     for result in triage_results {
         let idx = result.batch_index() as usize;
         if idx < n_candidates {
@@ -630,12 +640,11 @@ fn build_unified_lookup(
         }
     }
 
-    // Similar-item indices: resolve directly from matched item IDs.
     for (i, decision) in similar_item_decisions.iter().enumerate() {
         debug_assert_eq!(
             n_candidates + i,
             decision.context_index as usize,
-            "context_index mismatch — decisions may have been reordered",
+            "context_index mismatch: decisions may have been reordered",
         );
         lookup[n_candidates + i] = Some(decision.matched_item_id);
     }
@@ -655,16 +664,11 @@ struct ResolvedEdge {
     justification: Option<String>,
 }
 
-/// Normalises raw relation edges into resolved, deduplicated edges.
-///
-/// Steps:
-/// 1. Resolve `ContextIndex` endpoints to `KnowledgeItemId` via the unified lookup table.
-/// 2. Drop edges with any unresolvable endpoint.
-/// 3. Drop self-edges.
-/// 4. Deduplicate `(source_id, target_id, relation_type)` triples.
-///
-/// `Supersedes` edges cannot reach this function — the schema-level
-/// [`IngestionRelationKind`] type excludes the variant entirely.
+/// Normalises raw relation edges into resolved, deduplicated edges,
+/// dropping any with an unresolvable endpoint, self-edges, and duplicate
+/// `(source_id, target_id, relation_type)` triples. `Supersedes` edges
+/// cannot reach here: the schema-level [`IngestionRelationKind`] type
+/// excludes the variant entirely.
 fn normalise_edges(
     edges: Vec<RelationEdge>,
     lookup: &[Option<KnowledgeItemId>],
@@ -676,11 +680,10 @@ fn normalise_edges(
     for edge in edges {
         let relation_type: RelationKind = edge.relation_type.into();
 
-        // Step 1+2: resolve targets.
         let Some(source_id) = resolve_target(&edge.source, lookup) else {
             tracing::debug!(
                 ?edge.source, ?edge.target, ?relation_type,
-                "dropping edge — unresolvable source",
+                "dropping edge: unresolvable source",
             );
             skipped += 1;
             continue;
@@ -688,13 +691,12 @@ fn normalise_edges(
         let Some(target_id) = resolve_target(&edge.target, lookup) else {
             tracing::debug!(
                 ?edge.source, ?edge.target, ?relation_type,
-                "dropping edge — unresolvable target",
+                "dropping edge: unresolvable target",
             );
             skipped += 1;
             continue;
         };
 
-        // Step 3: drop self-edges.
         if source_id == target_id {
             tracing::debug!(
                 %source_id, ?relation_type,
@@ -704,7 +706,6 @@ fn normalise_edges(
             continue;
         }
 
-        // Step 4: deduplicate.
         let triple = (source_id, target_id, relation_type);
         if !seen.insert(triple) {
             tracing::debug!(
@@ -743,7 +744,7 @@ fn resolve_target(
 // ---------------------------------------------------------------------------
 
 /// Computes the job outcome from triage results and batch size.
-fn compute_outcome(triage_results: &[TriageResult], batch_size: u32) -> JobOutcome {
+pub(super) fn compute_outcome(triage_results: &[TriageResult], batch_size: u32) -> JobOutcome {
     let n_created = triage_results
         .iter()
         .filter(|r| matches!(r.outcome(), TriageOutcome::Created { .. }))
@@ -980,7 +981,7 @@ mod tests {
     #[test]
     fn test_normalise_drops_failed_candidate() {
         let ki_a = ki("aaaa");
-        // Index 1 is None — corresponds to a failed triage outcome.
+        // Index 1 is None: corresponds to a failed triage outcome.
         let lookup = vec![Some(ki_a), None];
         let edges = vec![edge(
             RelationTarget::ContextIndex { context_index: 0 },
@@ -1198,7 +1199,7 @@ mod tests {
 
     #[test]
     fn test_outcome_partial_when_some_dead_lettered() {
-        // batch_size=2 but only 1 triage result exists — the missing
+        // batch_size=2 but only 1 triage result exists: the missing
         // result means the other triage task was dead-lettered (no
         // TriageResult row is written for dead-lettered tasks).
         // With n_created=1 and n_dead=1, the outcome is Partial.

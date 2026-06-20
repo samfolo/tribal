@@ -12,9 +12,8 @@ use tribal_domain::{
 };
 
 use super::{
-    CandidateOutcome, LoopSimilarItemContext, RelationPromptContext, SimilarItemContext,
-    SimilarItemDecisionContext, VerifierConsideredItem, VerifierSubmissionContext,
-    extraction_user_context,
+    CandidateOutcome, RelationPromptContext, SimilarItemContext, SimilarItemDecisionContext,
+    VerifierConsideredItem, VerifierSubmissionContext, extraction_user_context,
     legends::SimilarityBand,
     loop_user_context, relation_user_context, triage_user_context,
     variables::{
@@ -44,7 +43,7 @@ pub fn synthetic_validation_context(
     role: PromptRole,
 ) -> tera::Context {
     let mut ctx = match class {
-        PromptClass::Loop => loop_validation_context(role),
+        PromptClass::Loop => loop_validation_context(stage, role),
         PromptClass::Verifier => verifier_validation_context(role),
         PromptClass::OneShot => one_shot_validation_context(stage, role),
     };
@@ -59,12 +58,33 @@ pub fn synthetic_validation_context(
     ctx
 }
 
-/// The agentic loop's synthetic contexts: the system prompt is static,
-/// the user prompt consumes the one-shot triage shape (the similar-item
-/// entries already carry their item ids).
-fn loop_validation_context(role: PromptRole) -> tera::Context {
+/// The agentic loop's synthetic contexts, by stage. The triage loop user
+/// prompt consumes the triage shape; the relation loop user prompt consumes
+/// the relation shape, and its system prompt renders the relation legends.
+fn loop_validation_context(stage: PromptStage, role: PromptRole) -> tera::Context {
+    match stage {
+        PromptStage::Extraction => extraction_loop_validation_context(role),
+        PromptStage::Triage => triage_loop_validation_context(role),
+        PromptStage::Relation => relation_loop_validation_context(role),
+    }
+}
+
+/// The extraction loop's synthetic context: a static system prompt, a user
+/// prompt over the raw input and tag registry: the one-shot's own shape.
+fn extraction_loop_validation_context(role: PromptRole) -> tera::Context {
     match role {
-        PromptRole::System => tera::Context::new(),
+        PromptRole::System => extraction_system_context(),
+        PromptRole::User => extraction_user_context("x", &["x"]),
+    }
+}
+
+/// The triage loop's synthetic context: the system prompt renders the
+/// similarity and relation-suggestion legends, the user prompt the candidate
+/// and tags, with no prefetched similar items (the loop reaches the corpus
+/// through its search tool).
+fn triage_loop_validation_context(role: PromptRole) -> tera::Context {
+    match role {
+        PromptRole::System => triage_system_context(),
         PromptRole::User => {
             let candidate: Candidate = serde_json::from_value(json!({
                 "kind": "fact",
@@ -73,16 +93,57 @@ fn loop_validation_context(role: PromptRole) -> tera::Context {
             }))
             .expect("synthetic candidate is valid");
 
-            let similar = LoopSimilarItemContext {
-                item_id: KnowledgeItemId::new().to_string(),
-                kind: KnowledgeKind::Fact,
-                content: "x".to_owned(),
-                similarity_score: 0.5,
-                similarity_label: SimilarityBand::from(0.5).to_string(),
-                tags: vec!["x".to_owned()],
+            loop_user_context(&candidate, &["x"])
+        }
+    }
+}
+
+/// The relation loop's synthetic context: the system prompt renders the
+/// relation legends, the user prompt the batch shape with committed ids.
+fn relation_loop_validation_context(role: PromptRole) -> tera::Context {
+    match role {
+        PromptRole::System => relation_system_context(),
+        PromptRole::User => {
+            let candidate: Candidate = serde_json::from_value(json!({
+                "kind": "fact",
+                "content": "x",
+                "suggested_tags": ["x"],
+            }))
+            .expect("synthetic candidate is valid");
+
+            let hint: RelationHint = serde_json::from_value(json!({
+                "source_index": 0,
+                "target_index": 1,
+                "hint_type": "derived_from",
+            }))
+            .expect("synthetic relation hint is valid");
+
+            let outcome = CandidateOutcome {
+                batch_index: 0,
+                candidate: &candidate,
+                outcome: "created".to_owned(),
+                item_id: Some(KnowledgeItemId::new()),
+                handoff: None,
             };
 
-            loop_user_context(&candidate, &[similar], &["x"])
+            let decision = SimilarItemDecisionContext {
+                batch_index: 0,
+                context_index: 1,
+                matched_item_id: KnowledgeItemId::new(),
+                matched_content: "x".to_owned(),
+                similarity_score: 0.5,
+                similarity_label: SimilarityBand::from(0.5).to_string(),
+                suggested_relation: RelationSuggestion::Supports,
+                justification: "x".to_owned(),
+            };
+
+            let prompt_context = RelationPromptContext {
+                candidates: vec![outcome],
+                relation_hints: &[hint],
+                similar_item_decisions: &[decision],
+            };
+
+            relation_user_context(&prompt_context)
         }
     }
 }
@@ -206,7 +267,7 @@ mod tests {
     /// context. Mirrors the server's hot-reload validation path.
     #[test]
     fn test_synthetic_context_renders_all_embedded_defaults() {
-        let pairs: [(PromptStage, PromptClass, PromptRole, &str); 10] = [
+        let pairs: [(PromptStage, PromptClass, PromptRole, &str); 14] = [
             (
                 PromptStage::Extraction,
                 PromptClass::OneShot,
@@ -244,6 +305,18 @@ mod tests {
                 include_str!("../../../../prompts/relation/user.tera"),
             ),
             (
+                PromptStage::Extraction,
+                PromptClass::Loop,
+                PromptRole::System,
+                include_str!("../../../../prompts/extraction/loop_system.tera"),
+            ),
+            (
+                PromptStage::Extraction,
+                PromptClass::Loop,
+                PromptRole::User,
+                include_str!("../../../../prompts/extraction/loop_user.tera"),
+            ),
+            (
                 PromptStage::Triage,
                 PromptClass::Loop,
                 PromptRole::System,
@@ -254,6 +327,18 @@ mod tests {
                 PromptClass::Loop,
                 PromptRole::User,
                 include_str!("../../../../prompts/triage/loop_user.tera"),
+            ),
+            (
+                PromptStage::Relation,
+                PromptClass::Loop,
+                PromptRole::System,
+                include_str!("../../../../prompts/relation/loop_system.tera"),
+            ),
+            (
+                PromptStage::Relation,
+                PromptClass::Loop,
+                PromptRole::User,
+                include_str!("../../../../prompts/relation/loop_user.tera"),
             ),
             (
                 PromptStage::Triage,
@@ -276,6 +361,32 @@ mod tests {
                 "embedded default for {stage}/{class}/{role} failed to render against synthetic \
                  context: {}",
                 result.unwrap_err(),
+            );
+        }
+    }
+
+    #[test]
+    fn test_loop_system_prompts_instruct_resubmission() {
+        // A submission pipeline bounces a deterministic failure with
+        // diagnostics; the loop prompt must tell the model to resubmit, or
+        // a recoverable bounce becomes a turn-budget failure.
+        for (stage, content) in [
+            (
+                "extraction",
+                include_str!("../../../../prompts/extraction/loop_system.tera"),
+            ),
+            (
+                "triage",
+                include_str!("../../../../prompts/triage/loop_system.tera"),
+            ),
+            (
+                "relation",
+                include_str!("../../../../prompts/relation/loop_system.tera"),
+            ),
+        ] {
+            assert!(
+                content.contains("submit again"),
+                "the {stage} loop prompt must instruct resubmission after a bounce",
             );
         }
     }

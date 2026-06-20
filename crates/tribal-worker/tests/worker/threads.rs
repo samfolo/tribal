@@ -176,7 +176,7 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
 
     let binding = tribal_agent_runtime::resolve_binding(
         &mut conn,
-        &tribal_test_utils::an_agent_definition().build(),
+        &a_routed_definition(tribal_domain::TaskType::Extraction),
     )
     .await
     .expect("binding");
@@ -737,7 +737,6 @@ async fn test_thread_aware_reclaim_requeues_without_touching_the_thread() {
     let stats = worker
         .run_thread_aware_reclaim(
             10,
-            0,
             tribal_domain::TaskErrorKind::HeartbeatExpired,
             "heartbeat_expired",
             None,
@@ -830,7 +829,6 @@ async fn test_reclaim_exhaustion_dead_letters_thread_and_task_and_fails_the_job(
     let stats = worker
         .run_thread_aware_reclaim(
             10,
-            0,
             tribal_domain::TaskErrorKind::HeartbeatExpired,
             "heartbeat_expired",
             None,
@@ -909,9 +907,13 @@ async fn test_reclaim_opens_a_recovery_cycle_with_reset_retry_counter() {
         .find_by_id(&mut conn, task.job_id())
         .await
         .expect("job");
+    // A loop binding earns recovery cycles; one-shot would fail fast, so
+    // the recovery path is only reachable under the loop executor.
     let binding = tribal_agent_runtime::resolve_binding(
         &mut conn,
-        &tribal_test_utils::an_agent_definition().build(),
+        &tribal_test_utils::an_agent_definition()
+            .executor(tribal_domain::StageExecutorKind::BuiltInLoop)
+            .build(),
     )
     .await
     .expect("binding");
@@ -933,7 +935,6 @@ async fn test_reclaim_opens_a_recovery_cycle_with_reset_retry_counter() {
     let stats = worker
         .run_thread_aware_reclaim(
             10,
-            2,
             tribal_domain::TaskErrorKind::HeartbeatExpired,
             "heartbeat_expired",
             None,
@@ -1017,7 +1018,7 @@ async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
         .expect("job");
     let binding = tribal_agent_runtime::resolve_binding(
         &mut conn,
-        &tribal_test_utils::an_agent_definition().build(),
+        &a_routed_definition(tribal_domain::TaskType::Extraction),
     )
     .await
     .expect("binding");
@@ -1259,7 +1260,7 @@ async fn test_claim_time_disposal_reblocks_a_task_with_a_suspended_thread() {
         .expect("job");
     let binding = tribal_agent_runtime::resolve_binding(
         &mut conn,
-        &tribal_test_utils::an_agent_definition().build(),
+        &a_routed_definition(tribal_domain::TaskType::Extraction),
     )
     .await
     .expect("binding");
@@ -1433,6 +1434,117 @@ async fn test_sweep_cancel_fallback_notifies_watchers() {
     teardown(ctx).await;
 }
 
+/// The availability sweep's stuck-relating predicate converges a stranded
+/// relation thread in one transaction: a relating job whose suspended
+/// relation thread has no live resolver (no wake instant, no descendant) is
+/// failed, its blocked task dead-lettered, its thread cancelled, and the
+/// failure published. The trigger is seeded by hand, since a relation
+/// verifier is deferred and this suspension does not arise naturally in this
+/// release; the test exercises the convergence the gate exists to guarantee.
+#[tokio::test]
+async fn test_stuck_relating_sweep_fails_a_stranded_job_and_notifies() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "stuck-relating-sweep").await;
+    let candidates = vec![a_candidate().content("a stranded claim".to_owned()).build()];
+    let (job_id, task_id, _) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_relation_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+            &[],
+        )
+        .await
+    };
+
+    // A relation thread suspended on deferred results with no wake instant
+    // and no live descendant: the one suspension the terminal stage cannot
+    // otherwise converge, and the only one the stuck-relating sweep selects.
+    let mut conn = raw_conn(ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "stranding-worker")
+        .await
+        .expect("claim");
+    let task = claimed
+        .into_iter()
+        .find(|t| t.id() == task_id)
+        .expect("the relation task claims");
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition()
+            .pipeline_stage(tribal_domain::TaskType::Relation)
+            .build(),
+    )
+    .await
+    .expect("relation binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
+    tribal_agent_runtime::suspend_stage_thread(
+        &mut conn,
+        &stage_thread.thread,
+        task.id(),
+        task.claim_token().expect("token"),
+        &tribal_domain::AgentThreadSuspension::DeferredToolResults {
+            requesting_seq: tribal_domain::AgentThreadRecordSeq::FIRST,
+            pending_tool_call_ids: vec!["call_submit".to_owned()],
+        },
+        None,
+    )
+    .await
+    .expect("suspend");
+
+    let token = CancellationToken::new();
+    let (worker, job_state_txs) =
+        build_test_worker_with_watch(pool.clone(), token.clone(), test_config(), None, None).await;
+    let (watch_tx, keepalive_rx) = watch::channel(JobState::Queued);
+    let mut watch_rx = watch_tx.subscribe();
+    job_state_txs.insert(job_id, JobWatchEntry::new(watch_tx, keepalive_rx));
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    tokio::time::timeout(POLL_SETTLE, watch_rx.wait_for(|s| *s == JobState::Failed))
+        .await
+        .expect("the stuck-relating sweep's notification reaches watchers")
+        .expect("watch channel stays open");
+    poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("job");
+    assert_eq!(job.status(), JobStatus::Failed);
+    let thread_after = PgAgentThreadRepository
+        .find_by_id(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(thread_after.status(), AgentThreadStatus::Cancelled);
+
+    teardown(ctx).await;
+}
+
 /// The two reclaim scans partition the stale set: the legacy bulk scan
 /// handles only rows with no thread, the thread-aware pass only rows
 /// with one. Either predicate's removal makes a scan claim the other's
@@ -1514,7 +1626,6 @@ async fn test_reclaim_scans_partition_threaded_and_legacy_rows() {
     let stats = worker
         .run_thread_aware_reclaim(
             10,
-            0,
             tribal_domain::TaskErrorKind::HeartbeatExpired,
             "heartbeat_expired",
             None,
@@ -1801,7 +1912,6 @@ async fn test_reclaim_exhaustion_dead_letters_a_thread_that_never_started() {
     let stats = worker
         .run_thread_aware_reclaim(
             10,
-            0,
             tribal_domain::TaskErrorKind::HeartbeatExpired,
             "heartbeat_expired",
             None,
@@ -2065,7 +2175,9 @@ async fn test_inline_failure_exhaustion_dead_letters_the_thread() {
             user_pv_id,
         )
         .await;
-        // The next failure is the budget-exhausting one.
+        // Extraction is one-shot, so the next failure exhausts the retry
+        // budget straight into dead-letter: a one-shot has no committed
+        // progress to recover to, so the recovery cap is zero for it.
         set_retry_count(&mut conn, ids.1, config.task_max_retries).await;
         ids
     };

@@ -1,17 +1,17 @@
 use tribal_db::{
     AgentBindingVersionRepository, AgentDriverTaskRepository, AgentThreadRecordRepository,
-    AgentThreadRepository, DbError, DrivingTaskRef, JobRepository, NewAgentBindingVersion,
-    NewAgentDriverTask, NewAgentThread, NewAgentThreadRecord, PgAgentBindingVersionRepository,
-    PgAgentDriverTaskRepository, PgAgentThreadRecordRepository, PgAgentThreadRepository,
-    PgJobRepository, PgPrincipalRepository, PgProjectRepository, PgTaskRepository,
-    PgTokenUsageRepository, PrincipalRepository, ProjectRepository, TaskRepository,
-    ThreadPruneCriteria, TokenUsageRepository,
+    AgentThreadRepository, DbError, DrivingTaskRef, JobRepository, JobStatusTransition,
+    NewAgentBindingVersion, NewAgentDriverTask, NewAgentThread, NewAgentThreadRecord,
+    PgAgentBindingVersionRepository, PgAgentDriverTaskRepository, PgAgentThreadRecordRepository,
+    PgAgentThreadRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
+    PgTaskRepository, PgTokenUsageRepository, PrincipalRepository, ProjectRepository,
+    TaskRepository, ThreadPruneCriteria, TokenUsageRepository,
 };
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentDriverTaskId, AgentDriverTaskKind, AgentDriverTaskState,
     AgentThread, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus,
-    AgentThreadSuspension, AgentThreadTerminal, GitRemote, JobId, PrincipalId, TaskId, TaskType,
-    TokenUsageStage,
+    AgentThreadSuspension, AgentThreadTerminal, GitRemote, JobId, JobStatus, PrincipalId, TaskId,
+    TaskType, TokenUsageStage,
 };
 use tribal_test_utils::{
     a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_system_fingerprint,
@@ -654,7 +654,7 @@ async fn test_executed_tool_results_are_exactly_once_per_call() {
     assert_eq!(count, 1);
 
     // The violation aborts the enclosing transaction (Postgres 25P02), so
-    // it is the test's final act — and the reason a runtime conflict
+    // it is the test's final act, and the reason a runtime conflict
     // loser retries its whole transaction rather than reconciling inside
     // the aborted one.
     let err = PgAgentThreadRecordRepository
@@ -997,10 +997,12 @@ async fn test_timer_wake_scan_selects_only_due_intentless_stage_threads() {
         .insert(&mut txn, &driver_new)
         .await
         .expect("insert driver-driven thread");
-    sqlx::query("INSERT INTO agent_driver_tasks (id, thread_id, kind) VALUES ($1, $2, 'drive')")
-        .bind(driver_task_id)
-        .bind(driver_driven.id().inner())
-        .execute(&mut *txn)
+    PgAgentDriverTaskRepository
+        .insert_drive_for_test(
+            &mut txn,
+            AgentDriverTaskId::from(driver_task_id),
+            driver_driven.id(),
+        )
         .await
         .expect("insert paired driver task");
     PgAgentThreadRepository
@@ -1522,4 +1524,383 @@ async fn test_prune_cascade_collects_a_terminal_subtree() {
         .await
         .expect("prune");
     assert_eq!(pruned, 2, "parent and terminal child delete together");
+}
+
+// ---------------------------------------------------------------------------
+// Stuck-relating convergence scan
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_stuck_relating_scan_keys_on_resolver_liveness() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    let prereq = setup_thread_prerequisites(&mut txn, "stuck-relating").await;
+
+    // The job advances to relating, the status the scan's join requires.
+    PgJobRepository
+        .update_status_if_live(
+            &mut txn,
+            prereq.job_id,
+            &JobStatusTransition::builder()
+                .status(JobStatus::Relating)
+                .build(),
+        )
+        .await
+        .expect("relating");
+
+    // A relation stage thread, suspended on a verifier child.
+    let binding = PgAgentBindingVersionRepository
+        .record(
+            &mut txn,
+            &NewAgentBindingVersion::builder()
+                .hash(HASH_B.to_owned())
+                .pipeline_stage(TaskType::Relation)
+                .definition(
+                    an_agent_definition()
+                        .pipeline_stage(TaskType::Relation)
+                        .build(),
+                )
+                .build(),
+        )
+        .await
+        .expect("relation binding");
+    let thread = PgAgentThreadRepository
+        .insert(
+            &mut txn,
+            &NewAgentThread::builder()
+                .pipeline_stage(TaskType::Relation)
+                .binding_version_id(binding.id())
+                .driving_task(DrivingTaskRef::Stage(prereq.stage_task_id))
+                .principal_id(prereq.principal_id)
+                .format_version(AGENT_THREAD_FORMAT_VERSION)
+                .build(),
+        )
+        .await
+        .expect("relation thread");
+    PgAgentThreadRepository
+        .mark_running(&mut txn, thread.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("run");
+    PgAgentThreadRepository
+        .suspend(
+            &mut txn,
+            thread.id(),
+            &AgentThreadSuspension::DeferredToolResults {
+                requesting_seq: AgentThreadRecordSeq::new(2),
+                pending_tool_call_ids: vec!["verify".to_owned()],
+            },
+            None,
+        )
+        .await
+        .expect("suspend");
+
+    // No live descendant: the resolver is gone, so the thread is stranded
+    // and the scan selects it.
+    let stranded = PgAgentThreadRepository
+        .find_stuck_relating_threads(&mut txn, 16)
+        .await
+        .expect("scan");
+    assert!(
+        stranded.iter().any(|t| t.id() == thread.id()),
+        "a relation thread with no live resolver is selected",
+    );
+
+    // A live verifier child (driver-driven, non-terminal) and its pending
+    // driver task restore a live resolver: the in-flight verifier state the
+    // scan must leave alone, lest it fail a healthy job.
+    let driver_task_id = AgentDriverTaskId::from(uuid::Uuid::new_v4());
+    let child = PgAgentThreadRepository
+        .insert(
+            &mut txn,
+            &NewAgentThread::builder()
+                .parent_thread_id(Some(thread.id()))
+                .pipeline_stage(TaskType::Relation)
+                .binding_version_id(binding.id())
+                .driving_task(DrivingTaskRef::Driver(driver_task_id))
+                .principal_id(prereq.principal_id)
+                .format_version(AGENT_THREAD_FORMAT_VERSION)
+                .build(),
+        )
+        .await
+        .expect("child thread");
+    PgAgentDriverTaskRepository
+        .insert(
+            &mut txn,
+            &NewAgentDriverTask::builder()
+                .id(Some(driver_task_id))
+                .thread_id(child.id())
+                .kind(AgentDriverTaskKind::Drive)
+                .build(),
+        )
+        .await
+        .expect("child driver task");
+
+    let healthy = PgAgentThreadRepository
+        .find_stuck_relating_threads(&mut txn, 16)
+        .await
+        .expect("scan");
+    assert!(
+        !healthy.iter().any(|t| t.id() == thread.id()),
+        "a relation thread with a live verifier child is left alone",
+    );
+}
+
+/// A relation thread suspended on budget exhaustion carries a `wake_at` and
+/// has no descendants, so it satisfies every resolver-liveness clause. The
+/// scan must still spare it: the pending wake is its live resolver, and
+/// failing it would discard a recoverable suspension long before its
+/// legitimate recheck. Without a `wake_at` term the scan would kill every
+/// budget-suspended relation loop thread, which is the only way a relation
+/// loop suspends while the verifier binding is deferred.
+#[tokio::test]
+async fn test_stuck_relating_scan_spares_a_budget_suspended_thread() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    let prereq = setup_thread_prerequisites(&mut txn, "stuck-relating-budget").await;
+    PgJobRepository
+        .update_status_if_live(
+            &mut txn,
+            prereq.job_id,
+            &JobStatusTransition::builder()
+                .status(JobStatus::Relating)
+                .build(),
+        )
+        .await
+        .expect("relating");
+
+    let binding = PgAgentBindingVersionRepository
+        .record(
+            &mut txn,
+            &NewAgentBindingVersion::builder()
+                .hash(HASH_B.to_owned())
+                .pipeline_stage(TaskType::Relation)
+                .definition(
+                    an_agent_definition()
+                        .pipeline_stage(TaskType::Relation)
+                        .build(),
+                )
+                .build(),
+        )
+        .await
+        .expect("relation binding");
+    let thread = PgAgentThreadRepository
+        .insert(
+            &mut txn,
+            &NewAgentThread::builder()
+                .pipeline_stage(TaskType::Relation)
+                .binding_version_id(binding.id())
+                .driving_task(DrivingTaskRef::Stage(prereq.stage_task_id))
+                .principal_id(prereq.principal_id)
+                .format_version(AGENT_THREAD_FORMAT_VERSION)
+                .build(),
+        )
+        .await
+        .expect("relation thread");
+    PgAgentThreadRepository
+        .mark_running(&mut txn, thread.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("run");
+    // Budget exhaustion suspends with a wake_at and no descendants.
+    PgAgentThreadRepository
+        .suspend(
+            &mut txn,
+            thread.id(),
+            &AgentThreadSuspension::BudgetExhaustion {
+                unchanged_rechecks: 0,
+            },
+            Some(chrono::Utc::now() + chrono::Duration::seconds(300)),
+        )
+        .await
+        .expect("suspend");
+
+    let scanned = PgAgentThreadRepository
+        .find_stuck_relating_threads(&mut txn, 16)
+        .await
+        .expect("scan");
+    assert!(
+        !scanned.iter().any(|t| t.id() == thread.id()),
+        "a budget-suspended relation thread has a pending wake and is not stranded",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Cancellation cascade
+// ---------------------------------------------------------------------------
+
+/// Marks an inserted thread terminal (running then failed), so it can
+/// stand in for a parent the cascade must propagate from.
+async fn make_terminal(txn: &mut sqlx::PgConnection, thread: &AgentThread) {
+    PgAgentThreadRepository
+        .mark_running(txn, thread.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .complete(
+            txn,
+            thread.id(),
+            AgentThreadTerminal::Failed,
+            AgentThreadStatus::Running,
+        )
+        .await
+        .expect("complete");
+}
+
+async fn insert_child(
+    txn: &mut sqlx::PgConnection,
+    suffix: &str,
+    parent_id: tribal_domain::AgentThreadId,
+) -> AgentThread {
+    let mut prereq = setup_thread_prerequisites(txn, suffix).await;
+    prereq.new_thread.parent_thread_id = Some(parent_id);
+    PgAgentThreadRepository
+        .insert(txn, &prereq.new_thread)
+        .await
+        .expect("insert child")
+}
+
+#[tokio::test]
+async fn test_orphan_cascade_marks_only_live_children_of_terminal_parents() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    let terminal_parent = insert_thread(&mut txn, "cascade-terminal-parent").await;
+    make_terminal(&mut txn, &terminal_parent).await;
+    let orphan = insert_child(&mut txn, "cascade-orphan", terminal_parent.id()).await;
+
+    // A control: a live parent's child is not an orphan.
+    let live_parent = insert_thread(&mut txn, "cascade-live-parent").await;
+    let live_child = insert_child(&mut txn, "cascade-live-child", live_parent.id()).await;
+
+    let marked = PgAgentThreadRepository
+        .cascade_cancel_to_orphans(&mut txn, 16, "test")
+        .await
+        .expect("cascade");
+    assert_eq!(marked, 1, "only the terminal parent's live child is marked");
+
+    let orphan = PgAgentThreadRepository
+        .find_by_id(&mut txn, orphan.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert!(
+        orphan.cancel_requested_at().is_some(),
+        "the orphan carries the cascaded intent",
+    );
+    let live_child = PgAgentThreadRepository
+        .find_by_id(&mut txn, live_child.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert!(
+        live_child.cancel_requested_at().is_none(),
+        "a live parent's child is untouched",
+    );
+
+    // Idempotent: a second pass finds nothing new to mark.
+    let again = PgAgentThreadRepository
+        .cascade_cancel_to_orphans(&mut txn, 16, "test")
+        .await
+        .expect("cascade again");
+    assert_eq!(
+        again, 0,
+        "the cascade does not re-mark an already-marked orphan"
+    );
+}
+
+#[tokio::test]
+async fn test_cascade_to_children_skips_terminal_and_already_marked_children() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    let parent = insert_thread(&mut txn, "children-parent").await;
+    let live = insert_child(&mut txn, "children-live", parent.id()).await;
+    let terminal = insert_child(&mut txn, "children-terminal", parent.id()).await;
+    make_terminal(&mut txn, &terminal).await;
+
+    let marked = PgAgentThreadRepository
+        .cascade_cancel_to_children(&mut txn, parent.id(), "test")
+        .await
+        .expect("cascade");
+    assert_eq!(
+        marked, 1,
+        "only the live child is marked; the terminal one is skipped"
+    );
+
+    let live = PgAgentThreadRepository
+        .find_by_id(&mut txn, live.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert!(live.cancel_requested_at().is_some());
+
+    // Idempotent: the already-marked child is not re-marked.
+    let again = PgAgentThreadRepository
+        .cascade_cancel_to_children(&mut txn, parent.id(), "test")
+        .await
+        .expect("cascade again");
+    assert_eq!(again, 0);
+}
+
+#[tokio::test]
+async fn test_orphan_cascade_marks_a_child_whose_driver_task_is_terminal() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    // A live parent (so the parent clause does not fire) with a live child
+    // whose driver task has gone terminal: the deferred-death orphan no other
+    // sweep converges. The deferred circular reference admits the thread
+    // before its driver row.
+    let parent = insert_thread(&mut txn, "dt-orphan-parent").await;
+    let mut child_prereq = setup_thread_prerequisites(&mut txn, "dt-orphan-child").await;
+    let driver_task_id = uuid::Uuid::new_v4();
+    child_prereq.new_thread.parent_thread_id = Some(parent.id());
+    child_prereq.new_thread.driving_task =
+        DrivingTaskRef::Driver(AgentDriverTaskId::from(driver_task_id));
+    let child = PgAgentThreadRepository
+        .insert(&mut txn, &child_prereq.new_thread)
+        .await
+        .expect("insert child");
+    PgAgentDriverTaskRepository
+        .insert_drive_for_test(
+            &mut txn,
+            AgentDriverTaskId::from(driver_task_id),
+            child.id(),
+        )
+        .await
+        .expect("insert paired driver task");
+    PgAgentThreadRepository
+        .mark_running(&mut txn, child.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    // Deferred death dead-lettered the driver task but left the child live.
+    let disposed = PgAgentDriverTaskRepository
+        .dispose_unclaimed(
+            &mut txn,
+            AgentDriverTaskId::from(driver_task_id),
+            "the verifier exhausted its retries",
+        )
+        .await
+        .expect("dead-letter the driver task");
+    assert_eq!(disposed, 1);
+
+    let marked = PgAgentThreadRepository
+        .cascade_cancel_to_orphans(&mut txn, 16, "test")
+        .await
+        .expect("cascade");
+    assert_eq!(
+        marked, 1,
+        "the child orphaned by its terminal driver task is marked"
+    );
+
+    let child = PgAgentThreadRepository
+        .find_by_id(&mut txn, child.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert!(
+        child.cancel_requested_at().is_some(),
+        "a live child whose only resolver, its driver task, is terminal is converged",
+    );
 }

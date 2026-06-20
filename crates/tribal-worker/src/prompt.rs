@@ -11,11 +11,13 @@ mod validation;
 pub(crate) mod variables;
 
 pub(crate) use common::narrow_temperature;
-pub(crate) use extraction::{assemble_extraction_prompt, extraction_user_context};
+pub(crate) use extraction::{
+    assemble_extraction_loop_opening, assemble_extraction_prompt, extraction_user_context,
+};
 pub(crate) use legends::SimilarityBand;
 pub(crate) use relation::{
-    CandidateOutcome, RelationPromptContext, SimilarItemDecisionContext, assemble_relation_prompt,
-    relation_user_context,
+    CandidateOutcome, RelationPromptContext, SimilarItemDecisionContext,
+    assemble_relation_loop_opening, assemble_relation_prompt, relation_user_context,
 };
 pub(crate) use triage::{
     LoopSimilarItemContext, SimilarItemContext, VerifierConsideredItem, VerifierSubmissionContext,

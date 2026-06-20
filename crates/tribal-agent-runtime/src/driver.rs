@@ -7,8 +7,8 @@
 //! - **Suspend-with-child** commits, in one transaction: the parent's
 //!   suspension record, its thread CAS to suspended, its stage task to
 //!   blocked, the child thread, and the child's paired driver task. The
-//!   child/driver pair relies on the deferred foreign key — the thread
-//!   row names the driver task's id before the task exists — so nothing
+//!   child/driver pair relies on the deferred foreign key (the thread
+//!   row names the driver task's id before the task exists), so nothing
 //!   deferred is durable before the suspension that awaits it.
 //! - **The child terminal** commits, in one transaction: the child's
 //!   assistant record, its completion, the driver task's completion, the
@@ -16,7 +16,7 @@
 //!   resolution (running again, stage task re-queued). A parent no
 //!   longer waiting (cancelled, already resolved) is the orphan window:
 //!   the child and driver still complete, and the hand-back is discarded
-//!   under the parent row lock — never resurrecting the parent, never
+//!   under the parent row lock: never resurrecting the parent, never
 //!   double-committing.
 //! - **Deferred death** owns the child terminal too: when the driver's
 //!   retries exhaust, one transaction dead-letters the child and its
@@ -24,7 +24,7 @@
 //!   conversation as an error tool-result, then resolves the parent. The
 //!   child never outlives its driver row, so no janitor must hunt it.
 //!
-//! Orphan windows — a live child behind a terminal parent — are bounded
+//! Orphan windows (a live child behind a terminal parent) are bounded
 //! by the same parent row lock every terminal takes: the child runs to
 //! its own terminal, finds the parent gone, and discards. The
 //! availability sweep's cancel fallback reaches a child still suspended
@@ -40,7 +40,7 @@ use tribal_db::{
 use tribal_domain::{
     AgentBindingVersionId, AgentDriverTaskId, AgentDriverTaskKind, AgentThread, AgentThreadId,
     AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus, AgentThreadSuspension,
-    AgentThreadTerminal, CompletionResponse, PrincipalId, TaskId, TaskType,
+    AgentThreadTerminal, CompletionResponse, JobId, PrincipalId, TaskId, TaskType,
 };
 use tribal_telemetry::{current_span_id, current_trace_id};
 
@@ -66,6 +66,10 @@ pub struct ChildLaunch {
     pub binding_version_id: AgentBindingVersionId,
     /// The principal the child is attributed and metered to.
     pub principal_id: PrincipalId,
+    /// The job the child's spend meters to, captured from the parent so a
+    /// reclaimed driver attributes without walking a possibly-terminal
+    /// lineage. Absent when the parent runs outside a pipeline job.
+    pub job_id: Option<JobId>,
     /// The serialisation shape of the child's owned structures.
     pub format_version: u32,
 }
@@ -188,6 +192,7 @@ pub async fn suspend_with_child(
                 .binding_version_id(launch.binding_version_id)
                 .driving_task(DrivingTaskRef::Driver(driver_task_id))
                 .principal_id(launch.principal_id)
+                .job_id(launch.job_id)
                 .format_version(launch.format_version)
                 .build(),
         )
@@ -263,7 +268,7 @@ pub struct ParentResolution {
 /// The driver-task completion is the claim guard: a stale token (a
 /// reclaimed task) affects zero rows and the whole commit rolls back, so
 /// a reclaimed run can never hand back twice. A parent no longer
-/// suspended is the orphan window — the child and driver still complete,
+/// suspended is the orphan window: the child and driver still complete,
 /// the hand-back discards.
 ///
 /// # Errors
@@ -274,6 +279,56 @@ pub struct ParentResolution {
 // only move the same arguments behind a name.
 #[allow(clippy::too_many_arguments)]
 pub async fn commit_child_terminal(
+    conn: &mut PgConnection,
+    child: &AgentThread,
+    driver_task_id: AgentDriverTaskId,
+    driver_claim_token: uuid::Uuid,
+    attempt: i32,
+    child_response: &CompletionResponse,
+    parent: &ParentResolution,
+) -> Result<ChildTerminalOutcome, AgentRuntimeError> {
+    // `hand_back` locks the parent thread before its task, the sanctioned
+    // inversion of the global lock order it needs to read the parent's
+    // suspended status as the orphan guard. Correctness rests on bounded
+    // retry: a deadlock abort against an opposing-order writer retries the
+    // whole transaction in place rather than re-driving the child (a fresh
+    // verifier model call) or, on the final attempt, discarding a good
+    // verdict into a deferred-death error. The loop is inline because each
+    // attempt reborrows the connection, which a closure cannot hold across
+    // calls.
+    let mut remaining = CHILD_TERMINAL_CONFLICT_RETRIES;
+    loop {
+        match commit_child_terminal_once(
+            conn,
+            child,
+            driver_task_id,
+            driver_claim_token,
+            attempt,
+            child_response,
+            parent,
+        )
+        .await
+        {
+            Err(e) if remaining > 0 && e.is_retryable() => {
+                remaining -= 1;
+                tracing::warn!(
+                    child_thread_id = %child.id(),
+                    "child-terminal commit hit a transient conflict; retrying in place",
+                );
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+/// Attempts at the child-terminal commit before a persistent conflict
+/// surfaces, matching the shared [`retry_on_conflict`] budget.
+const CHILD_TERMINAL_CONFLICT_RETRIES: u32 = 5;
+
+// The same guard and hand-back context as the wrapper; a params struct would
+// only move the same arguments behind a name.
+#[allow(clippy::too_many_arguments)]
+async fn commit_child_terminal_once(
     conn: &mut PgConnection,
     child: &AgentThread,
     driver_task_id: AgentDriverTaskId,
@@ -430,7 +485,7 @@ async fn finish_child(
 }
 
 /// Moves the child to a terminal status. A death path carries no
-/// assistant record — the child produced no result — so the status move
+/// assistant record (the child produced no result), so the status move
 /// stands alone.
 async fn finish_child_status(
     txn: &mut PgConnection,

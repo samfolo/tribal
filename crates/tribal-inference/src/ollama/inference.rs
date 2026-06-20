@@ -125,7 +125,7 @@ pub(super) struct OllamaFunctionCallIn {
 }
 
 /// Maps the wire's id-less calls onto [`ToolCall`]s, synthesising the
-/// identifier from the call's position within its message — deterministic
+/// identifier from the call's position within its message: deterministic
 /// for any worker re-issuing the same response.
 pub(super) fn synthesise_tool_calls(calls: Vec<OllamaToolCallIn>) -> Vec<ToolCall> {
     calls

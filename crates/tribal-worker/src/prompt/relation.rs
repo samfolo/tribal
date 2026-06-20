@@ -149,6 +149,38 @@ pub(crate) fn assemble_relation_prompt(
     })
 }
 
+/// Renders the relation loop's opening: the system prompt and the initial
+/// user message, under one renderer so both share the turn's pinned nonce.
+/// The batch's committed item ids are the model's reference handles, so the
+/// rendered user message carries them.
+///
+/// # Errors
+///
+/// Returns [`StageError::TemplateRender`] if either template cannot be
+/// rendered.
+pub(crate) fn assemble_relation_loop_opening(
+    system_template: &str,
+    user_template: &str,
+    context: &RelationPromptContext<'_>,
+) -> Result<(String, String), StageError> {
+    let renderer = PromptRenderer::new();
+
+    let rendered_system = renderer.render(
+        system_template,
+        relation_system_context(),
+        "rendering the relation loop system prompt",
+    )?;
+
+    let user_ctx = relation_user_context(context);
+    let rendered_user = renderer.render(
+        user_template,
+        user_ctx,
+        "rendering the relation loop user prompt",
+    )?;
+
+    Ok((rendered_system, rendered_user))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -318,7 +350,7 @@ mod tests {
 
     /// The agentic triage handoff reaches the relation model through the
     /// launched template: a candidate that carried notes renders them in a
-    /// fenced line, and a candidate with none renders nothing — so the
+    /// fenced line, and a candidate with none renders nothing, so the
     /// one-shot path (no handoffs) is byte-identical, which the golden
     /// snapshot pins.
     #[test]

@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tribal_domain::{CompletionResponse, RelationKind};
 
 use super::deserialise;
@@ -20,7 +20,7 @@ use crate::error::StageError;
 /// any `supersedes` (or other unknown) relation types returned by the
 /// model will be rejected during deserialisation, rather than filtered
 /// out post-hoc or constrained only via prompt instructions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[schemars(description = "How the source claim relates to the target claim.")]
 pub(crate) enum IngestionRelationKind {

@@ -175,7 +175,7 @@ pub trait TaskRepository {
         claim_token: uuid::Uuid,
     ) -> Result<u64, DbError>;
 
-    /// Resets a claimed task's retry count to zero — the progress reset
+    /// Resets a claimed task's retry count to zero: the progress reset
     /// a record-committing transaction applies, so consecutive-failure
     /// accounting restarts from durable progress rather than spanning
     /// it.

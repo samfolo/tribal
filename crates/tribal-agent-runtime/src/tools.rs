@@ -2,9 +2,9 @@
 //! tools.
 //!
 //! Tools are named, schema-typed, stage-scoped semantic operations. The
-//! registry owns the model-facing contract mechanics — name lookup with
+//! registry owns the model-facing contract mechanics (name lookup with
 //! actionable diagnostics, response-size trimming, and the wire
-//! projection — while graph semantics live entirely in the tool
+//! projection) while graph semantics live entirely in the tool
 //! implementations the worker registers (the runtime never learns them).
 //! Scoping is structural: a tool captures its project at construction,
 //! so no argument the model supplies can widen it.
@@ -22,7 +22,7 @@ use sqlx::PgConnection;
 use tribal_domain::{RecoverableToolFailure, ToolDescriptor, ToolExecutionMode, ToolFailure};
 
 /// The marker appended to a result trimmed to its declared bound.
-const TRIM_MARKER_PREFIX: &str = "\n[result trimmed to ";
+const TRIM_MARKER_PREFIX: &str = "\n[truncated: over the ";
 
 /// A successful tool execution's product.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,16 +82,15 @@ pub enum ToolRegistryError {
         /// The contested name.
         name: String,
     },
-    /// The deferred execution mode has no loop-side dispatch path yet;
-    /// it activates with the first plain deferred tool.
-    #[error("tool '{name}' declares deferred execution, which no dispatch path serves yet")]
+    /// The deferred execution mode has no loop-side dispatch path.
+    #[error("tool '{name}' declares deferred execution, which no dispatch path serves")]
     DeferredUnsupported {
         /// The refused tool.
         name: String,
     },
-    /// The external safety tier needs intent rows, which no tool has
-    /// produced yet; it activates with the first external-tier tool.
-    #[error("tool '{name}' declares the external safety tier, which no intent store serves yet")]
+    /// The external safety tier needs intent rows, which no intent store
+    /// serves.
+    #[error("tool '{name}' declares the external safety tier, which no intent store serves")]
     ExternalTierUnsupported {
         /// The refused tool.
         name: String,
@@ -153,7 +152,7 @@ impl ToolRegistry {
             })
     }
 
-    /// The registered descriptors, in name order — the binding-hash
+    /// The registered descriptors, in name order: the binding-hash
     /// input.
     #[must_use]
     pub fn descriptors(&self) -> Vec<ToolDescriptor> {
@@ -176,7 +175,7 @@ impl ToolRegistry {
         if content.len() <= bound {
             return content;
         }
-        let marker = format!("{TRIM_MARKER_PREFIX}{bound} bytes]");
+        let marker = format!("{TRIM_MARKER_PREFIX}{bound}-byte limit]");
         if marker.len() >= bound {
             let mut end = bound;
             while end > 0 && !marker.is_char_boundary(end) {
@@ -191,6 +190,15 @@ impl ToolRegistry {
         let mut trimmed = content[..cut].to_owned();
         trimmed.push_str(&marker);
         trimmed
+    }
+
+    /// Bounds a result to its tool's declared size, returning the output and
+    /// whether it overflowed, so the caller records an overflow as a
+    /// model-recoverable failure, never a silent truncated success.
+    #[must_use]
+    pub fn bound_result(descriptor: &ToolDescriptor, content: String) -> (String, bool) {
+        let oversized = content.len() > descriptor.response_size_bound as usize;
+        (Self::trim_to_bound(descriptor, content), oversized)
     }
 }
 
@@ -240,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn test_register_rejects_deferred_mode_until_a_producer_exists() {
+    fn test_register_rejects_the_deferred_execution_mode() {
         let mut registry = ToolRegistry::new();
         let err = registry
             .register(echo(
@@ -256,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn test_register_rejects_the_external_tier_until_intents_exist() {
+    fn test_register_rejects_the_external_safety_tier() {
         let mut registry = ToolRegistry::new();
         let err = registry
             .register(echo(
@@ -324,12 +332,29 @@ mod tests {
 
         let long = ToolRegistry::trim_to_bound(&descriptor, "x".repeat(100));
         assert!(long.starts_with('x'), "the payload prefix is kept");
-        assert!(long.contains("[result trimmed to 64 bytes]"));
+        assert!(long.contains("over the 64-byte limit"));
         assert!(
             long.len() <= bound,
             "the marker's room is reserved inside the bound: {} > {bound}",
             long.len(),
         );
+    }
+
+    #[test]
+    fn test_bound_result_flags_only_an_overflow() {
+        let descriptor = a_descriptor("search", ToolExecutionMode::Immediate, ToolSafetyTier::Pure);
+
+        let (output, oversized) = ToolRegistry::bound_result(&descriptor, "short".to_owned());
+        assert_eq!(output, "short");
+        assert!(!oversized, "a result within bound is whole and not flagged");
+
+        let (output, oversized) = ToolRegistry::bound_result(&descriptor, "x".repeat(100));
+        assert!(
+            oversized,
+            "an overflow is flagged so the caller marks it an error"
+        );
+        assert!(output.contains("over the 64-byte limit"));
+        assert!(output.len() <= descriptor.response_size_bound as usize);
     }
 
     #[test]
@@ -339,7 +364,7 @@ mod tests {
         // marker) can fall mid-character, so the cut backs up to the
         // boundary rather than splitting it.
         let trimmed = ToolRegistry::trim_to_bound(&descriptor, "£".repeat(40));
-        assert!(trimmed.contains("[result trimmed to 64 bytes]"));
+        assert!(trimmed.contains("over the 64-byte limit"));
         assert!(!trimmed.starts_with('\u{fffd}'));
         assert!(trimmed.len() <= descriptor.response_size_bound as usize);
     }

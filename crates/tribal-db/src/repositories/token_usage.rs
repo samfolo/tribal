@@ -154,7 +154,7 @@ pub trait TokenUsageRepository {
     ) -> Result<u64, DbError>;
 
     /// Links the single most-recent unlinked completion-class row at
-    /// `(thread, attempt)` to the given record — the driver-driven
+    /// `(thread, attempt)` to the given record: the driver-driven
     /// thread's analogue of [`Self::link_completion_to_record`], for
     /// executions with no stage task to scope by. Returns the affected
     /// row count; zero stays best-effort.

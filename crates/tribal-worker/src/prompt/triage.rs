@@ -118,16 +118,14 @@ impl From<&SemanticSearchResult> for LoopSimilarItemContext {
 
 /// Builds the agentic loop's opening user prompt context.
 ///
-/// Both the production assembly and the validation tests call this,
-/// so adding a variable here is automatically reflected in both paths.
-pub(crate) fn loop_user_context(
-    candidate: &Candidate,
-    similar_items: &[LoopSimilarItemContext],
-    tags: &[&str],
-) -> tera::Context {
+/// Both the production assembly and the validation tests call this, so
+/// adding a variable here is automatically reflected in both paths. The
+/// opening pre-loads no similar items: the loop reaches the candidate corpus
+/// only through the candidate-search tool, so the model fetches what it
+/// needs rather than reading a prefetched list.
+pub(crate) fn loop_user_context(candidate: &Candidate, tags: &[&str]) -> tera::Context {
     let mut ctx = tera::Context::new();
     ctx.insert(VAR_CANDIDATE, candidate);
-    ctx.insert(VAR_SIMILAR_ITEMS, similar_items);
     ctx.insert(VAR_TAGS, tags);
     ctx
 }
@@ -148,19 +146,18 @@ pub(crate) fn assemble_loop_opening(
     system_template: &str,
     user_template: &str,
     candidate: &Candidate,
-    similar_items: &[LoopSimilarItemContext],
     tag_registry: &[TagRegistryEntry],
 ) -> Result<(String, String), StageError> {
     let renderer = PromptRenderer::new();
 
     let rendered_system = renderer.render(
         system_template,
-        tera::Context::new(),
+        triage_system_context(),
         "rendering the triage loop system prompt",
     )?;
 
     let tags: Vec<&str> = tag_registry.iter().map(TagRegistryEntry::tag).collect();
-    let user_ctx = loop_user_context(candidate, similar_items, &tags);
+    let user_ctx = loop_user_context(candidate, &tags);
     let rendered_user = renderer.render(
         user_template,
         user_ctx,
@@ -179,7 +176,7 @@ pub(crate) fn assemble_loop_opening(
 /// thread's reasoning.
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct VerifierSubmissionContext {
-    /// The classification — `novel` or `duplicate`.
+    /// The classification: `novel` or `duplicate`.
     pub decision: String,
     /// The duplicated claim's id, present only for a duplicate decision.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -1,7 +1,7 @@
 //! Thread-store orchestration: how a claimed stage task gets its thread.
 //!
 //! A stage-bound thread is created at first claim and survives the task's
-//! whole lifetime — the same row blocks, re-queues, and recovers; nothing
+//! whole lifetime: the same row blocks, re-queues, and recovers; nothing
 //! completes a task and inserts a successor, and nothing creates a second
 //! thread for one. Resume is a read: an interrupted thread's committed
 //! records are the only state, so re-execution starts from whatever the
@@ -20,6 +20,7 @@ use tribal_domain::{
 
 use crate::{
     AgentRuntimeError,
+    turn::is_rendered_conversation,
     txn::{begin, commit},
 };
 
@@ -31,12 +32,10 @@ pub struct StageThread {
     /// conversation as sent, which re-execution re-sends verbatim rather
     /// than re-rendering.
     pub input: Option<AgentThreadRecord>,
-    /// The binding the thread's row records — the stored pin for an
+    /// The binding the thread's row records: the stored pin for an
     /// existing thread, the freshly resolved one at creation. The stage
     /// reads its sampling parameters from here, so the recorded and the
-    /// sent parameters cannot drift apart across a configuration change;
-    /// the endpoint itself routes through the boot-time stage specs
-    /// until execution becomes binding-driven.
+    /// sent parameters cannot drift apart across a configuration change.
     pub binding: AgentBinding,
 }
 
@@ -45,7 +44,7 @@ pub struct StageThread {
 ///
 /// First claim creates the thread queued, pinned to the supplied
 /// binding, and immediately marks it running. A reclaim after a crash
-/// finds it already running and proceeds — inference is at-least-once —
+/// finds it already running and proceeds (inference is at-least-once),
 /// carrying the binding the thread row records rather than the supplied
 /// one, so a configuration change between attempts cannot change the
 /// parameters a resumed thread sends. A suspended or terminal thread is
@@ -120,7 +119,7 @@ pub async fn ensure_stage_thread(
         .into_iter()
         .find(|record| {
             record.kind() == AgentThreadRecordKind::Input
-                && crate::turn::is_rendered_conversation(record.content())
+                && is_rendered_conversation(record.content())
         });
 
     Ok(StageThread {
@@ -212,7 +211,7 @@ async fn holds_claim(
         .map_err(|source| AgentRuntimeError::database("verifying the claim", source))
 }
 
-/// Loads the binding a thread's row records — the pin a resumed thread's
+/// Loads the binding a thread's row records: the pin a resumed thread's
 /// parameters come from.
 async fn load_recorded_binding(
     conn: &mut PgConnection,

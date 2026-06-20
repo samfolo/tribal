@@ -55,16 +55,6 @@ pub(super) struct CandidateEmbedding<'a> {
     pub(super) profile: &'a EmbeddingProfile,
 }
 
-/// The embedding a loop submission commits with: the opening search's vector
-/// when the submitting turn produced one (a fresh claim), or `None` on a
-/// resume, which defers the embed to the commit that consumes it. Paired with
-/// the active profile the commit embeds against and labels the stored vector
-/// with.
-pub(super) struct CommitEmbedding<'a> {
-    pub(super) vector: Option<Vec<f32>>,
-    pub(super) profile: &'a EmbeddingProfile,
-}
-
 // ---------------------------------------------------------------------------
 // Stage implementation
 // ---------------------------------------------------------------------------
@@ -78,7 +68,7 @@ impl Worker {
     /// # Errors
     ///
     /// Propagates the routed executor's [`StageError`]s; an external
-    /// executor on the recorded binding is a derivation fault — nothing
+    /// executor on the recorded binding is a derivation fault. Nothing
     /// can produce one in this release.
     pub(crate) async fn run_triage(
         &self,

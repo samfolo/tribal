@@ -1,14 +1,9 @@
 //! Agent thread repository: the thread store's guarded transitions.
 //!
 //! Status moves exist only as compare-and-set methods naming their `from`
-//! status; zero affected rows is the CAS-miss signal callers act on —
-//! treating it as lost ownership, or leaving convergence to the next
-//! sweep cycle — with the table CHECKs as backstop. Methods that leave
-//! `suspended` clear the suspension payload and wake instant in the same
-//! statement, so the suspended-has-cause CHECK can never trip. The
-//! cancellation intent write is seq-free and idempotent. Uses runtime
-//! `sqlx::query()` because rows carry TEXT-encoded domain enums and JSONB
-//! payloads.
+//! status; zero affected rows is the CAS-miss signal callers act on. Methods
+//! that leave `suspended` clear the suspension payload and wake instant in the
+//! same statement, so the suspended-has-cause CHECK can never trip.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -20,7 +15,10 @@ use tribal_domain::{
 };
 use typed_builder::TypedBuilder;
 
-use super::common::{columns::Columns, constraint::try_into_unique_violation};
+use super::{
+    agent_driver_task::terminal_driver_state_literals,
+    common::{columns::Columns, constraint::try_into_unique_violation},
+};
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
@@ -35,6 +33,7 @@ const COLUMNS: Columns = Columns(&[
     "stage_task_id",
     "driver_task_id",
     "principal_id",
+    "job_id",
     "status",
     "suspension",
     "cancel_requested_at",
@@ -65,9 +64,7 @@ const FORMAT_VERSION_OVERFLOW: &str = "negative format_version in database: data
 /// (both, neither) unrepresentable at the input layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrivingTaskRef {
-    /// Driven by a launched stage task.
     Stage(TaskId),
-    /// Driven by a driver-family row.
     Driver(AgentDriverTaskId),
 }
 
@@ -82,21 +79,17 @@ impl std::fmt::Display for DrivingTaskRef {
 
 /// Input for creating a thread.
 ///
-/// `id`, `status` (queued), counters, and timestamps are
-/// server-defaulted.
+/// `id`, `status` (queued), counters, and timestamps are server-defaulted.
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct NewAgentThread {
-    /// The parent thread, for delegation lineage.
     #[builder(default)]
     pub parent_thread_id: Option<AgentThreadId>,
-    /// The pipeline stage this thread executes.
     pub pipeline_stage: TaskType,
-    /// The binding version this thread is admitted under.
     pub binding_version_id: AgentBindingVersionId,
-    /// The one driving task.
     pub driving_task: DrivingTaskRef,
-    /// The principal this run is attributed and metered to.
     pub principal_id: PrincipalId,
+    #[builder(default)]
+    pub job_id: Option<JobId>,
     /// The serialisation shape of the thread's owned structures.
     pub format_version: u32,
 }
@@ -108,22 +101,19 @@ pub struct NewAgentThread {
 /// Criteria for one thread prune pass.
 #[derive(Debug, Clone)]
 pub struct ThreadPruneCriteria {
-    /// Only threads whose terminal commit predates this instant.
     pub completed_before: DateTime<Utc>,
-    /// Restrict the pass to one pipeline stage.
     pub stage: Option<TaskType>,
-    /// Include a candidate's terminal descendants in the deletion; a
-    /// live descendant still refuses the whole subtree.
+    /// Include a candidate's terminal descendants in the deletion; a live
+    /// descendant still refuses the whole subtree.
     pub cascade: bool,
 }
 
 /// What one prune pass concluded (or would conclude, for a dry run).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThreadPruneOutcome {
-    /// Thread rows deleted (with their records).
     pub pruned: u64,
-    /// Candidate roots refused: a live descendant, or any descendant
-    /// without the cascade flag.
+    /// Candidate roots refused: a live descendant, or any descendant without
+    /// the cascade flag.
     pub refused: u64,
 }
 
@@ -134,10 +124,9 @@ pub trait AgentThreadRepository {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::UniqueViolation`] when the driving task — the
-    /// stage or driver side, each under its own unique fence — already
-    /// drives a thread, or [`DbError::QueryFailed`] on other database
-    /// errors.
+    /// Returns [`DbError::UniqueViolation`] when the driving task already
+    /// drives a thread (the stage and driver sides each hold their own unique
+    /// fence), or [`DbError::QueryFailed`] on other database errors.
     async fn insert(
         &self,
         conn: &mut PgConnection,
@@ -166,12 +155,12 @@ pub trait AgentThreadRepository {
         stage_task_id: TaskId,
     ) -> Result<Option<AgentThread>, DbError>;
 
-    /// Lists the threads a job's stage tasks drive, ordered by creation
-    /// time with ties broken by id.
+    /// Lists the threads a job's stage tasks drive, ordered by creation time
+    /// with ties broken by id.
     ///
-    /// Reaches threads through the stage-task linkage, so driver-driven
-    /// threads (delegated children) are not included: they belong to
-    /// their parent's lineage, not to the job's stage roster.
+    /// Reaches threads through the stage-task linkage, so driver-driven threads
+    /// (delegated children) belong to their parent's lineage, not the job's
+    /// stage roster, and are excluded.
     ///
     /// # Errors
     ///
@@ -183,8 +172,6 @@ pub trait AgentThreadRepository {
     ) -> Result<Vec<AgentThread>, DbError>;
 
     /// Locks a thread row (`FOR UPDATE`) and returns its current state.
-    /// Every resolution append locks the thread before its completeness
-    /// check, and every transition locks before deriving a seq.
     ///
     /// # Errors
     ///
@@ -195,9 +182,9 @@ pub trait AgentThreadRepository {
         id: AgentThreadId,
     ) -> Result<Option<AgentThread>, DbError>;
 
-    /// CAS to `running` from `from`, clearing any suspension payload and
-    /// wake instant in the same statement. Returns the affected row count
-    /// (zero is the CAS miss).
+    /// CAS to `running` from `from`, clearing any suspension payload and wake
+    /// instant in the same statement. Returns the affected row count (zero is
+    /// the CAS miss).
     ///
     /// # Errors
     ///
@@ -209,11 +196,10 @@ pub trait AgentThreadRepository {
         from: AgentThreadStatus,
     ) -> Result<u64, DbError>;
 
-    /// CAS from `running` to `suspended` with the typed cause, refusing
-    /// to commit over a durable cancellation intent: the `WHERE` clause
-    /// requires `cancel_requested_at IS NULL`, so a worker whose suspend
-    /// returns zero rows performs the cancel transaction at that boundary
-    /// instead.
+    /// CAS from `running` to `suspended` with the typed cause, refusing to
+    /// commit over a durable cancellation intent (the `WHERE` requires
+    /// `cancel_requested_at IS NULL`) so a worker whose suspend returns zero
+    /// rows performs the cancel transaction at that boundary instead.
     ///
     /// # Errors
     ///
@@ -227,8 +213,8 @@ pub trait AgentThreadRepository {
     ) -> Result<u64, DbError>;
 
     /// CAS to a terminal status from `from`, stamping `completed_at` and
-    /// clearing any suspension payload and wake instant. Returns the
-    /// affected row count (zero is the CAS miss).
+    /// clearing any suspension payload and wake instant. Returns the affected
+    /// row count (zero is the CAS miss).
     ///
     /// # Errors
     ///
@@ -241,12 +227,10 @@ pub trait AgentThreadRepository {
         from: AgentThreadStatus,
     ) -> Result<u64, DbError>;
 
-    /// Durably records a cancellation intent against an existing
-    /// thread, returning [`DbError::NotFound`] for an unknown id: an
-    /// idempotent, seq-free
-    /// write to columns no record commit touches, so it can never be lost
-    /// to a racing commit. Recording an intent on a terminal thread is
-    /// harmless dead data.
+    /// Durably records a cancellation intent against an existing thread,
+    /// returning [`DbError::NotFound`] for an unknown id. The idempotent,
+    /// seq-free write touches columns no record commit touches, so it can
+    /// never be lost to a racing commit.
     ///
     /// # Errors
     ///
@@ -263,19 +247,17 @@ pub trait AgentThreadRepository {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::QueryFailed`] on database errors, including a
-    /// vanished row.
+    /// Returns [`DbError::QueryFailed`] on database errors, including a vanished
+    /// row.
     async fn increment_recovery_attempts(
         &self,
         conn: &mut PgConnection,
         id: AgentThreadId,
     ) -> Result<u32, DbError>;
 
-    /// Finds suspended stage-driven threads whose wake instant has
-    /// elapsed and that carry no cancellation intent — the availability
-    /// sweep's timer predicate. `SKIP LOCKED` sheds rows a rival scan holds, though the
-    /// statement-scope locks release at once: the per-row transitions'
-    /// own guards are what make concurrent sweeps converge.
+    /// Finds suspended stage-driven threads whose wake instant has elapsed and
+    /// that carry no cancellation intent, the availability sweep's timer
+    /// predicate. `SKIP LOCKED` sheds rows a rival scan holds.
     ///
     /// # Errors
     ///
@@ -286,9 +268,8 @@ pub trait AgentThreadRepository {
         limit: u32,
     ) -> Result<Vec<AgentThread>, DbError>;
 
-    /// Finds live threads carrying a durable cancellation intent — the
-    /// sweep's cancel-fallback predicate. Rows are locked with
-    /// `SKIP LOCKED`.
+    /// Finds live threads carrying a durable cancellation intent, the sweep's
+    /// cancel-fallback predicate. Rows are locked with `SKIP LOCKED`.
     ///
     /// # Errors
     ///
@@ -298,6 +279,56 @@ pub trait AgentThreadRepository {
         conn: &mut PgConnection,
         limit: u32,
     ) -> Result<Vec<AgentThread>, DbError>;
+
+    /// Finds suspended relation threads of still-relating jobs whose resolver
+    /// has died. Rows are locked with `SKIP LOCKED`.
+    ///
+    /// `wake_at IS NULL` spares a budget-suspended thread (which carries a wake
+    /// instant for its own recheck), and a live descendant child thread or
+    /// driver task spares a healthy verifier-suspended thread the driver loop
+    /// is still re-driving.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_stuck_relating_threads(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+    ) -> Result<Vec<AgentThread>, DbError>;
+
+    /// Records cancellation intents on a terminal parent's live direct
+    /// children, the post-commit fast path of the cancellation cascade. One
+    /// level is exhaustive because a verifier binding is flat (a one-shot
+    /// launches no child of its own), and the orphan janitor heals any deeper
+    /// tree a nested delegation could add. Only non-terminal children without
+    /// an intent are touched. Returns the count written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn cascade_cancel_to_children(
+        &self,
+        conn: &mut PgConnection,
+        parent_id: AgentThreadId,
+        requested_by: &str,
+    ) -> Result<u64, DbError>;
+
+    /// Records cancellation intents on non-terminal threads whose only resolver
+    /// has gone terminal: the parent (the convergent half of the cancellation
+    /// cascade, healing a crash between a parent's terminal commit and its
+    /// fast-path cascade) or the thread's own driver task. Rows are locked with
+    /// `SKIP LOCKED`. Returns the count written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn cascade_cancel_to_orphans(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+        requested_by: &str,
+    ) -> Result<u64, DbError>;
 
     /// Replaces the committed-record spend projection.
     ///
@@ -312,8 +343,8 @@ pub trait AgentThreadRepository {
     ) -> Result<(), DbError>;
 
     /// Counts the prune candidates a pass would refuse: terminal,
-    /// criteria-matching roots holding a live descendant, or any
-    /// descendant at all without the cascade flag.
+    /// criteria-matching roots holding a live descendant, or any descendant at
+    /// all without the cascade flag.
     ///
     /// # Errors
     ///
@@ -362,8 +393,8 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         let sql = format!(
             "INSERT INTO agent_threads \
              (parent_thread_id, pipeline_stage, binding_version_id, stage_task_id, \
-              driver_task_id, principal_id, format_version) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+              driver_task_id, principal_id, job_id, format_version) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
              RETURNING {COLUMNS}"
         );
         let row = sqlx::query(&sql)
@@ -373,6 +404,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
             .bind(stage_task_id)
             .bind(driver_task_id)
             .bind(new.principal_id.inner())
+            .bind(new.job_id.map(|id| id.inner().to_owned()))
             .bind(i32::try_from(new.format_version).expect(FORMAT_VERSION_OVERFLOW))
             .fetch_one(&mut *conn)
             .await
@@ -565,9 +597,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
             source: e,
         })?;
 
-        // Idempotency covers re-writes to an existing row, never a
-        // missing one: a cancel against an unknown id must not report
-        // success.
+        // A cancel against an unknown id must not report success.
         if result.rows_affected() == 0 {
             return Err(DbError::NotFound {
                 entity: "agent_thread",
@@ -605,14 +635,11 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         conn: &mut PgConnection,
         limit: u32,
     ) -> Result<Vec<AgentThread>, DbError> {
-        // An intent-carrying thread belongs to the cancel predicate: waking
-        // it would burn a turn the cancellation immediately discards, and
-        // the two predicates locking task and thread rows in opposite
-        // orders could deadlock (retryable, but better unconstructible).
-        // The scan is stage-only: the resolve transaction re-queues a
-        // stage task, and waking a driver-driven thread without its
-        // driver half would strand it running; the driver family's wake
-        // path ships with its first producer.
+        // An intent-carrying thread belongs to the cancel predicate: waking it
+        // would burn a turn the cancellation immediately discards. The scan is
+        // stage-only because the resolve transaction re-queues a stage task,
+        // and waking a driver-driven thread without its driver half would
+        // strand it running.
         let sql = format!(
             "SELECT {COLUMNS} FROM agent_threads \
              WHERE status = 'suspended' AND wake_at IS NOT NULL AND wake_at <= now() \
@@ -639,15 +666,9 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         conn: &mut PgConnection,
         limit: u32,
     ) -> Result<Vec<AgentThread>, DbError> {
-        // The terminal set is interpolated as literals rather than bound:
-        // the planner can only match the partial cancel-intent index's
-        // hard-coded predicate against literals, and the derivation from
-        // ALL keeps the single-source contract either way.
-        let terminal: Vec<String> = AgentThreadStatus::ALL
-            .iter()
-            .filter(|status| status.is_terminal())
-            .map(|status| format!("'{}'", status.as_str()))
-            .collect();
+        // The terminal set is interpolated as literals rather than bound so the
+        // planner can match the partial cancel-intent index's literal predicate.
+        let terminal = terminal_status_literals();
         let sql = format!(
             "SELECT {COLUMNS} FROM agent_threads \
              WHERE cancel_requested_at IS NOT NULL \
@@ -667,6 +688,126 @@ impl AgentThreadRepository for PgAgentThreadRepository {
             })?;
 
         Ok(rows.iter().map(map_agent_thread_row).collect())
+    }
+
+    async fn find_stuck_relating_threads(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+    ) -> Result<Vec<AgentThread>, DbError> {
+        // The job-relating check rides the driving task because the thread row
+        // carries no job id.
+        let child_live = thread_is_live("child");
+        let descendant_driver_live = driver_task_is_live("dt");
+        let sql = format!(
+            "SELECT {COLUMNS} FROM agent_threads \
+             WHERE pipeline_stage = 'relation' \
+               AND status = 'suspended' \
+               AND cancel_requested_at IS NULL \
+               AND wake_at IS NULL \
+               AND stage_task_id IN ( \
+                   SELECT t.id FROM tasks t \
+                   JOIN jobs j ON j.id = t.job_id \
+                   WHERE j.status = 'relating' \
+               ) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM agent_threads child \
+                   WHERE child.parent_thread_id = agent_threads.id \
+                     AND {child_live} \
+               ) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM agent_driver_tasks dt \
+                   JOIN agent_threads child ON child.driver_task_id = dt.id \
+                   WHERE child.parent_thread_id = agent_threads.id \
+                     AND {descendant_driver_live} \
+               ) \
+             ORDER BY updated_at \
+             LIMIT $1 \
+             FOR UPDATE SKIP LOCKED",
+        );
+        let rows = sqlx::query(&sql)
+            .bind(i64::from(limit))
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "scanning for stranded relation threads".to_owned(),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_agent_thread_row).collect())
+    }
+
+    async fn cascade_cancel_to_children(
+        &self,
+        conn: &mut PgConnection,
+        parent_id: AgentThreadId,
+        requested_by: &str,
+    ) -> Result<u64, DbError> {
+        let terminal = terminal_status_literals();
+        let sql = format!(
+            "UPDATE agent_threads \
+             SET cancel_requested_at = now(), cancel_requested_by = $2, updated_at = now() \
+             WHERE parent_thread_id = $1 \
+               AND cancel_requested_at IS NULL \
+               AND status NOT IN ({terminal})",
+            terminal = terminal.join(", "),
+        );
+        let result = sqlx::query(&sql)
+            .bind(parent_id.inner())
+            .bind(requested_by)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("cascading cancellation to children of thread {parent_id}"),
+                source: e,
+            })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn cascade_cancel_to_orphans(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+        requested_by: &str,
+    ) -> Result<u64, DbError> {
+        // A live thread is orphaned when its only resolver (its parent or its
+        // own driver task) has gone terminal, so no live actor will resolve it
+        // and the cancel fallback disposes the written intent. The orphan test
+        // is the negation of the liveness predicate the stuck-relating sweep
+        // composes, so the two share one definition of "live". The CTE locks
+        // only the child rows it writes under `SKIP LOCKED`.
+        let child_live = thread_is_live("child");
+        let parent_live = thread_is_live("parent");
+        let driver_live = driver_task_is_live("dt");
+        let sql = format!(
+            "WITH orphan AS ( \
+                 SELECT child.id FROM agent_threads child \
+                 LEFT JOIN agent_threads parent ON parent.id = child.parent_thread_id \
+                 LEFT JOIN agent_driver_tasks dt ON dt.id = child.driver_task_id \
+                 WHERE child.cancel_requested_at IS NULL \
+                   AND {child_live} \
+                   AND (NOT ({parent_live}) OR NOT ({driver_live})) \
+                 ORDER BY child.updated_at \
+                 LIMIT $1 \
+                 FOR UPDATE OF child SKIP LOCKED \
+             ) \
+             UPDATE agent_threads c \
+             SET cancel_requested_at = now(), cancel_requested_by = $2, updated_at = now() \
+             FROM orphan \
+             WHERE c.id = orphan.id"
+        );
+        let result = sqlx::query(&sql)
+            .bind(i64::from(limit))
+            .bind(requested_by)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "cascading cancellation to orphaned descendants".to_owned(),
+                source: e,
+            })?;
+
+        Ok(result.rows_affected())
     }
 
     async fn set_execution_spend(
@@ -736,10 +877,8 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         criteria: &ThreadPruneCriteria,
     ) -> Result<u64, DbError> {
         let stage = criteria.stage.map(|stage| stage.as_str().to_owned());
-        // One statement: the data-modifying record delete and the thread
-        // delete share the candidate derivation, and the self-referential
-        // parent FK is checked at statement end, so a whole terminal
-        // subtree deletes together.
+        // One statement so the self-referential parent FK is checked at
+        // statement end and a whole terminal subtree deletes together.
         let result = sqlx::query(
             "WITH RECURSIVE candidates AS ( \
                  SELECT id FROM agent_threads \
@@ -790,6 +929,37 @@ impl AgentThreadRepository for PgAgentThreadRepository {
 // Row mapping
 // ---------------------------------------------------------------------------
 
+/// The quoted SQL literals for the terminal thread statuses, derived from
+/// `ALL` so a new status joins the set by construction. Interpolated, not
+/// bound, so the planner can match a partial index's literal predicate.
+fn terminal_status_literals() -> Vec<String> {
+    AgentThreadStatus::ALL
+        .iter()
+        .filter(|status| status.is_terminal())
+        .map(|status| format!("'{}'", status.as_str()))
+        .collect()
+}
+
+/// SQL predicate: the aliased `agent_threads` row holds a live (non-terminal)
+/// status. The single definition of thread liveness the stuck-relating sweep
+/// and the orphan cascade both compose, so the two cannot drift on what "live"
+/// means.
+fn thread_is_live(alias: &str) -> String {
+    format!(
+        "{alias}.status NOT IN ({})",
+        terminal_status_literals().join(", ")
+    )
+}
+
+/// SQL predicate: the aliased `agent_driver_tasks` row holds a live
+/// (non-terminal) state, the driver-task companion to [`thread_is_live`].
+fn driver_task_is_live(alias: &str) -> String {
+    format!(
+        "{alias}.state NOT IN ({})",
+        terminal_driver_state_literals().join(", ")
+    )
+}
+
 fn map_agent_thread_row(r: &sqlx::postgres::PgRow) -> AgentThread {
     AgentThread::builder()
         .id(AgentThreadId::from(r.get::<uuid::Uuid, _>("id")))
@@ -814,6 +984,7 @@ fn map_agent_thread_row(r: &sqlx::postgres::PgRow) -> AgentThread {
                 .map(AgentDriverTaskId::from),
         )
         .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
+        .job_id(r.get::<Option<uuid::Uuid>, _>("job_id").map(JobId::from))
         .status(
             r.get::<String, _>("status")
                 .parse::<AgentThreadStatus>()

@@ -2,8 +2,8 @@
 //!
 //! Provides per-task background heartbeat with ownership-loss
 //! signalling, the per-row thread-aware reclaim (recovery cycles and
-//! thread exhaustion for stage tasks that drive a thread), the legacy
-//! bulk reclaim for rows with no thread, and a startup reclaim pass for
+//! thread exhaustion for stage tasks that drive a thread), the bulk
+//! reclaim for rows with no thread, and a startup reclaim pass for
 //! crash recovery.
 
 use std::{
@@ -18,12 +18,14 @@ use sqlx::PgPool;
 use tokio::{sync::oneshot, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tribal_db::{
-    AgentDriverTaskRepository, AgentThreadRepository, PgAgentDriverTaskRepository,
-    PgAgentThreadRepository, PgTaskRepository, ReclaimOutcome, TaskRepository,
+    AgentBindingVersionRepository, AgentDriverTaskRepository, AgentThreadRepository,
+    PgAgentBindingVersionRepository, PgAgentDriverTaskRepository, PgAgentThreadRepository,
+    PgTaskRepository, ReclaimOutcome, TaskRepository,
 };
 use tribal_domain::{
-    AgentDriverTaskId, AgentThreadTerminal, Disposition, DispositionCounters, JobOutcome, JobState,
-    TaskErrorKind, TaskId, TurnOutcome, decide_disposition,
+    AgentDriverTaskId, AgentThread, AgentThreadTerminal, Disposition, DispositionCounters,
+    JobOutcome, JobState, StageExecutorKind, TaskErrorKind, TaskId, TurnOutcome,
+    decide_disposition,
 };
 
 use crate::{
@@ -44,13 +46,36 @@ pub(crate) const STARTUP_RECLAIM_MESSAGE: &str = "startup_reclaim";
 /// Error message written to tasks reclaimed by the periodic sweep.
 pub(crate) const HEARTBEAT_EXPIRED_MESSAGE: &str = "heartbeat_expired";
 
-/// The thread recovery-cycle budget. Zero reproduces launched behaviour
-/// exactly: a stage task whose retry budget exhausts under reclaim
-/// dead-letters at the same moment it always did, with its thread and
-/// job coupled in the same commit. Raising the cap opens fresh cycles
-/// (reset retry budget, escalating per-cycle backoff) before the thread
-/// fails.
-pub(crate) const THREAD_RECOVERY_CAP: u32 = 0;
+/// The thread recovery-cycle budget. Positive is a precondition for the
+/// job-terminal relation loop: at zero, the first reclaim of a stale running
+/// thread fails the job and discards the upstream extraction and triage turns
+/// already paid for; a positive cap opens fresh cycles before the thread fails.
+pub(crate) const THREAD_RECOVERY_CAP: u32 = 2;
+
+const _: () = assert!(THREAD_RECOVERY_CAP > 0);
+
+/// The recovery-cycle cap a thread's disposition runs under, resolved from
+/// its binding's executor: a loop earns recovery cycles (the relation-loop
+/// precondition, re-driven from the committed record-log tail), while a
+/// one-shot keeps its fail-fast exhaustion, which has no mid-thread
+/// progress to recover to. A binding that cannot be read defaults to the
+/// one-shot cap, the conservative fail-fast choice.
+pub(crate) async fn recovery_cap_for_thread(
+    conn: &mut sqlx::PgConnection,
+    thread: &AgentThread,
+) -> u32 {
+    let executor = match PgAgentBindingVersionRepository
+        .find_by_id(conn, thread.binding_version_id())
+        .await
+    {
+        Ok(Some(binding)) => binding.definition().executor,
+        Ok(None) | Err(_) => StageExecutorKind::OneShot,
+    };
+    match executor {
+        StageExecutorKind::BuiltInLoop => THREAD_RECOVERY_CAP,
+        StageExecutorKind::OneShot | StageExecutorKind::ExternalAgent => 0,
+    }
+}
 
 /// Ceiling on the per-cycle backoff ladder (`2^recovery_attempts`
 /// seconds), so the never-resetting cycle counter cannot push a task's
@@ -136,7 +161,6 @@ impl Worker {
     pub async fn run_thread_aware_reclaim(
         &self,
         limit: u32,
-        recovery_cap: u32,
         error_kind: TaskErrorKind,
         error_message: &str,
         flat_backoff_seconds: Option<u32>,
@@ -181,7 +205,7 @@ impl Worker {
                 .map_err(reclaim_db)?
             else {
                 // The scan's EXISTS clause makes this unreachable; the
-                // rolled-back row falls to the legacy pass.
+                // rolled-back row falls to the bulk pass.
                 break;
             };
             let Some(claim_token) = task.claim_token() else {
@@ -193,7 +217,7 @@ impl Worker {
                 retry_count: task.retry_count(),
                 max_retries: self.config().task_max_retries,
                 recovery_attempts: thread.recovery_attempts(),
-                max_recovery_attempts: recovery_cap,
+                max_recovery_attempts: recovery_cap_for_thread(&mut txn, &thread).await,
             };
 
             let mut owed = None;
@@ -268,8 +292,8 @@ impl Worker {
                 },
             })?;
 
-            // Metrics and notifications mirror the launched dead-letter
-            // path, fired only after the commit.
+            // Metrics and notifications mirror the dead-letter path, fired
+            // only after the commit.
             if task_dead_lettered {
                 self.metrics()
                     .record_task_dead_lettered(task.task_type().as_str());
@@ -288,8 +312,8 @@ impl Worker {
 }
 
 /// The exhaustion transaction's body: the thread row is locked before
-/// its status is judged — a concurrent guarded queued-to-running move
-/// serialises against this write rather than racing it — then the thread
+/// its status is judged (a concurrent guarded queued-to-running move
+/// serialises against this write rather than racing it), then the thread
 /// dead-letters from whatever live status the locked row holds, the
 /// driving task dead-letters under its claim guard, and the job couples,
 /// returning the owed notification.
@@ -426,7 +450,7 @@ impl tribal_agent_runtime::HeartbeatPump for WorkerHeartbeatPump {
         let task_id = self.task_id;
         let claim_token = self.claim_token;
         // Fire-and-forget: a delta beat is pure liveness. Ownership loss
-        // is not signalled from here — the next claim-guarded commit
+        // is not signalled from here. The next claim-guarded commit
         // refuses deterministically, and the timer resumes after the
         // call.
         tokio::spawn(async move {
@@ -454,7 +478,7 @@ impl tribal_agent_runtime::HeartbeatPump for WorkerHeartbeatPump {
 /// Spawns a background heartbeat task for the given claimed task.
 ///
 /// The task periodically updates `heartbeat_at` via
-/// [`TaskRepository::heartbeat`].  When the update affects zero rows
+/// [`TaskRepository::heartbeat`]. When the update affects zero rows
 /// (ownership lost), it fires the `ownership_lost` signal and exits.
 /// On cancellation, it exits immediately without signalling ownership
 /// loss.
@@ -559,7 +583,7 @@ impl DriverHeartbeatHandle {
 /// driver loop executes its child.
 ///
 /// A driver child is a single bounded one-shot, so this beats on the
-/// timer alone — no phase-aware suppression and no ownership-lost
+/// timer alone. No phase-aware suppression and no ownership-lost
 /// channel: the child-terminal's claim-guarded driver-task completion is
 /// the deterministic ownership check, and a stale beat is harmless.
 pub(crate) fn spawn_driver_heartbeat(
