@@ -556,9 +556,9 @@ mod tests {
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, MockKnowledgeItemRepository,
         MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
-        MockStandingRepository, TestContext, a_knowledge_item, a_not_found, a_principal, a_project,
+        MockStandingRepository, TestDb, a_knowledge_item, a_not_found, a_principal, a_project,
         a_reference, a_standing, an_embedding_response, create_complete_profile,
-        ensure_genesis_profile, test_context,
+        ensure_genesis_profile,
     };
 
     use super::*;
@@ -643,8 +643,8 @@ mod tests {
         repos: &ConnectionRepositories,
         params: DiscoverParams,
     ) -> Result<DiscoverResult, DiscoverError> {
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
         // The handler resolves the active embedding profile; seed one and read
         // it back so the mocked search runs against it.
         ensure_genesis_profile(&mut tx, "mock-model", 768).await;
@@ -1123,7 +1123,7 @@ mod tests {
         // one in a dedicated database and bind a failing provider to it; the
         // embed error must surface as an internal error result. A dummy pool
         // would instead fail at find_active, with an environment-dependent code.
-        let ctx = TestContext::new().await.expect("dedicated test database");
+        let ctx = TestDb::new().await;
         let pool = ctx.pool().clone();
         let active = {
             let mut seed = ctx.raw_connection().await.expect("seed connection");
@@ -1170,7 +1170,7 @@ mod tests {
         // strict validator would reject. The search mock only responds when the
         // cursor arrives absent, so a regression would surface as a missing
         // response rather than a silent pass.
-        let ctx = TestContext::new().await.expect("dedicated test database");
+        let ctx = TestDb::new().await;
         let pool = ctx.pool().clone();
         let active = {
             let mut seed = ctx.raw_connection().await.expect("seed connection");
@@ -1411,7 +1411,7 @@ mod tests {
         // tests. A dedicated database (its own container) isolates it entirely:
         // no shared pool, no committed-state leakage, so no serial lock or
         // truncation is needed. A single raw connection seeds it.
-        let ctx = TestContext::new().await.expect("dedicated test database");
+        let ctx = TestDb::new().await;
         let pool = ctx.pool().clone();
         let mut seed = ctx.raw_connection().await.expect("seed connection");
 

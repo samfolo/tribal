@@ -169,8 +169,7 @@ mod tests {
     use tribal_db::DbError;
     use tribal_domain::{KnowledgeItemId, ProjectId};
     use tribal_test_utils::{
-        ExhaustBehaviour, MockProjectRepository, TEST_PRINCIPAL_KEY, a_not_found, a_project,
-        test_context,
+        ExhaustBehaviour, MockProjectRepository, TEST_PRINCIPAL_KEY, TestDb, a_not_found, a_project,
     };
 
     use super::resolve_project;
@@ -197,8 +196,8 @@ mod tests {
         repos: &ConnectionRepositories,
         proj_id: ProjectId,
     ) -> Result<SessionProject, DbError> {
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
         resolve_project(&mut tx, repos, proj_id).await
     }
 
@@ -329,7 +328,7 @@ mod tests {
     /// contention with the shared pool under concurrent test execution.
     #[tokio::test]
     async fn test_set_project_id_updates_session_and_response() {
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("pool");
         let project = a_project().build();
         let mock = MockProjectRepository::builder()

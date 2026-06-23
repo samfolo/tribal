@@ -20,12 +20,12 @@ fail-fast = false
 retries = 0
 slow-timeout = "180s"
 
-# The e2e suite stands up a full server plus mock providers per test. They are
-# safe to run in parallel (in-process transport, ephemeral wiremock ports, a
-# per-test database), but cap concurrency so a many-core run does not exhaust
-# connections or memory.
+# Each e2e test stands up a full in-process server, a background worker, and
+# four wiremock providers against its own per-test database. They are isolated
+# (per-test database, ephemeral ports) but resource-heavy and timing-sensitive,
+# so they run one at a time; the parallelism win is in the non-e2e suite.
 [test-groups]
-e2e = { max-threads = 4 }
+e2e = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'package(tribal-e2e)'

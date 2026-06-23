@@ -8,7 +8,7 @@ use tribal_db::{
 use tribal_domain::{
     EmbeddingErrorClass, ReindexEntityKind, ReindexRunId, ReindexRunState, ReindexTaskState,
 };
-use tribal_test_utils::{a_new_principal, ensure_genesis_profile, test_context};
+use tribal_test_utils::{TestDb, a_new_principal, ensure_genesis_profile};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -55,8 +55,8 @@ fn item_task(run: ReindexRunId, target_ref: &str) -> NewReindexTask {
 
 #[tokio::test]
 async fn test_run_inserts_queued_and_find_live() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
 
     let run_id = setup_run(&mut txn, "live").await;
 
@@ -100,8 +100,8 @@ async fn test_run_inserts_queued_and_find_live() {
 
 #[tokio::test]
 async fn test_single_flight_rejects_second_live_run() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
 
     let _first = setup_run(&mut txn, "sf").await;
 
@@ -134,8 +134,8 @@ async fn test_single_flight_rejects_second_live_run() {
 
 #[tokio::test]
 async fn test_run_tallies_accumulate() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let run_id = setup_run(&mut txn, "tally").await;
 
     PgReindexRunRepository
@@ -166,8 +166,8 @@ async fn test_run_tallies_accumulate() {
 /// catch-up passes can sum past the INT ceiling without overflowing.
 #[tokio::test]
 async fn test_embedded_tallies_exceed_int_ceiling() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let run_id = setup_run(&mut txn, "bigint").await;
 
     // Two passes of 1.5B each sum to 3B, past the 2.147B INT ceiling.
@@ -201,8 +201,8 @@ async fn test_embedded_tallies_exceed_int_ceiling() {
 
 #[tokio::test]
 async fn test_task_upsert_is_idempotent() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let run_id = setup_run(&mut txn, "upsert").await;
 
     let first = PgReindexTaskRepository
@@ -220,8 +220,8 @@ async fn test_task_upsert_is_idempotent() {
 
 #[tokio::test]
 async fn test_task_claim_and_complete() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let run_id = setup_run(&mut txn, "claim").await;
 
     PgReindexTaskRepository
@@ -265,8 +265,8 @@ async fn test_task_claim_and_complete() {
 
 #[tokio::test]
 async fn test_claim_is_scoped_to_its_run_and_skips_a_prior_runs_leftover() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
 
     // An older run enrols a task, then aborts, leaving the task pending. Single-
     // flight requires the older run to be terminal before a newer one is live.
@@ -315,8 +315,8 @@ async fn test_claim_is_scoped_to_its_run_and_skips_a_prior_runs_leftover() {
 
 #[tokio::test]
 async fn test_task_fail_requeues_then_dead_letters() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let run_id = setup_run(&mut txn, "fail").await;
 
     // max_attempts defaults to 8; the task dead-letters once attempt exceeds it.
@@ -372,8 +372,8 @@ async fn test_task_fail_requeues_then_dead_letters() {
 
 #[tokio::test]
 async fn test_task_count_by_state() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let run_id = setup_run(&mut txn, "count").await;
 
     for i in 0..3 {
@@ -413,8 +413,8 @@ async fn test_task_count_by_state() {
 
 #[tokio::test]
 async fn test_quarantine_record_is_idempotent_and_counts() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let principal = PgPrincipalRepository
         .insert(
             &mut txn,
@@ -474,8 +474,8 @@ async fn test_quarantine_record_is_idempotent_and_counts() {
 
 #[tokio::test]
 async fn test_find_tags_missing_embeddings_excludes_quarantined_tags() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let principal = PgPrincipalRepository
         .insert(
             &mut txn,

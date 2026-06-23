@@ -588,15 +588,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_embedded_and_disk_paths_produce_equal_version_ids() {
-        use tribal_test_utils::{serial_lock, test_context, truncate_all_tables};
+        use tribal_test_utils::TestDb;
 
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("create pool");
-
-        let mut conn = pool.acquire().await.expect("acquire connection");
-        truncate_all_tables(&mut conn).await;
-        drop(conn);
 
         // `ensure_prompt_files` writes the embedded defaults to disk, so
         // both paths receive byte-identical content. Equal `content_hash`

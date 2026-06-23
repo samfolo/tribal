@@ -181,5 +181,4 @@ async fn test_ingest_pipeline_end_to_end() {
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

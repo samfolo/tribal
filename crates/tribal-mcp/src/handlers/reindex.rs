@@ -246,15 +246,15 @@ mod tests {
         PgPrincipalRepository, PgReindexRunRepository, PrincipalRepository, ReindexRunRepository,
     };
     use tribal_domain::ReindexRunState;
-    use tribal_test_utils::{a_new_embedding_profile, a_new_principal, test_context};
+    use tribal_test_utils::{TestDb, a_new_embedding_profile, a_new_principal};
 
     use super::*;
     use crate::test_utils::{NO_STRUCTURED_CONTENT, TestHandler, first_text_content};
 
     #[tokio::test]
     async fn test_reindex_cancel_aborts_the_live_run() {
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin_test");
 
         let principal = PgPrincipalRepository
             .insert(
@@ -305,8 +305,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reindex_cancel_reports_no_live_run() {
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin_test");
 
         let outcome = reindex_cancel(&mut tx).await.expect("cancel");
         assert!(matches!(outcome, ReindexCancelOutcome::NoLiveRun));
@@ -314,8 +314,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reindex_prune_supersedes_all_but_the_active() {
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin_test");
 
         // An old complete profile, the active (highest-epoch complete), and a
         // failed one, inserted in ascending epoch order.
@@ -410,7 +410,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_reindex_dry_run_estimates_without_creating_a_run() {
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("pool");
         let handler = TestHandler::builder().pool(pool).build();
 

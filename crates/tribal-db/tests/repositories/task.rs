@@ -5,9 +5,9 @@ use tribal_db::{
 };
 use tribal_domain::{GitRemote, JobId, TaskErrorKind, TaskId, TaskStatus, TaskType};
 use tribal_test_utils::{
-    a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_system_fingerprint,
-    a_new_task, backdate_task_heartbeat, count_tasks_by_status, insert_prompt_version,
-    set_retry_count, shift_timestamp_by_id, test_context, upsert_system_fingerprint,
+    TestDb, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
+    a_new_system_fingerprint, a_new_task, backdate_task_heartbeat, count_tasks_by_status,
+    insert_prompt_version, set_retry_count, shift_timestamp_by_id, upsert_system_fingerprint,
 };
 
 // ---------------------------------------------------------------------------
@@ -73,8 +73,8 @@ async fn setup_task_prerequisites(txn: &mut sqlx::PgConnection, suffix: &str) ->
 
 #[tokio::test]
 async fn test_insert_extraction_task() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "insert-extraction").await;
@@ -102,8 +102,8 @@ async fn test_insert_extraction_task() {
 
 #[tokio::test]
 async fn test_insert_triage_task_with_batch_index() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "insert-triage").await;
@@ -122,8 +122,8 @@ async fn test_insert_triage_task_with_batch_index() {
 
 #[tokio::test]
 async fn test_insert_duplicate_singleton_unique_violation() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "dup-singleton").await;
@@ -149,8 +149,8 @@ async fn test_insert_duplicate_singleton_unique_violation() {
 
 #[tokio::test]
 async fn test_insert_duplicate_triage_unique_violation() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "dup-triage").await;
@@ -182,8 +182,8 @@ async fn test_insert_duplicate_triage_unique_violation() {
 
 #[tokio::test]
 async fn test_find_by_id_returns_task() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "find-by-id").await;
@@ -202,8 +202,8 @@ async fn test_find_by_id_returns_task() {
 
 #[tokio::test]
 async fn test_find_by_id_not_found() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let result = repo.find_by_id(&mut txn, TaskId::new()).await;
@@ -220,8 +220,8 @@ async fn test_find_by_id_not_found() {
 
 #[tokio::test]
 async fn test_find_by_job_id() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "find-by-job").await;
@@ -276,8 +276,8 @@ async fn test_find_by_job_id() {
 
 #[tokio::test]
 async fn test_find_by_job_id_empty() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let tasks = repo
@@ -294,8 +294,8 @@ async fn test_find_by_job_id_empty() {
 
 #[tokio::test]
 async fn test_claim_returns_claimed_tasks() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "claim").await;
@@ -335,8 +335,8 @@ async fn test_claim_returns_claimed_tasks() {
 
 #[tokio::test]
 async fn test_claim_respects_limit() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "claim-limit").await;
@@ -369,8 +369,8 @@ async fn test_claim_respects_limit() {
 
 #[tokio::test]
 async fn test_claim_skips_future_available_at() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "claim-future").await;
@@ -403,8 +403,8 @@ async fn test_claim_skips_future_available_at() {
 
 #[tokio::test]
 async fn test_claim_returns_empty_when_none_claimable() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let claimed = repo.claim(&mut txn, 10, "worker-1").await.expect("claim");
@@ -418,8 +418,8 @@ async fn test_claim_returns_empty_when_none_claimable() {
 
 #[tokio::test]
 async fn test_heartbeat_updates_timestamp() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "heartbeat").await;
@@ -450,8 +450,8 @@ async fn test_heartbeat_updates_timestamp() {
 
 #[tokio::test]
 async fn test_heartbeat_wrong_token_returns_zero() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "heartbeat-wrong").await;
@@ -477,8 +477,8 @@ async fn test_heartbeat_wrong_token_returns_zero() {
 
 #[tokio::test]
 async fn test_reset_retry_count_is_claim_guarded() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "progress-reset").await;
@@ -522,8 +522,8 @@ async fn test_reset_retry_count_is_claim_guarded() {
 
 #[tokio::test]
 async fn test_complete_marks_completed() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "complete").await;
@@ -557,8 +557,8 @@ async fn test_complete_marks_completed() {
 
 #[tokio::test]
 async fn test_complete_wrong_token_returns_zero() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "complete-wrong").await;
@@ -584,8 +584,8 @@ async fn test_complete_wrong_token_returns_zero() {
 
 #[tokio::test]
 async fn test_fail_requeues_within_budget() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "fail-requeue").await;
@@ -633,8 +633,8 @@ async fn test_fail_requeues_within_budget() {
 
 #[tokio::test]
 async fn test_fail_dead_letters_when_exceeding_max_retries() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "fail-dead-letter").await;
@@ -687,8 +687,8 @@ async fn test_fail_dead_letters_when_exceeding_max_retries() {
 
 #[tokio::test]
 async fn test_fail_wrong_token_returns_zero() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "fail-wrong-token").await;
@@ -722,8 +722,8 @@ async fn test_fail_wrong_token_returns_zero() {
 
 #[tokio::test]
 async fn test_reclaim_stale_heartbeat_expired() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "reclaim-heartbeat").await;
@@ -775,8 +775,8 @@ async fn test_reclaim_stale_heartbeat_expired() {
 
 #[tokio::test]
 async fn test_reclaim_stale_startup_reclaim() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "reclaim-startup").await;
@@ -828,8 +828,8 @@ async fn test_reclaim_stale_startup_reclaim() {
 
 #[tokio::test]
 async fn test_reclaim_stale_dead_letters_exhausted_budget() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "reclaim-dead-letter").await;
@@ -889,8 +889,8 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
 
 #[tokio::test]
 async fn test_reclaim_stale_respects_limit() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     // Each task needs its own job due to the unique constraint on
@@ -959,8 +959,8 @@ async fn test_reclaim_stale_respects_limit() {
 
 #[tokio::test]
 async fn test_count_by_status_empty_table() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let counts = repo
@@ -972,8 +972,8 @@ async fn test_count_by_status_empty_table() {
 
 #[tokio::test]
 async fn test_count_by_status_groups_by_type_and_status() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTaskRepository;
 
     let job_id = setup_task_prerequisites(&mut txn, "count-by-status").await;
@@ -1065,8 +1065,8 @@ async fn test_count_by_status_groups_by_type_and_status() {
 
 #[tokio::test]
 async fn test_block_clears_the_lease_and_makes_the_row_unclaimable() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let job_id = setup_task_prerequisites(&mut txn, "block").await;
 
     PgTaskRepository
@@ -1106,8 +1106,8 @@ async fn test_block_clears_the_lease_and_makes_the_row_unclaimable() {
 
 #[tokio::test]
 async fn test_requeue_from_blocked_is_immediately_available() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let job_id = setup_task_prerequisites(&mut txn, "unblock").await;
 
     PgTaskRepository
@@ -1141,8 +1141,8 @@ async fn test_requeue_from_blocked_is_immediately_available() {
 
 #[tokio::test]
 async fn test_count_live_siblings_counts_blocked_as_live() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let job_id = setup_task_prerequisites(&mut txn, "live-count").await;
 
     let current = PgTaskRepository

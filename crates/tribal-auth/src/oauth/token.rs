@@ -475,7 +475,7 @@ mod tests {
         DbError, NewOauthAuthorizationCode, NewOauthClient, NewPrincipal, PgPrincipalRepository,
         PrincipalRepository,
     };
-    use tribal_test_utils::{MockAuthTokenRepository, test_context};
+    use tribal_test_utils::{MockAuthTokenRepository, TestDb};
     use url::Url;
 
     use super::*;
@@ -488,7 +488,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exchange_rolls_back_on_token_insert_failure() {
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.unwrap();
 
         let mut conn = pool.acquire().await.unwrap();

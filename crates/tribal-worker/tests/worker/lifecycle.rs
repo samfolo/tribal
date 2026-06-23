@@ -10,15 +10,14 @@ use super::common::*;
 /// `available_at`.
 #[tokio::test]
 async fn test_retry_path_increments_retry_count() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "retry").await;
+        setup_prerequisites(&ctx, "retry").await;
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -55,7 +54,7 @@ async fn test_retry_path_increments_retry_count() {
         "available_at should be in the future (backoff)",
     );
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let job = PgJobRepository
         .find_by_id(&mut conn, job_id)
         .await
@@ -65,24 +64,21 @@ async fn test_retry_path_increments_retry_count() {
         JobStatus::Failed,
         "job should not be failed after first retry",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that a task at its retry limit is dead-lettered and the
 /// parent job transitions to Failed with a Failure outcome.
 #[tokio::test]
 async fn test_dead_letter_path_transitions_task_and_job() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "dead-letter").await;
+        setup_prerequisites(&ctx, "dead-letter").await;
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let (job_id, task_id) = seed_extraction_job(
             &mut conn,
             principal_id,
@@ -132,8 +128,6 @@ async fn test_dead_letter_path_transitions_task_and_job() {
         job.completed_at().is_some(),
         "job completed_at should be set",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that the worker never exceeds `max_concurrent_tasks`
@@ -141,8 +135,7 @@ async fn test_dead_letter_path_transitions_task_and_job() {
 /// `Worker`.
 #[tokio::test]
 async fn test_concurrency_limit_respected() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
     let max_concurrent = 2_usize;
 
@@ -152,12 +145,12 @@ async fn test_concurrency_limit_respected() {
     };
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "concurrency").await;
+        setup_prerequisites(&ctx, "concurrency").await;
 
     // Seed more tasks than max_concurrent.
     let task_count = max_concurrent + 2;
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
 
         let fingerprint_hash =
             upsert_system_fingerprint(&mut conn, &a_new_system_fingerprint().build()).await;
@@ -219,23 +212,20 @@ async fn test_concurrency_limit_respected() {
     // Verify at least one task was dispatched (otherwise the assertion
     // above is vacuously true).
     assert!(peak > 0, "worker should have processed at least one task");
-
-    teardown(ctx).await;
 }
 
 /// Verifies that the reclaim sweep requeues a task whose heartbeat
 /// has expired and increments its retry count.
 #[tokio::test]
 async fn test_reclaim_sweep_requeues_stale_heartbeat_task() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "reclaim-requeue").await;
+        setup_prerequisites(&ctx, "reclaim-requeue").await;
 
     let task_id = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let (_job_id, task_id) = seed_extraction_job(
             &mut conn,
             principal_id,
@@ -280,24 +270,21 @@ async fn test_reclaim_sweep_requeues_stale_heartbeat_task() {
         TaskStatus::Queued,
         "task should be requeued after reclaim",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that the reclaim sweep dead-letters a task whose retry
 /// budget is exhausted and transitions the parent job to Failed.
 #[tokio::test]
 async fn test_reclaim_sweep_dead_letters_exhausted_task() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "reclaim-dead-letter").await;
+        setup_prerequisites(&ctx, "reclaim-dead-letter").await;
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let (job_id, task_id) = seed_extraction_job(
             &mut conn,
             principal_id,
@@ -357,23 +344,20 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
         Some(JobOutcome::Failure),
         "job outcome should be Failure",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that `startup_reclaim` recovers an orphaned task left
 /// by a crashed worker instance.
 #[tokio::test]
 async fn test_startup_reclaim_recovers_orphaned_task() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "startup-reclaim").await;
+        setup_prerequisites(&ctx, "startup-reclaim").await;
 
     let task_id = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let (_job_id, task_id) = seed_extraction_job(
             &mut conn,
             principal_id,
@@ -404,7 +388,7 @@ async fn test_startup_reclaim_recovers_orphaned_task() {
 
     assert_eq!(reclaimed, 1, "should reclaim exactly one orphaned task");
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let task = PgTaskRepository
         .find_by_id(&mut conn, task_id)
         .await
@@ -426,8 +410,6 @@ async fn test_startup_reclaim_recovers_orphaned_task() {
         Some("startup_reclaim"),
         "error message should be startup_reclaim",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that the heartbeat detects ownership loss when another
@@ -435,15 +417,14 @@ async fn test_startup_reclaim_recovers_orphaned_task() {
 /// interruption gracefully without corrupting task state.
 #[tokio::test]
 async fn test_heartbeat_detects_ownership_loss_mid_stage() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "ownership-loss").await;
+        setup_prerequisites(&ctx, "ownership-loss").await;
 
     let task_id = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let (_job_id, task_id) = seed_extraction_job(
             &mut conn,
             principal_id,
@@ -521,7 +502,7 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
     // keeps the requeued task's available_at far in the future, so the
     // worker's poll loop cannot re-claim it before the test asserts.
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
     }
     worker
@@ -552,7 +533,7 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
         "expected ownership loss to abort the stage early, but test took {elapsed:?}",
     );
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
 
     // The zombie's commit attempt died at the task claim CAS, so nothing
     // of its turn persisted: the thread stays running with the lone
@@ -595,6 +576,4 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
         Some(TaskErrorKind::HeartbeatExpired),
         "error kind should reflect the reclaim",
     );
-
-    teardown(ctx).await;
 }

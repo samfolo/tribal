@@ -1,6 +1,6 @@
 //! Integration tests for the declarative seed infrastructure.
 //!
-//! Each test starts a pgvector container via [`TestContext`] (shared per
+//! Each test starts a pgvector container via [`TestDb`] (shared per
 //! binary), opens a transaction that rolls back on drop, and exercises
 //! the [`Seed`] builder against the real database through the repository
 //! layer.
@@ -19,7 +19,7 @@ use tribal_domain::{
     SourceType,
 };
 use tribal_test_utils::{
-    Seed, active_embedding_profile, find_active_embedding, item, scenarios, test_context,
+    Seed, TestDb, active_embedding_profile, find_active_embedding, item, scenarios,
 };
 
 // ---------------------------------------------------------------------------
@@ -39,8 +39,8 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
 #[tokio::test]
 async fn test_basic_seed_inserts_project_and_principal() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -72,8 +72,8 @@ async fn test_basic_seed_inserts_project_and_principal() {
 
 #[tokio::test]
 async fn test_seed_with_items_and_embeddings() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -106,8 +106,8 @@ async fn test_seed_with_items_and_embeddings() {
 
 #[tokio::test]
 async fn test_seed_with_tags_auto_registers_in_registry() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -137,8 +137,8 @@ async fn test_seed_with_tags_auto_registers_in_registry() {
 
 #[tokio::test]
 async fn test_seed_virtual_clock_backdating() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -174,8 +174,8 @@ async fn test_seed_virtual_clock_backdating() {
 
 #[tokio::test]
 async fn test_seed_commit_relations_creates_scaffolding() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -209,8 +209,8 @@ async fn test_seed_commit_relations_creates_scaffolding() {
 
 #[tokio::test]
 async fn test_seed_uncommitted_relations_no_scaffolding() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -232,8 +232,8 @@ async fn test_seed_uncommitted_relations_no_scaffolding() {
 
 #[tokio::test]
 async fn test_seed_observations_backdated() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -268,8 +268,8 @@ async fn test_seed_observations_backdated() {
 
 #[tokio::test]
 async fn test_seed_references_attached_to_items() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -305,8 +305,8 @@ async fn test_seed_references_attached_to_items() {
 
 #[tokio::test]
 async fn test_seed_embedding_groups_produce_similar_vectors() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -346,8 +346,8 @@ async fn test_seed_embedding_groups_produce_similar_vectors() {
 
 #[tokio::test]
 async fn test_seed_skip_embed_item_has_no_embedding() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -369,8 +369,8 @@ async fn test_seed_skip_embed_item_has_no_embedding() {
 
 #[tokio::test]
 async fn test_seed_episode_label_shares_episode_id() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -413,8 +413,8 @@ async fn test_seed_episode_label_shares_episode_id() {
 
 #[tokio::test]
 async fn test_seed_cross_project_relations() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj-a", "git@example.com:a.git")
@@ -438,8 +438,8 @@ async fn test_seed_cross_project_relations() {
 
 #[tokio::test]
 async fn test_seed_cross_project_observations() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj-a", "git@example.com:a.git")
@@ -463,8 +463,8 @@ async fn test_seed_cross_project_observations() {
 
 #[tokio::test]
 async fn test_seed_as_principal_within_scope() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -496,8 +496,8 @@ async fn test_seed_as_principal_within_scope() {
 
 #[tokio::test]
 async fn test_seed_forward_reference_within_scope() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     // observe and add_reference declared BEFORE add_item — should still
     // work because of the two-bucket partition.
@@ -522,8 +522,8 @@ async fn test_seed_forward_reference_within_scope() {
 #[tokio::test]
 #[should_panic(expected = "requires an active principal")]
 async fn test_clear_principal_persists_beyond_scope() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     // clear_principal within a scope persists beyond the scope boundary.
     // The second for_project scope inherits the cleared state.
@@ -548,8 +548,8 @@ async fn test_clear_principal_persists_beyond_scope() {
 #[tokio::test]
 #[should_panic(expected = "requires an active principal")]
 async fn test_clear_principal_prevents_subsequent_relate() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -570,8 +570,8 @@ async fn test_clear_principal_prevents_subsequent_relate() {
 #[tokio::test]
 #[should_panic(expected = "requires an active principal")]
 async fn test_scope_clear_principal_prevents_subsequent_relate() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -595,8 +595,8 @@ async fn test_scope_clear_principal_prevents_subsequent_relate() {
 
 #[tokio::test]
 async fn test_basic_knowledge_graph_scenario() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = scenarios::basic_knowledge_graph().execute(&mut txn).await;
 
@@ -627,8 +627,8 @@ async fn test_basic_knowledge_graph_scenario() {
 
 #[tokio::test]
 async fn test_supersession_scenario() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = scenarios::supersession_scenario().execute(&mut txn).await;
 
@@ -671,8 +671,8 @@ async fn test_supersession_scenario() {
 
 #[tokio::test]
 async fn test_supersession_scenario_excludes_superseded_from_search() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = scenarios::supersession_scenario().execute(&mut txn).await;
 
@@ -739,8 +739,8 @@ async fn test_supersession_scenario_excludes_superseded_from_search() {
 
 #[tokio::test]
 async fn test_seed_composability() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = scenarios::basic_knowledge_graph()
         .for_project("tribal", |store| {
@@ -769,8 +769,8 @@ async fn test_seed_composability() {
 #[tokio::test]
 #[should_panic(expected = "duplicate project label")]
 async fn test_duplicate_project_label_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:a.git")
@@ -788,8 +788,8 @@ async fn test_duplicate_project_label_panics() {
 #[tokio::test]
 #[should_panic(expected = "duplicate principal label")]
 async fn test_duplicate_principal_label_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -807,8 +807,8 @@ async fn test_duplicate_principal_label_panics() {
 #[tokio::test]
 #[should_panic(expected = "duplicate item label")]
 async fn test_duplicate_item_label_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -827,8 +827,8 @@ async fn test_duplicate_item_label_panics() {
 #[tokio::test]
 #[should_panic(expected = "duplicate batch label")]
 async fn test_duplicate_batch_label_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -852,8 +852,8 @@ async fn test_duplicate_batch_label_panics() {
 #[tokio::test]
 #[should_panic(expected = "relation source")]
 async fn test_unknown_relate_source_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -871,8 +871,8 @@ async fn test_unknown_relate_source_panics() {
 #[tokio::test]
 #[should_panic(expected = "relation target")]
 async fn test_unknown_relate_target_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -890,8 +890,8 @@ async fn test_unknown_relate_target_panics() {
 #[tokio::test]
 #[should_panic(expected = "observe target")]
 async fn test_unknown_observe_target_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -908,8 +908,8 @@ async fn test_unknown_observe_target_panics() {
 #[tokio::test]
 #[should_panic(expected = "reference target")]
 async fn test_unknown_reference_target_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -926,8 +926,8 @@ async fn test_unknown_reference_target_panics() {
 #[tokio::test]
 #[should_panic(expected = "unknown principal")]
 async fn test_unknown_principal_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -944,8 +944,8 @@ async fn test_unknown_principal_panics() {
 #[tokio::test]
 #[should_panic(expected = "unknown project")]
 async fn test_unknown_project_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -962,8 +962,8 @@ async fn test_unknown_project_panics() {
 #[tokio::test]
 #[should_panic(expected = "no embedding model set")]
 async fn test_no_embedding_model_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -979,8 +979,8 @@ async fn test_no_embedding_model_panics() {
 #[tokio::test]
 #[should_panic(expected = "non-negative duration")]
 async fn test_negative_advance_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -998,8 +998,8 @@ async fn test_negative_advance_panics() {
 #[tokio::test]
 #[should_panic(expected = "no projects were defined")]
 async fn test_no_projects_defined_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_principal("user", "user:key")
@@ -1010,8 +1010,8 @@ async fn test_no_projects_defined_panics() {
 #[tokio::test]
 #[should_panic(expected = "no principals were defined")]
 async fn test_no_principals_defined_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -1022,8 +1022,8 @@ async fn test_no_principals_defined_panics() {
 #[tokio::test]
 #[should_panic(expected = "self-relation not permitted")]
 async fn test_self_relation_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -1041,8 +1041,8 @@ async fn test_self_relation_panics() {
 #[tokio::test]
 #[should_panic(expected = "conflicting values")]
 async fn test_conflicting_embedding_model_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -1060,8 +1060,8 @@ async fn test_conflicting_embedding_model_panics() {
 #[tokio::test]
 #[should_panic(expected = "requires an active principal")]
 async fn test_no_principal_for_add_item_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -1078,8 +1078,8 @@ async fn test_no_principal_for_add_item_panics() {
 #[tokio::test]
 #[should_panic(expected = "requires an active principal")]
 async fn test_no_principal_for_observe_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     // Items are added with a principal (bucket 1), then the principal
     // is cleared. The observe (bucket 2) has no principal and panics.
@@ -1101,8 +1101,8 @@ async fn test_no_principal_for_observe_panics() {
 #[tokio::test]
 #[should_panic(expected = "embedding dimensions must be greater than zero")]
 async fn test_zero_dimensions_panics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -1122,8 +1122,8 @@ async fn test_zero_dimensions_panics() {
 
 #[tokio::test]
 async fn test_commit_relations_with_no_pending_is_noop() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     let result = Seed::new()
         .define_project("proj", "git@example.com:test.git")
@@ -1142,8 +1142,8 @@ async fn test_commit_relations_with_no_pending_is_noop() {
 
 #[tokio::test]
 async fn test_set_embedding_model_identical_is_noop() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin txn");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin txn");
 
     // Setting the same model twice should not panic.
     let result = Seed::new()

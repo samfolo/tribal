@@ -220,7 +220,7 @@ mod tests {
 
     use tokio::sync::RwLock;
     use tribal_mcp::ActivePromptVersions;
-    use tribal_test_utils::{serial_lock, test_context, truncate_all_tables};
+    use tribal_test_utils::TestDb;
 
     use super::*;
     use crate::startup::{PromptTemplateLocation, ensure_prompt_files, load_prompts};
@@ -368,15 +368,10 @@ mod tests {
         Arc<RwLock<ActivePromptVersions>>,
         tempfile::TempDir,
         sqlx::PgPool,
-        tokio::sync::MutexGuard<'static, ()>,
+        TestDb,
     ) {
-        let guard = serial_lock().await;
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("create per-test pool");
-
-        let mut conn = pool.acquire().await.expect("acquire connection");
-        truncate_all_tables(&mut conn).await;
-        drop(conn);
 
         let prompts_dir = tempfile::tempdir().expect("create prompts tempdir");
 
@@ -390,12 +385,12 @@ mod tests {
 
         let active = Arc::new(RwLock::new(initial));
 
-        (active, prompts_dir, pool, guard)
+        (active, prompts_dir, pool, ctx)
     }
 
     #[tokio::test]
     async fn test_reload_updates_active_prompt_version() {
-        let (active, prompts_dir, pool, _guard) = reload_test_harness().await;
+        let (active, prompts_dir, pool, _db) = reload_test_harness().await;
 
         let stage = PromptStage::Extraction;
         let role = PromptRole::System;
@@ -427,7 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reload_same_content_is_idempotent() {
-        let (active, prompts_dir, pool, _guard) = reload_test_harness().await;
+        let (active, prompts_dir, pool, _db) = reload_test_harness().await;
 
         let stage = PromptStage::Extraction;
         let role = PromptRole::System;
@@ -454,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reload_empty_content_keeps_current_version() {
-        let (active, prompts_dir, pool, _guard) = reload_test_harness().await;
+        let (active, prompts_dir, pool, _db) = reload_test_harness().await;
 
         let stage = PromptStage::Triage;
         let role = PromptRole::User;
@@ -484,7 +479,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reload_invalid_template_keeps_current_version() {
-        let (active, prompts_dir, pool, _guard) = reload_test_harness().await;
+        let (active, prompts_dir, pool, _db) = reload_test_harness().await;
 
         let stage = PromptStage::Extraction;
         let role = PromptRole::System;
@@ -514,7 +509,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reload_updates_and_is_idempotent() {
-        let (active, prompts_dir, pool, _guard) = reload_test_harness().await;
+        let (active, prompts_dir, pool, _db) = reload_test_harness().await;
 
         let stage = PromptStage::Relation;
         let role = PromptRole::User;

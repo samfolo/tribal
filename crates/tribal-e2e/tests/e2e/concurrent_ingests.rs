@@ -168,5 +168,4 @@ async fn test_concurrent_identical_ingests() {
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

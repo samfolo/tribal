@@ -35,7 +35,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        a_job, a_job_status_transition, mock::async_dispatch::core::ExhaustBehaviour, test_context,
+        TestDb, a_job, a_job_status_transition, mock::async_dispatch::core::ExhaustBehaviour,
     };
 
     // -- Constants ----------------------------------------------------------
@@ -53,8 +53,8 @@ mod tests {
             .on_update_status_if_live(Some(job), None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
         let transition = a_job_status_transition()
             .status(JobStatus::Extracting)
@@ -86,8 +86,8 @@ mod tests {
             .on_update_status_if_live(Some(fallback_job.clone()), None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
         let transition = a_job_status_transition().build();
 
         let r1 = mock
@@ -112,8 +112,8 @@ mod tests {
             .on_update_batch_size(job, None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
         let _ = mock
             .update_batch_size(&mut tx, job_id, 42, 100)
@@ -138,8 +138,8 @@ mod tests {
             .on_fail_stale_dead_lettered_jobs(vec![id1, id2], None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
         let result = mock.fail_stale_dead_lettered_jobs(&mut tx).await.unwrap();
         assert_eq!(result, vec![id1, id2]);
@@ -155,8 +155,8 @@ mod tests {
             .on_update_status_if_live_exhaust(ExhaustBehaviour::RepeatLast)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
         let transition = a_job_status_transition().build();
 
         let r1 = mock

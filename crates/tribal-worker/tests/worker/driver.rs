@@ -38,7 +38,7 @@ struct SuspendedParent {
 /// submit call, then suspends it with a child whose recorded route
 /// matches the triage stage spec, as a freshly launched verifier's would.
 async fn seed_suspended_parent(
-    ctx: &TestContext,
+    ctx: &TestDb,
     suffix: &str,
 ) -> (sqlx::PgConnection, SuspendedParent) {
     seed_suspended_parent_with_child(
@@ -53,7 +53,7 @@ async fn seed_suspended_parent(
 /// definition supplied so a test can diverge its route from the stage
 /// spec.
 async fn seed_suspended_parent_with_child(
-    ctx: &TestContext,
+    ctx: &TestDb,
     suffix: &str,
     child_definition: AgentDefinition,
 ) -> (sqlx::PgConnection, SuspendedParent) {
@@ -203,9 +203,8 @@ async fn child(conn: &mut sqlx::PgConnection, id: tribal_domain::AgentThreadId) 
 
 #[tokio::test]
 async fn test_suspend_with_child_writes_the_pair_atomically() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let (mut conn, sp) = seed_suspended_parent(ctx, "suspend-child").await;
+    let ctx = TestDb::new().await;
+    let (mut conn, sp) = seed_suspended_parent(&ctx, "suspend-child").await;
 
     // The parent suspended on the pending call, its stage task blocked.
     let parent = PgAgentThreadRepository
@@ -241,15 +240,12 @@ async fn test_suspend_with_child_writes_the_pair_atomically() {
         .expect("present");
     assert_eq!(driver.state(), AgentDriverTaskState::Pending);
     assert_eq!(driver.thread_id(), sp.child_thread_id);
-
-    teardown(ctx).await;
 }
 
 #[tokio::test]
 async fn test_child_terminal_hands_the_verdict_back_to_the_parent() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let (mut conn, sp) = seed_suspended_parent(ctx, "hand-back").await;
+    let ctx = TestDb::new().await;
+    let (mut conn, sp) = seed_suspended_parent(&ctx, "hand-back").await;
     let token = claim_and_run_child(&mut conn, &sp).await;
 
     let response = a_completion_response(r#"{"accepted": true, "critique": null}"#);
@@ -317,15 +313,12 @@ async fn test_child_terminal_hands_the_verdict_back_to_the_parent() {
         result.content()["output"],
         r#"{"accepted": true, "critique": null}"#
     );
-
-    teardown(ctx).await;
 }
 
 #[tokio::test]
 async fn test_a_stale_driver_token_rolls_the_whole_terminal_back() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let (mut conn, sp) = seed_suspended_parent(ctx, "stale-token").await;
+    let ctx = TestDb::new().await;
+    let (mut conn, sp) = seed_suspended_parent(&ctx, "stale-token").await;
     let _token = claim_and_run_child(&mut conn, &sp).await;
 
     // A reclaimed run presents a stale token: the driver-task completion
@@ -367,15 +360,12 @@ async fn test_a_stale_driver_token_rolls_the_whole_terminal_back() {
             .all(|r| r.kind() != AgentThreadRecordKind::ToolResult),
         "the rolled-back terminal left no hand-back",
     );
-
-    teardown(ctx).await;
 }
 
 #[tokio::test]
 async fn test_a_hand_back_rolls_back_when_the_parent_task_is_not_blocked() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let (mut conn, sp) = seed_suspended_parent(ctx, "not-blocked").await;
+    let ctx = TestDb::new().await;
+    let (mut conn, sp) = seed_suspended_parent(&ctx, "not-blocked").await;
     let token = claim_and_run_child(&mut conn, &sp).await;
 
     // The unmodelled pairing the hand-back guards against: a suspended
@@ -423,15 +413,12 @@ async fn test_a_hand_back_rolls_back_when_the_parent_task_is_not_blocked() {
             .all(|r| r.kind() != AgentThreadRecordKind::ToolResult),
         "the rolled-back hand-back left no tool result",
     );
-
-    teardown(ctx).await;
 }
 
 #[tokio::test]
 async fn test_child_terminal_discards_when_the_parent_is_no_longer_waiting() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let (mut conn, sp) = seed_suspended_parent(ctx, "orphan").await;
+    let ctx = TestDb::new().await;
+    let (mut conn, sp) = seed_suspended_parent(&ctx, "orphan").await;
     let token = claim_and_run_child(&mut conn, &sp).await;
 
     // The orphan window: the parent reaches a terminal (a cascade
@@ -491,8 +478,6 @@ async fn test_child_terminal_discards_when_the_parent_is_no_longer_waiting() {
             .all(|r| r.kind() != AgentThreadRecordKind::ToolResult),
         "an orphaned hand-back commits no parent record",
     );
-
-    teardown(ctx).await;
 }
 
 /// The live driver loop claims the child's `Drive` task, executes the
@@ -501,10 +486,9 @@ async fn test_child_terminal_discards_when_the_parent_is_no_longer_waiting() {
 /// claim loop running.
 #[tokio::test]
 async fn test_the_driver_loop_drives_a_child_and_hands_back() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
-    let (conn, sp) = seed_suspended_parent(ctx, "driver-loop").await;
+    let (conn, sp) = seed_suspended_parent(&ctx, "driver-loop").await;
     drop(conn);
 
     let provider = Arc::new(
@@ -556,7 +540,7 @@ async fn test_the_driver_loop_drives_a_child_and_hands_back() {
     token.cancel();
     let _ = driver.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let parent = PgAgentThreadRepository
         .find_by_id(&mut conn, sp.parent.id())
         .await
@@ -599,8 +583,6 @@ async fn test_the_driver_loop_drives_a_child_and_hands_back() {
         ),
         "the verdict schema constrains the child's structured output",
     );
-
-    teardown(ctx).await;
 }
 
 /// A child whose recorded route diverges from its stage spec (a config
@@ -609,13 +591,12 @@ async fn test_the_driver_loop_drives_a_child_and_hands_back() {
 /// error tool-result, and the gateway is never reached.
 #[tokio::test]
 async fn test_the_driver_loop_fails_a_route_diverged_child_before_the_call() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
     // The default factory's route diverges from the triage stage spec the
     // test worker resolves, standing in for a post-admission config edit.
     let (conn, sp) = seed_suspended_parent_with_child(
-        ctx,
+        &ctx,
         "route-diverged",
         tribal_test_utils::an_agent_definition()
             .pipeline_stage(tribal_domain::TaskType::Triage)
@@ -676,7 +657,7 @@ async fn test_the_driver_loop_fails_a_route_diverged_child_before_the_call() {
         "the route-diverged child never calls the model",
     );
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let child = child(&mut conn, sp.child_thread_id).await;
     assert_eq!(child.status(), AgentThreadStatus::DeadLetter);
 
@@ -698,8 +679,6 @@ async fn test_the_driver_loop_fails_a_route_diverged_child_before_the_call() {
         .expect("the divergence committed an error tool result");
     assert_eq!(result.content()["is_error"], true);
     assert_eq!(result.tool_call_id(), Some(SUBMIT_CALL_ID));
-
-    teardown(ctx).await;
 }
 
 /// A child carrying a cancellation intent (the §10.3 cascade, or an
@@ -707,10 +686,9 @@ async fn test_the_driver_loop_fails_a_route_diverged_child_before_the_call() {
 /// cancellation back through deferred death rather than spend a paid turn.
 #[tokio::test]
 async fn test_the_driver_loop_refuses_a_cancelled_child_before_the_call() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
-    let (mut conn, sp) = seed_suspended_parent(ctx, "cancelled-child").await;
+    let (mut conn, sp) = seed_suspended_parent(&ctx, "cancelled-child").await;
     PgAgentThreadRepository
         .record_cancel_intent(&mut conn, sp.child_thread_id, "operator:test")
         .await
@@ -768,7 +746,7 @@ async fn test_the_driver_loop_refuses_a_cancelled_child_before_the_call() {
         "a cancelled child never calls the model",
     );
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let child = child(&mut conn, sp.child_thread_id).await;
     assert_eq!(child.status(), AgentThreadStatus::DeadLetter);
 
@@ -790,8 +768,6 @@ async fn test_the_driver_loop_refuses_a_cancelled_child_before_the_call() {
         .find(|r| r.kind() == AgentThreadRecordKind::ToolResult)
         .expect("the cancellation committed an error tool result");
     assert_eq!(result.content()["is_error"], true);
-
-    teardown(ctx).await;
 }
 
 /// Cancelling a parent with a queued verifier child cascades the intent to
@@ -799,9 +775,8 @@ async fn test_the_driver_loop_refuses_a_cancelled_child_before_the_call() {
 /// unclaimed driver task so it never starts a paid call.
 #[tokio::test]
 async fn test_cancelling_a_parent_cascades_to_and_disposes_a_queued_child() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let (mut conn, sp) = seed_suspended_parent(ctx, "cascade-queued-child").await;
+    let ctx = TestDb::new().await;
+    let (mut conn, sp) = seed_suspended_parent(&ctx, "cascade-queued-child").await;
 
     let outcome = tribal_worker::coupling::cancel_thread(&mut conn, &sp.parent)
         .await
@@ -846,8 +821,6 @@ async fn test_cancelling_a_parent_cascades_to_and_disposes_a_queued_child() {
         AgentDriverTaskState::DeadLetter,
         "the child's unclaimed driver task is disposed with it",
     );
-
-    teardown(ctx).await;
 }
 
 /// A `DeferredTool` driver task has no producer in this release; the
@@ -855,14 +828,13 @@ async fn test_cancelling_a_parent_cascades_to_and_disposes_a_queued_child() {
 /// than leaving it unexecuted.
 #[tokio::test]
 async fn test_the_driver_loop_dead_letters_a_deferred_tool_task() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let driver_task_id = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let (principal_id, project_id, system_pv_id, user_pv_id) =
-            setup_prerequisites(ctx, "deferred-tool").await;
+            setup_prerequisites(&ctx, "deferred-tool").await;
         let (job_id, _) = seed_extraction_job(
             &mut conn,
             principal_id,
@@ -939,17 +911,14 @@ async fn test_the_driver_loop_dead_letters_a_deferred_tool_task() {
         dead_lettered.last_error().is_some(),
         "the dead-letter records why",
     );
-
-    teardown(ctx).await;
 }
 
 /// Prune refuses a terminal parent while its real `suspend_with_child`
 /// child is live.
 #[tokio::test]
 async fn test_prune_refuses_a_terminal_parent_with_a_live_real_child() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let (mut conn, sp) = seed_suspended_parent(ctx, "prune-real-pair").await;
+    let ctx = TestDb::new().await;
+    let (mut conn, sp) = seed_suspended_parent(&ctx, "prune-real-pair").await;
 
     PgAgentThreadRepository
         .complete(
@@ -976,15 +945,12 @@ async fn test_prune_refuses_a_terminal_parent_with_a_live_real_child() {
         .await
         .expect("prune");
     assert_eq!(pruned, 0, "nothing deletes while the child is live");
-
-    teardown(ctx).await;
 }
 
 #[tokio::test]
 async fn test_deferred_death_crosses_the_failure_into_the_parent() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let (mut conn, sp) = seed_suspended_parent(ctx, "deferred-death").await;
+    let ctx = TestDb::new().await;
+    let (mut conn, sp) = seed_suspended_parent(&ctx, "deferred-death").await;
     let token = claim_and_run_child(&mut conn, &sp).await;
 
     let child_thread = child(&mut conn, sp.child_thread_id).await;
@@ -1030,6 +996,4 @@ async fn test_deferred_death_crosses_the_failure_into_the_parent() {
         .expect("the death committed an error tool result");
     assert_eq!(result.content()["is_error"], true);
     assert_eq!(result.tool_call_id(), Some(SUBMIT_CALL_ID));
-
-    teardown(ctx).await;
 }

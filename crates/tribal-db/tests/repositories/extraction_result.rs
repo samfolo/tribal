@@ -5,8 +5,9 @@ use tribal_db::{
 };
 use tribal_domain::GitRemote;
 use tribal_test_utils::{
-    a_new_extraction_result, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
-    a_new_system_fingerprint, insert_prompt_version, test_context, upsert_system_fingerprint,
+    TestDb, a_new_extraction_result, a_new_job, a_new_principal, a_new_project,
+    a_new_prompt_version, a_new_system_fingerprint, insert_prompt_version,
+    upsert_system_fingerprint,
 };
 
 // ---------------------------------------------------------------------------
@@ -72,8 +73,8 @@ async fn setup_job(txn: &mut sqlx::PgConnection, suffix: &str) -> tribal_domain:
 
 #[tokio::test]
 async fn test_insert_returns_populated_result() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgExtractionResultRepository;
 
     let job_id = setup_job(&mut txn, "insert").await;
@@ -114,8 +115,8 @@ async fn test_insert_returns_populated_result() {
 
 #[tokio::test]
 async fn test_find_by_job_id_returns_result() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgExtractionResultRepository;
 
     let job_id = setup_job(&mut txn, "find").await;
@@ -152,8 +153,8 @@ async fn test_find_by_job_id_returns_result() {
 
 #[tokio::test]
 async fn test_find_by_job_id_returns_none_when_absent() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgExtractionResultRepository;
 
     let job_id = setup_job(&mut txn, "absent").await;
@@ -172,8 +173,8 @@ async fn test_find_by_job_id_returns_none_when_absent() {
 
 #[tokio::test]
 async fn test_insert_duplicate_job_id_returns_unique_violation() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgExtractionResultRepository;
 
     let job_id = setup_job(&mut txn, "dup").await;

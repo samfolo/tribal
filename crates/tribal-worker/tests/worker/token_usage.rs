@@ -11,12 +11,11 @@ use super::{
 /// IDs, and trace context.
 #[tokio::test]
 async fn test_extraction_records_token_usage() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "extraction-token-usage").await;
+        setup_prerequisites(&ctx, "extraction-token-usage").await;
 
     let candidates = vec![a_candidate().build()];
     let response_json = extraction_response_json(&candidates, &[]);
@@ -24,7 +23,7 @@ async fn test_extraction_records_token_usage() {
     // Inline job creation to set trace_context (seed_extraction_job
     // does not expose this parameter).
     let (job_id, _task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
 
         let fingerprint_hash =
             upsert_system_fingerprint(&mut conn, &a_new_system_fingerprint().build()).await;
@@ -87,7 +86,7 @@ async fn test_extraction_records_token_usage() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let records = PgTokenUsageRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -115,25 +114,22 @@ async fn test_extraction_records_token_usage() {
     assert_eq!(r.system_prompt_version_id(), Some(system_pv_id));
     assert_eq!(r.user_prompt_version_id(), Some(user_pv_id));
     assert_eq!(r.trace_id(), Some("4bf92f3577b34da6a3ce929d0e0e4736"));
-
-    teardown(ctx).await;
 }
 
 /// Runs an extraction job with the given `trace_context` and asserts that
 /// the worker completes the stage and records exactly one token usage entry.
 async fn assert_extraction_with_trace_context(trace_context: Option<String>, label: &str) {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, label).await;
+        setup_prerequisites(&ctx, label).await;
 
     let candidates = vec![a_candidate().build()];
     let response_json = extraction_response_json(&candidates, &[]);
 
     let (job_id, _task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
 
         let fingerprint_hash =
             upsert_system_fingerprint(&mut conn, &a_new_system_fingerprint().build()).await;
@@ -194,7 +190,7 @@ async fn assert_extraction_with_trace_context(trace_context: Option<String>, lab
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let records = PgTokenUsageRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -211,8 +207,6 @@ async fn assert_extraction_with_trace_context(trace_context: Option<String>, lab
         r.trace_id().is_none(),
         "{label}: trace_id should be None without an OTel layer",
     );
-
-    teardown(ctx).await;
 }
 
 /// The worker completes extraction and records token usage when
@@ -238,12 +232,11 @@ async fn test_extraction_records_token_usage_with_malformed_trace_context() {
 /// embeddings (one per unregistered tag).
 #[tokio::test]
 async fn test_triage_novel_records_token_usage() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "triage-novel-token-usage").await;
+        setup_prerequisites(&ctx, "triage-novel-token-usage").await;
 
     let candidates = vec![
         a_candidate()
@@ -253,7 +246,7 @@ async fn test_triage_novel_records_token_usage() {
     ];
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_triage_job(
             &mut conn,
             principal_id,
@@ -297,7 +290,7 @@ async fn test_triage_novel_records_token_usage() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let records = PgTokenUsageRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -362,8 +355,6 @@ async fn test_triage_novel_records_token_usage() {
         assert_eq!(emb.system_prompt_version_id(), None);
         assert_eq!(emb.user_prompt_version_id(), None);
     }
-
-    teardown(ctx).await;
 }
 
 /// Verifies that the triage duplicate path records exactly 2 token usage
@@ -371,11 +362,10 @@ async fn test_triage_novel_records_token_usage() {
 /// embeddings since duplicates skip tag resolution).
 #[tokio::test]
 async fn test_triage_duplicate_records_token_usage() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let seed_result = Seed::new()
         .define_project("proj", "git@github.com:test/triage-dup-token-usage.git")
         .define_principal("user", "user:triage-dup-token-usage")
@@ -461,7 +451,7 @@ async fn test_triage_duplicate_records_token_usage() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let records = PgTokenUsageRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -527,8 +517,6 @@ async fn test_triage_duplicate_records_token_usage() {
     let e = candidate_embeds[0];
     assert_eq!(e.system_prompt_version_id(), None);
     assert_eq!(e.user_prompt_version_id(), None);
-
-    teardown(ctx).await;
 }
 
 /// Verifies that the relation stage records a single completion token
@@ -536,12 +524,11 @@ async fn test_triage_duplicate_records_token_usage() {
 /// context on the job).
 #[tokio::test]
 async fn test_relation_records_token_usage() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "relation-token-usage").await;
+        setup_prerequisites(&ctx, "relation-token-usage").await;
 
     let candidates = vec![
         a_candidate().content("first item".to_owned()).build(),
@@ -550,7 +537,7 @@ async fn test_relation_records_token_usage() {
     let relation_hints = vec![a_relation_hint().build()];
 
     let (job_id, _task_id, ki_ids) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_relation_job(
             &mut conn,
             principal_id,
@@ -591,7 +578,7 @@ async fn test_relation_records_token_usage() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let records = PgTokenUsageRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -617,26 +604,23 @@ async fn test_relation_records_token_usage() {
     assert_eq!(r.system_prompt_version_id(), Some(system_pv_id));
     assert_eq!(r.user_prompt_version_id(), Some(user_pv_id));
     assert_eq!(r.trace_id(), None, "job has no trace context");
-
-    teardown(ctx).await;
 }
 
 /// Verifies that the token usage `attempt` field reflects the task's
 /// retry count at execution time.
 #[tokio::test]
 async fn test_token_usage_records_retry_attempt() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "retry-attempt-token-usage").await;
+        setup_prerequisites(&ctx, "retry-attempt-token-usage").await;
 
     let candidates = vec![a_candidate().build()];
     let response_json = extraction_response_json(&candidates, &[]);
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let (job_id, task_id) = seed_extraction_job(
             &mut conn,
             principal_id,
@@ -674,7 +658,7 @@ async fn test_token_usage_records_retry_attempt() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let records = PgTokenUsageRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -687,8 +671,6 @@ async fn test_token_usage_records_retry_attempt() {
         "attempt should reflect the task's retry count",
     );
     assert_eq!(records[0].task_id(), Some(task_id));
-
-    teardown(ctx).await;
 }
 
 /// Verifies that tag embedding backfill during `worker.startup()` records
@@ -696,12 +678,11 @@ async fn test_token_usage_records_retry_attempt() {
 /// `stage = Embedding`, and `purpose = Tag`.
 #[tokio::test]
 async fn test_backfill_records_token_usage() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         Seed::new()
             .define_project("proj", "git@github.com:test/backfill-token-usage.git")
             .define_principal("user", "user:backfill-token-usage")
@@ -724,7 +705,7 @@ async fn test_backfill_records_token_usage() {
 
     worker.startup().await.expect("startup");
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let records = PgTokenUsageRepository
         .find_all_for_test(&mut conn)
         .await
@@ -750,6 +731,4 @@ async fn test_backfill_records_token_usage() {
         assert_eq!(r.system_prompt_version_id(), None);
         assert_eq!(r.user_prompt_version_id(), None);
     }
-
-    teardown(ctx).await;
 }

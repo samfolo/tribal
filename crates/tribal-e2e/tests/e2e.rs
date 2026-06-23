@@ -1,8 +1,8 @@
 mod harness;
 
 // Test modules — each file exercises a different cross-cutting E2E flow.
-// All tests share a single testcontainer via `serial_lock`, ensuring
-// sequential execution within this binary.
+// Each test owns an isolated `TestDb` cloned from the shared template, so
+// tests run independently without serialisation.
 #[path = "e2e/agentic.rs"]
 mod agentic;
 #[path = "e2e/concurrent_ingests.rs"]

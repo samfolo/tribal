@@ -5,12 +5,11 @@ use super::{common::*, fixtures::extraction_response_json};
 /// transitions the job to Triaging.
 #[tokio::test]
 async fn test_extraction_happy_path() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "extraction-happy").await;
+        setup_prerequisites(&ctx, "extraction-happy").await;
 
     let candidates = vec![
         a_candidate().content("first".to_owned()).build(),
@@ -20,7 +19,7 @@ async fn test_extraction_happy_path() {
     let response_json = extraction_response_json(&candidates, &hints);
 
     let (job_id, _task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -64,7 +63,7 @@ async fn test_extraction_happy_path() {
     );
 
     // Extraction result should be persisted.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let extraction = PgExtractionResultRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -88,25 +87,22 @@ async fn test_extraction_happy_path() {
         .filter(|t| t.task_type() == TaskType::Triage)
         .collect();
     assert_eq!(triage_tasks.len(), 2, "should create 2 triage tasks");
-
-    teardown(ctx).await;
 }
 
 /// Verifies that zero candidates causes the job to complete immediately
 /// with an Empty outcome, and no triage tasks are created.
 #[tokio::test]
 async fn test_extraction_zero_candidates() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "extraction-zero-candidates").await;
+        setup_prerequisites(&ctx, "extraction-zero-candidates").await;
 
     let response_json = extraction_response_json(&[], &[]);
 
     let (job_id, _task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -151,7 +147,7 @@ async fn test_extraction_zero_candidates() {
     assert_eq!(job.batch_size(), Some(0), "batch_size should be 0");
 
     // No triage tasks should have been created.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let tasks = PgTaskRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -161,8 +157,6 @@ async fn test_extraction_zero_candidates() {
         .filter(|t| t.task_type() == TaskType::Triage)
         .collect();
     assert!(triage_tasks.is_empty(), "should create no triage tasks");
-
-    teardown(ctx).await;
 }
 
 /// Verifies that candidates exceeding `max_candidates_per_job` are
@@ -170,12 +164,11 @@ async fn test_extraction_zero_candidates() {
 /// filtered, and the original count reflects the pre-cap total.
 #[tokio::test]
 async fn test_extraction_capping() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "extraction-capping").await;
+        setup_prerequisites(&ctx, "extraction-capping").await;
 
     // Build 5 candidates and hints that span all 5 indices.
     let candidates: Vec<_> = (0..5)
@@ -188,7 +181,7 @@ async fn test_extraction_capping() {
     let response_json = extraction_response_json(&candidates, &hints);
 
     let (job_id, _task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -236,7 +229,7 @@ async fn test_extraction_capping() {
     );
 
     // Only 2 triage tasks.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let tasks = PgTaskRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -261,23 +254,20 @@ async fn test_extraction_capping() {
         1,
         "only hint within capped range should be persisted",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that an unparseable LLM response causes the extraction
 /// task to be requeued with a ParseError error kind.
 #[tokio::test]
 async fn test_extraction_parse_failure() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "extraction-parse-failure").await;
+        setup_prerequisites(&ctx, "extraction-parse-failure").await;
 
     let (_job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -347,6 +337,4 @@ async fn test_extraction_parse_failure() {
         task.error_message().is_some(),
         "error message should be set",
     );
-
-    teardown(ctx).await;
 }

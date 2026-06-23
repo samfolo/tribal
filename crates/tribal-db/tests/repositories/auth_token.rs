@@ -3,7 +3,7 @@ use tribal_db::{
     AuthTokenRepository, DbError, PgAuthTokenRepository, PgPrincipalRepository, PrincipalRepository,
 };
 use tribal_domain::{AuthTokenId, PrincipalId, Scope, full_access_scopes};
-use tribal_test_utils::{a_new_auth_token, a_new_principal, shift_timestamp_by_id, test_context};
+use tribal_test_utils::{TestDb, a_new_auth_token, a_new_principal, shift_timestamp_by_id};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,8 +34,8 @@ fn make_token_hash() -> String {
 
 #[tokio::test]
 async fn test_insert_returns_populated_auth_token() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "insert").await;
@@ -60,8 +60,8 @@ async fn test_insert_returns_populated_auth_token() {
 
 #[tokio::test]
 async fn test_insert_roundtrips_narrowed_scopes() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "narrowed-scopes").await;
@@ -86,8 +86,8 @@ async fn test_insert_roundtrips_narrowed_scopes() {
 
 #[tokio::test]
 async fn test_insert_duplicate_hash_returns_unique_violation() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "dup-hash").await;
@@ -113,8 +113,8 @@ async fn test_insert_duplicate_hash_returns_unique_violation() {
 
 #[tokio::test]
 async fn test_find_by_hash_returns_auth_token() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "find-hash").await;
@@ -138,8 +138,8 @@ async fn test_find_by_hash_returns_auth_token() {
 
 #[tokio::test]
 async fn test_find_by_hash_returns_none_for_unknown() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let found = repo
@@ -156,8 +156,8 @@ async fn test_find_by_hash_returns_none_for_unknown() {
 
 #[tokio::test]
 async fn test_find_by_principal_id_returns_tokens_ordered() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "find-principal").await;
@@ -206,8 +206,8 @@ async fn test_find_by_principal_id_returns_tokens_ordered() {
 
 #[tokio::test]
 async fn test_find_by_principal_id_returns_empty_for_unknown() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let results = repo
@@ -224,8 +224,8 @@ async fn test_find_by_principal_id_returns_empty_for_unknown() {
 
 #[tokio::test]
 async fn test_revoke_sets_revoked_at() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "revoke").await;
@@ -254,8 +254,8 @@ async fn test_revoke_sets_revoked_at() {
 
 #[tokio::test]
 async fn test_revoke_is_idempotent() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "idempotent").await;
@@ -292,8 +292,8 @@ async fn test_revoke_is_idempotent() {
 
 #[tokio::test]
 async fn test_revoke_not_found() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let result = repo.revoke(&mut txn, AuthTokenId::new(), Utc::now()).await;
@@ -310,8 +310,8 @@ async fn test_revoke_not_found() {
 
 #[tokio::test]
 async fn test_find_all_returns_tokens_ordered() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "find-all").await;
@@ -357,8 +357,8 @@ async fn test_find_all_returns_tokens_ordered() {
 
 #[tokio::test]
 async fn test_find_all_returns_empty_when_no_tokens() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let results = repo.find_all(&mut txn).await.expect("find_all");
@@ -372,8 +372,8 @@ async fn test_find_all_returns_empty_when_no_tokens() {
 
 #[tokio::test]
 async fn test_find_by_hash_prefix_returns_matching_token() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "prefix-match").await;
@@ -402,8 +402,8 @@ async fn test_find_by_hash_prefix_returns_matching_token() {
 
 #[tokio::test]
 async fn test_find_by_hash_prefix_returns_empty_for_unknown() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let results = repo
@@ -416,8 +416,8 @@ async fn test_find_by_hash_prefix_returns_empty_for_unknown() {
 
 #[tokio::test]
 async fn test_find_by_hash_prefix_returns_multiple_on_shared_prefix() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "prefix-multi").await;
@@ -478,8 +478,8 @@ async fn test_find_by_hash_prefix_returns_multiple_on_shared_prefix() {
 
 #[tokio::test]
 async fn test_revoke_all_revokes_active_tokens() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "revoke-all").await;
@@ -514,8 +514,8 @@ async fn test_revoke_all_revokes_active_tokens() {
 
 #[tokio::test]
 async fn test_revoke_all_with_principal_filter() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_a = setup_principal(&mut txn, "revoke-all-a").await;
@@ -561,8 +561,8 @@ async fn test_revoke_all_with_principal_filter() {
 
 #[tokio::test]
 async fn test_revoke_all_skips_already_revoked() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "revoke-all-skip").await;
@@ -593,8 +593,8 @@ async fn test_revoke_all_skips_already_revoked() {
 
 #[tokio::test]
 async fn test_revoke_all_returns_zero_when_no_active_tokens() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let count = repo
@@ -607,8 +607,8 @@ async fn test_revoke_all_returns_zero_when_no_active_tokens() {
 
 #[tokio::test]
 async fn test_revoke_all_skips_expired_tokens() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "revoke-all-expired").await;
@@ -635,8 +635,8 @@ async fn test_revoke_all_skips_expired_tokens() {
 
 #[tokio::test]
 async fn test_revoke_all_includes_token_expiring_at_revocation_time() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
     let principal_id = setup_principal(&mut txn, "revoke-all-boundary").await;

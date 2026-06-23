@@ -244,5 +244,4 @@ async fn test_explore_graph_traversal() {
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

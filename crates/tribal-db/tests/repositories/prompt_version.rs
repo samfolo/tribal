@@ -1,6 +1,6 @@
 use tribal_db::{DbError, PgPromptVersionRepository, PromptVersionRepository};
 use tribal_domain::{PromptClass, PromptRole, PromptStage, PromptVersionId};
-use tribal_test_utils::{a_new_prompt_version, test_context};
+use tribal_test_utils::{TestDb, a_new_prompt_version};
 
 // ---------------------------------------------------------------------------
 // upsert
@@ -8,8 +8,8 @@ use tribal_test_utils::{a_new_prompt_version, test_context};
 
 #[tokio::test]
 async fn test_upsert_returns_new_prompt_version() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
 
     let new = a_new_prompt_version()
@@ -29,8 +29,8 @@ async fn test_upsert_returns_new_prompt_version() {
 
 #[tokio::test]
 async fn test_upsert_returns_existing_on_duplicate_stage_and_hash() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
 
     let new = a_new_prompt_version().build();
@@ -44,8 +44,8 @@ async fn test_upsert_returns_existing_on_duplicate_stage_and_hash() {
 
 #[tokio::test]
 async fn test_upsert_different_hash_creates_new_version() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
 
     let first = repo
@@ -80,8 +80,8 @@ async fn test_upsert_different_hash_creates_new_version() {
 
 #[tokio::test]
 async fn test_find_by_id_returns_prompt_version() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
 
     let pv = repo
@@ -96,8 +96,8 @@ async fn test_find_by_id_returns_prompt_version() {
 
 #[tokio::test]
 async fn test_find_by_id_not_found() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
 
     let result = repo.find_by_id(&mut txn, PromptVersionId::new()).await;
@@ -113,8 +113,8 @@ async fn test_find_by_id_not_found() {
 
 #[tokio::test]
 async fn test_find_by_slot_and_hash_returns_prompt_version() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
 
     let new = a_new_prompt_version()
@@ -140,8 +140,8 @@ async fn test_find_by_slot_and_hash_returns_prompt_version() {
 
 #[tokio::test]
 async fn test_find_by_slot_and_hash_returns_none() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
 
     let found = repo
@@ -160,8 +160,8 @@ async fn test_find_by_slot_and_hash_returns_none() {
 
 #[tokio::test]
 async fn test_upsert_same_stage_hash_different_role_creates_separate_record() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
 
     let hash = "a".repeat(64);
@@ -198,8 +198,8 @@ async fn test_upsert_same_stage_hash_different_role_creates_separate_record() {
 
 #[tokio::test]
 async fn test_find_by_slot_and_hash_distinguishes_roles() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
 
     let hash = "e".repeat(64);

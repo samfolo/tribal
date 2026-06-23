@@ -32,7 +32,7 @@ mod tests {
     use tribal_db::AuthTokenRepository;
 
     use super::*;
-    use crate::{an_auth_token, test_context};
+    use crate::{TestDb, an_auth_token};
 
     #[tokio::test]
     async fn test_find_by_hash_returns_canned_token() {
@@ -41,8 +41,8 @@ mod tests {
             .on_find_by_hash(Some(token.clone()), None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let result = mock
             .find_by_hash(&mut tx, token.token_hash())
@@ -59,8 +59,8 @@ mod tests {
             .on_find_by_hash(Some(token.clone()), None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let _ = mock.find_by_hash(&mut tx, "abc123").await;
 

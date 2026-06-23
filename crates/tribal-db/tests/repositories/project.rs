@@ -1,11 +1,11 @@
 use tribal_db::{DbError, PgProjectRepository, ProjectRepository};
 use tribal_domain::{GitRemote, ProjectId};
-use tribal_test_utils::{a_new_project, set_timestamp, test_context};
+use tribal_test_utils::{TestDb, a_new_project, set_timestamp};
 
 #[tokio::test]
 async fn test_insert_with_none_optional_fields_returns_none() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgProjectRepository;
 
     let new = a_new_project()
@@ -22,8 +22,8 @@ async fn test_insert_with_none_optional_fields_returns_none() {
 
 #[tokio::test]
 async fn test_insert_returns_populated_project() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgProjectRepository;
 
     let new = a_new_project()
@@ -50,8 +50,8 @@ async fn test_insert_returns_populated_project() {
 
 #[tokio::test]
 async fn test_insert_duplicate_git_remote_returns_unique_violation() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgProjectRepository;
 
     let new = a_new_project()
@@ -68,8 +68,8 @@ async fn test_insert_duplicate_git_remote_returns_unique_violation() {
 
 #[tokio::test]
 async fn test_find_by_id_returns_project() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgProjectRepository;
 
     let new = a_new_project()
@@ -88,8 +88,8 @@ async fn test_find_by_id_returns_project() {
 
 #[tokio::test]
 async fn test_find_by_id_not_found_returns_error() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgProjectRepository;
 
     let result = repo.find_by_id(&mut txn, ProjectId::new()).await;
@@ -101,8 +101,8 @@ async fn test_find_by_id_not_found_returns_error() {
 
 #[tokio::test]
 async fn test_find_by_git_remote_returns_project() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgProjectRepository;
 
     let remote = GitRemote::from_parts("github.com", "test/find-remote", None);
@@ -120,8 +120,8 @@ async fn test_find_by_git_remote_returns_project() {
 
 #[tokio::test]
 async fn test_find_by_git_remote_not_found_returns_none() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgProjectRepository;
 
     let result = repo
@@ -137,8 +137,8 @@ async fn test_find_by_git_remote_not_found_returns_none() {
 
 #[tokio::test]
 async fn test_list_returns_all_projects_ordered_by_created_at() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgProjectRepository;
 
     let first = repo
@@ -191,8 +191,8 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
 
 #[tokio::test]
 async fn test_list_returns_empty_vec_when_no_projects() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgProjectRepository;
 
     let projects = repo.list(&mut txn).await.expect("list");

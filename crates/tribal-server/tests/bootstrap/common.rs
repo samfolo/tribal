@@ -15,7 +15,7 @@ use tribal::{
 };
 use tribal_config::{CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config};
 use tribal_domain::{BearerToken, GitRemote, LOCAL_PRINCIPAL_KEY, full_access_scopes};
-use tribal_test_utils::{TestContext, truncate_all_tables};
+use tribal_test_utils::TestDb;
 use tribal_ui::Theme;
 
 // ---------------------------------------------------------------------------
@@ -34,11 +34,8 @@ pub(crate) const TEST_TTL_HOURS: i64 = 24;
 
 /// Restores a process-global env var on drop.
 ///
-/// Callers must hold [`tribal_test_utils::serial_lock`] for the lifetime
-/// of the guard so concurrent tests do not observe the mutation. The
-/// `set_var` / `remove_var` calls are wrapped in `unsafe` since Rust
-/// 1.81 because the POSIX `setenv`/`getenv` pair is not thread-safe;
-/// the serial lock is what makes the call sound here.
+/// The `set_var` / `remove_var` calls are wrapped in `unsafe` since Rust
+/// 1.81 because the POSIX `setenv`/`getenv` pair is not thread-safe.
 ///
 /// `#[must_use]` guards against the common mistake of constructing
 /// the guard without binding — that would mutate the env then drop
@@ -54,9 +51,8 @@ impl EnvGuard {
     /// Sets `key=value` for the lifetime of the guard.
     pub(crate) fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
         let previous = std::env::var_os(key);
-        // SAFETY: callers hold `serial_lock`; the test binary serialises
-        // mutations and no foreign thread is reading these vars during
-        // the guarded scope.
+        // SAFETY: no foreign thread is reading these process-global env
+        // vars during the guarded scope.
         unsafe {
             std::env::set_var(key, value);
         }
@@ -87,9 +83,7 @@ impl Drop for EnvGuard {
 /// Restores the process current directory on drop.
 ///
 /// Used to force `detect_git_remote_from(".")` into the failure path
-/// (tests can point cwd at a tempdir that has no `.git`). Callers
-/// must hold [`tribal_test_utils::serial_lock`] since cwd is
-/// process-global.
+/// (tests can point cwd at a tempdir that has no `.git`).
 #[must_use = "binding the guard is what scopes the cwd mutation"]
 pub(crate) struct CwdGuard {
     previous: PathBuf,
@@ -134,8 +128,7 @@ pub(crate) struct TestEnv {
 }
 
 impl TestEnv {
-    /// Constructs a fresh isolated environment. Caller must hold
-    /// [`tribal_test_utils::serial_lock`].
+    /// Constructs a fresh isolated environment scoped to a single test.
     pub(crate) fn new() -> Self {
         let xdg_dir = tempfile::tempdir().expect("xdg tempdir");
         let config_dir = tempfile::tempdir().expect("config tempdir");
@@ -167,15 +160,10 @@ impl TestEnv {
 // Database
 // ---------------------------------------------------------------------------
 
-/// Drains all rows from the testcontainer DB so the test starts from
-/// a known-empty state. Runs through a pool acquired from the shared
-/// context.
-pub(crate) async fn fresh_db(ctx: &TestContext) -> PgPool {
-    let pool = ctx.create_pool().await.expect("create pool");
-    let mut conn = pool.acquire().await.expect("acquire");
-    truncate_all_tables(&mut conn).await;
-    drop(conn);
-    pool
+/// Builds a connection pool against this test's isolated database, which
+/// starts empty.
+pub(crate) async fn fresh_db(ctx: &TestDb) -> PgPool {
+    ctx.create_pool().await.expect("create pool")
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +180,7 @@ pub(crate) async fn fresh_db(ctx: &TestContext) -> PgPool {
 /// layer so `cli_overrides.database` stays untouched and tests can
 /// model `--database-url` independently.
 pub(crate) async fn run_bootstrap(
-    ctx: &TestContext,
+    ctx: &TestDb,
     config_path: &Path,
     overrides: CliOverrides,
     principal_key: Option<&str>,
@@ -230,7 +218,7 @@ pub(crate) async fn run_bootstrap(
 /// [`run_bootstrap`]. mcp-config is a pure renderer and does not call
 /// `validate`, so the helper skips that step too.
 pub(crate) async fn run_mcp_config(
-    ctx: &TestContext,
+    ctx: &TestDb,
     config_path: &Path,
     overrides: CliOverrides,
     project_override: Option<String>,
@@ -261,7 +249,7 @@ pub(crate) async fn run_mcp_config(
 /// (currently only mcp-config); validating callers go through
 /// [`prepare_test_config`].
 fn load_test_config(
-    ctx: &TestContext,
+    ctx: &TestDb,
     config_path: &Path,
     overrides: CliOverrides,
 ) -> Result<TribalConfig, AppError> {
@@ -275,7 +263,7 @@ fn load_test_config(
 /// defaults.  Centralising it means a future addition to the prep phase
 /// lands for production and tests at once.
 fn prepare_test_config(
-    ctx: &TestContext,
+    ctx: &TestDb,
     config_path: &Path,
     overrides: CliOverrides,
 ) -> Result<TribalConfig, AppError> {
@@ -288,7 +276,7 @@ fn prepare_test_config(
 /// — mirroring the synchronous CLI wrapper. `setup_async` emits the
 /// warn-and-success literal internally on its provided stderr.
 pub(crate) async fn run_setup(
-    ctx: &TestContext,
+    ctx: &TestDb,
     config_path: &Path,
     overrides: CliOverrides,
     principal_key: Option<&str>,
@@ -313,7 +301,7 @@ pub(crate) async fn run_setup(
 /// `token_create_async` emits the warn-and-success literal internally
 /// on its provided stderr.
 pub(crate) async fn run_token_create(
-    ctx: &TestContext,
+    ctx: &TestDb,
     config_path: &Path,
     principal_key: Option<&str>,
 ) -> Result<(BearerToken, Vec<u8>), AppError> {

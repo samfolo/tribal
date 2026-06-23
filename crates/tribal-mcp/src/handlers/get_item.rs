@@ -348,8 +348,7 @@ mod tests {
     use tribal_domain::ProjectId;
     use tribal_test_utils::{
         MockKnowledgeItemRepository, MockPrincipalRepository, MockReferenceRepository,
-        MockStandingRepository, a_knowledge_item, a_principal, a_reference, a_standing,
-        test_context,
+        MockStandingRepository, TestDb, a_knowledge_item, a_principal, a_reference, a_standing,
     };
 
     use super::*;
@@ -402,8 +401,8 @@ mod tests {
         repos: &ConnectionRepositories,
         params: GetItemParams,
     ) -> Result<GetItemResult, GetItemError> {
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
         execute_get_item(&mut tx, repos, params).await
     }
 
@@ -671,7 +670,7 @@ mod tests {
         let principal = test_principal(prin_id, "user:ada");
 
         let repos = repos_for_get_item(vec![item], vec![principal]);
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("pool");
 
         let found_str = ki_id_found.to_string();

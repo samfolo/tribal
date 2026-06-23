@@ -1,5 +1,5 @@
 use tribal_db::{AdvisoryLockRepository, PgAdvisoryLockRepository};
-use tribal_test_utils::test_context;
+use tribal_test_utils::TestDb;
 
 // Each test uses a distinct, test-scoped lock id (the `test` ASCII prefix plus
 // a per-test suffix) so concurrently-running tests never contend on the same
@@ -13,8 +13,8 @@ const LOCK_REENTRANT: i64 = 0x7465_7374_0000_0004;
 
 #[tokio::test]
 async fn test_acquire_shared_xact_succeeds_in_transaction() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
 
     PgAdvisoryLockRepository
         .acquire_shared_xact(&mut txn, LOCK_SHARED)
@@ -24,8 +24,8 @@ async fn test_acquire_shared_xact_succeeds_in_transaction() {
 
 #[tokio::test]
 async fn test_acquire_exclusive_xact_succeeds_in_transaction() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
 
     PgAdvisoryLockRepository
         .acquire_exclusive_xact(&mut txn, LOCK_EXCLUSIVE)
@@ -35,8 +35,8 @@ async fn test_acquire_exclusive_xact_succeeds_in_transaction() {
 
 #[tokio::test]
 async fn test_try_acquire_exclusive_xact_granted_when_uncontended() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
 
     let granted = PgAdvisoryLockRepository
         .try_acquire_exclusive_xact(&mut txn, LOCK_TRY)
@@ -49,8 +49,8 @@ async fn test_try_acquire_exclusive_xact_granted_when_uncontended() {
 async fn test_same_session_does_not_self_conflict() {
     // A session that already holds the shared lock can still take the exclusive
     // lock on the same id: advisory locks conflict only between sessions.
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
 
     PgAdvisoryLockRepository
         .acquire_shared_xact(&mut txn, LOCK_REENTRANT)
