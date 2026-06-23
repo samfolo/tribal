@@ -48,6 +48,17 @@ pub enum TestDbError {
         source: sqlx::migrate::MigrateError,
     },
 
+    /// Failed to provision a database: a `CREATE`, `DROP`, or `ALTER DATABASE`
+    /// statement (template build or per-test clone) failed.
+    #[error("database provisioning failed: {context}")]
+    Provision {
+        /// Human-readable description of the failing operation.
+        context: String,
+        /// The underlying sqlx error.
+        #[source]
+        source: sqlx::Error,
+    },
+
     /// Failed to create a connection pool to the test database.
     #[error("failed to create test connection pool: {context}")]
     PoolCreation {
