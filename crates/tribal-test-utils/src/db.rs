@@ -10,19 +10,14 @@
 //! - **External** — `DATABASE_URL` is set (the `just test` wrapper, which runs
 //!   the suite under `cargo nextest`). It points at a running server whose
 //!   template was built once up front; each [`TestDb`] clones a fresh database
-//!   from it. Under nextest (process-per-test) every test gets its own database.
+//!   from it.
 //! - **Embedded** — `DATABASE_URL` is unset (plain `cargo test`). A pgvector
-//!   container is started once per process via testcontainers, the template is
-//!   built in-process, and databases are cloned from it. Under `cargo test`
-//!   (process-per-binary) one clone is shared per binary and [`serial_lock`]
-//!   serialises tests that commit data.
+//!   container is started once per process via testcontainers and the template
+//!   is built in-process; each [`TestDb`] clones a fresh database from it.
 //!
-//! # Per-process context
-//!
-//! [`TestContext`]/[`test_context`] expose a per-process [`TestDb`]: the
-//! `OnceCell` backing [`test_context`] initialises once per process, so under
-//! nextest each test process gets its own database and [`serial_lock`] is
-//! uncontended.
+//! Either way every test owns its database. Tests that mutate process-global
+//! state — environment variables or the working directory — serialise on
+//! [`env_lock`], since that state is shared across all threads in a process.
 //!
 //! [`TestTransaction`] uses a raw [`PgConnection`] rather than a pooled one:
 //! pooled- and transaction-connection drops in sqlx spawn async cleanup, which
@@ -162,8 +157,7 @@ async fn start_embedded_server() -> Result<EmbeddedServer, TestDbError> {
                 source,
             })?;
 
-    let base_url =
-        format!("postgres://tribal:tribal@{host}:{host_port}/{MAINTENANCE_DB_NAME}");
+    let base_url = format!("postgres://tribal:tribal@{host}:{host_port}/{MAINTENANCE_DB_NAME}");
 
     tracing::info!(%host, host_port, "embedded test server ready");
 
@@ -202,10 +196,7 @@ async fn base_url() -> Result<String, TestDbError> {
 ///
 /// Returns [`TestDbError`] if the maintenance connection fails, the advisory
 /// lock or any DDL statement fails, or migrations fail.
-pub async fn build_test_template(
-    base_url: &str,
-    migrator: &Migrator,
-) -> Result<(), TestDbError> {
+pub async fn build_test_template(base_url: &str, migrator: &Migrator) -> Result<(), TestDbError> {
     let admin_url = replace_database(base_url, MAINTENANCE_DB_NAME);
     let mut admin = PgConnection::connect(&admin_url)
         .await
@@ -502,8 +493,8 @@ impl Drop for TestDb {
 /// # Usage
 ///
 /// ```rust,no_run
-/// # async fn example(ctx: &tribal_test_utils::TestContext) {
-/// let mut txn = ctx.begin_test().await.expect("should begin transaction");
+/// # async fn example(db: &tribal_test_utils::TestDb) {
+/// let mut txn = db.begin().await.expect("should begin transaction");
 ///
 /// // Use &mut *txn as an executor for sqlx queries:
 /// sqlx::query("INSERT INTO principals (principal_key) VALUES ($1)")
@@ -534,109 +525,6 @@ impl DerefMut for TestTransaction {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Per-process context: TestContext / test_context / serial_lock
-// ---------------------------------------------------------------------------
-
-/// Shared per-process test context.
-///
-/// Wraps a single [`TestDb`] cloned once per process. Under `cargo nextest`
-/// (process-per-test) this yields one isolated database per test; under
-/// `cargo test` (process-per-binary) it is shared across the binary's tests,
-/// where [`serial_lock`] serialises those that commit data.
-pub struct TestContext {
-    /// The per-process cloned database this context delegates to.
-    db: TestDb,
-}
-
-impl TestContext {
-    /// Creates a new context backed by a freshly cloned database.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TestDbError`] if the database cannot be provisioned.
-    pub async fn new() -> Result<Self, TestDbError> {
-        Ok(Self {
-            db: TestDb::try_new().await?,
-        })
-    }
-
-    /// Returns the database connection URL.
-    pub fn database_url(&self) -> &str {
-        self.db.database_url()
-    }
-
-    /// Returns a reference to the connection pool.
-    pub fn pool(&self) -> &PgPool {
-        self.db.pool()
-    }
-
-    /// Opens a raw (non-pooled) connection to the test database.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TestDbError::ConnectionFailed`] if the connection cannot be
-    /// established.
-    pub async fn raw_connection(&self) -> Result<PgConnection, TestDbError> {
-        self.db.raw_connection().await
-    }
-
-    /// Creates an independent connection pool to the test database.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TestDbError::PoolCreation`] if the pool cannot connect.
-    pub async fn create_pool(&self) -> Result<PgPool, TestDbError> {
-        self.db.create_pool().await
-    }
-
-    /// Begins a new test transaction, rolled back on drop.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TestDbError::TransactionBegin`] if the connection or `BEGIN`
-    /// fails.
-    pub async fn begin_test(&self) -> Result<TestTransaction, TestDbError> {
-        self.db.begin().await
-    }
-}
-
-/// Serialises tests that commit data to a *shared* database.
-///
-/// Under `cargo test` (one shared database per binary) the guard orders
-/// committed-data tests against one another. Under `cargo nextest`, where each
-/// test has its own database, the lock is uncontended.
-///
-/// Hold the returned guard for the entire test. Uses [`tokio::sync::Mutex`] so
-/// the guard is `Send` and can be held across `.await` points.
-pub async fn serial_lock() -> tokio::sync::MutexGuard<'static, ()> {
-    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    LOCK.lock().await
-}
-
-/// Per-process test context, initialised once per process.
-static CONTEXT: tokio::sync::OnceCell<TestContext> = tokio::sync::OnceCell::const_new();
-
-/// Returns the shared per-process test context, initialising it on first call.
-///
-/// Under nextest (process-per-test) this provisions one isolated database per
-/// test. Subsequent calls in the same process return the same context.
-///
-/// # Panics
-///
-/// Panics if the context cannot be created. A test-infrastructure failure
-/// should abort the binary with a clear diagnostic rather than propagating a
-/// `Result` through every test.
-pub async fn test_context() -> &'static TestContext {
-    CONTEXT
-        .get_or_init(|| async {
-            TestContext::new()
-                .await
-                .expect("failed to initialise test context")
-        })
-        .await
-}
-
 /// Returns a lazy `PgPool` that never connects to a real database.
 ///
 /// Suitable for tests that construct a type requiring a `PgPool` but never
@@ -647,6 +535,23 @@ pub async fn test_context() -> &'static TestContext {
 /// Panics if the dummy connection string cannot be parsed.
 pub fn lazy_pool() -> PgPool {
     PgPool::connect_lazy("postgres://localhost/dummy").expect("lazy pool URL must parse")
+}
+
+/// Serialises tests that mutate process-global state — environment variables
+/// or the current working directory.
+///
+/// Database state is isolated per test by [`TestDb`], but environment variables
+/// and the process working directory are shared by every thread in a process.
+/// Tests that mutate them (via env/cwd guards) acquire this lock so they do not
+/// observe one another's mutations. Under `cargo nextest` (process-per-test)
+/// the lock is uncontended; under `cargo test` (threads in one process) it
+/// serialises those tests.
+///
+/// Acquire it as the first line of the test and hold the guard for the whole
+/// test. Uses [`tokio::sync::Mutex`] so the guard is `Send` across `.await`.
+pub async fn env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
 }
 
 #[cfg(test)]

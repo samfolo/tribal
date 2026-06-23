@@ -20,7 +20,6 @@ use tribal_auth::oauth::OAuthRuntimeConfig;
 use tribal_config::{OAuthConfig, ServerConfig, SseConfig};
 use tribal_domain::Scope;
 use tribal_mcp::{AppState, HandlerConfig};
-use tribal_test_utils::serial_lock;
 use url::Url;
 
 fn test_oauth_runtime() -> Arc<OAuthRuntimeConfig> {
@@ -111,8 +110,8 @@ fn lifecycle_config(sse: SseConfig) -> ServerConfig {
 
 #[tokio::test]
 async fn test_missing_bearer_token_returns_401() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool, ct.clone());
     let transport = spawn_sse(&state, ct, ServerConfig::default()).await;
@@ -136,8 +135,8 @@ async fn test_missing_bearer_token_returns_401() {
 
 #[tokio::test]
 async fn test_valid_bearer_token_passes_auth() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
@@ -172,8 +171,8 @@ async fn test_valid_bearer_token_passes_auth() {
 
 #[tokio::test]
 async fn test_expired_token_returns_401() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
@@ -211,8 +210,8 @@ async fn test_expired_token_returns_401() {
 
 #[tokio::test]
 async fn test_max_connection_age_closes_stream() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
@@ -262,8 +261,8 @@ async fn test_max_connection_age_closes_stream() {
 
 #[tokio::test]
 async fn test_idle_timeout_closes_stream() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
@@ -320,8 +319,8 @@ async fn test_idle_timeout_closes_stream() {
 /// through the SSE transport to `tools/list` filtering.
 #[tokio::test]
 async fn test_underprovisioned_principal_sees_minimal_tools() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
@@ -354,8 +353,8 @@ async fn test_underprovisioned_principal_sees_minimal_tools() {
 /// standalone event stream for an already-initialised session.
 #[tokio::test]
 async fn test_get_to_existing_session_returns_sse_stream() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
@@ -393,8 +392,8 @@ async fn test_get_to_existing_session_returns_sse_stream() {
 /// GET without a session ID is rejected with 400.
 #[tokio::test]
 async fn test_get_without_session_id_returns_400() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
@@ -424,8 +423,8 @@ async fn test_get_without_session_id_returns_400() {
 /// GET with a session ID that does not exist returns 404.
 #[tokio::test]
 async fn test_get_with_unknown_session_id_returns_404() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
@@ -468,8 +467,8 @@ async fn test_get_with_unknown_session_id_returns_404() {
 /// and responds with a valid SSE stream rather than an error.
 #[tokio::test]
 async fn test_get_with_last_event_id_returns_sse_stream() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 

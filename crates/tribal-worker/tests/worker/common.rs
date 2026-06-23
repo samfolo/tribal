@@ -30,11 +30,10 @@ pub(super) use tribal_inference::{
 pub(super) use tribal_telemetry::noop_recorder;
 pub(super) use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, Seed,
-    TestContext, a_candidate, a_completion_response, a_new_embedding_profile,
-    a_new_extraction_result, a_new_job, a_new_knowledge_item, a_new_prompt_version,
-    a_new_system_fingerprint, a_new_task, a_new_triage_result_created,
-    a_new_triage_result_duplicate, a_relation_hint, active_embedding_profile,
-    an_embedding_response, backdate_task_heartbeat, candidates_json,
+    TestDb, a_candidate, a_completion_response, a_new_embedding_profile, a_new_extraction_result,
+    a_new_job, a_new_knowledge_item, a_new_prompt_version, a_new_system_fingerprint, a_new_task,
+    a_new_triage_result_created, a_new_triage_result_duplicate, a_relation_hint,
+    active_embedding_profile, an_embedding_response, backdate_task_heartbeat, candidates_json,
     duration::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
         POLL_INTERVAL, POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,
@@ -42,8 +41,7 @@ pub(super) use tribal_test_utils::{
     find_active_embedding, item,
     polling::{poll_job_status, poll_task_status, poll_until},
     seed_extraction_job, seed_multiple_triage_tasks, seed_relation_job, seed_triage_job,
-    serial_lock, set_retry_count, set_task_status_by_job, test_context, truncate_all_tables,
-    upsert_system_fingerprint,
+    set_retry_count, set_task_status_by_job, upsert_system_fingerprint,
 };
 use tribal_worker::Worker;
 
@@ -65,21 +63,14 @@ pub(super) const SEED_TRIAGE_BATCH_INDEX: u32 = 0;
 /// # Panics
 ///
 /// Panics if the connection cannot be established.
-pub(super) async fn raw_conn(ctx: &TestContext) -> sqlx::PgConnection {
+pub(super) async fn raw_conn(ctx: &TestDb) -> sqlx::PgConnection {
     ctx.raw_connection().await.expect("raw connection")
-}
-
-/// Removes committed work data so the next serialised test starts
-/// with a clean claim surface.  Called at the end of each test.
-pub(super) async fn teardown(ctx: &TestContext) {
-    let mut conn = raw_conn(ctx).await;
-    truncate_all_tables(&mut conn).await;
 }
 
 /// Seeds a principal, project, and prompt versions (system + user)
 /// via the [`Seed`] builder, returning the IDs needed to create a job.
 pub(super) async fn setup_prerequisites(
-    ctx: &TestContext,
+    ctx: &TestDb,
     suffix: &str,
 ) -> (PrincipalId, ProjectId, PromptVersionId, PromptVersionId) {
     let mut conn = raw_conn(ctx).await;

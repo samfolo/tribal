@@ -467,8 +467,8 @@ mod tests {
     use tribal_domain::{ProjectId, ReferenceKind};
     use tribal_test_utils::{
         MockKnowledgeItemRepository, MockPrincipalRepository, MockReferenceRepository,
-        MockRelationRepository, MockStandingRepository, a_knowledge_item, a_principal, a_reference,
-        a_standing, test_context,
+        MockRelationRepository, MockStandingRepository, TestDb, a_knowledge_item, a_principal,
+        a_reference, a_standing,
     };
 
     use super::*;
@@ -559,8 +559,8 @@ mod tests {
         repos: &ConnectionRepositories,
         params: ExploreParams,
     ) -> Result<ExploreResult, ExploreError> {
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
         execute_explore(&mut tx, repos, params).await
     }
 
@@ -1383,7 +1383,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_defaults_for_direction_depth_limit() {
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("pool");
         let anchor_id = KnowledgeItemId::new();
         let prin_id = PrincipalId::new();
@@ -1441,7 +1441,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_trace_id_echoed_when_valid() {
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("pool");
         let anchor_id = KnowledgeItemId::new();
         let prin_id = PrincipalId::new();
@@ -1478,7 +1478,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_trace_id_uppercase_normalised_to_lowercase() {
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("pool");
         let anchor_id = KnowledgeItemId::new();
         let prin_id = PrincipalId::new();
@@ -1518,7 +1518,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_trace_id_generated_when_absent() {
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("pool");
         let anchor_id = KnowledgeItemId::new();
         let prin_id = PrincipalId::new();

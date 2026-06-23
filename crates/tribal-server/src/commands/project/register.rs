@@ -345,9 +345,7 @@ fn resolve_git_remote(explicit: Option<&str>) -> Result<GitRemote, AppError> {
 mod tests {
     use std::path::PathBuf;
 
-    use tribal_test_utils::{
-        assert_json_snapshot, assert_text_snapshot, serial_lock, test_context, truncate_all_tables,
-    };
+    use tribal_test_utils::{TestDb, assert_json_snapshot, assert_text_snapshot};
 
     use super::*;
 
@@ -376,12 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_stderr_stdio_matches_snapshot() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let pool = ctx.create_pool().await.expect("create pool");
-        let mut conn = pool.acquire().await.expect("acquire");
-        truncate_all_tables(&mut conn).await;
-        drop(conn);
+        let ctx = TestDb::new().await;
 
         let mut config = TribalConfig::minimum_valid(ctx.database_url());
         config.database.max_connect_attempts = 1;
@@ -420,12 +413,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_json_http_matches_snapshot() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let pool = ctx.create_pool().await.expect("create pool");
-        let mut conn = pool.acquire().await.expect("acquire");
-        truncate_all_tables(&mut conn).await;
-        drop(conn);
+        let ctx = TestDb::new().await;
 
         let mut config = TribalConfig::minimum_valid(ctx.database_url());
         config.database.max_connect_attempts = 1;

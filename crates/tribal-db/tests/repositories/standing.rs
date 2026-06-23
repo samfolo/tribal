@@ -8,8 +8,8 @@ use tribal_domain::{
     EpisodeId, GitRemote, KnowledgeItemId, PrincipalId, ProjectId, RelationBatchId, RelationKind,
 };
 use tribal_test_utils::{
-    a_new_item_observation, a_new_knowledge_item, a_new_knowledge_item_relation, a_new_principal,
-    a_new_project, commit_relation_batch, shift_relations_timestamp_by_batch, test_context,
+    TestDb, a_new_item_observation, a_new_knowledge_item, a_new_knowledge_item_relation,
+    a_new_principal, a_new_project, commit_relation_batch, shift_relations_timestamp_by_batch,
 };
 
 // ---------------------------------------------------------------------------
@@ -73,8 +73,8 @@ async fn setup_item(
 
 #[tokio::test]
 async fn test_compute_returns_standings_in_input_order() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "order").await;
@@ -129,8 +129,8 @@ async fn test_compute_returns_standings_in_input_order() {
 
 #[tokio::test]
 async fn test_compute_empty_graph_returns_zero_standings() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "empty-graph").await;
@@ -152,8 +152,8 @@ async fn test_compute_empty_graph_returns_zero_standings() {
 
 #[tokio::test]
 async fn test_compute_excludes_derived_from_relations() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "derived-from").await;
@@ -184,8 +184,8 @@ async fn test_compute_excludes_derived_from_relations() {
 
 #[tokio::test]
 async fn test_compute_excludes_uncommitted_batch_relations() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "uncommitted").await;
@@ -215,8 +215,8 @@ async fn test_compute_excludes_uncommitted_batch_relations() {
 
 #[tokio::test]
 async fn test_compute_counts_observations() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "obs-count").await;
@@ -242,8 +242,8 @@ async fn test_compute_counts_observations() {
 
 #[tokio::test]
 async fn test_compute_diversity_metrics() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgStandingRepository;
 
     let (principal_id, project_id_1) = setup_prerequisites(&mut txn, "diversity-1").await;
@@ -352,8 +352,8 @@ async fn test_compute_diversity_metrics() {
 
 #[tokio::test]
 async fn test_compute_empty_slice_returns_empty_vec() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgStandingRepository;
 
     let standings = repo.compute(&mut txn, &[]).await.expect("compute");
@@ -363,8 +363,8 @@ async fn test_compute_empty_slice_returns_empty_vec() {
 
 #[tokio::test]
 async fn test_compute_unknown_ids_return_zero_standings() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgStandingRepository;
 
     let unknown_id = KnowledgeItemId::new();
@@ -387,8 +387,8 @@ async fn test_compute_unknown_ids_return_zero_standings() {
 
 #[tokio::test]
 async fn test_compute_superseded_by() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "superseded").await;
@@ -421,8 +421,8 @@ async fn test_compute_superseded_by() {
 
 #[tokio::test]
 async fn test_compute_newest_supporting_and_contradicting() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "newest-ids").await;
@@ -501,8 +501,8 @@ async fn test_compute_newest_supporting_and_contradicting() {
 
 #[tokio::test]
 async fn test_compute_counts_distinct_source_items() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "distinct-count").await;

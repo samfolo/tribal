@@ -1,5 +1,5 @@
 use tribal_db::{PgSystemFingerprintRepository, SystemFingerprintRepository};
-use tribal_test_utils::{a_new_system_fingerprint, test_context};
+use tribal_test_utils::{TestDb, a_new_system_fingerprint};
 
 // ---------------------------------------------------------------------------
 // upsert
@@ -7,8 +7,8 @@ use tribal_test_utils::{a_new_system_fingerprint, test_context};
 
 #[tokio::test]
 async fn test_upsert_returns_fingerprint() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgSystemFingerprintRepository;
 
     let new = a_new_system_fingerprint().build();
@@ -24,8 +24,8 @@ async fn test_upsert_returns_fingerprint() {
 
 #[tokio::test]
 async fn test_upsert_idempotency() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgSystemFingerprintRepository;
 
     let new = a_new_system_fingerprint().build();
@@ -39,8 +39,8 @@ async fn test_upsert_idempotency() {
 
 #[tokio::test]
 async fn test_upsert_different_content_hash_produces_different_id() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgSystemFingerprintRepository;
 
     let first = repo
@@ -75,8 +75,8 @@ async fn test_upsert_different_content_hash_produces_different_id() {
 
 #[tokio::test]
 async fn test_find_by_hash_returns_stored_fingerprint() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgSystemFingerprintRepository;
 
     let new = a_new_system_fingerprint().build();
@@ -98,8 +98,8 @@ async fn test_find_by_hash_returns_stored_fingerprint() {
 
 #[tokio::test]
 async fn test_find_by_hash_unknown_returns_none() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgSystemFingerprintRepository;
 
     let result = repo

@@ -209,13 +209,12 @@ async fn seed_relation_loop_prompts(conn: &mut sqlx::PgConnection) -> FixedAgent
 /// submission record, and the completed thread in one consistent shape.
 #[tokio::test]
 async fn test_the_loop_executor_completes_a_triage_job_end_to_end() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "agentic-loop").await;
-    let mut conn = raw_conn(ctx).await;
+        setup_prerequisites(&ctx, "agentic-loop").await;
+    let mut conn = raw_conn(&ctx).await;
     let prompts = seed_loop_prompts(&mut conn).await;
     let (job_id, task_id) = seed_triage_job(
         &mut conn,
@@ -317,7 +316,7 @@ async fn test_the_loop_executor_completes_a_triage_job_end_to_end() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
 
     // The committed decision: an observation against the matched item.
     let triage_result = PgTriageResultRepository
@@ -388,8 +387,6 @@ async fn test_the_loop_executor_completes_a_triage_job_end_to_end() {
         "two turns: the opening, the candidate search and its result, then \
          the submit call and the accepted submission",
     );
-
-    teardown(ctx).await;
 }
 
 /// A budgeted one-shot whose thread already carries ledger spend
@@ -398,13 +395,12 @@ async fn test_the_loop_executor_completes_a_triage_job_end_to_end() {
 /// the default executor.
 #[tokio::test]
 async fn test_a_budgeted_one_shot_suspends_pre_call_and_resumes() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "budgeted-one-shot").await;
-    let mut conn = raw_conn(ctx).await;
+        setup_prerequisites(&ctx, "budgeted-one-shot").await;
+    let mut conn = raw_conn(&ctx).await;
     let (job_id, task_id) = seed_triage_job(
         &mut conn,
         principal_id,
@@ -499,7 +495,7 @@ async fn test_a_budgeted_one_shot_suspends_pre_call_and_resumes() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let thread = PgAgentThreadRepository
         .find_by_id(&mut conn, stage_thread.thread.id())
         .await
@@ -558,7 +554,7 @@ async fn test_a_budgeted_one_shot_suspends_pre_call_and_resumes() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let thread = PgAgentThreadRepository
         .find_by_id(&mut conn, thread.id())
         .await
@@ -569,8 +565,6 @@ async fn test_a_budgeted_one_shot_suspends_pre_call_and_resumes() {
         AgentThreadStatus::Completed,
         "headroom returning resumes the suspended one-shot to completion",
     );
-
-    teardown(ctx).await;
 }
 
 /// The divergence window's authority rule: a job ingested under one
@@ -578,13 +572,12 @@ async fn test_a_budgeted_one_shot_suspends_pre_call_and_resumes() {
 /// the fingerprint keeps naming ingest-time intent.
 #[tokio::test]
 async fn test_the_recorded_binding_wins_the_ingest_claim_divergence_window() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "divergence").await;
-    let mut conn = raw_conn(ctx).await;
+        setup_prerequisites(&ctx, "divergence").await;
+    let mut conn = raw_conn(&ctx).await;
     let (job_id, task_id) = seed_triage_job(
         &mut conn,
         principal_id,
@@ -656,7 +649,7 @@ async fn test_the_recorded_binding_wins_the_ingest_claim_divergence_window() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let thread = PgAgentThreadRepository
         .find_by_stage_task_id(&mut conn, task_id)
         .await
@@ -678,8 +671,6 @@ async fn test_the_recorded_binding_wins_the_ingest_claim_divergence_window() {
         loop_hash,
         "the thread's recorded binding, not the ingest composite, is the truth of what ran",
     );
-
-    teardown(ctx).await;
 }
 
 /// The loop executor completes a relation job end to end through the live
@@ -688,13 +679,12 @@ async fn test_the_recorded_binding_wins_the_ingest_claim_divergence_window() {
 /// relation, seals the batch, and transitions the job to completed.
 #[tokio::test]
 async fn test_the_loop_executor_completes_a_relation_job_end_to_end() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "agentic-relation-loop").await;
-    let mut conn = raw_conn(ctx).await;
+        setup_prerequisites(&ctx, "agentic-relation-loop").await;
+    let mut conn = raw_conn(&ctx).await;
     let prompts = seed_relation_loop_prompts(&mut conn).await;
     let candidates = vec![
         a_candidate()
@@ -785,7 +775,7 @@ async fn test_the_loop_executor_completes_a_relation_job_end_to_end() {
         "the loop sealed the relation batch",
     );
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
 
     // The submitted edge committed between the two batch items.
     let outbound = PgRelationRepository
@@ -825,8 +815,6 @@ async fn test_the_loop_executor_completes_a_relation_job_end_to_end() {
         AgentThreadRecordKind::Submission,
         "the log ends in the accepted submission",
     );
-
-    teardown(ctx).await;
 }
 
 /// The loop executor completes an extraction job end to end through the
@@ -835,13 +823,12 @@ async fn test_the_loop_executor_completes_a_relation_job_end_to_end() {
 /// candidate, exactly as the one-shot path would.
 #[tokio::test]
 async fn test_the_loop_executor_completes_an_extraction_job_end_to_end() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "agentic-extraction-loop").await;
-    let mut conn = raw_conn(ctx).await;
+        setup_prerequisites(&ctx, "agentic-extraction-loop").await;
+    let mut conn = raw_conn(&ctx).await;
     let prompts = seed_extraction_loop_prompts(&mut conn).await;
     let (job_id, task_id) = seed_extraction_job(
         &mut conn,
@@ -899,7 +886,7 @@ async fn test_the_loop_executor_completes_an_extraction_job_end_to_end() {
     let _ = handle.await;
     assert_eq!(task.status(), TaskStatus::Completed);
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
 
     // The extraction result carries the two submitted candidates.
     let result = PgExtractionResultRepository
@@ -941,8 +928,6 @@ async fn test_the_loop_executor_completes_an_extraction_job_end_to_end() {
         binding.definition().executor,
         StageExecutorKind::BuiltInLoop
     );
-
-    teardown(ctx).await;
 }
 
 /// A deterministic validator bounce drives a second turn before fan-out:
@@ -952,13 +937,12 @@ async fn test_the_loop_executor_completes_an_extraction_job_end_to_end() {
 /// reaches the database; only the accepted submission does.
 #[tokio::test]
 async fn test_a_bounced_extraction_resubmits_then_fans_out() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "agentic-extraction-bounce").await;
-    let mut conn = raw_conn(ctx).await;
+        setup_prerequisites(&ctx, "agentic-extraction-bounce").await;
+    let mut conn = raw_conn(&ctx).await;
     let prompts = seed_extraction_loop_prompts(&mut conn).await;
     let (job_id, task_id) = seed_extraction_job(
         &mut conn,
@@ -1031,7 +1015,7 @@ async fn test_a_bounced_extraction_resubmits_then_fans_out() {
     let _ = handle.await;
     assert_eq!(task.status(), TaskStatus::Completed);
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
 
     // Only the accepted resubmission committed: two candidates, two triage
     // tasks, never the bounced single-candidate submission.
@@ -1087,6 +1071,4 @@ async fn test_a_bounced_extraction_resubmits_then_fans_out() {
             .contains("reference no candidate"),
         "the bounce diagnostics teach the model what to fix",
     );
-
-    teardown(ctx).await;
 }

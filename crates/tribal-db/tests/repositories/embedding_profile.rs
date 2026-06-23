@@ -1,11 +1,11 @@
 use tribal_db::{EmbeddingProfileRepository, PgEmbeddingProfileRepository};
 use tribal_domain::EmbeddingProfileId;
-use tribal_test_utils::{a_new_embedding_profile, test_context};
+use tribal_test_utils::{TestDb, a_new_embedding_profile};
 
 #[tokio::test]
 async fn test_find_by_id_returns_profile_in_any_state_and_none_when_absent() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgEmbeddingProfileRepository;
 
     // A freshly inserted profile is `building`; `find_by_id` returns it
@@ -33,8 +33,8 @@ async fn test_find_by_id_returns_profile_in_any_state_and_none_when_absent() {
 
 #[tokio::test]
 async fn test_mark_failed_transitions_building_then_is_idempotent() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgEmbeddingProfileRepository;
 
     // The repository always inserts in the `building` state.

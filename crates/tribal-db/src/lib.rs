@@ -14,8 +14,8 @@ pub use tables::APPLICATION_TABLES;
 /// Compiled migrations for the Tribal database schema.
 ///
 /// Embeds all SQL migration files from `crates/tribal-db/migrations/` at
-/// compile time. Used by [`tribal_test_utils::TestContext`] to run
-/// migrations against test databases.
+/// compile time. Used by the test harness to build the migrated template
+/// database that every test clones from.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 
 pub use error::DbError;

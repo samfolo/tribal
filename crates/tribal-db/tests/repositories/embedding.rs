@@ -8,8 +8,8 @@ use tribal_domain::{
     EmbeddingErrorClass, EmbeddingProfileId, GitRemote, KnowledgeItemId, ReindexEntityKind,
 };
 use tribal_test_utils::{
-    a_new_embedding, a_new_knowledge_item, a_new_principal, a_new_project, ensure_genesis_profile,
-    test_context,
+    TestDb, a_new_embedding, a_new_knowledge_item, a_new_principal, a_new_project,
+    ensure_genesis_profile,
 };
 
 // ---------------------------------------------------------------------------
@@ -80,8 +80,8 @@ fn make_test_embedding(dominant_index: usize) -> Vec<f32> {
 
 #[tokio::test]
 async fn test_insert_returns_populated_embedding() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgEmbeddingRepository;
 
     let (item_id, profile_id) = setup_prerequisites(&mut txn, "emb-insert-pop").await;
@@ -105,8 +105,8 @@ async fn test_insert_returns_populated_embedding() {
 
 #[tokio::test]
 async fn test_insert_generates_prefixed_id() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgEmbeddingRepository;
 
     let (item_id, profile_id) = setup_prerequisites(&mut txn, "emb-insert-prefix").await;
@@ -127,8 +127,8 @@ async fn test_insert_generates_prefixed_id() {
 
 #[tokio::test]
 async fn test_insert_duplicate_item_profile_returns_unique_violation() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgEmbeddingRepository;
 
     let (item_id, profile_id) = setup_prerequisites(&mut txn, "emb-insert-dup").await;
@@ -159,8 +159,8 @@ async fn test_insert_duplicate_item_profile_returns_unique_violation() {
 
 #[tokio::test]
 async fn test_find_by_knowledge_item_id_returns_embedding() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgEmbeddingRepository;
 
     let (item_id, profile_id) = setup_prerequisites(&mut txn, "emb-find").await;
@@ -191,8 +191,8 @@ async fn test_find_by_knowledge_item_id_returns_embedding() {
 
 #[tokio::test]
 async fn test_find_by_knowledge_item_id_not_found_returns_none() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgEmbeddingRepository;
 
     let found = repo
@@ -209,8 +209,8 @@ async fn test_find_by_knowledge_item_id_not_found_returns_none() {
 
 #[tokio::test]
 async fn test_items_without_embedding_is_the_set_difference() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgEmbeddingRepository;
 
     let principal = PgPrincipalRepository
@@ -321,8 +321,8 @@ async fn test_items_without_embedding_is_the_set_difference() {
 
 #[tokio::test]
 async fn test_batch_insert_skipping_existing_skips_embedded_pairs() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgEmbeddingRepository;
 
     let principal = PgPrincipalRepository
@@ -404,8 +404,8 @@ async fn test_batch_insert_skipping_existing_skips_embedded_pairs() {
 
 #[tokio::test]
 async fn test_find_items_without_embedding_pages_by_cursor() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgEmbeddingRepository;
 
     let principal = PgPrincipalRepository

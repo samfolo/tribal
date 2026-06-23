@@ -4,7 +4,7 @@
 //! expected for a few representative cases.
 
 use tribal_config::{ENV_PUBLIC_MCP_URL, TransportKind, TribalConfig};
-use tribal_test_utils::{serial_lock, test_context};
+use tribal_test_utils::{TestDb, env_lock};
 
 use super::common::{
     CheckRun, EnvGuard, TestEnv, fresh_db, parse_json, row_status, run_check, write_config,
@@ -12,10 +12,10 @@ use super::common::{
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_happy_path_all_phases_green_against_fresh_db() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
@@ -46,10 +46,10 @@ async fn test_happy_path_all_phases_green_against_fresh_db() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_project_cascade_missing_is_warn_without_override() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
@@ -69,10 +69,10 @@ async fn test_project_cascade_missing_is_warn_without_override() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_valid_token_is_skip_under_stdio_without_token_override() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
@@ -92,10 +92,10 @@ async fn test_valid_token_is_skip_under_stdio_without_token_override() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_valid_token_skips_on_loopback_http_without_token() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let mut config = TribalConfig::minimum_valid(ctx.database_url());
     config.server.transport = TransportKind::Http;
     config.server.bind_address = Some("127.0.0.1:8725".into());
@@ -119,10 +119,10 @@ async fn test_valid_token_skips_on_loopback_http_without_token() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_valid_token_fails_on_routable_http_without_token() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let mut config = TribalConfig::minimum_valid(ctx.database_url());
     config.server.transport = TransportKind::Http;
     config.server.bind_address = Some("127.0.0.1:8725".into());
@@ -152,10 +152,10 @@ async fn test_valid_token_fails_on_routable_http_without_token() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_valid_token_skips_on_docker_wildcard_loopback_shape() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     // The exact Docker compose shape: bound to the container wildcard
     // address, reached on a loopback host-port mapping advertised via
     // TRIBAL_PUBLIC_MCP_URL, DCR left enabled. The explicit loopback
@@ -188,10 +188,10 @@ async fn test_valid_token_skips_on_docker_wildcard_loopback_shape() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_valid_token_fails_on_loopback_http_with_dcr_disabled() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let mut config = TribalConfig::minimum_valid(ctx.database_url());
     config.server.transport = TransportKind::Http;
     config.server.bind_address = Some("127.0.0.1:8725".into());
@@ -219,10 +219,10 @@ async fn test_valid_token_fails_on_loopback_http_with_dcr_disabled() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_advertised_url_is_skip_under_stdio_transport() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
@@ -245,10 +245,10 @@ async fn test_advertised_url_is_skip_under_stdio_transport() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_advertised_url_attempts_probe_under_http_transport() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let mut config = TribalConfig::minimum_valid(ctx.database_url());
     config.server.transport = TransportKind::Http;
     config.server.bind_address = Some("127.0.0.1:0".into());

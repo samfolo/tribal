@@ -10,7 +10,7 @@ use tribal_db::{
     AuthTokenRepository, PgAuthTokenRepository, PgPrincipalRepository, PrincipalRepository,
 };
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, ProviderKind};
-use tribal_test_utils::{serial_lock, test_context};
+use tribal_test_utils::{TestDb, env_lock};
 
 use super::common::{
     EnvGuard, TestEnv, fresh_db, parse_json, run_bootstrap, run_mcp_config, run_setup,
@@ -24,13 +24,13 @@ use super::common::{
 /// shape — the shared snippet builder is the single source of truth.
 #[tokio::test]
 async fn test_bootstrap_then_mcp_config_round_trip_stdio() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let _pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let _pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
 
     let (boot_stdout, _) = run_bootstrap(
-        ctx,
+        &ctx,
         &env.config_path,
         CliOverrides::default(),
         None,
@@ -48,7 +48,7 @@ async fn test_bootstrap_then_mcp_config_round_trip_stdio() {
     let boot_mcp = boot_json["mcp_config"].clone();
 
     let (mc_stdout, _) = run_mcp_config(
-        ctx,
+        &ctx,
         &env.config_path,
         CliOverrides::default(),
         Some(project_id),
@@ -68,13 +68,13 @@ async fn test_bootstrap_then_mcp_config_round_trip_stdio() {
 /// embedded-token round-trip is covered by the DCR-disabled case below.
 #[tokio::test]
 async fn test_bootstrap_then_mcp_config_round_trip_http() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let _pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let _pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
 
     let (boot_stdout, _) = run_bootstrap(
-        ctx,
+        &ctx,
         &env.config_path,
         CliOverrides::default(),
         None,
@@ -92,7 +92,7 @@ async fn test_bootstrap_then_mcp_config_round_trip_http() {
     let boot_mcp = boot_json["mcp_config"].clone();
 
     let (mc_stdout, _) = run_mcp_config(
-        ctx,
+        &ctx,
         &env.config_path,
         CliOverrides::default(),
         Some(project_id),
@@ -114,9 +114,9 @@ async fn test_bootstrap_then_mcp_config_round_trip_http() {
 /// property that the URL-only default no longer exercises.
 #[tokio::test]
 async fn test_bootstrap_then_mcp_config_round_trip_http_embeds_token() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let _pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let _pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
     // DCR disabled on a loopback surface is not URL-only onboarding, so
     // both commands embed the static token. The nested-env name follows the
@@ -124,7 +124,7 @@ async fn test_bootstrap_then_mcp_config_round_trip_http_embeds_token() {
     let _dcr_guard = EnvGuard::set("TRIBAL_OAUTH__DCR_ENABLED", "false");
 
     let (boot_stdout, _) = run_bootstrap(
-        ctx,
+        &ctx,
         &env.config_path,
         CliOverrides::default(),
         None,
@@ -142,7 +142,7 @@ async fn test_bootstrap_then_mcp_config_round_trip_http_embeds_token() {
     let boot_mcp = boot_json["mcp_config"].clone();
 
     let (mc_stdout, _) = run_mcp_config(
-        ctx,
+        &ctx,
         &env.config_path,
         CliOverrides::default(),
         Some(project_id),
@@ -171,13 +171,13 @@ async fn test_bootstrap_then_mcp_config_round_trip_http_embeds_token() {
 /// token holder).
 #[tokio::test]
 async fn test_bootstrap_with_explicit_principal_provisions_both() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
 
     let (stdout, _stderr) = run_bootstrap(
-        ctx,
+        &ctx,
         &env.config_path,
         CliOverrides::default(),
         Some("user:alice"),
@@ -249,14 +249,14 @@ fn openai_embedding_overrides(model: Option<&str>) -> CliOverrides {
 /// fail-closed at boot, not at bootstrap.
 #[tokio::test]
 async fn test_bootstrap_openai_without_key_persists_a_keyless_skeleton() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let _pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let _pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
     let _api_key_guard = EnvGuard::remove(ENV_OPENAI_API_KEY);
 
     run_bootstrap(
-        ctx,
+        &ctx,
         &env.config_path,
         openai_embedding_overrides(None),
         None,
@@ -288,14 +288,14 @@ async fn test_bootstrap_openai_without_key_persists_a_keyless_skeleton() {
 /// path.
 #[tokio::test]
 async fn test_setup_openai_without_key_succeeds() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let _pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let _pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
     let _api_key_guard = EnvGuard::remove(ENV_OPENAI_API_KEY);
 
     run_setup(
-        ctx,
+        &ctx,
         &env.config_path,
         openai_embedding_overrides(None),
         None,
@@ -313,9 +313,9 @@ async fn test_setup_openai_without_key_succeeds() {
 /// (file-exists path, no silent rewrites).
 #[tokio::test]
 async fn test_bootstrap_persists_then_leaves_file_unchanged_on_second_run() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let _pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let _pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
     // The OpenAI provider requires an api_key at validation time; the
     // cascade picks it up from this env var.
@@ -336,7 +336,7 @@ async fn test_bootstrap_persists_then_leaves_file_unchanged_on_second_run() {
 
     // -- First run writes the file ------------------------------------------
     let _ = run_bootstrap(
-        ctx,
+        &ctx,
         &env.config_path,
         overrides.clone(),
         None,
@@ -378,7 +378,7 @@ async fn test_bootstrap_persists_then_leaves_file_unchanged_on_second_run() {
 
     // -- Second run finds the file, leaves it byte-identical ----------------
     let _ = run_bootstrap(
-        ctx,
+        &ctx,
         &env.config_path,
         overrides,
         None,

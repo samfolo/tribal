@@ -26,11 +26,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        a_project,
+        TestDb, a_project,
         mock::async_dispatch::{
             core::ExhaustBehaviour, repositories::error_factories::a_not_found,
         },
-        test_context,
     };
 
     // -- Constants ----------------------------------------------------------
@@ -49,8 +48,8 @@ mod tests {
             .on_find_by_id(p2.clone(), None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
         let r1 = mock.find_by_id(&mut tx, ProjectId::new()).await.unwrap();
         let r2 = mock.find_by_id(&mut tx, ProjectId::new()).await.unwrap();
@@ -69,8 +68,8 @@ mod tests {
             .respond_with(project.clone(), None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
         let result = mock.find_by_id(&mut tx, target_id).await.unwrap();
         assert_eq!(result.name(), "matched");
@@ -80,8 +79,8 @@ mod tests {
     #[should_panic(expected = "sequential queue exhausted")]
     async fn test_exhaust_panic_on_empty_queue() {
         let mock = MockProjectRepository::builder().build();
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
         let _ = mock.find_by_id(&mut tx, ProjectId::new()).await;
     }
 
@@ -94,8 +93,8 @@ mod tests {
             .on_find_by_id_exhaust(ExhaustBehaviour::RepeatLast)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
         let r1 = mock.find_by_id(&mut tx, ProjectId::new()).await.unwrap();
         let r2 = mock.find_by_id(&mut tx, ProjectId::new()).await.unwrap();
@@ -116,8 +115,8 @@ mod tests {
             )))
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
         let err = mock
             .find_by_id(&mut tx, ProjectId::new())
             .await
@@ -139,8 +138,8 @@ mod tests {
             .on_find_by_id(p, None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
         let id1 = ProjectId::new();
         let id2 = ProjectId::new();
@@ -170,8 +169,8 @@ mod tests {
             .on_insert(project, None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
         let new_project = NewProject::builder()
             .git_remote(GitRemote::from_parts("github.com", "user/test", None))

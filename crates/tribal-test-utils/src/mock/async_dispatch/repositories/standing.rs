@@ -19,7 +19,7 @@ mod tests {
     use tribal_db::StandingRepository;
 
     use super::*;
-    use crate::{a_standing, test_context};
+    use crate::{TestDb, a_standing};
 
     #[tokio::test]
     async fn test_compute_returns_canned_standings() {
@@ -28,8 +28,8 @@ mod tests {
             .on_compute(vec![standing.clone()], None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let ids = vec![KnowledgeItemId::new()];
         let result = mock.compute(&mut tx, &ids).await.unwrap();
@@ -44,8 +44,8 @@ mod tests {
             .on_compute(vec![], None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let id = KnowledgeItemId::new();
         let _ = mock.compute(&mut tx, &[id]).await;

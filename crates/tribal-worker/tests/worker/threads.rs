@@ -22,18 +22,17 @@ use super::{common::*, fixtures::extraction_response_json};
 /// sent and an assistant record carrying the response and its usage.
 #[tokio::test]
 async fn test_stage_execution_commits_a_completed_thread_with_its_log() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "thread-log").await;
+        setup_prerequisites(&ctx, "thread-log").await;
 
     let candidates = vec![a_candidate().content("threaded".to_owned()).build()];
     let response_json = extraction_response_json(&candidates, &[]);
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -70,7 +69,7 @@ async fn test_stage_execution_commits_a_completed_thread_with_its_log() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let thread = PgAgentThreadRepository
         .find_by_stage_task_id(&mut conn, task_id)
         .await
@@ -129,8 +128,6 @@ async fn test_stage_execution_commits_a_completed_thread_with_its_log() {
         Some(records[1].id()),
         "completion spend attributes to the committed assistant record",
     );
-
-    teardown(ctx).await;
 }
 
 /// Drives suspend and resolve directly through the runtime against a live
@@ -139,17 +136,16 @@ async fn test_stage_execution_commits_a_completed_thread_with_its_log() {
 /// the committed input rather than re-rendering.
 #[tokio::test]
 async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "suspend-resolve").await;
+        setup_prerequisites(&ctx, "suspend-resolve").await;
     let candidates = vec![a_candidate().content("resumed".to_owned()).build()];
     let response_json = extraction_response_json(&candidates, &[]);
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -163,7 +159,7 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
     // Claim the task by hand and establish its thread through the runtime,
     // exactly as a worker would, then suspend on a timer that has already
     // elapsed so the availability sweep wakes it.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "suspend-test")
         .await
@@ -251,7 +247,7 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
 
     let deadline = tokio::time::Instant::now() + MULTI_CYCLE_SETTLE;
     loop {
-        let mut probe = raw_conn(ctx).await;
+        let mut probe = raw_conn(&ctx).await;
         let task_now = PgTaskRepository
             .find_by_id(&mut probe, task_id)
             .await
@@ -272,7 +268,7 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let thread = PgAgentThreadRepository
         .find_by_stage_task_id(&mut conn, task_id)
         .await
@@ -312,8 +308,6 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
         extraction_rows, 1,
         "suspension and resolution never insert or complete extra stage tasks",
     );
-
-    teardown(ctx).await;
 }
 
 /// Suspend-versus-cancel converges in both orderings: an intent written
@@ -321,15 +315,14 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
 /// written after it is honoured by the sweep's cancel fallback.
 #[tokio::test]
 async fn test_suspend_versus_cancel_converges_in_both_orderings() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "suspend-cancel").await;
+        setup_prerequisites(&ctx, "suspend-cancel").await;
 
     // Ordering one: intent first, suspend refused.
     let (job_a, _) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -339,7 +332,7 @@ async fn test_suspend_versus_cancel_converges_in_both_orderings() {
         )
         .await
     };
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let task_a = PgTaskRepository
         .claim(&mut conn, 1, "ordering-one")
         .await
@@ -401,7 +394,7 @@ async fn test_suspend_versus_cancel_converges_in_both_orderings() {
     // Ordering two: suspend first, intent after; the cancel fallback
     // terminates the unclaimed suspended thread.
     let (job_b, task_b_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -488,22 +481,19 @@ async fn test_suspend_versus_cancel_converges_in_both_orderings() {
         .await
         .expect("find job");
     assert_eq!(job_after.status(), JobStatus::Failed);
-
-    teardown(ctx).await;
 }
 
 /// Two concurrent resolutions cannot both commit without waking the
 /// thread: the row lock serialises them, exactly one wakes it.
 #[tokio::test]
 async fn test_concurrent_resolutions_wake_the_thread_exactly_once() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "concurrent-resolve").await;
+        setup_prerequisites(&ctx, "concurrent-resolve").await;
     let (job_id, _) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -514,7 +504,7 @@ async fn test_concurrent_resolutions_wake_the_thread_exactly_once() {
         .await
     };
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let task = PgTaskRepository
         .claim(&mut conn, 1, "concurrent-resolve")
         .await
@@ -576,7 +566,7 @@ async fn test_concurrent_resolutions_wake_the_thread_exactly_once() {
         .count();
     assert_eq!(woken, 1, "exactly one resolution wakes the thread");
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let task_after = PgTaskRepository
         .find_by_id(&mut conn, task.id())
         .await
@@ -592,21 +582,18 @@ async fn test_concurrent_resolutions_wake_the_thread_exactly_once() {
         2,
         "the loser's arrival rolls back: one suspension, one resolution",
     );
-
-    teardown(ctx).await;
 }
 
 /// A zombie worker's input commit fails on ownership, deterministically:
 /// the input-record transaction carries the driving task's claim guard.
 #[tokio::test]
 async fn test_a_stale_lease_cannot_commit_an_input_record() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "zombie-input").await;
+        setup_prerequisites(&ctx, "zombie-input").await;
     let (job_id, _) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -617,7 +604,7 @@ async fn test_a_stale_lease_cannot_commit_an_input_record() {
         .await
     };
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let task = PgTaskRepository
         .claim(&mut conn, 1, "zombie-input")
         .await
@@ -672,22 +659,19 @@ async fn test_a_stale_lease_cannot_commit_an_input_record() {
         .await
         .expect("log");
     assert!(records.is_empty(), "the rejected commit left no record");
-
-    teardown(ctx).await;
 }
 
 /// A stale claimed thread-driving task within its retry budget is
 /// re-queued by the thread-aware reclaim without touching its thread.
 #[tokio::test]
 async fn test_thread_aware_reclaim_requeues_without_touching_the_thread() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "thread-reclaim-requeue").await;
+        setup_prerequisites(&ctx, "thread-reclaim-requeue").await;
     let (_job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -698,7 +682,7 @@ async fn test_thread_aware_reclaim_requeues_without_touching_the_thread() {
         .await
     };
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "crashed-worker")
         .await
@@ -763,8 +747,6 @@ async fn test_thread_aware_reclaim_requeues_without_touching_the_thread() {
         .expect("present");
     assert_eq!(thread_after.status(), status_before);
     assert_eq!(thread_after.recovery_attempts(), 0);
-
-    teardown(ctx).await;
 }
 
 /// Reclaim exhaustion under the production cap dead-letters the thread
@@ -772,15 +754,14 @@ async fn test_thread_aware_reclaim_requeues_without_touching_the_thread() {
 /// strands a running thread behind it.
 #[tokio::test]
 async fn test_reclaim_exhaustion_dead_letters_thread_and_task_and_fails_the_job() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "thread-reclaim-exhaust").await;
+        setup_prerequisites(&ctx, "thread-reclaim-exhaust").await;
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -791,7 +772,7 @@ async fn test_reclaim_exhaustion_dead_letters_thread_and_task_and_fails_the_job(
         .await
     };
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "crashed-worker")
         .await
@@ -868,8 +849,6 @@ async fn test_reclaim_exhaustion_dead_letters_thread_and_task_and_fails_the_job(
         JobStatus::Failed,
         "an extraction exhaustion couples the job in the same commit",
     );
-
-    teardown(ctx).await;
 }
 
 /// With recovery budget remaining, an exhausted retry budget opens a
@@ -878,15 +857,14 @@ async fn test_reclaim_exhaustion_dead_letters_thread_and_task_and_fails_the_job(
 /// advances.
 #[tokio::test]
 async fn test_reclaim_opens_a_recovery_cycle_with_reset_retry_counter() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "thread-reclaim-cycle").await;
+        setup_prerequisites(&ctx, "thread-reclaim-cycle").await;
     let (_job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -897,7 +875,7 @@ async fn test_reclaim_opens_a_recovery_cycle_with_reset_retry_counter() {
         .await
     };
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "crashed-worker")
         .await
@@ -972,8 +950,6 @@ async fn test_reclaim_opens_a_recovery_cycle_with_reset_retry_counter() {
         .expect("present");
     assert_eq!(thread_after.recovery_attempts(), 1);
     assert_eq!(thread_after.status(), status_before);
-
-    teardown(ctx).await;
 }
 
 /// A worker that claims a task whose thread carries a durable cancel
@@ -983,17 +959,16 @@ async fn test_reclaim_opens_a_recovery_cycle_with_reset_retry_counter() {
 /// rules were bypassed.
 #[tokio::test]
 async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "claim-dispose-cancel").await;
+        setup_prerequisites(&ctx, "claim-dispose-cancel").await;
     let candidates = vec![a_candidate().content("never sent".to_owned()).build()];
     let response_json = extraction_response_json(&candidates, &[]);
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -1006,7 +981,7 @@ async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
 
     // Fabricate the crash-window state on the still-queued task: its
     // thread exists and carries a durable intent before any claim.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "fabricating-worker")
         .await
@@ -1100,25 +1075,22 @@ async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
         .await
         .expect("job");
     assert_eq!(job_after.status(), JobStatus::Failed);
-
-    teardown(ctx).await;
 }
 
 /// A worker that claims a task whose thread is already terminal disposes
 /// of the task and couples the job without executing a turn.
 #[tokio::test]
 async fn test_claim_time_disposal_dead_letters_a_task_with_a_terminal_thread() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "claim-dispose-terminal").await;
+        setup_prerequisites(&ctx, "claim-dispose-terminal").await;
     let candidates = vec![a_candidate().content("never sent".to_owned()).build()];
     let response_json = extraction_response_json(&candidates, &[]);
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -1131,7 +1103,7 @@ async fn test_claim_time_disposal_dead_letters_a_task_with_a_terminal_thread() {
 
     // Fabricate the partial history: the thread reached a terminal
     // status while its task half stayed queued.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "fabricating-worker")
         .await
@@ -1216,8 +1188,6 @@ async fn test_claim_time_disposal_dead_letters_a_task_with_a_terminal_thread() {
         AgentThreadStatus::Failed,
         "disposal leaves the terminal thread untouched",
     );
-
-    teardown(ctx).await;
 }
 
 /// A worker that claims a task whose thread reads suspended re-blocks
@@ -1225,17 +1195,16 @@ async fn test_claim_time_disposal_dead_letters_a_task_with_a_terminal_thread() {
 /// reaches.
 #[tokio::test]
 async fn test_claim_time_disposal_reblocks_a_task_with_a_suspended_thread() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "claim-dispose-suspend").await;
+        setup_prerequisites(&ctx, "claim-dispose-suspend").await;
     let candidates = vec![a_candidate().content("never sent".to_owned()).build()];
     let response_json = extraction_response_json(&candidates, &[]);
 
     let (_job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -1248,7 +1217,7 @@ async fn test_claim_time_disposal_reblocks_a_task_with_a_suspended_thread() {
 
     // Fabricate the unmodelled state: the thread row alone moves to
     // suspended (no wake-at, no blocked task half).
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "fabricating-worker")
         .await
@@ -1335,8 +1304,6 @@ async fn test_claim_time_disposal_reblocks_a_task_with_a_suspended_thread() {
         .expect("find")
         .expect("present");
     assert_eq!(thread_after.status(), AgentThreadStatus::Suspended);
-
-    teardown(ctx).await;
 }
 
 /// The availability sweep's cancel fallback sends the owed notification:
@@ -1345,14 +1312,13 @@ async fn test_claim_time_disposal_reblocks_a_task_with_a_suspended_thread() {
 /// reaches watchers.
 #[tokio::test]
 async fn test_sweep_cancel_fallback_notifies_watchers() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "sweep-cancel-notify").await;
+        setup_prerequisites(&ctx, "sweep-cancel-notify").await;
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -1365,7 +1331,7 @@ async fn test_sweep_cancel_fallback_notifies_watchers() {
 
     // A suspended thread with a durable intent and a blocked task: the
     // shape only the sweep's cancel fallback converges.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "suspending-worker")
         .await
@@ -1430,8 +1396,6 @@ async fn test_sweep_cancel_fallback_notifies_watchers() {
         .expect("find")
         .expect("present");
     assert_eq!(thread_after.status(), AgentThreadStatus::Cancelled);
-
-    teardown(ctx).await;
 }
 
 /// The availability sweep's stuck-relating predicate converges a stranded
@@ -1443,15 +1407,14 @@ async fn test_sweep_cancel_fallback_notifies_watchers() {
 /// release; the test exercises the convergence the gate exists to guarantee.
 #[tokio::test]
 async fn test_stuck_relating_sweep_fails_a_stranded_job_and_notifies() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "stuck-relating-sweep").await;
+        setup_prerequisites(&ctx, "stuck-relating-sweep").await;
     let candidates = vec![a_candidate().content("a stranded claim".to_owned()).build()];
     let (job_id, task_id, _) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_relation_job(
             &mut conn,
             principal_id,
@@ -1467,7 +1430,7 @@ async fn test_stuck_relating_sweep_fails_a_stranded_job_and_notifies() {
     // A relation thread suspended on deferred results with no wake instant
     // and no live descendant: the one suspension the terminal stage cannot
     // otherwise converge, and the only one the stuck-relating sweep selects.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "stranding-worker")
         .await
@@ -1541,8 +1504,6 @@ async fn test_stuck_relating_sweep_fails_a_stranded_job_and_notifies() {
         .expect("find")
         .expect("present");
     assert_eq!(thread_after.status(), AgentThreadStatus::Cancelled);
-
-    teardown(ctx).await;
 }
 
 /// The two reclaim scans partition the stale set: the legacy bulk scan
@@ -1551,14 +1512,13 @@ async fn test_stuck_relating_sweep_fails_a_stranded_job_and_notifies() {
 /// half.
 #[tokio::test]
 async fn test_reclaim_scans_partition_threaded_and_legacy_rows() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "reclaim-partition").await;
-    let mut conn = raw_conn(ctx).await;
+        setup_prerequisites(&ctx, "reclaim-partition").await;
+    let mut conn = raw_conn(&ctx).await;
     let (job_threaded, task_threaded) = seed_extraction_job(
         &mut conn,
         principal_id,
@@ -1676,8 +1636,6 @@ async fn test_reclaim_scans_partition_threaded_and_legacy_rows() {
         .expect("find")
         .expect("present");
     assert_eq!(thread_after.recovery_attempts(), 0);
-
-    teardown(ctx).await;
 }
 
 /// A retried attempt adopts the committed input record rather than
@@ -1686,17 +1644,16 @@ async fn test_reclaim_scans_partition_threaded_and_legacy_rows() {
 /// failure between the input commit and the response.
 #[tokio::test]
 async fn test_resume_adopts_the_committed_input_record() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "resume-adopt").await;
+        setup_prerequisites(&ctx, "resume-adopt").await;
     let candidates = vec![a_candidate().content("resumed".to_owned()).build()];
     let response_json = extraction_response_json(&candidates, &[]);
 
     let (_job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -1738,7 +1695,7 @@ async fn test_resume_adopts_the_committed_input_record() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let thread = PgAgentThreadRepository
         .find_by_stage_task_id(&mut conn, task_id)
         .await
@@ -1760,22 +1717,19 @@ async fn test_resume_adopts_the_committed_input_record() {
     );
     assert_eq!(records.len(), 2, "one input, one assistant message");
     assert_eq!(records[1].kind(), AgentThreadRecordKind::AssistantMessage);
-
-    teardown(ctx).await;
 }
 
 /// An existing thread re-established under a different binding executes
 /// and reports the binding its row records, not the supplied one.
 #[tokio::test]
 async fn test_resume_pairs_an_existing_thread_with_its_recorded_binding() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let _pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "recorded-binding").await;
+        setup_prerequisites(&ctx, "recorded-binding").await;
     let (_job_id, _task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -1786,7 +1740,7 @@ async fn test_resume_pairs_an_existing_thread_with_its_recorded_binding() {
         .await
     };
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "first-config")
         .await
@@ -1846,23 +1800,20 @@ async fn test_resume_pairs_an_existing_thread_with_its_recorded_binding() {
         first.id(),
         "the row's pin is unchanged",
     );
-
-    teardown(ctx).await;
 }
 
 /// Reclaim exhaustion dead-letters a thread that never reached running
 /// (its queued row is the live status the locked CAS moves from).
 #[tokio::test]
 async fn test_reclaim_exhaustion_dead_letters_a_thread_that_never_started() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "exhaust-queued").await;
+        setup_prerequisites(&ctx, "exhaust-queued").await;
     let (_job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -1875,7 +1826,7 @@ async fn test_reclaim_exhaustion_dead_letters_a_thread_that_never_started() {
 
     // A queued thread behind a claimed task: the crash window between
     // the thread insert and the running move.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "crashed-worker")
         .await
@@ -1927,22 +1878,19 @@ async fn test_reclaim_exhaustion_dead_letters_a_thread_that_never_started() {
         .expect("present");
     assert_eq!(thread.status(), AgentThreadStatus::DeadLetter);
     assert!(thread.completed_at().is_some());
-
-    teardown(ctx).await;
 }
 
 /// The cancel fallback never disposes of a claimed stage task: a live
 /// worker owns that boundary, so the whole transaction rolls back.
 #[tokio::test]
 async fn test_cancel_fallback_skips_a_claimed_stage_task() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let _pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "cancel-skip-claimed").await;
+        setup_prerequisites(&ctx, "cancel-skip-claimed").await;
     let (_job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -1953,7 +1901,7 @@ async fn test_cancel_fallback_skips_a_claimed_stage_task() {
         .await
     };
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "live-worker")
         .await
@@ -2007,8 +1955,6 @@ async fn test_cancel_fallback_skips_a_claimed_stage_task() {
         .expect("find")
         .expect("present");
     assert_eq!(thread_after.status(), AgentThreadStatus::Running);
-
-    teardown(ctx).await;
 }
 
 /// A one-shot terminal against a thread that left running (swept,
@@ -2016,14 +1962,13 @@ async fn test_cancel_fallback_skips_a_claimed_stage_task() {
 /// rolls back rather than completing a task whose thread is gone.
 #[tokio::test]
 async fn test_one_shot_terminal_refuses_a_non_running_thread() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let _pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "terminal-cas").await;
+        setup_prerequisites(&ctx, "terminal-cas").await;
     let (_job_id, _task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -2034,7 +1979,7 @@ async fn test_one_shot_terminal_refuses_a_non_running_thread() {
         .await
     };
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "terminal-cas")
         .await
@@ -2081,8 +2026,6 @@ async fn test_one_shot_terminal_refuses_a_non_running_thread() {
         err,
         tribal_agent_runtime::AgentRuntimeError::StatusCasMissed { .. }
     ));
-
-    teardown(ctx).await;
 }
 
 /// The claim guard at thread creation: a worker presenting a token the
@@ -2090,14 +2033,13 @@ async fn test_one_shot_terminal_refuses_a_non_running_thread() {
 /// refusal leaves no thread row behind.
 #[tokio::test]
 async fn test_ensure_stage_thread_refuses_a_stale_claim() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let _pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "stale-claim").await;
+        setup_prerequisites(&ctx, "stale-claim").await;
     let (_job_id, _task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -2108,7 +2050,7 @@ async fn test_ensure_stage_thread_refuses_a_stale_claim() {
         .await
     };
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "stale-claim")
         .await
@@ -2149,8 +2091,6 @@ async fn test_ensure_stage_thread_refuses_a_stale_claim() {
             .is_none(),
         "the refused creation left no thread row",
     );
-
-    teardown(ctx).await;
 }
 
 /// Inline retry exhaustion runs the same disposition as the reclaim
@@ -2158,15 +2098,14 @@ async fn test_ensure_stage_thread_refuses_a_stale_claim() {
 /// commit, and the job fails.
 #[tokio::test]
 async fn test_inline_failure_exhaustion_dead_letters_the_thread() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "inline-exhaust").await;
+        setup_prerequisites(&ctx, "inline-exhaust").await;
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let ids = seed_extraction_job(
             &mut conn,
             principal_id,
@@ -2195,7 +2134,7 @@ async fn test_inline_failure_exhaustion_dead_letters_the_thread() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let thread = PgAgentThreadRepository
         .find_by_stage_task_id(&mut conn, task_id)
         .await
@@ -2207,22 +2146,19 @@ async fn test_inline_failure_exhaustion_dead_letters_the_thread() {
         "the inline exhaustion maps the retryable class to a dead-lettered thread",
     );
     assert!(thread.completed_at().is_some());
-
-    teardown(ctx).await;
 }
 
 /// An arrival at a terminal thread is recorded and discarded: the log
 /// grows, nothing re-enqueues, and the durable arrival survives.
 #[tokio::test]
 async fn test_resolution_at_a_terminal_thread_is_recorded_and_discarded() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let _pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "resolve-terminal").await;
+        setup_prerequisites(&ctx, "resolve-terminal").await;
     let (_job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -2233,7 +2169,7 @@ async fn test_resolution_at_a_terminal_thread_is_recorded_and_discarded() {
         .await
     };
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "resolve-terminal")
         .await
@@ -2305,22 +2241,19 @@ async fn test_resolution_at_a_terminal_thread_is_recorded_and_discarded() {
         TaskStatus::Claimed,
         "a terminal arrival never touches the task",
     );
-
-    teardown(ctx).await;
 }
 
 /// A resolution against a running thread commits nothing: no record, no
 /// task move.
 #[tokio::test]
 async fn test_resolution_at_a_running_thread_commits_nothing() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let _pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "resolve-running").await;
+        setup_prerequisites(&ctx, "resolve-running").await;
     let (_job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_extraction_job(
             &mut conn,
             principal_id,
@@ -2331,7 +2264,7 @@ async fn test_resolution_at_a_running_thread_commits_nothing() {
         .await
     };
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let claimed = PgTaskRepository
         .claim(&mut conn, 1, "resolve-running")
         .await
@@ -2382,6 +2315,4 @@ async fn test_resolution_at_a_running_thread_commits_nothing() {
         .await
         .expect("task");
     assert_eq!(task_after.status(), TaskStatus::Claimed);
-
-    teardown(ctx).await;
 }

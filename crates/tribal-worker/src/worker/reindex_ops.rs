@@ -431,9 +431,7 @@ pub async fn drop_superseded_indexes(conn: &mut sqlx::PgConnection, epochs: &[i6
 
 #[cfg(test)]
 mod tests {
-    use tribal_test_utils::{
-        a_new_embedding_profile, serial_lock, test_context, truncate_all_tables,
-    };
+    use tribal_test_utils::{TestDb, a_new_embedding_profile};
 
     use super::*;
 
@@ -445,11 +443,9 @@ mod tests {
     /// Against a live database, since a real partial index must exist to enumerate.
     #[tokio::test]
     async fn test_prune_retries_a_superseded_profiles_lingering_index() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         // CREATE/DROP INDEX CONCURRENTLY cannot run inside a transaction, so use
-        // a committed raw connection; truncate cleans the committed rows at the
-        // end (every reindex worker test serialises on the same lock).
+        // a committed raw connection.
         let mut conn = ctx.raw_connection().await.expect("raw connection");
         let table = EmbeddingTable::Embeddings;
 
@@ -512,7 +508,5 @@ mod tests {
             !third.superseded_epochs.contains(&epoch),
             "a dropped index removes the epoch from the prunable set",
         );
-
-        truncate_all_tables(&mut conn).await;
     }
 }

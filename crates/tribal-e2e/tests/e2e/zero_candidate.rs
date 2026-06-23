@@ -60,5 +60,4 @@ async fn test_zero_candidate_extraction() {
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

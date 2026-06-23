@@ -322,9 +322,9 @@ mod tests {
     };
     use tribal_domain::{AGENT_THREAD_FORMAT_VERSION, AgentThreadRecordKind, GitRemote, TaskType};
     use tribal_test_utils::{
-        TracingCapture, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
+        TestDb, TracingCapture, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
         a_new_system_fingerprint, a_new_task, an_agent_definition, insert_prompt_version,
-        serial_lock, test_context, upsert_system_fingerprint,
+        upsert_system_fingerprint,
     };
 
     use super::*;
@@ -427,8 +427,7 @@ mod tests {
     /// re-check count carried forward; a plain timer stays a timer.
     #[tokio::test]
     async fn test_budget_wakes_carry_the_recheck_count_and_timer_wakes_stay_timers() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let mut conn = ctx.raw_connection().await.expect("raw connection");
 
         let (budget_task, budget_thread) = a_claimed_thread(&mut conn, "budget").await;
@@ -482,8 +481,6 @@ mod tests {
             .expect("present");
         assert_eq!(timer_wake.content()["cause"], "timer");
         assert!(timer_wake.content().get("unchanged_rechecks").is_none());
-
-        tribal_test_utils::truncate_all_tables(&mut conn).await;
     }
 
     /// The sweep cycle records its four convergence counts on one

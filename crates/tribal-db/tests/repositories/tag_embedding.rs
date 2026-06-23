@@ -2,7 +2,7 @@ use tribal_db::{
     PgTagEmbeddingRepository, PgTagRegistryRepository, TagEmbeddingRepository,
     TagRegistryRepository,
 };
-use tribal_test_utils::{a_new_tag_embedding, create_complete_profile, test_context};
+use tribal_test_utils::{TestDb, a_new_tag_embedding, create_complete_profile};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,8 +32,8 @@ fn make_test_embedding(dominant_index: usize) -> Vec<f32> {
 
 #[tokio::test]
 async fn test_batch_upsert_inserts_new_embeddings() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust", "python"]).await;
@@ -67,8 +67,8 @@ async fn test_batch_upsert_inserts_new_embeddings() {
 
 #[tokio::test]
 async fn test_batch_upsert_empty_is_no_op() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
     repo.batch_upsert(&mut txn, &[])
@@ -78,8 +78,8 @@ async fn test_batch_upsert_empty_is_no_op() {
 
 #[tokio::test]
 async fn test_batch_upsert_on_conflict_is_idempotent() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust"]).await;
@@ -125,8 +125,8 @@ async fn test_batch_upsert_on_conflict_is_idempotent() {
 
 #[tokio::test]
 async fn test_similarity_search_returns_match_above_threshold() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust"]).await;
@@ -159,8 +159,8 @@ async fn test_similarity_search_returns_match_above_threshold() {
 
 #[tokio::test]
 async fn test_similarity_search_excludes_below_threshold() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust"]).await;
@@ -191,8 +191,8 @@ async fn test_similarity_search_excludes_below_threshold() {
 
 #[tokio::test]
 async fn test_similarity_search_orders_by_similarity_then_usage_then_tag() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let tag_repo = PgTagRegistryRepository;
     let repo = PgTagEmbeddingRepository;
 
@@ -235,8 +235,8 @@ async fn test_similarity_search_orders_by_similarity_then_usage_then_tag() {
 
 #[tokio::test]
 async fn test_similarity_search_filters_by_profile() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust"]).await;
@@ -265,8 +265,8 @@ async fn test_similarity_search_filters_by_profile() {
 
 #[tokio::test]
 async fn test_similarity_search_respects_limit() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["alpha", "beta", "gamma"]).await;
@@ -307,8 +307,8 @@ async fn test_similarity_search_respects_limit() {
 
 #[tokio::test]
 async fn test_find_tags_missing_embeddings_returns_unembedded() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["alpha", "beta", "gamma"]).await;
@@ -336,8 +336,8 @@ async fn test_find_tags_missing_embeddings_returns_unembedded() {
 
 #[tokio::test]
 async fn test_find_tags_missing_embeddings_filters_by_profile() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust"]).await;
@@ -367,8 +367,8 @@ async fn test_find_tags_missing_embeddings_filters_by_profile() {
 
 #[tokio::test]
 async fn test_find_tags_missing_embeddings_returns_empty_when_all_embedded() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust", "python"]).await;

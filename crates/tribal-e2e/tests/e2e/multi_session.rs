@@ -274,5 +274,4 @@ async fn test_multi_session_isolation() {
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

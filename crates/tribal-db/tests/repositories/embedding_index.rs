@@ -1,14 +1,13 @@
 use tribal_db::{EmbeddingIndexRepository, EmbeddingTable, IndexState, PgEmbeddingIndexRepository};
 use tribal_domain::EmbeddingProfileId;
-use tribal_test_utils::{serial_lock, test_context};
+use tribal_test_utils::TestDb;
 
 /// The three-way catalogue check that makes a partial HNSW index build
 /// idempotent and crash-safe, against a live database: absent builds, valid
 /// skips, and an invalid (crashed) build is dropped and rebuilt.
 #[tokio::test]
 async fn test_ensure_partial_hnsw_three_way_check() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     // CREATE/DROP INDEX CONCURRENTLY cannot run inside a transaction, so use a
     // committed raw connection rather than the rollback test transaction.
     let mut conn = ctx.raw_connection().await.expect("raw connection");
