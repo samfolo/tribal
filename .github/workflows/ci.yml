@@ -50,20 +50,20 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      NEXTEST_PROFILE: ci
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers
-
-  e2e:
-    name: E2E Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p tribal-e2e
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest,just
+      # `just test` starts an ephemeral pgvector server, builds the migrated
+      # template, then runs the whole workspace under nextest (per-test
+      # database isolation) followed by doctests. Docker is preinstalled on
+      # ubuntu-latest.
+      - run: just test
 
   audit:
     name: Security & Licence Audit
