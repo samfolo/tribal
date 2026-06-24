@@ -241,9 +241,12 @@ impl<'a> StageMountBuilder<'a> {
         }
     }
 
-    /// Attaches a response to a mock builder. A [`MockResponse::DynamicFixture`]
-    /// computes its body from the request at serve time; every other response
-    /// uses a static template.
+    /// Attaches a response to a mock builder, dispatching on its kind: a
+    /// [`MockResponse::DynamicFixture`] computes its body from the request at
+    /// serve time; a [`MockResponse::Fixture`] uses a static success envelope;
+    /// a [`MockResponse::Error`] returns the bare status. The match is
+    /// exhaustive, so a new variant is a compile error here rather than a
+    /// runtime surprise.
     fn attach(
         &self,
         builder: MockBuilder,
@@ -259,27 +262,11 @@ impl<'a> StageMountBuilder<'a> {
                     finish_template(&resolver(req), provider, streaming, delay_ms)
                 })
             }
-            _ => builder.respond_with(self.to_template(response, streaming, delay_ms)),
-        }
-    }
-
-    fn to_template(
-        &self,
-        response: &MockResponse,
-        streaming: bool,
-        delay_ms: Option<u64>,
-    ) -> ResponseTemplate {
-        match response {
-            MockResponse::Fixture(v) => finish_template(v, self.provider, streaming, delay_ms),
-            MockResponse::DynamicFixture(_) => {
-                unreachable!("dynamic fixtures are served via the respond_with closure in `attach`")
+            MockResponse::Fixture(content) => {
+                builder.respond_with(finish_template(content, self.provider, streaming, delay_ms))
             }
             MockResponse::Error(status) => {
-                let template = ResponseTemplate::new(*status);
-                match delay_ms {
-                    Some(ms) => template.set_delay(std::time::Duration::from_millis(ms)),
-                    None => template,
-                }
+                builder.respond_with(apply_delay(ResponseTemplate::new(*status), delay_ms))
             }
         }
     }
@@ -307,6 +294,11 @@ fn finish_template(
     } else {
         ResponseTemplate::new(200).set_body_json(wrap_completion(content, provider))
     };
+    apply_delay(template, delay_ms)
+}
+
+/// Applies the configured response delay, if any.
+fn apply_delay(template: ResponseTemplate, delay_ms: Option<u64>) -> ResponseTemplate {
     match delay_ms {
         Some(ms) => template.set_delay(std::time::Duration::from_millis(ms)),
         None => template,
