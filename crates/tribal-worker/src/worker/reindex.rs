@@ -1281,7 +1281,7 @@ mod tests {
         EmbeddingMatcher, ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, Seed,
         TestDb, a_new_embedding_profile, a_new_knowledge_item, a_new_principal,
         a_provider_unavailable, a_rate_limited, an_embedding_profile, an_embedding_response,
-        an_overloaded, cluster_serial_lock, item,
+        an_overloaded, item,
     };
 
     use super::*;
@@ -1410,7 +1410,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_reindex_run_creates_building_profile_and_queued_run() {
-        let _cluster = cluster_serial_lock().await;
         let ctx = TestDb::new().await;
         let mut txn = ctx.begin().await.expect("begin_test");
         let principal = insert_principal(&mut txn, "user:reindex-create").await;
@@ -1434,7 +1433,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_reindex_run_no_ops_on_an_unchanged_target() {
-        let _cluster = cluster_serial_lock().await;
         let ctx = TestDb::new().await;
         let mut txn = ctx.begin().await.expect("begin_test");
         let principal = insert_principal(&mut txn, "user:reindex-noop").await;
@@ -1526,7 +1524,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_reindex_run_force_rebuilds_with_a_stamped_token_on_probe_drift() {
-        let _cluster = cluster_serial_lock().await;
         let ctx = TestDb::new().await;
         let mut txn = ctx.begin().await.expect("begin_test");
         let principal = insert_principal(&mut txn, "user:reindex-force").await;
@@ -1574,7 +1571,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_quarantine_over_a_quarter_of_items_exceeds_the_cap() {
-        let _cluster = cluster_serial_lock().await;
         let ctx = TestDb::new().await;
         let mut txn = ctx.begin().await.expect("begin_test");
         let principal = insert_principal(&mut txn, "user:reindex-qcap").await;
@@ -1623,7 +1619,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_reindex_target_probes_and_fingerprints() {
-        let _cluster = cluster_serial_lock().await;
         let probe_vector = vec![0.25_f32; 768];
         let mock: Arc<dyn EmbeddingProvider> = Arc::new(
             MockEmbeddingProvider::builder()
@@ -1660,7 +1655,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_reindex_run_is_single_flight() {
-        let _cluster = cluster_serial_lock().await;
         let ctx = TestDb::new().await;
         let mut txn = ctx.begin().await.expect("begin_test");
         let principal = insert_principal(&mut txn, "user:reindex-sf").await;
@@ -1680,7 +1674,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_reconcile_fails_an_orphan_building_profile() {
-        let _cluster = cluster_serial_lock().await;
         let ctx = TestDb::new().await;
         let mut txn = ctx.begin().await.expect("begin_test");
 
@@ -1708,7 +1701,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_reconcile_leaves_a_building_profile_a_live_run_owns() {
-        let _cluster = cluster_serial_lock().await;
         let ctx = TestDb::new().await;
         let mut txn = ctx.begin().await.expect("begin_test");
         let principal = insert_principal(&mut txn, "user:reindex-reconcile-live").await;
@@ -1737,7 +1729,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_dead_lettered_task_fails_the_run() {
-        let _cluster = cluster_serial_lock().await;
         let ctx = TestDb::new().await;
         let mut txn = ctx.begin().await.expect("begin_test");
         let principal = insert_principal(&mut txn, "user:reindex-deadletter").await;
@@ -1891,7 +1882,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limited_failure_records_the_class_and_honours_retry_after() {
-        let _cluster = cluster_serial_lock().await;
         let ctx_db = TestDb::new().await;
         let mut txn = ctx_db.begin().await.expect("begin_test");
         let (run, building, task) = a_claimed_tag_task(&mut txn, "user:reindex-rate-limited").await;
@@ -1931,7 +1921,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_overloaded_failure_records_the_overloaded_class() {
-        let _cluster = cluster_serial_lock().await;
         let ctx_db = TestDb::new().await;
         let mut txn = ctx_db.begin().await.expect("begin_test");
         let (run, building, task) = a_claimed_tag_task(&mut txn, "user:reindex-overloaded").await;
@@ -1971,7 +1960,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_drive_reindex_promotes_a_queued_run_and_enrols_the_backlog() {
-        let _cluster = cluster_serial_lock().await;
         let ctx = TestDb::new().await;
         let mut txn = ctx.begin().await.expect("begin_test");
 
@@ -2036,7 +2024,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_tasks_embeds_the_backlog_into_the_building_profile() {
-        let _cluster = cluster_serial_lock().await;
         let ctx_db = TestDb::new().await;
         let mut txn = ctx_db.begin().await.expect("begin_test");
 
@@ -2108,7 +2095,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_cutover_flips_the_building_profile_and_completes_the_run() {
-        let _cluster = cluster_serial_lock().await;
         let ctx_db = TestDb::new().await;
         // The cutover opens its own transactions for the xact-scoped cutover
         // lock, so the test needs a depth-tracked sqlx transaction (whose nested
@@ -2197,7 +2183,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_cutover_fails_the_run_when_the_probe_digest_drifts() {
-        let _cluster = cluster_serial_lock().await;
         let ctx_db = TestDb::new().await;
         let mut conn = ctx_db.raw_connection().await.expect("raw connection");
         let mut txn = sqlx::Connection::begin(&mut conn)
@@ -2301,7 +2286,6 @@ mod tests {
     /// without flipping, leaving the building profile unmarked and the run live.
     #[tokio::test]
     async fn test_cutover_does_not_activate_when_the_probe_endpoint_is_unavailable() {
-        let _cluster = cluster_serial_lock().await;
         let ctx_db = TestDb::new().await;
         let mut conn = ctx_db.raw_connection().await.expect("raw connection");
         let mut txn = sqlx::Connection::begin(&mut conn)
@@ -2401,7 +2385,6 @@ mod tests {
     /// provider; the stalled item stays unembedded and the run stays live.
     #[tokio::test]
     async fn test_catch_up_yields_when_a_transient_stalls_convergence() {
-        let _cluster = cluster_serial_lock().await;
         let ctx_db = TestDb::new().await;
         let mut setup = ctx_db.raw_connection().await.expect("setup connection");
 
@@ -2473,7 +2456,6 @@ mod tests {
     /// round-trip. The observer latches if any embed sees the exclusive held.
     #[tokio::test]
     async fn test_cutover_never_calls_the_provider_under_the_exclusive_lock() {
-        let _cluster = cluster_serial_lock().await;
         let ctx_db = TestDb::new().await;
         let mut setup = ctx_db.raw_connection().await.expect("setup connection");
 
@@ -2547,7 +2529,6 @@ mod tests {
     /// A two-connection interleaving against a live database.
     #[tokio::test]
     async fn test_cutover_drains_an_in_flight_ingest_commit() {
-        let _cluster = cluster_serial_lock().await;
         let ctx_db = TestDb::new().await;
 
         // Setup (committed, so all connections see it): an empty corpus with a
@@ -2668,7 +2649,6 @@ mod tests {
     /// competing run. A two-connection interleaving against a live database.
     #[tokio::test]
     async fn test_create_reindex_run_is_single_flight_across_sessions() {
-        let _cluster = cluster_serial_lock().await;
         let ctx_db = TestDb::new().await;
 
         let mut setup = ctx_db.raw_connection().await.expect("setup connection");

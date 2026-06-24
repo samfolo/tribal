@@ -35,7 +35,9 @@ pub(crate) const TEST_TTL_HOURS: i64 = 24;
 /// Restores a process-global env var on drop.
 ///
 /// The `set_var` / `remove_var` calls are wrapped in `unsafe` since Rust
-/// 1.81 because the POSIX `setenv`/`getenv` pair is not thread-safe.
+/// 1.81 because the POSIX `setenv`/`getenv` pair is not thread-safe. The test
+/// must therefore hold `env_lock` for the guard's lifetime; that process-wide
+/// serialisation is what makes the mutation sound.
 ///
 /// `#[must_use]` guards against the common mistake of constructing
 /// the guard without binding — that would mutate the env then drop
@@ -51,8 +53,10 @@ impl EnvGuard {
     /// Sets `key=value` for the lifetime of the guard.
     pub(crate) fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
         let previous = std::env::var_os(key);
-        // SAFETY: no foreign thread is reading these process-global env
-        // vars during the guarded scope.
+        // SAFETY: `setenv` is not thread-safe, but every test in this binary
+        // that touches the process environment holds `env_lock` for its whole
+        // body, serialising them. So no other thread reads or writes the
+        // environment during the guarded scope.
         unsafe {
             std::env::set_var(key, value);
         }
