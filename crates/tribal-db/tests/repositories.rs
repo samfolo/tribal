@@ -1,9 +1,9 @@
 //! Integration tests for repository implementations.
 //!
-//! All tests in this binary share a single testcontainers Postgres
-//! instance via [`tribal_test_utils::test_context`].  Each test uses
-//! [`TestTransaction`](tribal_test_utils::TestTransaction) for isolation
-//! via transaction rollback.
+//! Each test owns an isolated database via
+//! [`tribal_test_utils::TestDb`] — one [`tribal_test_utils::TestDb::new`]
+//! call per test — so tests are isolated at the database level rather than
+//! sharing a single instance.
 
 #[path = "repositories/advisory_lock.rs"]
 mod advisory_lock;

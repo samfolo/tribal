@@ -27,7 +27,7 @@ use tribal_db::{
     PrincipalRepository,
 };
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId};
-use tribal_test_utils::test_context;
+use tribal_test_utils::TestDb;
 use url::Url;
 
 const ISSUER: &str = "http://127.0.0.1:8080";
@@ -257,7 +257,7 @@ fn token_form(code: &str, client_id: &str, verifier: &str, client_secret: Option
 
 #[tokio::test]
 async fn test_handshake_dcr_full_round_trip() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
 
@@ -442,7 +442,7 @@ async fn test_handshake_dcr_full_round_trip() {
 
 #[tokio::test]
 async fn test_authorize_rejects_resource_mismatch() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
 
@@ -477,7 +477,7 @@ async fn test_authorize_rejects_resource_mismatch() {
 
 #[tokio::test]
 async fn test_authorize_rejects_uncatalogued_scope() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -505,7 +505,7 @@ async fn test_authorize_rejects_uncatalogued_scope() {
 
 #[tokio::test]
 async fn test_token_rejects_pkce_verifier_mismatch() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
 
@@ -527,7 +527,7 @@ async fn test_token_rejects_pkce_verifier_mismatch() {
 
 #[tokio::test]
 async fn test_token_requires_resource() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -554,7 +554,7 @@ async fn test_token_requires_resource() {
 
 #[tokio::test]
 async fn test_register_rejects_non_loopback_http_redirect() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     let runtime = runtime_config();
     let client = OAuthClient::new(runtime, pool);
@@ -572,7 +572,7 @@ async fn test_register_rejects_non_loopback_http_redirect() {
 
 #[tokio::test]
 async fn test_register_rejects_uncatalogued_scope() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     let runtime = runtime_config();
     let client = OAuthClient::new(runtime, pool);
@@ -593,7 +593,7 @@ async fn test_register_rejects_uncatalogued_scope() {
 
 #[tokio::test]
 async fn test_authorize_rejects_scope_beyond_registration() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -630,7 +630,7 @@ async fn test_authorize_rejects_scope_beyond_registration() {
 
 #[tokio::test]
 async fn test_authorize_accepts_scope_within_registration() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -662,7 +662,7 @@ async fn test_authorize_accepts_scope_within_registration() {
 
 #[tokio::test]
 async fn test_authorize_rejects_resource_with_fragment() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -689,7 +689,7 @@ async fn test_authorize_rejects_resource_with_fragment() {
 
 #[tokio::test]
 async fn test_authorize_missing_client_id_returns_invalid_request() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -709,7 +709,7 @@ async fn test_authorize_missing_client_id_returns_invalid_request() {
 
 #[tokio::test]
 async fn test_token_missing_code_verifier_returns_invalid_request() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -734,7 +734,7 @@ async fn test_token_missing_code_verifier_returns_invalid_request() {
 
 #[tokio::test]
 async fn test_register_missing_redirect_uris_returns_invalid_redirect_uri() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     let runtime = runtime_config();
     let client = OAuthClient::new(runtime, pool);
@@ -753,7 +753,7 @@ async fn test_register_missing_redirect_uris_returns_invalid_redirect_uri() {
 
 #[tokio::test]
 async fn test_register_filters_unsupported_grant_types() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     let runtime = runtime_config();
     let client = OAuthClient::new(runtime, pool);
@@ -784,7 +784,7 @@ async fn test_register_filters_unsupported_grant_types() {
 
 #[tokio::test]
 async fn test_register_rejects_unsupported_response_types() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     let runtime = runtime_config();
     let client = OAuthClient::new(runtime, pool);
@@ -805,7 +805,7 @@ async fn test_register_rejects_unsupported_response_types() {
 
 #[tokio::test]
 async fn test_register_rejects_malformed_json() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     let runtime = runtime_config();
     let client = OAuthClient::new(runtime, pool);
@@ -829,7 +829,7 @@ async fn test_register_rejects_malformed_json() {
 
 #[tokio::test]
 async fn test_token_rejects_duplicate_parameter() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -857,7 +857,7 @@ async fn test_token_rejects_duplicate_parameter() {
 
 #[tokio::test]
 async fn test_authorize_rejects_duplicate_parameter() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -878,7 +878,7 @@ async fn test_authorize_rejects_duplicate_parameter() {
 
 #[tokio::test]
 async fn test_token_omitted_scope_falls_back_to_registration() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -929,7 +929,7 @@ async fn test_token_omitted_scope_falls_back_to_registration() {
 
 #[tokio::test]
 async fn test_token_blank_scope_falls_back_to_registration() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -979,7 +979,7 @@ async fn test_token_blank_scope_falls_back_to_registration() {
 
 #[tokio::test]
 async fn test_token_empty_registered_scope_resolves_to_default() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -1028,7 +1028,7 @@ async fn test_token_empty_registered_scope_resolves_to_default() {
 
 #[tokio::test]
 async fn test_consent_page_shows_explicit_requested_scope() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -1077,7 +1077,7 @@ async fn test_consent_page_shows_explicit_requested_scope() {
 
 #[tokio::test]
 async fn test_authorize_omits_redirect_uri_with_single_registered() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -1102,7 +1102,7 @@ async fn test_authorize_omits_redirect_uri_with_single_registered() {
 
 #[tokio::test]
 async fn test_authorize_rejects_omitted_redirect_uri_with_multiple_registered() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -1135,7 +1135,7 @@ async fn test_authorize_rejects_omitted_redirect_uri_with_multiple_registered() 
 
 #[tokio::test]
 async fn test_authorize_rejects_unregistered_redirect_uri() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -1157,7 +1157,7 @@ async fn test_authorize_rejects_unregistered_redirect_uri() {
 
 #[tokio::test]
 async fn test_token_rejects_missing_client_secret() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -1177,7 +1177,7 @@ async fn test_token_rejects_missing_client_secret() {
 
 #[tokio::test]
 async fn test_token_rejects_wrong_client_secret() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -1201,7 +1201,7 @@ async fn test_token_rejects_wrong_client_secret() {
 
 #[tokio::test]
 async fn test_token_basic_client_rejected_when_secret_only_in_form() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -1224,7 +1224,7 @@ async fn test_token_basic_client_rejected_when_secret_only_in_form() {
 
 #[tokio::test]
 async fn test_token_post_client_succeeds_with_form_secret() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -1243,7 +1243,7 @@ async fn test_token_post_client_succeeds_with_form_secret() {
 
 #[tokio::test]
 async fn test_concurrent_code_exchange_has_one_winner() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -1275,7 +1275,7 @@ async fn test_concurrent_code_exchange_has_one_winner() {
 
 #[tokio::test]
 async fn test_token_rejects_expired_authorization_code() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     let principal_id = ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -1314,7 +1314,7 @@ async fn test_token_rejects_expired_authorization_code() {
 
 #[tokio::test]
 async fn test_token_rejected_by_server_with_different_audience() {
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
@@ -1362,7 +1362,7 @@ async fn test_authorization_code_survives_transaction_rollback() {
     // thing back so the code stays exchangeable. This pins the database
     // guarantee that property relies on: a consume inside a rolled-back
     // transaction does not durably mark the code used.
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();
     let principal_id = ensure_local_principal(&pool).await;
 

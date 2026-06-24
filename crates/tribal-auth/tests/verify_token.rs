@@ -12,8 +12,8 @@ use tribal_db::{
 };
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId, full_access_scopes, stdio_principal_scopes};
 use tribal_test_utils::{
-    MockAuthTokenRepository, MockPrincipalRepository, TEST_PRINCIPAL_KEY, a_not_found, a_principal,
-    a_query_failed, an_auth_token, test_context,
+    MockAuthTokenRepository, MockPrincipalRepository, TEST_PRINCIPAL_KEY, TestDb, a_not_found,
+    a_principal, a_query_failed, an_auth_token,
 };
 
 // ---------------------------------------------------------------------------
@@ -52,8 +52,8 @@ async fn test_verify_token_valid() {
             .build(),
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let result = authenticator
         .verify_token(&mut tx, "raw-token")
@@ -88,8 +88,8 @@ async fn test_verify_token_preserves_narrowed_scopes() {
             .build(),
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let result = authenticator
         .verify_token(&mut tx, "raw-token")
@@ -108,8 +108,8 @@ async fn test_verify_token_invalid_hash() {
         MockPrincipalRepository::builder().build(),
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let err = authenticator
         .verify_token(&mut tx, "unknown-token")
@@ -133,8 +133,8 @@ async fn test_verify_token_revoked() {
         MockPrincipalRepository::builder().build(),
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let err = authenticator
         .verify_token(&mut tx, "revoked-token")
@@ -157,8 +157,8 @@ async fn test_verify_token_expired() {
         MockPrincipalRepository::builder().build(),
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let err = authenticator
         .verify_token(&mut tx, "expired-token")
@@ -182,8 +182,8 @@ async fn test_verify_token_revoked_and_expired() {
         MockPrincipalRepository::builder().build(),
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let err = authenticator
         .verify_token(&mut tx, "revoked-and-expired-token")
@@ -210,8 +210,8 @@ async fn test_verify_token_principal_not_found() {
             .build(),
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let err = authenticator
         .verify_token(&mut tx, "orphaned-token")
@@ -233,8 +233,8 @@ async fn test_verify_token_find_by_hash_database_error() {
         MockPrincipalRepository::builder().build(),
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let err = authenticator
         .verify_token(&mut tx, "any-token")
@@ -259,8 +259,8 @@ async fn test_verify_token_find_by_id_database_error() {
             .build(),
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let err = authenticator
         .verify_token(&mut tx, "valid-but-db-fails")
@@ -309,8 +309,8 @@ async fn test_verify_token_audience_match_passes() {
         "http://127.0.0.1:8080/mcp",
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     authenticator
         .verify_token(&mut tx, "raw-token")
@@ -333,8 +333,8 @@ async fn test_verify_token_audience_mismatch_rejected() {
         "http://127.0.0.1:8080/mcp",
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let err = authenticator
         .verify_token(&mut tx, "raw-token")
@@ -362,8 +362,8 @@ async fn test_verify_token_empty_audience_rejected_when_binding_configured() {
         "http://127.0.0.1:8080/mcp",
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let err = authenticator
         .verify_token(&mut tx, "raw-token")
@@ -392,8 +392,8 @@ async fn test_resolve_stdio_principal_success() {
             .build(),
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let result = authenticator
         .resolve_stdio_principal(&mut tx)
@@ -415,8 +415,8 @@ async fn test_resolve_stdio_principal_missing() {
             .build(),
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let err = authenticator
         .resolve_stdio_principal(&mut tx)
@@ -436,8 +436,8 @@ async fn test_resolve_stdio_principal_database_error() {
             .build(),
     );
 
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let err = authenticator
         .resolve_stdio_principal(&mut tx)
@@ -453,8 +453,8 @@ async fn test_resolve_stdio_principal_database_error() {
 
 #[tokio::test]
 async fn test_verify_token_integration() {
-    let ctx = test_context().await;
-    let mut tx = ctx.begin_test().await.expect("begin");
+    let ctx = TestDb::new().await;
+    let mut tx = ctx.begin().await.expect("begin");
 
     let principal = PgPrincipalRepository
         .insert(

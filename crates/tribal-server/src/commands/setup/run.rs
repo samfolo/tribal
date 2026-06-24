@@ -219,9 +219,7 @@ pub async fn run_async(
 #[allow(clippy::result_large_err)]
 mod tests {
     use figment::Jail;
-    use tribal_test_utils::{
-        assert_text_snapshot, count_prompt_versions, serial_lock, test_context, truncate_all_tables,
-    };
+    use tribal_test_utils::{TestDb, assert_text_snapshot, count_prompt_versions};
 
     use super::*;
 
@@ -255,17 +253,12 @@ mod tests {
     #[test]
     fn test_setup_embedded_omits_prompts_directory_line() {
         let rt = test_runtime();
-        let _serial_guard = rt.block_on(serial_lock());
         Jail::expect_with(|jail| {
             let xdg = tempfile::tempdir().expect("xdg tempdir");
             jail.set_env("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf8 xdg"));
             rt.block_on(async {
-                let ctx = test_context().await;
+                let ctx = TestDb::new().await;
                 let pool = ctx.create_pool().await.expect("create pool");
-
-                let mut conn = pool.acquire().await.expect("acquire connection");
-                truncate_all_tables(&mut conn).await;
-                drop(conn);
 
                 let config_dir = tempfile::tempdir().expect("config dir");
                 let config_path = config_dir.path().join("tribal.yaml");
@@ -313,17 +306,12 @@ mod tests {
     #[test]
     fn test_setup_disk_emits_prompts_directory_line_and_writes_files() {
         let rt = test_runtime();
-        let _serial_guard = rt.block_on(serial_lock());
         Jail::expect_with(|jail| {
             let xdg = tempfile::tempdir().expect("xdg tempdir");
             jail.set_env("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf8 xdg"));
             rt.block_on(async {
-                let ctx = test_context().await;
+                let ctx = TestDb::new().await;
                 let pool = ctx.create_pool().await.expect("create pool");
-
-                let mut conn = pool.acquire().await.expect("acquire connection");
-                truncate_all_tables(&mut conn).await;
-                drop(conn);
 
                 let prompts_dir = tempfile::tempdir().expect("prompts dir");
                 let config_dir = tempfile::tempdir().expect("config dir");
@@ -429,17 +417,11 @@ mod tests {
     #[test]
     fn test_setup_stderr_default_principal_matches_snapshot() {
         let rt = test_runtime();
-        let _serial_guard = rt.block_on(serial_lock());
         Jail::expect_with(|jail| {
             let xdg = tempfile::tempdir().expect("xdg tempdir");
             jail.set_env("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf8 xdg"));
             rt.block_on(async {
-                let ctx = test_context().await;
-                let pool = ctx.create_pool().await.expect("create pool");
-
-                let mut conn = pool.acquire().await.expect("acquire connection");
-                truncate_all_tables(&mut conn).await;
-                drop(conn);
+                let ctx = TestDb::new().await;
 
                 let config_dir = tempfile::tempdir().expect("config dir");
                 let config_path = config_dir.path().join("tribal.yaml");
@@ -485,17 +467,11 @@ mod tests {
     #[test]
     fn test_setup_stderr_explicit_principal_matches_snapshot() {
         let rt = test_runtime();
-        let _serial_guard = rt.block_on(serial_lock());
         Jail::expect_with(|jail| {
             let xdg = tempfile::tempdir().expect("xdg tempdir");
             jail.set_env("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf8 xdg"));
             rt.block_on(async {
-                let ctx = test_context().await;
-                let pool = ctx.create_pool().await.expect("create pool");
-
-                let mut conn = pool.acquire().await.expect("acquire connection");
-                truncate_all_tables(&mut conn).await;
-                drop(conn);
+                let ctx = TestDb::new().await;
 
                 let config_dir = tempfile::tempdir().expect("config dir");
                 let config_path = config_dir.path().join("tribal.yaml");

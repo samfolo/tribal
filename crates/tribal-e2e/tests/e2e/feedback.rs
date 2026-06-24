@@ -150,5 +150,4 @@ async fn test_feedback_after_discovery() {
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

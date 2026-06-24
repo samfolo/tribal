@@ -1,4 +1,4 @@
-//! Integration test: full [`TestContext`] lifecycle.
+//! Integration test: full [`TestDb`] lifecycle.
 //!
 //! This test lives in `tests/` (separate binary) because it requires a
 //! Docker daemon and starts a real pgvector container via testcontainers.
@@ -9,7 +9,7 @@ use sqlx::Row;
 
 #[tokio::test]
 async fn test_context_starts_container_and_runs_migrations() {
-    let ctx = tribal_test_utils::test_context().await;
+    let ctx = tribal_test_utils::TestDb::new().await;
 
     // Verify the pool is connected by running a simple query.
     let row = sqlx::query("SELECT 1 AS value")
@@ -23,7 +23,7 @@ async fn test_context_starts_container_and_runs_migrations() {
 
 #[tokio::test]
 async fn test_context_migrations_create_expected_tables() {
-    let ctx = tribal_test_utils::test_context().await;
+    let ctx = tribal_test_utils::TestDb::new().await;
 
     let row = sqlx::query(
         "SELECT EXISTS (
@@ -41,7 +41,7 @@ async fn test_context_migrations_create_expected_tables() {
 
 #[tokio::test]
 async fn test_context_migrations_enable_pgvector_extension() {
-    let ctx = tribal_test_utils::test_context().await;
+    let ctx = tribal_test_utils::TestDb::new().await;
 
     let row = sqlx::query(
         "SELECT EXISTS (

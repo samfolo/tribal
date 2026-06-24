@@ -24,7 +24,7 @@ mod tests {
     use tribal_db::{MigrationHeadStatus, MigrationRepository};
 
     use super::*;
-    use crate::test_context;
+    use crate::TestDb;
 
     #[tokio::test]
     async fn test_current_head_matches_returns_canned_status() {
@@ -32,8 +32,8 @@ mod tests {
             .on_current_head_matches(MigrationHeadStatus::Matches, None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let status = mock
             .current_head_matches(&mut tx, 42)
@@ -48,8 +48,8 @@ mod tests {
             .on_current_head_matches(MigrationHeadStatus::Matches, None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let _ = mock.current_head_matches(&mut tx, 7).await;
 

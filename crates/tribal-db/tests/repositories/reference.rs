@@ -4,7 +4,7 @@ use tribal_db::{
 };
 use tribal_domain::{GitRemote, KnowledgeItemId, PrincipalId, ProjectId, ReferenceKind};
 use tribal_test_utils::{
-    a_new_knowledge_item, a_new_principal, a_new_project, a_new_reference, test_context,
+    TestDb, a_new_knowledge_item, a_new_principal, a_new_project, a_new_reference,
 };
 
 // ---------------------------------------------------------------------------
@@ -63,8 +63,8 @@ async fn setup_prerequisites(
 
 #[tokio::test]
 async fn test_insert_returns_populated_reference() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgReferenceRepository;
 
     let (_, project_id, item_id) = setup_prerequisites(&mut txn, "ref-insert-pop").await;
@@ -92,8 +92,8 @@ async fn test_insert_returns_populated_reference() {
 
 #[tokio::test]
 async fn test_insert_with_none_optional_fields() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgReferenceRepository;
 
     let (_, project_id, item_id) = setup_prerequisites(&mut txn, "ref-insert-none").await;
@@ -112,8 +112,8 @@ async fn test_insert_with_none_optional_fields() {
 
 #[tokio::test]
 async fn test_insert_generates_prefixed_id() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgReferenceRepository;
 
     let (_, project_id, item_id) = setup_prerequisites(&mut txn, "ref-insert-prefix").await;
@@ -138,8 +138,8 @@ async fn test_insert_generates_prefixed_id() {
 
 #[tokio::test]
 async fn test_find_by_knowledge_item_id_returns_references() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgReferenceRepository;
 
     let (_, project_id, item_id) = setup_prerequisites(&mut txn, "ref-find-item").await;
@@ -171,8 +171,8 @@ async fn test_find_by_knowledge_item_id_returns_references() {
 
 #[tokio::test]
 async fn test_find_by_knowledge_item_id_returns_empty_vec_when_none_exist() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgReferenceRepository;
 
     let found = repo
@@ -189,8 +189,8 @@ async fn test_find_by_knowledge_item_id_returns_empty_vec_when_none_exist() {
 
 #[tokio::test]
 async fn test_find_by_knowledge_item_ids_returns_references_for_multiple_items() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgReferenceRepository;
 
     let (principal_id, project_id, item_a) = setup_prerequisites(&mut txn, "ref-find-ids-a").await;
@@ -243,8 +243,8 @@ async fn test_find_by_knowledge_item_ids_returns_references_for_multiple_items()
 
 #[tokio::test]
 async fn test_find_by_knowledge_item_ids_empty_input_returns_empty_vec() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgReferenceRepository;
 
     let found = repo
@@ -257,8 +257,8 @@ async fn test_find_by_knowledge_item_ids_empty_input_returns_empty_vec() {
 
 #[tokio::test]
 async fn test_find_by_knowledge_item_ids_omits_items_without_references() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgReferenceRepository;
 
     let (principal_id, project_id, item_with_ref) =

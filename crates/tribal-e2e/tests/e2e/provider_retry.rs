@@ -130,5 +130,4 @@ async fn test_provider_failure_and_retry() {
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

@@ -8,12 +8,11 @@ use super::{
 /// registers new tags, and records a Created triage result.
 #[tokio::test]
 async fn test_triage_novel_path() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "triage-novel").await;
+        setup_prerequisites(&ctx, "triage-novel").await;
 
     let candidates = vec![
         a_candidate()
@@ -28,7 +27,7 @@ async fn test_triage_novel_path() {
     ];
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_triage_job(
             &mut conn,
             principal_id,
@@ -77,7 +76,7 @@ async fn test_triage_novel_path() {
     assert_eq!(task.status(), TaskStatus::Completed);
 
     // Verify triage result with Created outcome.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let triage_result = PgTriageResultRepository
         .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
         .await
@@ -138,8 +137,6 @@ async fn test_triage_novel_path() {
         tag_names.contains(&"performance"),
         "tag registry should contain 'performance': {tag_names:?}",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies the novel commit path while a reindex is live: with a queued reindex
@@ -150,19 +147,18 @@ async fn test_triage_novel_path() {
 /// path's outcome unchanged.
 #[tokio::test]
 async fn test_triage_novel_commits_with_a_live_reindex() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "triage-novel-reindex").await;
+        setup_prerequisites(&ctx, "triage-novel-reindex").await;
 
     // Stand up a building profile and a queued reindex run so the commit path
     // sees a live reindex and takes the shared cutover lock. The building
     // profile is a higher epoch but not yet complete, so the active profile is
     // still the genesis the embedding is written against.
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let building = PgEmbeddingProfileRepository
             .insert(&mut conn, &a_new_embedding_profile().build())
             .await
@@ -188,7 +184,7 @@ async fn test_triage_novel_commits_with_a_live_reindex() {
     ];
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_triage_job(
             &mut conn,
             principal_id,
@@ -237,7 +233,7 @@ async fn test_triage_novel_commits_with_a_live_reindex() {
         "novel commit completes while a reindex is live",
     );
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let triage_result = PgTriageResultRepository
         .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
         .await
@@ -259,8 +255,6 @@ async fn test_triage_novel_commits_with_a_live_reindex() {
         emb.is_some(),
         "embedding is written against the active profile",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies the duplicate path: the triage stage classifies a candidate
@@ -268,13 +262,12 @@ async fn test_triage_novel_commits_with_a_live_reindex() {
 /// and records a Duplicate triage result.
 #[tokio::test]
 async fn test_triage_duplicate_path() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     // Seed an existing knowledge item with an embedding via the Seed
     // builder so semantic search returns it as a match.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let seed_result = Seed::new()
         .define_project("proj", "git@github.com:test/triage-dup.git")
         .define_principal("user", "user:triage-duplicate")
@@ -366,7 +359,7 @@ async fn test_triage_duplicate_path() {
     assert_eq!(task.status(), TaskStatus::Completed);
 
     // Verify triage result with Duplicate outcome.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let triage_result = PgTriageResultRepository
         .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
         .await
@@ -388,8 +381,6 @@ async fn test_triage_duplicate_path() {
         .await
         .expect("find observations");
     assert_eq!(observations.len(), 1, "should have one observation");
-
-    teardown(ctx).await;
 }
 
 /// Verifies the downgrade path end-to-end: a duplicate whose matched index
@@ -398,13 +389,12 @@ async fn test_triage_duplicate_path() {
 /// the resolve-before-tag-resolution ordering in `run_triage`.
 #[tokio::test]
 async fn test_triage_duplicate_out_of_range_downgrades_to_novel() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     // Seed an existing item so semantic search returns one hit at index 0;
     // the model references an out-of-range index instead.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let seed_result = Seed::new()
         .define_project("proj", "git@github.com:test/triage-downgrade.git")
         .define_principal("user", "user:triage-downgrade")
@@ -498,7 +488,7 @@ async fn test_triage_duplicate_out_of_range_downgrades_to_novel() {
     // the `resolved_tags` panic.
     assert_eq!(task.status(), TaskStatus::Completed);
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let triage_result = PgTriageResultRepository
         .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
         .await
@@ -525,25 +515,22 @@ async fn test_triage_duplicate_out_of_range_downgrades_to_novel() {
         observations.is_empty(),
         "downgrade must not observe the seeded item",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that an unparseable LLM response causes the triage task
 /// to be requeued with a ParseError error kind.
 #[tokio::test]
 async fn test_triage_parse_failure() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "triage-parse-failure").await;
+        setup_prerequisites(&ctx, "triage-parse-failure").await;
 
     let candidates = vec![a_candidate().build()];
 
     let (_job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_triage_job(
             &mut conn,
             principal_id,
@@ -618,8 +605,6 @@ async fn test_triage_parse_failure() {
         task.error_message().is_some(),
         "error message should be set",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies the idempotency guard: when a triage result already exists
@@ -627,17 +612,16 @@ async fn test_triage_parse_failure() {
 /// calling any providers, and the task is completed.
 #[tokio::test]
 async fn test_triage_idempotency_skip() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "triage-idempotency").await;
+        setup_prerequisites(&ctx, "triage-idempotency").await;
 
     let candidates = vec![a_candidate().build()];
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let (job_id, task_id) = seed_triage_job(
             &mut conn,
             principal_id,
@@ -721,7 +705,7 @@ async fn test_triage_idempotency_skip() {
     );
 
     // Verify no additional triage results were created.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let results = PgTriageResultRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -731,8 +715,6 @@ async fn test_triage_idempotency_skip() {
         1,
         "should have exactly one triage result (pre-seeded)",
     );
-
-    teardown(ctx).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -752,17 +734,16 @@ fn make_test_embedding(dominant_index: usize) -> Vec<f32> {
 /// embeddings for genuinely new tags.
 #[tokio::test]
 async fn test_triage_novel_semantic_tag_resolution() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "triage-semantic-tags").await;
+        setup_prerequisites(&ctx, "triage-semantic-tags").await;
 
     // Pre-seed "rust" in the tag registry with an embedding so semantic
     // matching can find it.
     let rust_embedding = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         Seed::new()
             .define_project("tag-proj", "git@github.com:test/semantic-tags.git")
             .define_principal("tag-user", "user:semantic-tags")
@@ -786,7 +767,7 @@ async fn test_triage_novel_semantic_tag_resolution() {
     ];
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_triage_job(
             &mut conn,
             principal_id,
@@ -837,7 +818,7 @@ async fn test_triage_novel_semantic_tag_resolution() {
 
     assert_eq!(task.status(), TaskStatus::Completed);
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let triage_result = PgTriageResultRepository
         .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
         .await
@@ -895,8 +876,6 @@ async fn test_triage_novel_semantic_tag_resolution() {
         !missing.contains(&"performance".to_owned()),
         "performance should have an embedding: missing = {missing:?}",
     );
-
-    teardown(ctx).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -907,13 +886,12 @@ async fn test_triage_novel_semantic_tag_resolution() {
 /// registry that lack them.
 #[tokio::test]
 async fn test_startup_backfill_embeds_missing_tags() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     // Pre-seed tags without embeddings.
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         Seed::new()
             .define_project("proj", "git@github.com:test/backfill.git")
             .define_principal("user", "user:backfill")
@@ -936,7 +914,7 @@ async fn test_startup_backfill_embeds_missing_tags() {
 
     worker.startup().await.expect("startup");
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let profile_id = active_embedding_profile(&mut conn).await.id();
     let missing = PgTagEmbeddingRepository
         .find_tags_missing_embeddings(&mut conn, profile_id)
@@ -946,21 +924,18 @@ async fn test_startup_backfill_embeds_missing_tags() {
         missing.is_empty(),
         "all tags should have embeddings after backfill: missing = {missing:?}",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that startup backfill is idempotent: tags that already have
 /// embeddings are not re-embedded.
 #[tokio::test]
 async fn test_startup_backfill_skips_already_embedded_tags() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     // Pre-seed a tag WITH its embedding.
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         Seed::new()
             .define_project("proj", "git@github.com:test/backfill-skip.git")
             .define_principal("user", "user:backfill-skip")
@@ -1000,8 +975,6 @@ async fn test_startup_backfill_skips_already_embedded_tags() {
         0,
         "embedding provider should not be called for already-embedded tags",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies exact match precedence: when a suggested tag matches an
@@ -1009,16 +982,15 @@ async fn test_startup_backfill_skips_already_embedded_tags() {
 /// called for tag resolution — only for the candidate content embedding.
 #[tokio::test]
 async fn test_triage_exact_match_skips_tag_embedding() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "triage-exact-match").await;
+        setup_prerequisites(&ctx, "triage-exact-match").await;
 
     // Pre-seed "rust" in the registry with an embedding.
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         Seed::new()
             .define_project("tag-proj", "git@github.com:test/exact-match.git")
             .define_principal("tag-user", "user:exact-match")
@@ -1038,7 +1010,7 @@ async fn test_triage_exact_match_skips_tag_embedding() {
     ];
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_triage_job(
             &mut conn,
             principal_id,
@@ -1101,7 +1073,7 @@ async fn test_triage_exact_match_skips_tag_embedding() {
     );
 
     // Knowledge item should have the exact-matched tag.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let triage_result = PgTriageResultRepository
         .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
         .await
@@ -1136,8 +1108,6 @@ async fn test_triage_exact_match_skips_tag_embedding() {
         1,
         "usage_count should be incremented for exact match",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that an embedding provider failure during tag resolution
@@ -1145,12 +1115,11 @@ async fn test_triage_exact_match_skips_tag_embedding() {
 /// requeued for retry.
 #[tokio::test]
 async fn test_triage_tag_resolution_provider_failure_retries() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "triage-tag-provider-fail").await;
+        setup_prerequisites(&ctx, "triage-tag-provider-fail").await;
 
     // Candidate with a tag that won't exact-match anything, forcing
     // semantic resolution and an embedding call that will fail.
@@ -1162,7 +1131,7 @@ async fn test_triage_tag_resolution_provider_failure_retries() {
     ];
 
     let (_job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_triage_job(
             &mut conn,
             principal_id,
@@ -1222,8 +1191,6 @@ async fn test_triage_tag_resolution_provider_failure_retries() {
         task.error_message().is_some(),
         "error message should be set",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies multi-match determinism: when two tags in the registry have
@@ -1231,17 +1198,16 @@ async fn test_triage_tag_resolution_provider_failure_retries() {
 /// is chosen deterministically by `resolve_tags`.
 #[tokio::test]
 async fn test_triage_semantic_match_determinism() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "triage-determinism").await;
+        setup_prerequisites(&ctx, "triage-determinism").await;
 
     // Seed two tags with identical embeddings. Give "beta" a higher
     // usage_count so the tie-breaker is exercised.
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         Seed::new()
             .define_project("tag-proj", "git@github.com:test/determinism.git")
             .define_principal("tag-user", "user:determinism")
@@ -1294,7 +1260,7 @@ async fn test_triage_semantic_match_determinism() {
     ];
 
     let (job_id, task_id) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_triage_job(
             &mut conn,
             principal_id,
@@ -1342,7 +1308,7 @@ async fn test_triage_semantic_match_determinism() {
 
     assert_eq!(task.status(), TaskStatus::Completed);
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let triage_result = PgTriageResultRepository
         .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
         .await
@@ -1377,8 +1343,6 @@ async fn test_triage_semantic_match_determinism() {
         "tags should NOT contain 'unknown-tag' (resolved to 'beta'): {:?}",
         item.tags(),
     );
-
-    teardown(ctx).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1389,12 +1353,11 @@ async fn test_triage_semantic_match_determinism() {
 /// creates a relation task and transitions the job to `Relating`.
 #[tokio::test]
 async fn test_triage_fan_in_all_complete() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "fan-in-all-complete").await;
+        setup_prerequisites(&ctx, "fan-in-all-complete").await;
 
     let candidates = vec![
         a_candidate()
@@ -1408,7 +1371,7 @@ async fn test_triage_fan_in_all_complete() {
     ];
 
     let (job_id, task_ids) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_multiple_triage_tasks(
             &mut conn,
             principal_id,
@@ -1471,7 +1434,7 @@ async fn test_triage_fan_in_all_complete() {
     assert_eq!(job.status(), JobStatus::Relating);
 
     // Verify a relation task was created.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let tasks = PgTaskRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -1485,8 +1448,6 @@ async fn test_triage_fan_in_all_complete() {
         1,
         "exactly one relation task should exist",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that fan-in fires when some triage tasks complete and others
@@ -1497,13 +1458,12 @@ async fn test_triage_fan_in_all_complete() {
 /// response completes; the other fails and dead-letters immediately.
 #[tokio::test]
 async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "fan-in-mixed").await;
+        setup_prerequisites(&ctx, "fan-in-mixed").await;
 
     let candidates = vec![
         a_candidate()
@@ -1517,7 +1477,7 @@ async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
     ];
 
     let job_id = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let (job_id, task_ids) = seed_multiple_triage_tasks(
             &mut conn,
             principal_id,
@@ -1576,7 +1536,7 @@ async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
 
     assert_eq!(job.status(), JobStatus::Relating);
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let tasks = PgTaskRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -1610,20 +1570,17 @@ async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
         1,
         "exactly one relation task should exist",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies the `ON CONFLICT DO NOTHING` guard: even when multiple triage
 /// tasks race to fan-in, exactly one relation task is created.
 #[tokio::test]
 async fn test_triage_fan_in_multi_task_exactly_one_relation() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "fan-in-one-relation").await;
+        setup_prerequisites(&ctx, "fan-in-one-relation").await;
 
     let candidates = vec![
         a_candidate()
@@ -1641,7 +1598,7 @@ async fn test_triage_fan_in_multi_task_exactly_one_relation() {
     ];
 
     let (job_id, task_ids) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_multiple_triage_tasks(
             &mut conn,
             principal_id,
@@ -1706,7 +1663,7 @@ async fn test_triage_fan_in_multi_task_exactly_one_relation() {
     token.cancel();
     let _ = handle.await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let tasks = PgTaskRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -1720,20 +1677,17 @@ async fn test_triage_fan_in_multi_task_exactly_one_relation() {
         1,
         "exactly one relation task should exist despite multiple fan-in attempts",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies the healing sweep: a job stuck in `Triaging` with all triage
 /// tasks terminal but no relation task is healed by the reclaim loop.
 #[tokio::test]
 async fn test_heal_stuck_triaging_job() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "heal-stuck-triaging").await;
+        setup_prerequisites(&ctx, "heal-stuck-triaging").await;
 
     let candidates = vec![
         a_candidate()
@@ -1747,7 +1701,7 @@ async fn test_heal_stuck_triaging_job() {
     ];
 
     let job_id = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let (job_id, _task_ids) = seed_multiple_triage_tasks(
             &mut conn,
             principal_id,
@@ -1782,7 +1736,7 @@ async fn test_heal_stuck_triaging_job() {
 
     assert_eq!(job.status(), JobStatus::Relating);
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let tasks = PgTaskRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -1796,20 +1750,17 @@ async fn test_heal_stuck_triaging_job() {
         1,
         "healing sweep should create exactly one relation task",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that fan-in fires correctly for a single-candidate batch
 /// (one triage task).
 #[tokio::test]
 async fn test_triage_fan_in_single_candidate_batch() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "fan-in-single").await;
+        setup_prerequisites(&ctx, "fan-in-single").await;
 
     let candidates = vec![
         a_candidate()
@@ -1819,7 +1770,7 @@ async fn test_triage_fan_in_single_candidate_batch() {
     ];
 
     let (job_id, task_ids) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_multiple_triage_tasks(
             &mut conn,
             principal_id,
@@ -1870,7 +1821,7 @@ async fn test_triage_fan_in_single_candidate_batch() {
 
     assert_eq!(job.status(), JobStatus::Relating);
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let tasks = PgTaskRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -1884,8 +1835,6 @@ async fn test_triage_fan_in_single_candidate_batch() {
         1,
         "exactly one relation task should exist (fan-in single candidate)",
     );
-
-    teardown(ctx).await;
 }
 
 /// A resumed triage attempt resolves the model's positional answer
@@ -1894,11 +1843,10 @@ async fn test_triage_fan_in_single_candidate_batch() {
 /// the original cannot become the duplicate target.
 #[tokio::test]
 async fn test_resumed_triage_resolves_against_the_recorded_slots() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let seed_result = Seed::new()
         .define_project("proj", "git@github.com:test/triage-resume.git")
         .define_principal("user", "user:triage-resume")
@@ -1991,7 +1939,7 @@ async fn test_resumed_triage_resolves_against_the_recorded_slots() {
     // retry: a decoy item whose vector equals the candidate's lands at
     // the top of any fresh search.
     poll_task_requeued_with_retry(&pool, task_id, POLL_SETTLE).await;
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let decoy = PgKnowledgeItemRepository
         .insert(
             &mut conn,
@@ -2023,7 +1971,7 @@ async fn test_resumed_triage_resolves_against_the_recorded_slots() {
     let _ = handle.await;
     assert_eq!(task.status(), TaskStatus::Completed);
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let triage_result = PgTriageResultRepository
         .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
         .await
@@ -2038,6 +1986,4 @@ async fn test_resumed_triage_resolves_against_the_recorded_slots() {
         "the duplicate resolves to the item the model saw, not the decoy: {:?}",
         triage_result.outcome(),
     );
-
-    teardown(ctx).await;
 }

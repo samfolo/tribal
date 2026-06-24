@@ -28,7 +28,7 @@ mod tests {
     use tribal_db::RelationRepository;
 
     use super::*;
-    use crate::test_context;
+    use crate::TestDb;
 
     #[tokio::test]
     async fn test_traverse_returns_canned_response() {
@@ -40,8 +40,8 @@ mod tests {
             .on_traverse(response, None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let result = mock
             .traverse(
@@ -69,8 +69,8 @@ mod tests {
             .on_traverse(response, None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let anchor_id = KnowledgeItemId::new();
         let _ = mock

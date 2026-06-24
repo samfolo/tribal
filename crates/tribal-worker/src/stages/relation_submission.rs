@@ -415,9 +415,9 @@ mod tests {
     };
     use tribal_domain::{AGENT_THREAD_FORMAT_VERSION, GitRemote, TaskType};
     use tribal_test_utils::{
-        a_new_job, a_new_knowledge_item, a_new_principal, a_new_project, a_new_prompt_version,
-        a_new_system_fingerprint, a_new_task, an_agent_definition, an_agent_thread,
-        insert_prompt_version, serial_lock, test_context, upsert_system_fingerprint,
+        TestDb, a_new_job, a_new_knowledge_item, a_new_principal, a_new_project,
+        a_new_prompt_version, a_new_system_fingerprint, a_new_task, an_agent_definition,
+        an_agent_thread, insert_prompt_version, upsert_system_fingerprint,
     };
 
     use super::*;
@@ -625,9 +625,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_a_malformed_submission_bounces_with_the_schema_diagnostics() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let thread = an_agent_thread().build();
 
         let outcome = RelationSubmissionPipeline::new(HashSet::new())
@@ -647,9 +646,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_an_empty_submission_is_accepted() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let thread = an_agent_thread().build();
 
         let outcome = RelationSubmissionPipeline::new(HashSet::new())
@@ -666,9 +664,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_an_id_absent_from_the_seed_and_tool_results_bounces() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         // An unpersisted thread has no tool-result records, so the citable
         // set is the seed alone: a foreign id the model only saw inside
         // candidate content (never the seed, never a tool result) bounces.
@@ -855,9 +852,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_evaluate_accepts_an_id_a_tool_result_surfaced() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let committed = ki("aaaa");
         let searched = ki("5555");
         let laundered = ki("ffff");
@@ -879,9 +875,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_evaluate_bounces_a_foreign_id_laundered_through_content() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let committed = ki("aaaa");
         let searched = ki("5555");
         let laundered = ki("ffff");
@@ -909,9 +904,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_evaluate_does_not_launder_an_id_read_from_content() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let committed = ki("aaaa");
         let foreign = ki("ffff");
         let thread = insert_relation_thread(&mut txn).await;
@@ -955,9 +949,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_evaluate_grounds_a_neighbour_read_from_a_citable_anchor() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let committed = ki("aaaa");
         let anchor = ki("5555");
         let neighbour = ki("6666");
@@ -1026,9 +1019,8 @@ mod tests {
     /// decline to launch.
     #[tokio::test]
     async fn test_the_verifier_launch_renders_the_child_with_the_rubric_and_verdict_schema() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
 
         let principal = PgPrincipalRepository
             .insert(

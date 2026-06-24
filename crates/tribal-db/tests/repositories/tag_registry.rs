@@ -1,5 +1,5 @@
 use tribal_db::{PgTagRegistryRepository, TagRegistryRepository};
-use tribal_test_utils::{shift_tag_registry_timestamp, test_context};
+use tribal_test_utils::{TestDb, shift_tag_registry_timestamp};
 
 // ---------------------------------------------------------------------------
 // upsert
@@ -7,8 +7,8 @@ use tribal_test_utils::{shift_tag_registry_timestamp, test_context};
 
 #[tokio::test]
 async fn test_upsert_inserts_new_tag() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTagRegistryRepository;
 
     let entry = repo.upsert(&mut txn, "rust").await.expect("upsert");
@@ -18,8 +18,8 @@ async fn test_upsert_inserts_new_tag() {
 
 #[tokio::test]
 async fn test_upsert_existing_tag_is_idempotent() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTagRegistryRepository;
 
     let first = repo.upsert(&mut txn, "rust").await.expect("upsert 1");
@@ -35,8 +35,8 @@ async fn test_upsert_existing_tag_is_idempotent() {
 
 #[tokio::test]
 async fn test_batch_upsert_mix_of_new_and_existing() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTagRegistryRepository;
 
     let pre_existing = repo.upsert(&mut txn, "existing").await.expect("pre-insert");
@@ -60,8 +60,8 @@ async fn test_batch_upsert_mix_of_new_and_existing() {
 
 #[tokio::test]
 async fn test_batch_upsert_empty_returns_empty() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTagRegistryRepository;
 
     let entries = repo
@@ -78,8 +78,8 @@ async fn test_batch_upsert_empty_returns_empty() {
 
 #[tokio::test]
 async fn test_find_all_returns_complete_registry() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTagRegistryRepository;
 
     repo.upsert(&mut txn, "zebra").await.expect("upsert");
@@ -96,8 +96,8 @@ async fn test_find_all_returns_complete_registry() {
 
 #[tokio::test]
 async fn test_find_all_empty_registry() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTagRegistryRepository;
 
     let all = repo.find_all(&mut txn).await.expect("find_all");
@@ -111,8 +111,8 @@ async fn test_find_all_empty_registry() {
 
 #[tokio::test]
 async fn test_increment_usage_count_increments_existing_tags() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTagRegistryRepository;
 
     repo.upsert(&mut txn, "rust").await.expect("upsert");
@@ -139,8 +139,8 @@ async fn test_increment_usage_count_increments_existing_tags() {
 
 #[tokio::test]
 async fn test_increment_usage_count_sets_last_seen_at() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTagRegistryRepository;
 
     let entry = repo.upsert(&mut txn, "rust").await.expect("upsert");
@@ -163,8 +163,8 @@ async fn test_increment_usage_count_sets_last_seen_at() {
 
 #[tokio::test]
 async fn test_increment_usage_count_advances_last_seen_at() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTagRegistryRepository;
 
     repo.upsert(&mut txn, "rust").await.expect("upsert");
@@ -210,8 +210,8 @@ async fn test_increment_usage_count_advances_last_seen_at() {
 
 #[tokio::test]
 async fn test_increment_usage_count_ignores_unknown_tags() {
-    let ctx = test_context().await;
-    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTagRegistryRepository;
 
     // No tags in registry — should succeed without error.

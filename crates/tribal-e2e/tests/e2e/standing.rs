@@ -235,5 +235,4 @@ async fn test_standing_and_supersession() {
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

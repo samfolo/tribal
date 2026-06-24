@@ -344,8 +344,8 @@ mod tests {
     use tribal_common::{JobStateTxs, JobWatchEntry};
     use tribal_domain::{JobId, JobOutcome, JobState, JobStatus, KnowledgeItemId, TaskType};
     use tribal_test_utils::{
-        MockJobRepository, MockTaskRepository, MockTriageResultRepository, a_job, a_task,
-        a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed, test_context,
+        MockJobRepository, MockTaskRepository, MockTriageResultRepository, TestDb, a_job, a_task,
+        a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed,
     };
 
     use super::*;
@@ -380,8 +380,8 @@ mod tests {
         repos: &ConnectionRepositories,
         params: &JobStatusParams,
     ) -> Result<JobStatusResult, JobStatusError> {
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
         execute_job_status(&mut tx, repos, params).await
     }
 
@@ -718,7 +718,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_job_status_job_not_found_returns_application_error() {
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("pool");
 
         let job_id = JobId::new();
@@ -762,7 +762,7 @@ mod tests {
     /// non-zero `wait_seconds`.
     #[tokio::test]
     async fn test_apply_job_status_returns_immediately_when_terminal() {
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("pool");
 
         let job_id = JobId::new();
@@ -820,7 +820,7 @@ mod tests {
     /// terminal.
     #[tokio::test]
     async fn test_apply_job_status_polls_until_terminal() {
-        let ctx = test_context().await;
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("pool");
 
         let job_id = JobId::new();
@@ -918,8 +918,8 @@ mod tests {
         second_job: Job,
         job_state_txs: JobStateTxs,
         cancellation_token: CancellationToken,
-    ) -> (TribalServerHandler, Arc<MockJobRepository>) {
-        let ctx = test_context().await;
+    ) -> (TribalServerHandler, Arc<MockJobRepository>, TestDb) {
+        let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("pool");
 
         let job_mock = Arc::new(
@@ -952,7 +952,9 @@ mod tests {
             .cancellation_token(cancellation_token)
             .build();
 
-        (handler, job_mock_ref)
+        // Return the owned `TestDb` so the caller keeps the cloned database
+        // alive for the duration of the test; dropping it runs `DROP DATABASE`.
+        (handler, job_mock_ref, ctx)
     }
 
     // -- Watch path behaviour ----------------------------------------------
@@ -983,7 +985,7 @@ mod tests {
             .status(JobStatus::Completed)
             .outcome(Some(JobOutcome::Success))
             .build();
-        let (handler, job_mock) =
+        let (handler, job_mock, _db) =
             wait_path_handler(first, second, txs, CancellationToken::new()).await;
 
         let result = handler
@@ -1020,7 +1022,7 @@ mod tests {
             .status(JobStatus::Completed)
             .outcome(Some(JobOutcome::Success))
             .build();
-        let (handler, job_mock) =
+        let (handler, job_mock, _db) =
             wait_path_handler(first, second, txs, CancellationToken::new()).await;
 
         let result = handler
@@ -1051,7 +1053,7 @@ mod tests {
 
         let first = a_job().id(job_id).status(JobStatus::Triaging).build();
         let second = a_job().id(job_id).status(JobStatus::Triaging).build();
-        let (handler, job_mock) =
+        let (handler, job_mock, _db) =
             wait_path_handler(first, second, txs, CancellationToken::new()).await;
 
         let result = handler
@@ -1092,7 +1094,7 @@ mod tests {
 
         let first = a_job().id(job_id).status(JobStatus::Triaging).build();
         let second = a_job().id(job_id).status(JobStatus::Triaging).build();
-        let (handler, job_mock) = wait_path_handler(first, second, txs, cancel_token).await;
+        let (handler, job_mock, _db) = wait_path_handler(first, second, txs, cancel_token).await;
 
         let result = handler
             .apply_job_status(
@@ -1131,7 +1133,7 @@ mod tests {
             .status(JobStatus::Completed)
             .outcome(Some(JobOutcome::Success))
             .build();
-        let (handler, job_mock) =
+        let (handler, job_mock, _db) =
             wait_path_handler(first, second, empty_txs, CancellationToken::new()).await;
 
         let result = handler
@@ -1175,7 +1177,8 @@ mod tests {
         // the first poll iteration.
         let first = a_job().id(job_id).status(JobStatus::Triaging).build();
         let second = a_job().id(job_id).status(JobStatus::Triaging).build();
-        let (handler, job_mock) = wait_path_handler(first, second, empty_txs, cancel_token).await;
+        let (handler, job_mock, _db) =
+            wait_path_handler(first, second, empty_txs, cancel_token).await;
 
         let result = handler
             .apply_job_status(

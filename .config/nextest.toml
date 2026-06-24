@@ -1,0 +1,36 @@
+# cargo-nextest configuration for the Tribal/Cortex test harness.
+#
+# Every test provisions its own physical database (cloned from a migrated
+# template), so the suite runs fully parallel with no shared-state
+# serialisation. See crates/tribal-test-utils/src/db.rs. The `just test`
+# wrapper starts the database server and builds the template before invoking
+# nextest.
+
+[profile.default]
+# Surface every failure in a run rather than stopping at the first.
+fail-fast = false
+# A flaky test signals a real isolation defect we want to see, not retry away.
+retries = 0
+# Generous: some integration tests poll background workers with deliberate
+# delays before asserting. Tests exceeding this are flagged as slow.
+slow-timeout = "120s"
+
+[profile.ci]
+fail-fast = false
+retries = 0
+slow-timeout = "180s"
+
+# Each e2e test stands up a full in-process server, a background worker, and
+# four wiremock providers against its own per-test database. They are isolated
+# (per-test database, ephemeral ports) but resource-heavy and timing-sensitive,
+# so they run one at a time; the parallelism win is in the non-e2e suite.
+[test-groups]
+e2e = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(tribal-e2e)'
+test-group = 'e2e'
+
+[[profile.ci.overrides]]
+filter = 'package(tribal-e2e)'
+test-group = 'e2e'

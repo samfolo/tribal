@@ -477,9 +477,9 @@ mod tests {
         AGENT_THREAD_FORMAT_VERSION, GitRemote, JobOutcome, JobStatus, PrincipalId, RelationBatchId,
     };
     use tribal_test_utils::{
-        a_new_job, a_new_knowledge_item, a_new_principal, a_new_project, a_new_prompt_version,
-        a_new_system_fingerprint, a_new_task, an_agent_definition, an_agent_thread,
-        insert_committed_relation, insert_prompt_version, serial_lock, test_context,
+        TestDb, a_new_job, a_new_knowledge_item, a_new_principal, a_new_project,
+        a_new_prompt_version, a_new_system_fingerprint, a_new_task, an_agent_definition,
+        an_agent_thread, insert_committed_relation, insert_prompt_version,
         upsert_system_fingerprint,
     };
 
@@ -635,9 +635,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reconstruct_pins_scores_to_the_latest_embedding_profile() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let principal = PgPrincipalRepository
             .insert(
                 &mut txn,
@@ -697,9 +696,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_a_malformed_submission_bounces_with_the_schema_diagnostics() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let pipeline = TriageSubmissionPipeline::new(ProjectId::new());
         let thread = an_agent_thread().build();
 
@@ -720,9 +718,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_an_unseen_id_bounces_by_membership() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let pipeline = TriageSubmissionPipeline::new(ProjectId::new());
         let thread = an_agent_thread().build();
 
@@ -745,9 +742,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_a_repeated_assessment_bounces_before_commit() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let pipeline = TriageSubmissionPipeline::new(ProjectId::new());
         let thread = an_agent_thread().build();
         let id = "ki_00000000-0000-0000-0000-0000000000a1";
@@ -910,9 +906,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_the_duplicate_recheck_requires_a_live_in_project_unsuperseded_match() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let RecheckFixture {
             pipeline,
             corpus,
@@ -981,9 +976,8 @@ mod tests {
     /// candidate that contradicts a claim is novel, never a duplicate.
     #[tokio::test]
     async fn test_contradicting_any_examined_claim_bounces_a_duplicate() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
 
         let principal = PgPrincipalRepository
             .insert(
@@ -1091,9 +1085,8 @@ mod tests {
     /// assessment: all constrained to the verdict schema.
     #[tokio::test]
     async fn test_the_verifier_launch_renders_the_child_with_the_rubric_and_verdict_schema() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
 
         let principal = PgPrincipalRepository
             .insert(
@@ -1228,9 +1221,8 @@ mod tests {
     /// prefetch is gone.
     #[tokio::test]
     async fn test_the_must_search_gate_bounces_unsearched_and_ungrounded_submissions() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
 
         let principal = PgPrincipalRepository
             .insert(

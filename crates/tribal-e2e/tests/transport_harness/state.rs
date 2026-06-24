@@ -1,6 +1,6 @@
 //! Database pool, application state, and auth seeding for transport tests.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use chrono::Utc;
 use dashmap::DashMap;
@@ -20,7 +20,7 @@ use tribal_inference::{
 };
 use tribal_mcp::{ActivePromptVersions, AppState};
 use tribal_telemetry::noop_recorder;
-use tribal_test_utils::{MockInferenceProvider, test_context};
+use tribal_test_utils::{MockInferenceProvider, TestDb};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,18 +39,14 @@ pub const TEST_CANONICAL_RESOURCE: &str = "http://127.0.0.1:8080/mcp";
 // Pool
 // ---------------------------------------------------------------------------
 
-/// Creates a fresh pool against the shared test database.
+/// Provisions an owned, isolated test database.
 ///
-/// Each test gets its own pool so transport shutdown in one test
-/// does not starve connections in the next.
-pub async fn fresh_pool() -> sqlx::PgPool {
-    let ctx = test_context().await;
-    sqlx::pool::PoolOptions::new()
-        .max_connections(5)
-        .acquire_timeout(Duration::from_secs(5))
-        .connect(ctx.database_url())
-        .await
-        .expect("connect fresh pool")
+/// Returns the [`TestDb`] so the caller keeps it alive for the whole test:
+/// its `Drop` drops the cloned database, so it must outlive the pool, the
+/// `AppState`, and the running transport. Obtain a pool via
+/// [`TestDb::pool`]/[`TestDb::create_pool`].
+pub async fn fresh_pool() -> TestDb {
+    TestDb::new().await
 }
 
 // ---------------------------------------------------------------------------

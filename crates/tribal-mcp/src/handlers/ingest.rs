@@ -306,7 +306,7 @@ mod tests {
     use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
         MockJobRepository, MockProjectRepository, MockPromptVersionRepository, MockTaskRepository,
-        a_job, a_project, a_prompt_version, a_task, test_context,
+        TestDb, a_job, a_project, a_prompt_version, a_task,
     };
 
     use super::*;
@@ -326,8 +326,8 @@ mod tests {
         repos: &ConnectionRepositories,
         params: IngestParams,
     ) -> Result<IngestResult, IngestError> {
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
         execute_ingest(&mut tx, repos, params).await
     }
 
@@ -757,8 +757,8 @@ mod tests {
         let span = tracing::info_span!("test_trace_capture");
 
         async {
-            let ctx = test_context().await;
-            let mut tx = ctx.begin_test().await.expect("begin");
+            let ctx = TestDb::new().await;
+            let mut tx = ctx.begin().await.expect("begin");
             execute_ingest(&mut tx, &repos, params)
                 .await
                 .expect("execute_ingest should succeed in trace context test");

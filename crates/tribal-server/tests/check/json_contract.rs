@@ -1,16 +1,16 @@
 //! Wire-format stability: the JSON shape downstream tooling parses.
 
 use tribal_config::TribalConfig;
-use tribal_test_utils::{serial_lock, test_context};
+use tribal_test_utils::{TestDb, env_lock};
 
 use super::common::{CheckRun, TestEnv, fresh_db, parse_json, run_check, write_config};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_root_envelope_has_ok_and_checks_fields() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
@@ -39,10 +39,10 @@ async fn test_root_envelope_has_ok_and_checks_fields() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_every_row_has_status_name_detail() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
@@ -66,10 +66,10 @@ async fn test_every_row_has_status_name_detail() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_status_strings_are_lowercase_pass_warn_fail_skip() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
@@ -95,10 +95,10 @@ async fn test_status_strings_are_lowercase_pass_warn_fail_skip() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_pass_and_skip_rows_omit_remediation() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
@@ -131,10 +131,10 @@ async fn test_pass_and_skip_rows_omit_remediation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_ok_is_true_when_no_row_is_fail() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
@@ -163,7 +163,7 @@ async fn test_ok_is_true_when_no_row_is_fail() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_ok_is_false_when_any_row_is_fail() {
-    let _lock = serial_lock().await;
+    let _env_lock = env_lock().await;
     let env = TestEnv::new();
     // Unreachable database guarantees a fail row.
     let config = TribalConfig::minimum_valid("postgres://no-such-host.invalid:5432/db");
@@ -185,10 +185,10 @@ async fn test_ok_is_false_when_any_row_is_fail() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_human_output_goes_to_stderr_and_stdout_is_empty() {
-    let ctx = test_context().await;
-    let _lock = serial_lock().await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
     let env = TestEnv::new();
-    let _pool = fresh_db(ctx).await;
+    let _pool = fresh_db(&ctx).await;
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 

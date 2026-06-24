@@ -22,7 +22,7 @@ mod tests {
     use tribal_domain::RetrievalFeedbackId;
 
     use super::*;
-    use crate::{a_retrieval_feedback, test_context};
+    use crate::{TestDb, a_retrieval_feedback};
 
     // -- Constants ----------------------------------------------------------
 
@@ -40,8 +40,8 @@ mod tests {
             .on_find_by_id(rf2.clone(), None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
         let r1 = mock
             .find_by_id(&mut tx, RetrievalFeedbackId::new())
@@ -64,8 +64,8 @@ mod tests {
             .on_find_by_id(rf, None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
         let id = RetrievalFeedbackId::new();
         let _ = mock.find_by_id(&mut tx, id).await.unwrap();

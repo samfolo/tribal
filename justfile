@@ -1,8 +1,61 @@
-# Run all tests
+# Run the full test suite under nextest with template-clone-per-test isolation.
 test:
-    cargo test --workspace --features tribal/test-helpers
+    #!/usr/bin/env bash
+    # Starts one ephemeral pgvector server, builds the migrated template once,
+    # then runs every test in its own cloned database (fully parallel). The
+    # server is torn down on exit; use `test-cargo` for the in-process fallback.
+    set -euo pipefail
+    # Compile against cached sqlx metadata; runtime queries hit each test's
+    # cloned database, not the bare maintenance DB in DATABASE_URL.
+    export SQLX_OFFLINE=true
+    if ! command -v cargo-nextest >/dev/null 2>&1; then
+        echo "cargo-nextest is required: cargo binstall cargo-nextest, or" >&2
+        echo "  curl -LsSf https://get.nexte.st/latest/mac | tar zxf - -C \"\$HOME/.cargo/bin\"" >&2
+        exit 1
+    fi
+    # Unique container name + a random host port, so concurrent runs (local or
+    # a CI matrix) never collide on the name or the published port.
+    name="cortex-testdb-$$"
+    cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
+    trap cleanup EXIT
+    # Ephemeral server tuned for fast clones (fsync off — data is disposable).
+    docker run -d --name "$name" --label org.cortex.testdb \
+        -e POSTGRES_USER=tribal \
+        -e POSTGRES_PASSWORD=tribal \
+        -e POSTGRES_DB=postgres \
+        -p 127.0.0.1::5432 \
+        pgvector/pgvector:0.8.2-pg17 \
+        -c max_connections=500 \
+        -c fsync=off \
+        -c full_page_writes=off \
+        -c synchronous_commit=off >/dev/null
+    # Discover the random host port Docker assigned.
+    port=$(docker port "$name" 5432 | head -n1 | sed 's/.*://')
+    export DATABASE_URL="postgres://tribal:tribal@localhost:${port}/postgres"
+    echo "waiting for database on port ${port}..."
+    ready=false
+    for _ in $(seq 1 120); do
+        if docker exec "$name" pg_isready -U tribal -d postgres >/dev/null 2>&1; then ready=true; break; fi
+        sleep 0.5
+    done
+    if [ "$ready" != true ]; then
+        echo "database did not become ready in time" >&2
+        exit 1
+    fi
+    cargo run -q -p tribal-test-utils --bin build-test-template
+    # Worker/server/db/auth/mcp run with the test-helpers feature; e2e uses real
+    # HTTP mocks (wiremock) and must NOT enable the inference test-helper.
+    cargo nextest run --workspace --exclude tribal-e2e --features tribal/test-helpers
+    cargo nextest run -p tribal-e2e
+    # nextest does not run doctests; run them separately (none require a database).
+    cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers --doc
 
-# Run only unit tests (no database required)
+# Run the suite via plain `cargo test` (in-process testcontainers fallback).
+test-cargo:
+    SQLX_OFFLINE=true cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers
+    SQLX_OFFLINE=true cargo test -p tribal-e2e
+
+# Run only unit tests
 test-unit:
     cargo test --workspace --lib --features tribal/test-helpers
 

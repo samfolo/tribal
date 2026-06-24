@@ -9,13 +9,16 @@ use sqlx::PgPool;
 use tempfile::TempDir;
 use tribal::{AppError, CheckOptions, CheckOutput, check_async};
 use tribal_config::TribalConfig;
-use tribal_test_utils::{TestContext, truncate_all_tables};
+use tribal_test_utils::TestDb;
 use tribal_ui::Theme;
 
 // ---------------------------------------------------------------------------
 // Env-var lifecycle guard
 // ---------------------------------------------------------------------------
 
+/// Restores a process-global env var on drop. The `unsafe` `set_var` /
+/// `remove_var` are sound only while the test holds `env_lock`, which
+/// serialises every env-touching test in this binary.
 #[must_use = "binding the guard is what scopes the env mutation"]
 pub(crate) struct EnvGuard {
     key: &'static str,
@@ -25,9 +28,10 @@ pub(crate) struct EnvGuard {
 impl EnvGuard {
     pub(crate) fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
         let previous = std::env::var_os(key);
-        // SAFETY: callers hold `serial_lock`; the test binary serialises
-        // mutations and no foreign thread is reading these vars during
-        // the guarded scope.
+        // SAFETY: `setenv` is not thread-safe, but every test in this binary
+        // that touches the process environment holds `env_lock` for its whole
+        // body, serialising them. So no other thread reads or writes the
+        // environment during the guarded scope.
         unsafe {
             std::env::set_var(key, value);
         }
@@ -72,8 +76,7 @@ pub(crate) struct TestEnv {
 }
 
 impl TestEnv {
-    /// Constructs a fresh isolated environment.  Caller must hold
-    /// [`tribal_test_utils::serial_lock`].
+    /// Constructs a fresh isolated environment scoped to a single test.
     pub(crate) fn new() -> Self {
         let xdg_dir = tempfile::tempdir().expect("xdg tempdir");
         let config_dir = tempfile::tempdir().expect("config tempdir");
@@ -100,14 +103,10 @@ impl TestEnv {
 // Database
 // ---------------------------------------------------------------------------
 
-/// Drains all rows from the testcontainer DB so the test starts from a
-/// known-empty state.
-pub(crate) async fn fresh_db(ctx: &TestContext) -> PgPool {
-    let pool = ctx.create_pool().await.expect("create pool");
-    let mut conn = pool.acquire().await.expect("acquire");
-    truncate_all_tables(&mut conn).await;
-    drop(conn);
-    pool
+/// Builds a connection pool against this test's isolated database, which
+/// starts empty.
+pub(crate) async fn fresh_db(ctx: &TestDb) -> PgPool {
+    ctx.create_pool().await.expect("create pool")
 }
 
 // ---------------------------------------------------------------------------

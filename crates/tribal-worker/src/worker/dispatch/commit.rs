@@ -1096,9 +1096,9 @@ mod tests {
         ProviderLimits, ProviderRegistry, RequestClass,
     };
     use tribal_test_utils::{
-        ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, Seed, a_candidate,
+        ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, Seed, TestDb, a_candidate,
         a_new_knowledge_item, a_new_prompt_version, active_embedding_profile, an_embedding_profile,
-        an_embedding_response, seed_triage_job, test_context,
+        an_embedding_response, seed_triage_job,
     };
 
     use super::*;
@@ -1186,8 +1186,8 @@ mod tests {
     /// are unchanged.
     #[tokio::test]
     async fn test_commit_novel_signals_reembed_when_the_active_flipped() {
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
 
         let seed = Seed::new()
             .define_principal("op", "user:reembed-signal")
@@ -1267,8 +1267,8 @@ mod tests {
     /// created outcome.
     #[tokio::test]
     async fn test_commit_novel_commits_against_the_matching_active() {
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
 
         let seed = Seed::new()
             .define_principal("op", "user:commit-match")
