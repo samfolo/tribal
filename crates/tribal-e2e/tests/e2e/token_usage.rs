@@ -157,5 +157,4 @@ async fn test_every_pipeline_call_ledgers_one_attributed_row() {
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

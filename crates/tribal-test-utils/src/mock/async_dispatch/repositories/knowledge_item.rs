@@ -29,7 +29,7 @@ mod tests {
     use tribal_db::KnowledgeItemRepository;
 
     use super::*;
-    use crate::{a_knowledge_item, test_context};
+    use crate::{TestDb, a_knowledge_item};
 
     // -- Constants ----------------------------------------------------------
 
@@ -46,8 +46,8 @@ mod tests {
             .on_find_by_ids(vec![ki1.clone(), ki2.clone()], None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
         let query_ids = vec![ki1.id(), ki2.id()];
         let result = mock.find_by_ids(&mut tx, &query_ids).await.unwrap();
@@ -69,8 +69,8 @@ mod tests {
             .respond_with(vec![ki.clone()], None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
         let result = mock.find_by_ids(&mut tx, &[target_id]).await.unwrap();
         assert_eq!(result.len(), 1);

@@ -6,14 +6,11 @@
 
 #[tokio::test]
 async fn test_transaction_rolls_back_on_drop() {
-    let ctx = tribal_test_utils::test_context().await;
+    let ctx = tribal_test_utils::TestDb::new().await;
 
     // Insert a row inside a TestTransaction, then drop it.
     {
-        let mut txn = ctx
-            .begin_test()
-            .await
-            .expect("should begin test transaction");
+        let mut txn = ctx.begin().await.expect("should begin test transaction");
 
         sqlx::query(
             "INSERT INTO principals (principal_key, display_name)
@@ -50,11 +47,11 @@ async fn test_transaction_rolls_back_on_drop() {
 
 #[tokio::test]
 async fn test_transaction_isolates_concurrent_tests() {
-    let ctx = tribal_test_utils::test_context().await;
+    let ctx = tribal_test_utils::TestDb::new().await;
 
     // Two transactions should not see each other's writes.
-    let mut txn_a = ctx.begin_test().await.expect("should begin transaction A");
-    let mut txn_b = ctx.begin_test().await.expect("should begin transaction B");
+    let mut txn_a = ctx.begin().await.expect("should begin transaction A");
+    let mut txn_b = ctx.begin().await.expect("should begin transaction B");
 
     sqlx::query(
         "INSERT INTO principals (principal_key, display_name)

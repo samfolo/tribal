@@ -380,10 +380,9 @@ mod tests {
         AGENT_THREAD_FORMAT_VERSION, AgentThreadRecordKind, GitRemote, PrincipalId, TaskType,
     };
     use tribal_test_utils::{
-        a_candidate, a_new_extraction_result, a_new_job, a_new_principal, a_new_project,
+        TestDb, a_candidate, a_new_extraction_result, a_new_job, a_new_principal, a_new_project,
         a_new_prompt_version, a_new_system_fingerprint, a_new_task, an_agent_definition,
-        candidates_json, insert_prompt_version, serial_lock, test_context,
-        upsert_system_fingerprint,
+        candidates_json, insert_prompt_version, upsert_system_fingerprint,
     };
 
     use super::*;
@@ -492,9 +491,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_job_context_renders_the_extraction_batch() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let job = seed_job(&mut txn, "job-context").await;
 
         let candidates = [
@@ -541,9 +539,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_sibling_threads_lists_the_roster_excluding_self() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let job = seed_job(&mut txn, "roster").await;
         let own =
             seed_stage_thread(&mut txn, &job, TaskType::Triage, &"c".repeat(64), Some(0)).await;
@@ -595,9 +592,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_sibling_threads_pages_the_record_log() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let ctx = TestDb::new().await;
+        let mut txn = ctx.begin().await.expect("begin");
         let job = seed_job(&mut txn, "paging").await;
         let own =
             seed_stage_thread(&mut txn, &job, TaskType::Triage, &"e".repeat(64), Some(0)).await;

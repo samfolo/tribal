@@ -401,7 +401,7 @@ fn an_opening() -> tribal_agent_runtime::RenderedConversation {
 /// Seeds a job, claims its extraction task, establishes its thread, and
 /// builds a loop-ready harness over the queued mock responses.
 async fn loop_harness(
-    ctx: &'static TestContext,
+    ctx: &TestDb,
     suffix: &str,
     responses: Vec<tribal_domain::CompletionResponse>,
 ) -> LoopHarness {
@@ -510,7 +510,7 @@ fn submit_response(call_id: &str, claim_id: &str) -> tribal_domain::CompletionRe
 
 /// Composes the stage terminal the way a stage commit will: task
 /// completion and the loop terminal in one transaction.
-async fn compose_terminal(ctx: &TestContext, harness: &LoopHarness, accepted: &AcceptedSubmission) {
+async fn compose_terminal(ctx: &TestDb, harness: &LoopHarness, accepted: &AcceptedSubmission) {
     let mut conn = raw_conn(ctx).await;
     let mut txn = sqlx::Connection::begin(&mut conn).await.expect("begin");
     let rows = PgTaskRepository
@@ -538,14 +538,13 @@ async fn compose_terminal(ctx: &TestContext, harness: &LoopHarness, accepted: &A
 /// row, and the composed terminal leaving the full log.
 #[tokio::test]
 async fn test_loop_completes_through_submit_with_per_turn_attribution() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
 
     let mut second = submit_response("call_1", TOOL_ITEM_ID);
     second.usage.cache_read_tokens = 7;
     second.usage.cache_write_tokens = 3;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "loop-submit",
         vec![
             a_tool_call_response(&[("call_0", "lookup_note", serde_json::json!({}))]),
@@ -554,7 +553,7 @@ async fn test_loop_completes_through_submit_with_per_turn_attribution() {
     )
     .await;
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         set_retry_count(&mut conn, harness.task.id(), 3).await;
     }
 
@@ -573,9 +572,9 @@ async fn test_loop_completes_through_submit_with_per_turn_attribution() {
     assert_eq!(accepted.payload["claim_id"], TOOL_ITEM_ID);
     assert_eq!(accepted.tool_call_id, "call_1");
 
-    compose_terminal(ctx, &harness, &accepted).await;
+    compose_terminal(&ctx, &harness, &accepted).await;
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let thread = PgAgentThreadRepository
         .find_by_id(&mut conn, harness.thread.id())
         .await
@@ -642,8 +641,6 @@ async fn test_loop_completes_through_submit_with_per_turn_attribution() {
     assert_eq!(harness.pump.finished.load(Ordering::SeqCst), 2);
     assert!(harness.pump.deltas.load(Ordering::SeqCst) >= 2);
     assert_eq!(harness.pump.aborts.load(Ordering::SeqCst), 0);
-
-    teardown(ctx).await;
 }
 
 /// A submission referencing an id the model was never shown bounces as
@@ -651,10 +648,9 @@ async fn test_loop_completes_through_submit_with_per_turn_attribution() {
 /// conversation, and the corrected submission completes the loop.
 #[tokio::test]
 async fn test_bounced_submission_returns_in_band_and_the_loop_continues() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "loop-bounce",
         vec![
             submit_response("call_0", UNSEEN_ITEM_ID),
@@ -674,7 +670,7 @@ async fn test_bounced_submission_returns_in_band_and_the_loop_continues() {
     .expect("the loop runs");
     assert!(matches!(outcome, LoopOutcome::Submitted(_)));
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let records = PgAgentThreadRecordRepository
         .find_by_thread_id(&mut conn, harness.thread.id())
         .await
@@ -700,18 +696,15 @@ async fn test_bounced_submission_returns_in_band_and_the_loop_continues() {
         matches!(last, tribal_inference::Message::Tool { content, .. } if content.contains(UNSEEN_ITEM_ID)),
         "the bounce reaches the model as a tool result",
     );
-
-    teardown(ctx).await;
 }
 
 /// A model-recoverable tool failure returns in-band as an error-shaped
 /// result and the loop continues to a successful submission.
 #[tokio::test]
 async fn test_recoverable_tool_failure_returns_in_band() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let mut harness = loop_harness(
-        ctx,
+        &ctx,
         "loop-recoverable",
         vec![
             a_tool_call_response(&[("call_0", "flaky_lookup", serde_json::json!({}))]),
@@ -738,7 +731,7 @@ async fn test_recoverable_tool_failure_returns_in_band() {
     .expect("the loop runs");
     assert!(matches!(outcome, LoopOutcome::Submitted(_)));
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let records = PgAgentThreadRecordRepository
         .find_by_thread_id(&mut conn, harness.thread.id())
         .await
@@ -755,8 +748,6 @@ async fn test_recoverable_tool_failure_returns_in_band() {
             .contains("nothing matched"),
         "the rendered diagnostic is the model-facing output",
     );
-
-    teardown(ctx).await;
 }
 
 /// A tool's system failure aborts the turn into the stage-error path:
@@ -764,10 +755,9 @@ async fn test_recoverable_tool_failure_returns_in_band() {
 /// thread stays live for the retry.
 #[tokio::test]
 async fn test_system_tool_failure_routes_to_the_stage_error_path() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let mut harness = loop_harness(
-        ctx,
+        &ctx,
         "loop-system",
         vec![a_tool_call_response(&[(
             "call_0",
@@ -798,7 +788,7 @@ async fn test_system_tool_failure_routes_to_the_stage_error_path() {
         tribal_agent_runtime::AgentRuntimeError::ToolExecution { .. }
     ));
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let records = PgAgentThreadRecordRepository
         .find_by_thread_id(&mut conn, harness.thread.id())
         .await
@@ -819,8 +809,6 @@ async fn test_system_tool_failure_routes_to_the_stage_error_path() {
         AgentThreadStatus::Running,
         "the stage-error path owns the disposition",
     );
-
-    teardown(ctx).await;
 }
 
 /// Re-entry after a mid-turn crash executes exactly the unanswered tool
@@ -828,13 +816,12 @@ async fn test_system_tool_failure_routes_to_the_stage_error_path() {
 /// answered call is not executed twice.
 #[tokio::test]
 async fn test_mid_turn_crash_resume_executes_pending_calls_only() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     // Only the post-resume submit turn is queued: any re-issued
     // inference for the crashed turn would consume it early and panic
     // the mock on exhaustion.
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "loop-crash-resume",
         vec![submit_response("call_2", TOOL_ITEM_ID)],
     )
@@ -843,7 +830,7 @@ async fn test_mid_turn_crash_resume_executes_pending_calls_only() {
     // Build the crash state by hand: the committed input, an assistant
     // turn with two calls, and exactly one answered.
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         tribal_agent_runtime::begin_turn(
             &mut conn,
             &harness.thread,
@@ -915,7 +902,7 @@ async fn test_mid_turn_crash_resume_executes_pending_calls_only() {
         "re-entry never re-issues the crashed turn's inference",
     );
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let records = PgAgentThreadRecordRepository
         .find_by_thread_id(&mut conn, harness.thread.id())
         .await
@@ -930,18 +917,15 @@ async fn test_mid_turn_crash_resume_executes_pending_calls_only() {
         vec!["call_0".to_owned(), "call_1".to_owned()],
         "exactly the unanswered call executed; the answered one did not run twice",
     );
-
-    teardown(ctx).await;
 }
 
 /// The second turn's request repeats the first turn's conversation as an
 /// exact prefix: the cache-discipline contract.
 #[tokio::test]
 async fn test_second_turn_request_prefix_is_byte_identical() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "loop-prefix",
         vec![
             a_tool_call_response(&[("call_0", "lookup_note", serde_json::json!({}))]),
@@ -970,18 +954,15 @@ async fn test_second_turn_request_prefix_is_byte_identical() {
         "the prior turn's conversation is an exact prefix of the next request",
     );
     assert_eq!(requests[0].tools, requests[1].tools);
-
-    teardown(ctx).await;
 }
 
 /// The turn cap fails the thread as an outcome the caller owns: the
 /// loop commits nothing further and reports the cap.
 #[tokio::test]
 async fn test_turn_cap_returns_a_budget_failure() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "loop-turn-cap",
         vec![a_completion_response("thinking, no tools")],
     )
@@ -1006,7 +987,7 @@ async fn test_turn_cap_returns_a_budget_failure() {
         "got {outcome:?}",
     );
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let thread = PgAgentThreadRepository
         .find_by_id(&mut conn, harness.thread.id())
         .await
@@ -1017,8 +998,6 @@ async fn test_turn_cap_returns_a_budget_failure() {
         AgentThreadStatus::Running,
         "the failure's commit belongs to the caller",
     );
-
-    teardown(ctx).await;
 }
 
 /// Ledger-side spend exhaustion suspends the thread with the durable
@@ -1026,10 +1005,9 @@ async fn test_turn_cap_returns_a_budget_failure() {
 /// suspension commits.
 #[tokio::test]
 async fn test_spend_exhaustion_suspends_with_a_durable_recheck_count() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "loop-spend",
         vec![a_completion_response("an expensive thought")],
     )
@@ -1050,7 +1028,7 @@ async fn test_spend_exhaustion_suspends_with_a_durable_recheck_count() {
     .expect("the loop runs");
     assert!(matches!(outcome, LoopOutcome::Suspended), "got {outcome:?}");
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let thread = PgAgentThreadRepository
         .find_by_id(&mut conn, harness.thread.id())
         .await
@@ -1075,8 +1053,6 @@ async fn test_spend_exhaustion_suspends_with_a_durable_recheck_count() {
         1,
         "the pump stops before the suspension clears the claim",
     );
-
-    teardown(ctx).await;
 }
 
 /// A budget wake whose admission finds headroom returned resumes the
@@ -1084,10 +1060,9 @@ async fn test_spend_exhaustion_suspends_with_a_durable_recheck_count() {
 /// suspension's.
 #[tokio::test]
 async fn test_headroom_returning_resumes_the_loop_to_completion() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "loop-headroom",
         vec![
             a_completion_response("an expensive thought"),
@@ -1113,7 +1088,7 @@ async fn test_headroom_returning_resumes_the_loop_to_completion() {
 
     // The wake: the sweep's resolution shape, then the task re-queues
     // and a fresh claim re-enters the loop.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let resolution = serde_json::json!({
         "cause": BUDGET_RECHECK_CAUSE,
         "fired_at": chrono::Utc::now(),
@@ -1162,8 +1137,6 @@ async fn test_headroom_returning_resumes_the_loop_to_completion() {
         matches!(outcome, LoopOutcome::Submitted(_)),
         "got {outcome:?}"
     );
-
-    teardown(ctx).await;
 }
 
 /// A wake whose re-check still finds the budget exhausted re-suspends
@@ -1171,10 +1144,9 @@ async fn test_headroom_returning_resumes_the_loop_to_completion() {
 /// budget failure instead.
 #[tokio::test]
 async fn test_unchanged_rechecks_advance_and_run_dry_at_the_bound() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "loop-recheck",
         vec![a_completion_response("an expensive thought")],
     )
@@ -1191,7 +1163,7 @@ async fn test_unchanged_rechecks_advance_and_run_dry_at_the_bound() {
     assert!(matches!(outcome, LoopOutcome::Suspended));
 
     // First wake: still exhausted. The suspension's count advances.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let wake = |count: u32| {
         serde_json::json!({
             "cause": BUDGET_RECHECK_CAUSE,
@@ -1226,7 +1198,7 @@ async fn test_unchanged_rechecks_advance_and_run_dry_at_the_bound() {
             .expect("the loop re-checks");
     assert!(matches!(outcome, LoopOutcome::Suspended));
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let thread = PgAgentThreadRepository
             .find_by_id(&mut conn, resumed.thread.id())
             .await
@@ -1242,7 +1214,7 @@ async fn test_unchanged_rechecks_advance_and_run_dry_at_the_bound() {
     }
 
     // A wake carrying the bound's predecessor runs the re-checks dry.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     resolve_stage_thread(&mut conn, resumed.thread.id(), &wake(RECHECK.bound - 1))
         .await
         .expect("resolve");
@@ -1276,20 +1248,17 @@ async fn test_unchanged_rechecks_advance_and_run_dry_at_the_bound() {
         ),
         "got {outcome:?}",
     );
-
-    teardown(ctx).await;
 }
 
 /// A durable cancellation intent stops the loop at the boundary before
 /// any inference.
 #[tokio::test]
 async fn test_cancel_intent_stops_the_loop_before_inference() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     // No responses queued: any inference call would panic the mock.
-    let harness = loop_harness(ctx, "loop-cancel", vec![]).await;
+    let harness = loop_harness(&ctx, "loop-cancel", vec![]).await;
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         PgAgentThreadRepository
             .record_cancel_intent(&mut conn, harness.thread.id(), "operator:test")
             .await
@@ -1307,19 +1276,16 @@ async fn test_cancel_intent_stops_the_loop_before_inference() {
     .expect("the loop runs");
     assert!(matches!(outcome, LoopOutcome::CancelIntent));
     assert_eq!(harness.provider.call_count(), 0);
-
-    teardown(ctx).await;
 }
 
 /// The admission check under empty caps issues no query at all: it
 /// succeeds even inside an aborted transaction, where any query errors.
 #[tokio::test]
 async fn test_admission_with_empty_caps_issues_no_query() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let thread = tribal_test_utils::an_agent_thread().build();
 
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let mut txn = sqlx::Connection::begin(&mut conn).await.expect("begin");
     let _ = sqlx::query("SELECT this_is_not_sql")
         .execute(&mut *txn)
@@ -1352,7 +1318,7 @@ async fn test_admission_with_empty_caps_issues_no_query() {
 /// Resolves a binding the verifier child can bind to. Its stage matches
 /// the launch's, so the child thread satisfies the binding-stage foreign
 /// key; a distinct model keeps it a separate row from the parent's.
-async fn a_child_binding(ctx: &TestContext) -> AgentBindingVersionId {
+async fn a_child_binding(ctx: &TestDb) -> AgentBindingVersionId {
     let mut conn = raw_conn(ctx).await;
     tribal_agent_runtime::resolve_binding(
         &mut conn,
@@ -1498,10 +1464,7 @@ async fn kill_child_via_deferred_death(
 
 /// Re-claims a parent's woken stage task and re-reads its thread, the
 /// resume a fresh worker performs after the hand-back re-queues the task.
-async fn reclaim_parent(
-    ctx: &TestContext,
-    harness: &LoopHarness,
-) -> (tribal_domain::Task, AgentThread) {
+async fn reclaim_parent(ctx: &TestDb, harness: &LoopHarness) -> (tribal_domain::Task, AgentThread) {
     let mut conn = raw_conn(ctx).await;
     let reclaimed = PgTaskRepository
         .claim(&mut conn, 1, "verifier-resume")
@@ -1540,11 +1503,10 @@ async fn count_deferred_launches(conn: &mut PgConnection, parent_id: AgentThread
 /// the current graph and terminates.
 #[tokio::test]
 async fn test_an_accepted_verdict_commits_the_submission_on_resume() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let child_binding = a_child_binding(ctx).await;
+    let ctx = TestDb::new().await;
+    let child_binding = a_child_binding(&ctx).await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "verify-accept",
         vec![submit_response("call_0", OPENING_ITEM_ID)],
     )
@@ -1569,12 +1531,12 @@ async fn test_an_accepted_verdict_commits_the_submission_on_resume() {
     );
 
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         hand_back_verdict(&mut conn, harness.thread.id(), r#"{"accepted": true}"#).await;
     }
 
     // The resumed parent commits without a second inference call.
-    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let (task, thread) = reclaim_parent(&ctx, &harness).await;
     let resumed = LoopHarness {
         task,
         thread,
@@ -1598,8 +1560,6 @@ async fn test_an_accepted_verdict_commits_the_submission_on_resume() {
         1,
         "the commit re-validates the recorded submission, it never re-asks the model",
     );
-
-    teardown(ctx).await;
 }
 
 /// An accepted verdict commits without running a tool call the model
@@ -1609,14 +1569,13 @@ async fn test_an_accepted_verdict_commits_the_submission_on_resume() {
 /// failure, sinking) the verified submission.
 #[tokio::test]
 async fn test_an_accepted_verdict_drops_a_sibling_call_rather_than_running_it() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let child_binding = a_child_binding(ctx).await;
+    let ctx = TestDb::new().await;
+    let child_binding = a_child_binding(&ctx).await;
     // One assistant turn emits submit_result first, then a sibling tool;
     // submit_result accepts and launches the verifier, leaving the sibling
     // unanswered for the resume to project as the tail.
     let mut harness = loop_harness(
-        ctx,
+        &ctx,
         "verify-sibling",
         vec![a_tool_call_response(&[
             (
@@ -1649,14 +1608,14 @@ async fn test_an_accepted_verdict_drops_a_sibling_call_rather_than_running_it() 
     assert!(matches!(outcome, LoopOutcome::Suspended), "got {outcome:?}");
 
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         hand_back_verdict(&mut conn, harness.thread.id(), r#"{"accepted": true}"#).await;
     }
 
     // Had the leftover sibling run first, its system failure would have
     // errored the loop and lost the verified submission; a clean commit is
     // the proof that the verdict dispositioned before the tail.
-    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let (task, thread) = reclaim_parent(&ctx, &harness).await;
     let resumed = LoopHarness {
         task,
         thread,
@@ -1675,8 +1634,6 @@ async fn test_an_accepted_verdict_drops_a_sibling_call_rather_than_running_it() 
         panic!("the accepted verdict commits the submission, got {outcome:?}");
     };
     assert_eq!(accepted.payload["claim_id"], OPENING_ITEM_ID);
-
-    teardown(ctx).await;
 }
 
 /// A rejected verdict continues the loop: the critique rides the
@@ -1684,11 +1641,10 @@ async fn test_an_accepted_verdict_drops_a_sibling_call_rather_than_running_it() 
 /// launches. The submission never commits on a rejection.
 #[tokio::test]
 async fn test_a_rejected_verdict_continues_the_loop_with_the_critique() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let child_binding = a_child_binding(ctx).await;
+    let ctx = TestDb::new().await;
+    let child_binding = a_child_binding(&ctx).await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "verify-reject",
         vec![
             submit_response("call_0", OPENING_ITEM_ID),
@@ -1710,7 +1666,7 @@ async fn test_a_rejected_verdict_continues_the_loop_with_the_critique() {
     assert!(matches!(outcome, LoopOutcome::Suspended));
 
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         hand_back_verdict(
             &mut conn,
             harness.thread.id(),
@@ -1721,7 +1677,7 @@ async fn test_a_rejected_verdict_continues_the_loop_with_the_critique() {
 
     // The resume re-decides against the critique and launches a second
     // verifier round. It does not commit the rejected submission.
-    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let (task, thread) = reclaim_parent(&ctx, &harness).await;
     let resumed = LoopHarness {
         task,
         thread,
@@ -1756,8 +1712,6 @@ async fn test_a_rejected_verdict_continues_the_loop_with_the_critique() {
         )),
         "the verifier's critique reached the model as a tool result",
     );
-
-    teardown(ctx).await;
 }
 
 /// A full two-round cycle: round one rejects with a critique, the loop
@@ -1766,11 +1720,10 @@ async fn test_a_rejected_verdict_continues_the_loop_with_the_critique() {
 /// log, and the final commit re-validates without re-asking the model.
 #[tokio::test]
 async fn test_two_verifier_rounds_reject_then_accept_and_commit() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let child_binding = a_child_binding(ctx).await;
+    let ctx = TestDb::new().await;
+    let child_binding = a_child_binding(&ctx).await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "verify-two-round",
         vec![
             submit_response("call_0", OPENING_ITEM_ID),
@@ -1793,7 +1746,7 @@ async fn test_two_verifier_rounds_reject_then_accept_and_commit() {
     assert!(matches!(outcome, LoopOutcome::Suspended), "got {outcome:?}");
 
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         hand_back_verdict(
             &mut conn,
             harness.thread.id(),
@@ -1804,7 +1757,7 @@ async fn test_two_verifier_rounds_reject_then_accept_and_commit() {
 
     // Round two: the resume re-decides against the critique and a second
     // verifier launches, suspending again.
-    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let (task, thread) = reclaim_parent(&ctx, &harness).await;
     let round_two = LoopHarness {
         task,
         thread,
@@ -1825,12 +1778,12 @@ async fn test_two_verifier_rounds_reject_then_accept_and_commit() {
     );
 
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         hand_back_verdict(&mut conn, round_two.thread.id(), r#"{"accepted": true}"#).await;
     }
 
     // The second round's acceptance: the resume re-validates and commits.
-    let (task, thread) = reclaim_parent(ctx, &round_two).await;
+    let (task, thread) = reclaim_parent(&ctx, &round_two).await;
     let committed = LoopHarness {
         task,
         thread,
@@ -1856,12 +1809,10 @@ async fn test_two_verifier_rounds_reject_then_accept_and_commit() {
     );
 
     let launches = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         count_deferred_launches(&mut conn, committed.thread.id()).await
     };
     assert_eq!(launches, 2, "reject then accept is two verifier launches");
-
-    teardown(ctx).await;
 }
 
 /// The verify budget bounds the launches: once spent, an accepted
@@ -1869,11 +1820,10 @@ async fn test_two_verifier_rounds_reject_then_accept_and_commit() {
 /// another verifier or stalling.
 #[tokio::test]
 async fn test_the_verify_budget_bounds_launches_then_commits_directly() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let child_binding = a_child_binding(ctx).await;
+    let ctx = TestDb::new().await;
+    let child_binding = a_child_binding(&ctx).await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "verify-budget",
         vec![
             submit_response("call_0", OPENING_ITEM_ID),
@@ -1894,7 +1844,7 @@ async fn test_the_verify_budget_bounds_launches_then_commits_directly() {
     assert!(matches!(outcome, LoopOutcome::Suspended));
 
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         // Exactly one verifier launched: the suspension is the budgeted
         // launch, not an absent verifier. This makes the direct commit
         // below an enforced bound rather than a vacuous no-launch.
@@ -1913,7 +1863,7 @@ async fn test_the_verify_budget_bounds_launches_then_commits_directly() {
 
     // The resume re-decides, but the one launch is spent: the validated
     // submission commits directly rather than launching a second verifier.
-    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let (task, thread) = reclaim_parent(&ctx, &harness).await;
     let resumed = LoopHarness {
         task,
         thread,
@@ -1927,8 +1877,6 @@ async fn test_the_verify_budget_bounds_launches_then_commits_directly() {
         matches!(outcome, LoopOutcome::Submitted(_)),
         "the spent verify budget commits on the validators alone, got {outcome:?}",
     );
-
-    teardown(ctx).await;
 }
 
 /// A dead verifier consumes a verify round end to end: the child dies via
@@ -1937,11 +1885,10 @@ async fn test_the_verify_budget_bounds_launches_then_commits_directly() {
 /// proving the dead launch spent the round.
 #[tokio::test]
 async fn test_a_dead_verifier_consumes_a_round_and_the_loop_commits_directly() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let child_binding = a_child_binding(ctx).await;
+    let ctx = TestDb::new().await;
+    let child_binding = a_child_binding(&ctx).await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "verify-death",
         vec![
             submit_response("call_0", OPENING_ITEM_ID),
@@ -1964,7 +1911,7 @@ async fn test_a_dead_verifier_consumes_a_round_and_the_loop_commits_directly() {
     // The child dies instead of returning a verdict; the failure crosses
     // back as an error result and the launch is already counted.
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         kill_child_via_deferred_death(
             &mut conn,
             harness.thread.id(),
@@ -1976,7 +1923,7 @@ async fn test_a_dead_verifier_consumes_a_round_and_the_loop_commits_directly() {
     // The resume re-decides against the error, but the one launch is spent
     // even though no verdict ever returned: the resubmission commits
     // directly rather than launching a second verifier.
-    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let (task, thread) = reclaim_parent(&ctx, &harness).await;
     let resumed = LoopHarness {
         task,
         thread,
@@ -1990,8 +1937,6 @@ async fn test_a_dead_verifier_consumes_a_round_and_the_loop_commits_directly() {
         matches!(outcome, LoopOutcome::Submitted(_)),
         "a dead verifier consumed the round; the resubmission commits directly, got {outcome:?}",
     );
-
-    teardown(ctx).await;
 }
 
 /// Post-acceptance drift: the graph changes between the verifier's
@@ -2001,11 +1946,10 @@ async fn test_a_dead_verifier_consumes_a_round_and_the_loop_commits_directly() {
 /// continues: never a stale commit, never a fence collision.
 #[tokio::test]
 async fn test_post_acceptance_drift_injects_diagnostics_and_continues() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let child_binding = a_child_binding(ctx).await;
+    let ctx = TestDb::new().await;
+    let child_binding = a_child_binding(&ctx).await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "verify-drift",
         vec![
             submit_response("call_0", OPENING_ITEM_ID),
@@ -2030,13 +1974,13 @@ async fn test_post_acceptance_drift_injects_diagnostics_and_continues() {
     assert!(matches!(outcome, LoopOutcome::Suspended));
 
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         hand_back_verdict(&mut conn, harness.thread.id(), r#"{"accepted": true}"#).await;
     }
 
     // The resume re-validates the accepted submission, finds the drift,
     // and continues rather than committing or colliding on the fence.
-    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let (task, thread) = reclaim_parent(&ctx, &harness).await;
     let resumed = LoopHarness {
         task,
         thread,
@@ -2058,7 +2002,7 @@ async fn test_post_acceptance_drift_injects_diagnostics_and_continues() {
 
     // The drift crossed as a conversation-bearing input, not a second
     // tool result for the answered submit call, and reached the model.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let records = PgAgentThreadRecordRepository
         .find_by_thread_id(&mut conn, resumed.thread.id())
         .await
@@ -2094,8 +2038,6 @@ async fn test_post_acceptance_drift_injects_diagnostics_and_continues() {
             )),
         "the drift diagnostics reach the model's re-decision as a user turn",
     );
-
-    teardown(ctx).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2107,10 +2049,9 @@ async fn test_post_acceptance_drift_injects_diagnostics_and_continues() {
 /// loop-outcome event, and nests an `execute_tool` span under it per call.
 #[tokio::test]
 async fn test_observability_instruments_a_fresh_claim() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let harness = loop_harness(
-        ctx,
+        &ctx,
         "obs-fresh",
         vec![
             a_tool_call_response(&[("call_0", "lookup_note", serde_json::json!({}))]),
@@ -2185,8 +2126,6 @@ async fn test_observability_instruments_a_fresh_claim() {
             .all(|span| span.parent.as_deref() == Some("invoke_agent")),
         "every execute_tool span nests under invoke_agent",
     );
-
-    teardown(ctx).await;
 }
 
 /// The verifier round trip is observable end to end: the launch and its
@@ -2194,11 +2133,10 @@ async fn test_observability_instruments_a_fresh_claim() {
 /// the way in, and a second `invoke_agent` flagged as a resume.
 #[tokio::test]
 async fn test_observability_instruments_the_verifier_round_trip_and_resume() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let child_binding = a_child_binding(ctx).await;
+    let ctx = TestDb::new().await;
+    let child_binding = a_child_binding(&ctx).await;
     let mut harness = loop_harness(
-        ctx,
+        &ctx,
         "obs-verify",
         vec![submit_response("call_0", OPENING_ITEM_ID)],
     )
@@ -2247,7 +2185,7 @@ async fn test_observability_instruments_the_verifier_round_trip_and_resume() {
     );
 
     {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         hand_back_verdict(&mut conn, harness.thread.id(), r#"{"accepted": true}"#).await;
     }
 
@@ -2260,7 +2198,7 @@ async fn test_observability_instruments_the_verifier_round_trip_and_resume() {
     );
     assert_eq!(terminal.field(span_attrs::TERMINAL_IS_ERROR), Some("false"));
 
-    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let (task, thread) = reclaim_parent(&ctx, &harness).await;
     let resumed = LoopHarness {
         task,
         thread,
@@ -2292,18 +2230,15 @@ async fn test_observability_instruments_the_verifier_round_trip_and_resume() {
         1,
         "the resume is counted",
     );
-
-    teardown(ctx).await;
 }
 
 /// A spend exhaustion is observable as a budget-admission decision and a
 /// typed suspension with its wake instant.
 #[tokio::test]
 async fn test_observability_instruments_a_budget_suspension() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let mut harness = loop_harness(
-        ctx,
+        &ctx,
         "obs-budget",
         vec![a_completion_response("an expensive thought")],
     )
@@ -2351,6 +2286,4 @@ async fn test_observability_instruments_a_budget_suspension() {
     // suspension counts once.
     assert_eq!(counter.budget_admissions.load(Ordering::SeqCst), 2);
     assert_eq!(counter.suspensions.load(Ordering::SeqCst), 1);
-
-    teardown(ctx).await;
 }

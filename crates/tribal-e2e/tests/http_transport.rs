@@ -21,7 +21,6 @@ use tribal_auth::oauth::OAuthRuntimeConfig;
 use tribal_config::{OAuthConfig, ServerConfig};
 use tribal_domain::Scope;
 use tribal_mcp::HandlerConfig;
-use tribal_test_utils::serial_lock;
 use url::Url;
 
 fn test_oauth_runtime() -> Arc<OAuthRuntimeConfig> {
@@ -42,8 +41,8 @@ const RAW_TOKEN: &str = "http-integration-test-token";
 
 #[tokio::test]
 async fn test_missing_bearer_token_returns_401() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool, ct.clone());
 
@@ -84,8 +83,8 @@ async fn test_missing_bearer_token_returns_401() {
 
 #[tokio::test]
 async fn test_valid_bearer_token_passes_auth() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
@@ -133,8 +132,8 @@ async fn test_valid_bearer_token_passes_auth() {
 
 #[tokio::test]
 async fn test_expired_token_returns_401() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
@@ -193,8 +192,8 @@ async fn test_expired_token_returns_401() {
 /// through to `tools/list` filtering.
 #[tokio::test]
 async fn test_read_only_principal_sees_only_read_tools() {
-    let _lock = serial_lock().await;
-    let pool = fresh_pool().await;
+    let db = fresh_pool().await;
+    let pool = db.pool().clone();
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 

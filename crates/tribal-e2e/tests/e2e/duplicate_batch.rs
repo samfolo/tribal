@@ -122,5 +122,4 @@ async fn test_duplicate_only_batch() {
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

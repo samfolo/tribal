@@ -8,7 +8,7 @@ use tribal_db::APPLICATION_TABLES;
 
 #[tokio::test]
 async fn test_application_tables_matches_schema() {
-    let ctx = tribal_test_utils::test_context().await;
+    let ctx = tribal_test_utils::TestDb::new().await;
 
     let rows = sqlx::query(
         "SELECT table_name FROM information_schema.tables \

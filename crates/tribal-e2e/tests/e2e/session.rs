@@ -139,5 +139,4 @@ async fn test_session_context_lifecycle() {
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

@@ -186,5 +186,4 @@ async fn test_relation_normalisation_drops_invalid_edges() {
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

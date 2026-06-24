@@ -10,12 +10,11 @@ use super::{common::*, fixtures::context_index_relation_response_json};
 /// transitions the job to `Completed` with a `Success` outcome.
 #[tokio::test]
 async fn test_relation_stage_commits_relations_and_completes_job() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "relation-happy-path").await;
+        setup_prerequisites(&ctx, "relation-happy-path").await;
 
     let candidates = vec![
         a_candidate()
@@ -28,7 +27,7 @@ async fn test_relation_stage_commits_relations_and_completes_job() {
     let relation_hints = vec![a_relation_hint().build()];
 
     let (job_id, task_id, ki_ids) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_relation_job(
             &mut conn,
             principal_id,
@@ -86,7 +85,7 @@ async fn test_relation_stage_commits_relations_and_completes_job() {
     );
 
     // Verify relations were committed.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let outbound = PgRelationRepository
         .find_outbound(&mut conn, ki_ids[0], None)
         .await
@@ -102,8 +101,6 @@ async fn test_relation_stage_commits_relations_and_completes_job() {
         Some("Test relation"),
         "justification should be persisted",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that when all triage outcomes are duplicates, relations
@@ -111,14 +108,13 @@ async fn test_relation_stage_commits_relations_and_completes_job() {
 /// with an `Empty` outcome.
 #[tokio::test]
 async fn test_relation_stage_all_duplicates_empty_outcome() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let candidates = vec![a_candidate().build(), a_candidate().build()];
 
     let (job_id, task_id, matched_ki_a, matched_ki_b) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
 
         // Seed pre-existing data via Seed builder.
         let seed_result = Seed::new()
@@ -323,7 +319,7 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
     );
 
     // Task completion is atomic with the job transition — no polling needed.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let task = PgTaskRepository
         .find_by_id(&mut conn, task_id)
         .await
@@ -345,8 +341,6 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
         "should have one relation between existing items",
     );
     assert_eq!(outbound[0].target_id(), matched_ki_b);
-
-    teardown(ctx).await;
 }
 
 /// Verifies the idempotency guard: when `committed_batch_id` is already
@@ -354,17 +348,16 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
 /// without modifying job state.
 #[tokio::test]
 async fn test_relation_stage_idempotency_skip() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "relation-idempotency").await;
+        setup_prerequisites(&ctx, "relation-idempotency").await;
 
     let candidates = vec![a_candidate().build()];
 
     let task_id = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let (job_id, task_id, _) = seed_relation_job(
             &mut conn,
             principal_id,
@@ -426,25 +419,22 @@ async fn test_relation_stage_idempotency_skip() {
         0,
         "inference should not be called when committed_batch_id is set",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that an unparseable LLM response causes a `ParseError`
 /// requeue, matching the extraction and triage parse-failure tests.
 #[tokio::test]
 async fn test_relation_parse_failure() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "relation-parse-failure").await;
+        setup_prerequisites(&ctx, "relation-parse-failure").await;
 
     let candidates = vec![a_candidate().build()];
 
     let task_id = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         let (_job_id, task_id, _) = seed_relation_job(
             &mut conn,
             principal_id,
@@ -515,8 +505,6 @@ async fn test_relation_parse_failure() {
         task.error_message().is_some(),
         "error message should be set",
     );
-
-    teardown(ctx).await;
 }
 
 /// Verifies that when the LLM returns only `Supersedes` edges (all
@@ -524,12 +512,11 @@ async fn test_relation_parse_failure() {
 /// committed relations.
 #[tokio::test]
 async fn test_relation_stage_all_edges_dropped() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "relation-all-dropped").await;
+        setup_prerequisites(&ctx, "relation-all-dropped").await;
 
     let candidates = vec![
         a_candidate().content("First candidate".to_owned()).build(),
@@ -537,7 +524,7 @@ async fn test_relation_stage_all_edges_dropped() {
     ];
 
     let (job_id, _task_id, ki_ids) = {
-        let mut conn = raw_conn(ctx).await;
+        let mut conn = raw_conn(&ctx).await;
         seed_relation_job(
             &mut conn,
             principal_id,
@@ -599,7 +586,7 @@ async fn test_relation_stage_all_edges_dropped() {
     );
 
     // Verify no relations were committed.
-    let mut conn = raw_conn(ctx).await;
+    let mut conn = raw_conn(&ctx).await;
     let outbound = PgRelationRepository
         .find_outbound(&mut conn, ki_ids[0], None)
         .await
@@ -608,8 +595,6 @@ async fn test_relation_stage_all_edges_dropped() {
         outbound.is_empty(),
         "no relations should be committed when all edges are dropped",
     );
-
-    teardown(ctx).await;
 }
 
 /// The relation stage's handoff read: an agentic triage thread's
@@ -623,11 +608,10 @@ async fn test_relation_stage_all_edges_dropped() {
 /// recorded binding exists to keep).
 #[tokio::test]
 async fn test_find_triage_submissions_by_job_surfaces_agentic_handoffs() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
+    let ctx = TestDb::new().await;
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "relation-handoff-read").await;
-    let mut conn = raw_conn(ctx).await;
+        setup_prerequisites(&ctx, "relation-handoff-read").await;
+    let mut conn = raw_conn(&ctx).await;
 
     let candidates = vec![
         a_candidate()
@@ -724,6 +708,4 @@ async fn test_find_triage_submissions_by_job_surfaces_agentic_handoffs() {
         submissions[0].content["payload"]["handoff"],
         "links auth expiry and caching",
     );
-
-    teardown(ctx).await;
 }

@@ -10,7 +10,7 @@ use tribal_config::{
     Auth, CREDENTIALS_WRITE_FAILED_PREFIX, CliOverrides, Credentials, TransportKind,
 };
 use tribal_db::{AuthTokenRepository, PgAuthTokenRepository};
-use tribal_test_utils::{serial_lock, test_context};
+use tribal_test_utils::{TestDb, env_lock};
 
 use super::common::{TestEnv, fresh_db, run_bootstrap, run_setup, run_token_create};
 
@@ -23,12 +23,12 @@ use super::common::{TestEnv, fresh_db, run_bootstrap, run_setup, run_token_creat
 #[cfg(unix)]
 #[tokio::test]
 async fn test_credentials_written_with_locked_mode_no_residue() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let _pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let _pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
 
-    let (_token, _stderr) = run_token_create(ctx, &env.config_path, None)
+    let (_token, _stderr) = run_token_create(&ctx, &env.config_path, None)
         .await
         .expect("token-create succeeds");
 
@@ -66,9 +66,9 @@ async fn test_credentials_written_with_locked_mode_no_residue() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_credentials_unwritable_parent_emits_warning_and_keeps_token_row() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
 
     let tribal_dir = env.xdg_dir.path().join("tribal");
@@ -76,7 +76,7 @@ async fn test_credentials_unwritable_parent_emits_warning_and_keeps_token_row() 
     std::fs::set_permissions(&tribal_dir, std::fs::Permissions::from_mode(0o500))
         .expect("chmod r-x");
 
-    let (token, stderr) = run_token_create(ctx, &env.config_path, None)
+    let (token, stderr) = run_token_create(&ctx, &env.config_path, None)
         .await
         .expect("token-create still succeeds");
 
@@ -107,12 +107,12 @@ async fn test_credentials_unwritable_parent_emits_warning_and_keeps_token_row() 
 /// content must match the freshly-minted bearer.
 #[tokio::test]
 async fn test_setup_writes_credentials_with_minted_bearer() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let _pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let _pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
 
-    let (outcome, _stderr) = run_setup(ctx, &env.config_path, CliOverrides::default(), None)
+    let (outcome, _stderr) = run_setup(&ctx, &env.config_path, CliOverrides::default(), None)
         .await
         .expect("setup succeeds");
 
@@ -136,9 +136,9 @@ async fn test_setup_writes_credentials_with_minted_bearer() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_setup_credentials_unwritable_emits_warning_and_keeps_token_row() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
 
     let tribal_dir = env.xdg_dir.path().join("tribal");
@@ -146,7 +146,7 @@ async fn test_setup_credentials_unwritable_emits_warning_and_keeps_token_row() {
     std::fs::set_permissions(&tribal_dir, std::fs::Permissions::from_mode(0o500))
         .expect("chmod r-x");
 
-    let (outcome, stderr) = run_setup(ctx, &env.config_path, CliOverrides::default(), None)
+    let (outcome, stderr) = run_setup(&ctx, &env.config_path, CliOverrides::default(), None)
         .await
         .expect("setup still succeeds when credentials write fails");
 
@@ -181,9 +181,9 @@ async fn test_setup_credentials_unwritable_emits_warning_and_keeps_token_row() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_bootstrap_credentials_unwritable_emits_warning_with_handoff() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let _pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let _pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
 
     let tribal_dir = env.xdg_dir.path().join("tribal");
@@ -192,7 +192,7 @@ async fn test_bootstrap_credentials_unwritable_emits_warning_with_handoff() {
         .expect("chmod r-x");
 
     let (_stdout, stderr) = run_bootstrap(
-        ctx,
+        &ctx,
         &env.config_path,
         CliOverrides::default(),
         None,
@@ -233,12 +233,12 @@ async fn test_bootstrap_credentials_unwritable_emits_warning_with_handoff() {
 /// the freshly-minted bearer.
 #[tokio::test]
 async fn test_credentials_token_create_independent_of_setup() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let _pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let _pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
 
-    let (token, _stderr) = run_token_create(ctx, &env.config_path, None)
+    let (token, _stderr) = run_token_create(&ctx, &env.config_path, None)
         .await
         .expect("token-create succeeds");
 
@@ -263,15 +263,15 @@ async fn test_credentials_token_create_independent_of_setup() {
 /// freshly-minted bearers (last-writer-wins).
 #[tokio::test]
 async fn test_credentials_concurrent_writes_last_writer_wins() {
-    let _lock = serial_lock().await;
-    let ctx = test_context().await;
-    let _pool = fresh_db(ctx).await;
+    let _env = env_lock().await;
+    let ctx = TestDb::new().await;
+    let _pool = fresh_db(&ctx).await;
     let env = TestEnv::new();
 
     let config_path = env.config_path.clone();
     let (token_a, token_b) = tokio::join!(
-        run_token_create(ctx, &config_path, None),
-        run_token_create(ctx, &config_path, None),
+        run_token_create(&ctx, &config_path, None),
+        run_token_create(&ctx, &config_path, None),
     );
     let (token_a, _) = token_a.expect("first token-create succeeds");
     let (token_b, _) = token_b.expect("second token-create succeeds");

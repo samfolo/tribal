@@ -25,7 +25,7 @@ mod tests {
     use tribal_db::PrincipalRepository;
 
     use super::*;
-    use crate::{a_principal, test_context};
+    use crate::{TestDb, a_principal};
 
     #[tokio::test]
     async fn test_find_by_id_returns_canned_principal() {
@@ -34,8 +34,8 @@ mod tests {
             .on_find_by_id(principal.clone(), None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let result = mock.find_by_id(&mut tx, principal.id()).await.unwrap();
         assert_eq!(result.principal_key(), principal.principal_key());
@@ -48,8 +48,8 @@ mod tests {
             .on_find_by_key(Some(principal.clone()), None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let result = mock
             .find_by_key(&mut tx, principal.principal_key())
@@ -66,8 +66,8 @@ mod tests {
             .on_find_by_id(principal.clone(), None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let id = principal.id();
         let _ = mock.find_by_id(&mut tx, id).await;
@@ -85,8 +85,8 @@ mod tests {
             .on_find_by_ids(vec![p1.clone(), p2.clone()], None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let result = mock
             .find_by_ids(&mut tx, &[p1.id(), p2.id()])

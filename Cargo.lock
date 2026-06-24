@@ -5651,6 +5651,7 @@ dependencies = [
  "tribal-db",
  "tribal-domain",
  "tribal-inference",
+ "url",
  "uuid",
 ]
 

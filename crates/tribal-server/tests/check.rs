@@ -1,8 +1,7 @@
 //! Integration tests for `tribal check`.
 //!
-//! Each test holds `serial_lock` for the duration of its env-var
-//! manipulation and uses a fresh testcontainer-backed pool drained at
-//! the start.
+//! Each test owns an isolated database via `TestDb` and uses scoped
+//! guards for its env-var manipulation.
 
 #[path = "check/common.rs"]
 mod common;

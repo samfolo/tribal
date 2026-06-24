@@ -272,5 +272,4 @@ async fn test_agentic_triage_loop_end_to_end() {
     );
 
     harness.shutdown().await;
-    harness.teardown().await;
 }

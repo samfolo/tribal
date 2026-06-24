@@ -32,9 +32,7 @@ use tribal_mcp::{
     TribalServerHandler,
 };
 use tribal_telemetry::noop_recorder;
-use tribal_test_utils::{
-    Seed, a_new_principal, a_new_project, serial_lock, test_context, truncate_all_tables,
-};
+use tribal_test_utils::{Seed, TestDb, a_new_principal, a_new_project};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{body_string_contains, method, path},
@@ -299,7 +297,12 @@ pub struct TestHarness {
     cli_project: Option<String>,
 
     _prompts_dir: TempDir,
-    _serial_guard: tokio::sync::MutexGuard<'static, ()>,
+
+    /// The owned, isolated test database. Declared last so it drops AFTER
+    /// `server_handle` and `pool` (Rust drops struct fields in declaration
+    /// order), keeping the cloned database alive for the whole harness
+    /// lifetime. Held for its lifetime, not read.
+    _db: TestDb,
 }
 
 impl TestHarness {
@@ -313,15 +316,10 @@ impl TestHarness {
     /// Panics if any infrastructure step fails (database, wiremock, server
     /// startup, MCP handshake).
     pub async fn init(setup_fn: impl FnOnce(&mut HarnessSetup)) -> Self {
-        // 1. Serial lock + test context + per-test pool
-        let guard = serial_lock().await;
-        let ctx = test_context().await;
-        let pool = ctx.create_pool().await.expect("create per-test pool");
-
-        // 2. Clean slate
-        let mut conn = pool.acquire().await.expect("acquire connection");
-        truncate_all_tables(&mut conn).await;
-        drop(conn);
+        // 1-2. Owned, isolated test database + assertion pool. The cloned
+        // database is already empty, so no clean-slate truncation is needed.
+        let db = TestDb::new().await;
+        let pool = db.create_pool().await.expect("create assertion pool");
 
         // 3. Wiremock servers
         let embedding_server = MockServer::start().await;
@@ -338,7 +336,7 @@ impl TestHarness {
         // server's provider builder constructs from).
         let prompts_dir = tempfile::tempdir().expect("create prompts tempdir");
         let mut config = test_config(
-            ctx.database_url(),
+            db.database_url(),
             &embedding_server.uri(),
             &extraction_server.uri(),
             &triage_server.uri(),
@@ -357,7 +355,7 @@ impl TestHarness {
         seed_genesis_from_init(&pool, &config).await;
 
         // 6-7. Seed data (graph path or manual path)
-        let mut raw_conn = ctx.raw_connection().await.expect("raw connection for seed");
+        let mut raw_conn = db.raw_connection().await.expect("raw connection for seed");
 
         let (cli_project, labels) = if let Some(graph_fn) = setup.graph_fn {
             // Graph path: Seed manages project, principal, items, and
@@ -459,7 +457,7 @@ impl TestHarness {
             principal_key: setup.principal_key,
             cli_project,
             _prompts_dir: prompts_dir,
-            _serial_guard: guard,
+            _db: db,
         }
     }
 
@@ -483,16 +481,6 @@ impl TestHarness {
         })
         .await
         .expect("shutdown task panicked");
-    }
-
-    /// Truncates all application tables for test isolation.
-    pub async fn teardown(&self) {
-        let mut conn = self
-            .pool
-            .acquire()
-            .await
-            .expect("acquire connection for teardown");
-        truncate_all_tables(&mut conn).await;
     }
 
     /// Restarts the server after a prior [`shutdown()`](Self::shutdown).

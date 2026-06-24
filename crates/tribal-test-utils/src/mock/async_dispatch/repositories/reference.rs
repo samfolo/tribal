@@ -23,7 +23,7 @@ mod tests {
     use tribal_db::ReferenceRepository;
 
     use super::*;
-    use crate::{a_reference, test_context};
+    use crate::{TestDb, a_reference};
 
     #[tokio::test]
     async fn test_find_by_knowledge_item_ids_returns_canned_references() {
@@ -32,8 +32,8 @@ mod tests {
             .on_find_by_knowledge_item_ids(vec![reference.clone()], None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let ids = vec![KnowledgeItemId::new()];
         let result = mock
@@ -52,8 +52,8 @@ mod tests {
             .on_find_by_knowledge_item_id(vec![reference.clone()], None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let id = KnowledgeItemId::new();
         let result = mock.find_by_knowledge_item_id(&mut tx, id).await.unwrap();
@@ -68,8 +68,8 @@ mod tests {
             .on_find_by_knowledge_item_ids(vec![], None)
             .build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         let id = KnowledgeItemId::new();
         let _ = mock.find_by_knowledge_item_ids(&mut tx, &[id]).await;

@@ -334,9 +334,8 @@ mod tests {
     use tokio::sync::RwLock;
     use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
-        MockPromptVersionRepository, MockRetrievalFeedbackRepository, TestContext,
+        MockPromptVersionRepository, MockRetrievalFeedbackRepository, TestDb,
         a_new_embedding_profile, a_prompt_version, a_retrieval_feedback, ensure_genesis_profile,
-        test_context,
     };
 
     use super::*;
@@ -365,8 +364,8 @@ mod tests {
         repos: &ConnectionRepositories,
         params: FeedbackParams,
     ) -> Result<tribal_domain::RetrievalFeedback, FeedbackError> {
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
         // `execute_feedback` reads the active profile for the embedding lineage.
         ensure_genesis_profile(&mut tx, "nomic-embed-text:v1.5", 768).await;
         execute_feedback(&mut tx, repos, params).await
@@ -460,8 +459,8 @@ mod tests {
     async fn test_execute_feedback_records_active_profile_when_id_absent() {
         let feedback = a_retrieval_feedback().build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
         ensure_genesis_profile(&mut tx, "active-model:v1", 768).await;
         // Bind the expectation to the profile the handler resolves as active in
         // this transaction, rather than assuming the seeded genesis is the
@@ -502,8 +501,8 @@ mod tests {
     async fn test_execute_feedback_records_producing_profile_when_id_present() {
         let feedback = a_retrieval_feedback().build();
 
-        let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await.expect("begin");
+        let ctx = TestDb::new().await;
+        let mut tx = ctx.begin().await.expect("begin");
 
         // Genesis is active first; capture its id and model.
         let producing = ensure_genesis_profile(&mut tx, "producing-model:v1", 768).await;
@@ -792,7 +791,7 @@ mod tests {
         // so this test commits a genesis profile. A dedicated database isolates
         // it, keeping that committed profile out of the parallel suite's
         // global-state tests (prune, feedback provenance).
-        let ctx = TestContext::new().await.expect("dedicated test database");
+        let ctx = TestDb::new().await;
         let pool = ctx.pool().clone();
         let mut conn = ctx.raw_connection().await.expect("conn");
         ensure_genesis_profile(&mut conn, "nomic-embed-text:v1.5", 768).await;
