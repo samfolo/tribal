@@ -4,10 +4,7 @@ use tribal_test_utils::item;
 
 use crate::harness::{
     assertions::assert_success,
-    fixtures::{
-        ExtractionFixture, ReferenceSpec, RelationFixture, SimilarItemSpec, candidate, hint, novel,
-        relate,
-    },
+    fixtures::{ExtractionFixture, ReferenceSpec, RelationFixture, candidate, hint, novel, relate},
     server::TestHarness,
     tool_call::tool_result_json,
 };
@@ -19,16 +16,7 @@ use crate::harness::{
 /// Theme: Canopy's event sourcing architecture — a new performance
 /// fact supports the original architecture decision, and a companion
 /// monitoring heuristic is extracted alongside it.
-// QUARANTINED (~20% flaky): a pre-existing async-ordering non-determinism in the
-// worker pipeline, surfaced by per-test-database isolation. The triage stage's
-// similar-item search context depends on the order in which this job's own
-// candidates and the seeded item become visible; the previous persistent shared
-// database happened to stabilise that order. Confirmed NOT an HNSW/index issue
-// (reproduces with exact search) and NOT introduced by the test-harness change
-// (reproduces on the prior commit). Re-enable once the pipeline ordering is
-// deterministic.
 #[tokio::test]
-#[ignore = "flaky: pre-existing worker-pipeline ordering non-determinism; see comment"]
 async fn test_cross_batch_relations() {
     let mut harness = TestHarness::init(|setup| {
         // Anthropic triage exercises the Anthropic envelope abstraction.
@@ -99,14 +87,15 @@ async fn test_cross_batch_relations() {
             m.on_content_repeat_last(
                 "storage costs",
                 &[novel()
-                    // The seeded decision is the sole search hit, at index 0.
-                    .similar_item(SimilarItemSpec {
-                        context_index: 0,
-                        suggested_relation: "supports",
-                        justification: "Storage savings validate the event sourcing decision",
-                    })
-                    .build()
-                    .into()],
+                    // Reference the seeded decision by content; the responder
+                    // resolves its index from the actual search results, so the
+                    // mock is robust to similar-item ordering.
+                    .similar_item_by_content(
+                        "Meridian chose event sourcing",
+                        "supports",
+                        "Storage savings validate the event sourcing decision",
+                    )
+                    .build_resolved()],
             );
             m.on_content_repeat_last("compaction lag", &[novel().build().into()]);
         })

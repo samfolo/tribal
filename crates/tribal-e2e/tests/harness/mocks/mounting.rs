@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use serde_json::Value;
 use tribal_domain::ProviderKind;
 use wiremock::{
-    Mock, MockBuilder, MockServer, ResponseTemplate,
+    Mock, MockBuilder, MockServer, Request, ResponseTemplate,
     matchers::{body_string_contains, method, path},
 };
 
@@ -29,11 +31,19 @@ impl From<&str> for ContentMatcher {
 // MockResponse
 // ---------------------------------------------------------------------------
 
+/// Resolves a stage-fixture `Value` from the incoming request body at serve
+/// time — e.g. picking a similar item's context index by matching its content
+/// in the rendered prompt, so the response does not depend on search ordering.
+pub type DynamicFixtureFn = Arc<dyn Fn(&Request) -> Value + Send + Sync>;
+
 /// A single entry in a mock response sequence.
 #[derive(Clone)]
 pub enum MockResponse {
     /// A successful response wrapping a stage fixture.
     Fixture(Value),
+    /// A successful response whose fixture is computed from the request body
+    /// at serve time.
+    DynamicFixture(DynamicFixtureFn),
     /// An HTTP error response with the given status code.
     Error(u16),
 }
@@ -214,54 +224,50 @@ impl<'a> StageMountBuilder<'a> {
         // declared (and so mounted) last: registered behind every
         // content-specific matcher, it shadows none of them.
         for entry in &self.entries {
-            let wrapped: Vec<ResponseTemplate> = entry
-                .responses
-                .iter()
-                .map(|r| self.to_template(r, entry.streaming, entry.delay_ms))
-                .collect();
-            let (final_response, prefix) = wrapped
-                .split_last()
-                .expect("non-empty responses checked on add");
-
-            for template in prefix {
-                self.build_when(endpoint, &entry.matcher)
-                    .respond_with(template.clone())
-                    .up_to_n_times(1)
-                    .mount(self.server)
-                    .await;
-            }
-
-            let final_mock = self
-                .build_when(endpoint, &entry.matcher)
-                .respond_with(final_response.clone());
-            if entry.repeat_last {
-                final_mock.mount(self.server).await;
-            } else {
-                final_mock.up_to_n_times(1).mount(self.server).await;
+            let last = entry.responses.len() - 1;
+            for (i, response) in entry.responses.iter().enumerate() {
+                let mock = self.attach(
+                    self.build_when(endpoint, &entry.matcher),
+                    response,
+                    entry.streaming,
+                    entry.delay_ms,
+                );
+                if i == last && entry.repeat_last {
+                    mock.mount(self.server).await;
+                } else {
+                    mock.up_to_n_times(1).mount(self.server).await;
+                }
             }
         }
     }
 
-    fn to_template(
+    /// Attaches a response to a mock builder, dispatching on its kind: a
+    /// [`MockResponse::DynamicFixture`] computes its body from the request at
+    /// serve time; a [`MockResponse::Fixture`] uses a static success envelope;
+    /// a [`MockResponse::Error`] returns the bare status. The match is
+    /// exhaustive, so a new variant is a compile error here rather than a
+    /// runtime surprise.
+    fn attach(
         &self,
+        builder: MockBuilder,
         response: &MockResponse,
         streaming: bool,
         delay_ms: Option<u64>,
-    ) -> ResponseTemplate {
-        let template = match response {
-            MockResponse::Fixture(v) if streaming => {
-                let (body, content_type) = wrap_completion_stream(v, self.provider);
-                ResponseTemplate::new(200).set_body_raw(body, content_type)
+    ) -> Mock {
+        match response {
+            MockResponse::DynamicFixture(resolver) => {
+                let provider = self.provider;
+                let resolver = Arc::clone(resolver);
+                builder.respond_with(move |req: &Request| {
+                    finish_template(&resolver(req), provider, streaming, delay_ms)
+                })
             }
-            MockResponse::Fixture(v) => {
-                let wrapped = wrap_completion(v, self.provider);
-                ResponseTemplate::new(200).set_body_json(wrapped)
+            MockResponse::Fixture(content) => {
+                builder.respond_with(finish_template(content, self.provider, streaming, delay_ms))
             }
-            MockResponse::Error(status) => ResponseTemplate::new(*status),
-        };
-        match delay_ms {
-            Some(ms) => template.set_delay(std::time::Duration::from_millis(ms)),
-            None => template,
+            MockResponse::Error(status) => {
+                builder.respond_with(apply_delay(ResponseTemplate::new(*status), delay_ms))
+            }
         }
     }
 
@@ -271,5 +277,30 @@ impl<'a> StageMountBuilder<'a> {
             ContentMatcher::Any => base,
             ContentMatcher::Contains(s) => base.and(body_string_contains(s.clone())),
         }
+    }
+}
+
+/// Wraps a stage-fixture `Value` in the provider's success envelope (streaming
+/// or buffered), applying any configured delay.
+fn finish_template(
+    content: &Value,
+    provider: ProviderKind,
+    streaming: bool,
+    delay_ms: Option<u64>,
+) -> ResponseTemplate {
+    let template = if streaming {
+        let (body, content_type) = wrap_completion_stream(content, provider);
+        ResponseTemplate::new(200).set_body_raw(body, content_type)
+    } else {
+        ResponseTemplate::new(200).set_body_json(wrap_completion(content, provider))
+    };
+    apply_delay(template, delay_ms)
+}
+
+/// Applies the configured response delay, if any.
+fn apply_delay(template: ResponseTemplate, delay_ms: Option<u64>) -> ResponseTemplate {
+    match delay_ms {
+        Some(ms) => template.set_delay(std::time::Duration::from_millis(ms)),
+        None => template,
     }
 }
