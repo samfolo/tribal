@@ -127,7 +127,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_within_cap_submission_is_accepted() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let thread = an_agent_thread().build();
 
         let outcome = ExtractionSubmissionPipeline::new(3)
@@ -152,7 +152,7 @@ mod tests {
     #[tokio::test]
     async fn test_an_empty_submission_is_accepted() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let thread = an_agent_thread().build();
 
         let outcome = ExtractionSubmissionPipeline::new(3)
@@ -170,7 +170,7 @@ mod tests {
     #[tokio::test]
     async fn test_over_cap_bounces() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let thread = an_agent_thread().build();
 
         let outcome = ExtractionSubmissionPipeline::new(1)
@@ -191,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn test_an_out_of_range_hint_bounces() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let thread = an_agent_thread().build();
 
         let outcome = ExtractionSubmissionPipeline::new(3)
@@ -219,7 +219,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_malformed_submission_bounces_with_the_schema_diagnostics() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let thread = an_agent_thread().build();
 
         let outcome = ExtractionSubmissionPipeline::new(3)

@@ -14,7 +14,7 @@ const LOCK_REENTRANT: i64 = 0x7465_7374_0000_0004;
 #[tokio::test]
 async fn test_acquire_shared_xact_succeeds_in_transaction() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     PgAdvisoryLockRepository
         .acquire_shared_xact(&mut txn, LOCK_SHARED)
@@ -25,7 +25,7 @@ async fn test_acquire_shared_xact_succeeds_in_transaction() {
 #[tokio::test]
 async fn test_acquire_exclusive_xact_succeeds_in_transaction() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     PgAdvisoryLockRepository
         .acquire_exclusive_xact(&mut txn, LOCK_EXCLUSIVE)
@@ -36,7 +36,7 @@ async fn test_acquire_exclusive_xact_succeeds_in_transaction() {
 #[tokio::test]
 async fn test_try_acquire_exclusive_xact_granted_when_uncontended() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let granted = PgAdvisoryLockRepository
         .try_acquire_exclusive_xact(&mut txn, LOCK_TRY)
@@ -50,7 +50,7 @@ async fn test_same_session_does_not_self_conflict() {
     // A session that already holds the shared lock can still take the exclusive
     // lock on the same id: advisory locks conflict only between sessions.
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     PgAdvisoryLockRepository
         .acquire_shared_xact(&mut txn, LOCK_REENTRANT)

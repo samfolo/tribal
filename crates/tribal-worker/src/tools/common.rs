@@ -492,7 +492,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_job_context_renders_the_extraction_batch() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let job = seed_job(&mut txn, "job-context").await;
 
         let candidates = [
@@ -540,7 +540,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_sibling_threads_lists_the_roster_excluding_self() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let job = seed_job(&mut txn, "roster").await;
         let own =
             seed_stage_thread(&mut txn, &job, TaskType::Triage, &"c".repeat(64), Some(0)).await;
@@ -593,7 +593,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_sibling_threads_pages_the_record_log() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let job = seed_job(&mut txn, "paging").await;
         let own =
             seed_stage_thread(&mut txn, &job, TaskType::Triage, &"e".repeat(64), Some(0)).await;

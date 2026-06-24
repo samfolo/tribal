@@ -254,7 +254,7 @@ mod tests {
     #[tokio::test]
     async fn test_reindex_cancel_aborts_the_live_run() {
         let ctx = TestDb::new().await;
-        let mut tx = ctx.begin().await.expect("begin_test");
+        let mut tx = ctx.begin().await.expect("begin");
 
         let principal = PgPrincipalRepository
             .insert(
@@ -306,7 +306,7 @@ mod tests {
     #[tokio::test]
     async fn test_reindex_cancel_reports_no_live_run() {
         let ctx = TestDb::new().await;
-        let mut tx = ctx.begin().await.expect("begin_test");
+        let mut tx = ctx.begin().await.expect("begin");
 
         let outcome = reindex_cancel(&mut tx).await.expect("cancel");
         assert!(matches!(outcome, ReindexCancelOutcome::NoLiveRun));
@@ -315,7 +315,7 @@ mod tests {
     #[tokio::test]
     async fn test_reindex_prune_supersedes_all_but_the_active() {
         let ctx = TestDb::new().await;
-        let mut tx = ctx.begin().await.expect("begin_test");
+        let mut tx = ctx.begin().await.expect("begin");
 
         // An old complete profile, the active (highest-epoch complete), and a
         // failed one, inserted in ascending epoch order.

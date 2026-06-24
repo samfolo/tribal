@@ -130,7 +130,7 @@ const EMBEDDING_MODEL: &str = "text-embedding-test";
 #[tokio::test]
 async fn test_insert_returns_populated_knowledge_item() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "insert-pop").await;
@@ -162,7 +162,7 @@ async fn test_insert_returns_populated_knowledge_item() {
 #[tokio::test]
 async fn test_insert_with_none_optional_fields_returns_none() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "insert-none").await;
@@ -183,7 +183,7 @@ async fn test_insert_with_none_optional_fields_returns_none() {
 #[tokio::test]
 async fn test_insert_generates_prefixed_id() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "insert-prefix").await;
@@ -205,7 +205,7 @@ async fn test_insert_generates_prefixed_id() {
 #[tokio::test]
 async fn test_insert_with_tags_stores_and_returns_tags() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "insert-tags").await;
@@ -225,7 +225,7 @@ async fn test_insert_with_tags_stores_and_returns_tags() {
 #[tokio::test]
 async fn test_insert_with_all_optional_fields_round_trips() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "insert-opts").await;
@@ -258,7 +258,7 @@ async fn test_insert_with_all_optional_fields_round_trips() {
 #[tokio::test]
 async fn test_find_by_id_returns_knowledge_item() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "find-id").await;
@@ -281,7 +281,7 @@ async fn test_find_by_id_returns_knowledge_item() {
 #[tokio::test]
 async fn test_find_by_id_not_found_returns_error() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let result = repo.find_by_id(&mut txn, KnowledgeItemId::new()).await;
@@ -299,7 +299,7 @@ async fn test_find_by_id_not_found_returns_error() {
 #[tokio::test]
 async fn test_find_by_ids_returns_matching_items() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "find-ids").await;
@@ -327,7 +327,7 @@ async fn test_find_by_ids_returns_matching_items() {
 #[tokio::test]
 async fn test_find_by_ids_omits_missing_ids() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "find-ids-omit").await;
@@ -348,7 +348,7 @@ async fn test_find_by_ids_omits_missing_ids() {
 #[tokio::test]
 async fn test_find_by_ids_empty_input_returns_empty_vec() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let found = repo.find_by_ids(&mut txn, &[]).await.expect("find_by_ids");
@@ -359,7 +359,7 @@ async fn test_find_by_ids_empty_input_returns_empty_vec() {
 #[tokio::test]
 async fn test_find_by_ids_all_missing_returns_empty_vec() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let ids = vec![KnowledgeItemId::new(), KnowledgeItemId::new()];
@@ -375,7 +375,7 @@ async fn test_find_by_ids_all_missing_returns_empty_vec() {
 #[tokio::test]
 async fn test_semantic_search_returns_results_ordered_by_similarity() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-order").await;
@@ -417,7 +417,7 @@ async fn test_semantic_search_returns_results_ordered_by_similarity() {
 #[tokio::test]
 async fn test_semantic_search_filters_by_project_id() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_a) = setup_prerequisites(&mut txn, "ss-proj-a").await;
@@ -470,7 +470,7 @@ async fn test_semantic_search_filters_by_project_id() {
 #[tokio::test]
 async fn test_semantic_search_filters_by_kinds() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-kinds").await;
@@ -530,7 +530,7 @@ async fn test_semantic_search_filters_by_kinds() {
 #[tokio::test]
 async fn test_semantic_search_filters_by_tags_and_semantics() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-tags").await;
@@ -585,7 +585,7 @@ async fn test_semantic_search_filters_by_tags_and_semantics() {
 #[tokio::test]
 async fn test_semantic_search_filters_by_time_range_from() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-time-from").await;
@@ -650,7 +650,7 @@ async fn test_semantic_search_filters_by_time_range_from() {
 #[tokio::test]
 async fn test_semantic_search_filters_by_time_range_to() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-time-to").await;
@@ -715,7 +715,7 @@ async fn test_semantic_search_filters_by_time_range_to() {
 #[tokio::test]
 async fn test_semantic_search_excludes_superseded_items() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-superseded").await;
@@ -772,7 +772,7 @@ async fn test_semantic_search_excludes_superseded_items() {
 #[tokio::test]
 async fn test_semantic_search_includes_superseded_when_flag_set() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-include-sup").await;
@@ -830,7 +830,7 @@ async fn test_semantic_search_includes_superseded_when_flag_set() {
 #[tokio::test]
 async fn test_semantic_search_cursor_pagination() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-cursor").await;
@@ -902,7 +902,7 @@ async fn test_semantic_search_cursor_pagination() {
 #[tokio::test]
 async fn test_semantic_search_no_next_cursor_when_no_more_results() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-no-cursor").await;
@@ -934,7 +934,7 @@ async fn test_semantic_search_no_next_cursor_when_no_more_results() {
 #[tokio::test]
 async fn test_semantic_search_no_next_cursor_when_total_equals_limit() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-total-eq-limit").await;
@@ -970,7 +970,7 @@ async fn test_semantic_search_no_next_cursor_when_total_equals_limit() {
 #[tokio::test]
 async fn test_semantic_search_invalid_cursor_returns_error() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
     // The cursor decode fails before the profile is read; a genesis profile is
     // still needed so the params can name the active profile.
@@ -996,7 +996,7 @@ async fn test_semantic_search_invalid_cursor_returns_error() {
 #[tokio::test]
 async fn test_semantic_search_exact_true_when_enough_results() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-exact-true").await;
@@ -1031,7 +1031,7 @@ async fn test_semantic_search_exact_true_when_enough_results() {
 #[tokio::test]
 async fn test_semantic_search_exact_false_when_insufficient_results() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgKnowledgeItemRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-exact-false").await;

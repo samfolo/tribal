@@ -74,7 +74,7 @@ async fn setup_job(txn: &mut sqlx::PgConnection, suffix: &str) -> tribal_domain:
 #[tokio::test]
 async fn test_insert_returns_populated_result() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgExtractionResultRepository;
 
     let job_id = setup_job(&mut txn, "insert").await;
@@ -116,7 +116,7 @@ async fn test_insert_returns_populated_result() {
 #[tokio::test]
 async fn test_find_by_job_id_returns_result() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgExtractionResultRepository;
 
     let job_id = setup_job(&mut txn, "find").await;
@@ -154,7 +154,7 @@ async fn test_find_by_job_id_returns_result() {
 #[tokio::test]
 async fn test_find_by_job_id_returns_none_when_absent() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgExtractionResultRepository;
 
     let job_id = setup_job(&mut txn, "absent").await;
@@ -174,7 +174,7 @@ async fn test_find_by_job_id_returns_none_when_absent() {
 #[tokio::test]
 async fn test_insert_duplicate_job_id_returns_unique_violation() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgExtractionResultRepository;
 
     let job_id = setup_job(&mut txn, "dup").await;

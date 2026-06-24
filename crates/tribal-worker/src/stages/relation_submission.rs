@@ -626,7 +626,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_malformed_submission_bounces_with_the_schema_diagnostics() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let thread = an_agent_thread().build();
 
         let outcome = RelationSubmissionPipeline::new(HashSet::new())
@@ -647,7 +647,7 @@ mod tests {
     #[tokio::test]
     async fn test_an_empty_submission_is_accepted() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let thread = an_agent_thread().build();
 
         let outcome = RelationSubmissionPipeline::new(HashSet::new())
@@ -665,7 +665,7 @@ mod tests {
     #[tokio::test]
     async fn test_an_id_absent_from_the_seed_and_tool_results_bounces() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         // An unpersisted thread has no tool-result records, so the citable
         // set is the seed alone: a foreign id the model only saw inside
         // candidate content (never the seed, never a tool result) bounces.
@@ -853,7 +853,7 @@ mod tests {
     #[tokio::test]
     async fn test_evaluate_accepts_an_id_a_tool_result_surfaced() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let committed = ki("aaaa");
         let searched = ki("5555");
         let laundered = ki("ffff");
@@ -876,7 +876,7 @@ mod tests {
     #[tokio::test]
     async fn test_evaluate_bounces_a_foreign_id_laundered_through_content() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let committed = ki("aaaa");
         let searched = ki("5555");
         let laundered = ki("ffff");
@@ -905,7 +905,7 @@ mod tests {
     #[tokio::test]
     async fn test_evaluate_does_not_launder_an_id_read_from_content() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let committed = ki("aaaa");
         let foreign = ki("ffff");
         let thread = insert_relation_thread(&mut txn).await;
@@ -950,7 +950,7 @@ mod tests {
     #[tokio::test]
     async fn test_evaluate_grounds_a_neighbour_read_from_a_citable_anchor() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let committed = ki("aaaa");
         let anchor = ki("5555");
         let neighbour = ki("6666");
@@ -1020,7 +1020,7 @@ mod tests {
     #[tokio::test]
     async fn test_the_verifier_launch_renders_the_child_with_the_rubric_and_verdict_schema() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
 
         let principal = PgPrincipalRepository
             .insert(

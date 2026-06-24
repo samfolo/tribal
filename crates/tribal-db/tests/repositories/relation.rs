@@ -89,7 +89,7 @@ async fn setup_item(
 #[tokio::test]
 async fn test_batch_insert_returns_populated_relations() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     let (principal_id, project_id, item_a) = setup_prerequisites(&mut txn, "rel-batch-pop").await;
@@ -150,7 +150,7 @@ async fn test_batch_insert_returns_populated_relations() {
 #[tokio::test]
 async fn test_batch_insert_empty_batch_returns_empty_vec() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     let results = repo
@@ -167,7 +167,7 @@ async fn test_batch_insert_empty_batch_returns_empty_vec() {
 #[tokio::test]
 async fn test_find_inbound_returns_committed_relations() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     let (principal_id, project_id, item_a) =
@@ -216,7 +216,7 @@ async fn test_find_inbound_returns_committed_relations() {
 #[tokio::test]
 async fn test_find_inbound_with_type_filter() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     let (principal_id, project_id, anchor) = setup_prerequisites(&mut txn, "rel-in-filter").await;
@@ -260,7 +260,7 @@ async fn test_find_inbound_with_type_filter() {
 #[tokio::test]
 async fn test_find_inbound_returns_empty_when_no_committed_relations() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     let (principal_id, project_id, item_a) =
@@ -296,7 +296,7 @@ async fn test_find_inbound_returns_empty_when_no_committed_relations() {
 #[tokio::test]
 async fn test_find_outbound_returns_committed_relations() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     let (principal_id, project_id, item_a) =
@@ -345,7 +345,7 @@ async fn test_find_outbound_returns_committed_relations() {
 #[tokio::test]
 async fn test_find_outbound_with_type_filter() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     let (principal_id, project_id, anchor) = setup_prerequisites(&mut txn, "rel-out-filter").await;
@@ -389,7 +389,7 @@ async fn test_find_outbound_with_type_filter() {
 #[tokio::test]
 async fn test_find_outbound_returns_empty_when_no_committed_relations() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     let (principal_id, project_id, item_a) =
@@ -424,7 +424,7 @@ async fn test_find_outbound_returns_empty_when_no_committed_relations() {
 #[tokio::test]
 async fn test_traverse_returns_empty_when_no_committed_relations() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     let (principal_id, project_id, item_a) =
@@ -461,7 +461,7 @@ async fn test_traverse_returns_empty_when_no_committed_relations() {
 #[tokio::test]
 async fn test_traverse_inbound_multi_depth() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     // Graph: C → B → A (inbound from A's perspective).
@@ -528,7 +528,7 @@ async fn test_traverse_inbound_multi_depth() {
 #[tokio::test]
 async fn test_traverse_outbound_multi_depth() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     // Graph: A → B → C (outbound from A's perspective).
@@ -595,7 +595,7 @@ async fn test_traverse_outbound_multi_depth() {
 #[tokio::test]
 async fn test_traverse_both_merges_directions_multi_depth() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     // Graph: W → X → A → Y → Z (A is anchor; X,W inbound; Y,Z outbound).
@@ -674,7 +674,7 @@ async fn test_traverse_both_merges_directions_multi_depth() {
 #[tokio::test]
 async fn test_traverse_both_tags_directions_at_multiple_depths() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     // Graph: C → B → A → D → E (A is anchor).
@@ -773,7 +773,7 @@ async fn test_traverse_both_tags_directions_at_multiple_depths() {
 #[tokio::test]
 async fn test_traverse_cycle_terminates() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     // Cycle: A → B → C → D → A.
@@ -847,7 +847,7 @@ async fn test_traverse_cycle_terminates() {
 #[tokio::test]
 async fn test_traverse_respects_depth_limit() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     // Graph: C → B → A. Traverse inbound from A with depth=1.
@@ -899,7 +899,7 @@ async fn test_traverse_respects_depth_limit() {
 #[tokio::test]
 async fn test_traverse_sets_exact_false_when_limit_reached() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     // Create 4 items that all point inbound to the anchor.
@@ -939,7 +939,7 @@ async fn test_traverse_sets_exact_false_when_limit_reached() {
 #[tokio::test]
 async fn test_traverse_sets_exact_true_when_all_returned() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     let (principal_id, project_id, anchor) =
@@ -978,7 +978,7 @@ async fn test_traverse_sets_exact_true_when_all_returned() {
 #[tokio::test]
 async fn test_traverse_with_type_filter() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     let (principal_id, project_id, anchor) =
@@ -1031,7 +1031,7 @@ async fn test_traverse_with_type_filter() {
 #[tokio::test]
 async fn test_traverse_with_multiple_type_filter_uses_or() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRelationRepository;
 
     let (principal_id, project_id, anchor) =

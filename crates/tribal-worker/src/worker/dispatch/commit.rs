@@ -1187,7 +1187,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_novel_signals_reembed_when_the_active_flipped() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
 
         let seed = Seed::new()
             .define_principal("op", "user:reembed-signal")
@@ -1268,7 +1268,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_novel_commits_against_the_matching_active() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
 
         let seed = Seed::new()
             .define_principal("op", "user:commit-match")

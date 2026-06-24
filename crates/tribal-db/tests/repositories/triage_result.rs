@@ -98,7 +98,7 @@ async fn setup_item(
 #[tokio::test]
 async fn test_insert_created_outcome() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageResultRepository;
 
     let (principal_id, project_id, job_id) = setup_prerequisites(&mut txn, "created").await;
@@ -130,7 +130,7 @@ async fn test_insert_created_outcome() {
 #[tokio::test]
 async fn test_insert_duplicate_outcome() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageResultRepository;
 
     let (principal_id, project_id, job_id) = setup_prerequisites(&mut txn, "duplicate").await;
@@ -175,7 +175,7 @@ async fn test_insert_duplicate_outcome() {
 #[tokio::test]
 async fn test_insert_failed_outcome() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageResultRepository;
 
     let (_principal_id, _project_id, job_id) = setup_prerequisites(&mut txn, "failed").await;
@@ -208,7 +208,7 @@ async fn test_insert_failed_outcome() {
 #[tokio::test]
 async fn test_insert_duplicate_job_batch_index_returns_unique_violation() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageResultRepository;
 
     let (principal_id, project_id, job_id) = setup_prerequisites(&mut txn, "uv").await;
@@ -243,7 +243,7 @@ async fn test_insert_duplicate_job_batch_index_returns_unique_violation() {
 #[tokio::test]
 async fn test_find_by_job_id_returns_all_ordered() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageResultRepository;
 
     let (principal_id, project_id, job_id) = setup_prerequisites(&mut txn, "find-all").await;
@@ -319,7 +319,7 @@ async fn test_find_by_job_id_returns_all_ordered() {
 #[tokio::test]
 async fn test_find_by_job_id_returns_empty_for_unknown_job() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageResultRepository;
 
     let results = repo
@@ -337,7 +337,7 @@ async fn test_find_by_job_id_returns_empty_for_unknown_job() {
 #[tokio::test]
 async fn test_find_by_job_id_and_batch_index_returns_match() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageResultRepository;
 
     let (principal_id, project_id, job_id) = setup_prerequisites(&mut txn, "find-bi").await;
@@ -366,7 +366,7 @@ async fn test_find_by_job_id_and_batch_index_returns_match() {
 #[tokio::test]
 async fn test_find_by_job_id_and_batch_index_returns_none_for_unknown() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageResultRepository;
 
     let found = repo

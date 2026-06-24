@@ -90,7 +90,7 @@ async fn setup_job(
 #[tokio::test]
 async fn test_insert_returns_populated_token_usage() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTokenUsageRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "insert").await;
@@ -129,7 +129,7 @@ async fn test_insert_returns_populated_token_usage() {
 #[tokio::test]
 async fn test_insert_computes_tokens_total() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTokenUsageRepository;
 
     let new = a_new_token_usage()
@@ -144,7 +144,7 @@ async fn test_insert_computes_tokens_total() {
 #[tokio::test]
 async fn test_insert_embedding_stage_with_purpose() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTokenUsageRepository;
 
     let new = a_new_token_usage()
@@ -162,7 +162,7 @@ async fn test_insert_embedding_stage_with_purpose() {
 #[tokio::test]
 async fn test_insert_with_null_fk_fields() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTokenUsageRepository;
 
     let new = a_new_token_usage()
@@ -182,7 +182,7 @@ async fn test_insert_with_null_fk_fields() {
 #[tokio::test]
 async fn test_insert_with_trace_id_round_trips() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTokenUsageRepository;
 
     let new = a_new_token_usage()
@@ -201,7 +201,7 @@ async fn test_insert_with_trace_id_round_trips() {
 #[tokio::test]
 async fn test_find_by_job_id_returns_records_ordered() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTokenUsageRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "find-job").await;
@@ -245,7 +245,7 @@ async fn test_find_by_job_id_returns_records_ordered() {
 #[tokio::test]
 async fn test_find_by_job_id_returns_empty_for_unknown() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTokenUsageRepository;
 
     let results = repo
@@ -259,7 +259,7 @@ async fn test_find_by_job_id_returns_empty_for_unknown() {
 #[tokio::test]
 async fn test_insert_attributes_embedding_usage_to_a_reindex_run() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTokenUsageRepository;
 
     // A reindex run for the foreign key, over its genesis profile and principal.
@@ -304,7 +304,7 @@ async fn test_insert_attributes_embedding_usage_to_a_reindex_run() {
 #[tokio::test]
 async fn test_find_by_job_id_surfaces_verifier_child_spend() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTokenUsageRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "child-spend").await;

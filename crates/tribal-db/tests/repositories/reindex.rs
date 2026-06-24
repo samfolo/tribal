@@ -56,7 +56,7 @@ fn item_task(run: ReindexRunId, target_ref: &str) -> NewReindexTask {
 #[tokio::test]
 async fn test_run_inserts_queued_and_find_live() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let run_id = setup_run(&mut txn, "live").await;
 
@@ -101,7 +101,7 @@ async fn test_run_inserts_queued_and_find_live() {
 #[tokio::test]
 async fn test_single_flight_rejects_second_live_run() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let _first = setup_run(&mut txn, "sf").await;
 
@@ -135,7 +135,7 @@ async fn test_single_flight_rejects_second_live_run() {
 #[tokio::test]
 async fn test_run_tallies_accumulate() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let run_id = setup_run(&mut txn, "tally").await;
 
     PgReindexRunRepository
@@ -167,7 +167,7 @@ async fn test_run_tallies_accumulate() {
 #[tokio::test]
 async fn test_embedded_tallies_exceed_int_ceiling() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let run_id = setup_run(&mut txn, "bigint").await;
 
     // Two passes of 1.5B each sum to 3B, past the 2.147B INT ceiling.
@@ -202,7 +202,7 @@ async fn test_embedded_tallies_exceed_int_ceiling() {
 #[tokio::test]
 async fn test_task_upsert_is_idempotent() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let run_id = setup_run(&mut txn, "upsert").await;
 
     let first = PgReindexTaskRepository
@@ -221,7 +221,7 @@ async fn test_task_upsert_is_idempotent() {
 #[tokio::test]
 async fn test_task_claim_and_complete() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let run_id = setup_run(&mut txn, "claim").await;
 
     PgReindexTaskRepository
@@ -266,7 +266,7 @@ async fn test_task_claim_and_complete() {
 #[tokio::test]
 async fn test_claim_is_scoped_to_its_run_and_skips_a_prior_runs_leftover() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     // An older run enrols a task, then aborts, leaving the task pending. Single-
     // flight requires the older run to be terminal before a newer one is live.
@@ -316,7 +316,7 @@ async fn test_claim_is_scoped_to_its_run_and_skips_a_prior_runs_leftover() {
 #[tokio::test]
 async fn test_task_fail_requeues_then_dead_letters() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let run_id = setup_run(&mut txn, "fail").await;
 
     // max_attempts defaults to 8; the task dead-letters once attempt exceeds it.
@@ -373,7 +373,7 @@ async fn test_task_fail_requeues_then_dead_letters() {
 #[tokio::test]
 async fn test_task_count_by_state() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let run_id = setup_run(&mut txn, "count").await;
 
     for i in 0..3 {
@@ -414,7 +414,7 @@ async fn test_task_count_by_state() {
 #[tokio::test]
 async fn test_quarantine_record_is_idempotent_and_counts() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let principal = PgPrincipalRepository
         .insert(
             &mut txn,
@@ -475,7 +475,7 @@ async fn test_quarantine_record_is_idempotent_and_counts() {
 #[tokio::test]
 async fn test_find_tags_missing_embeddings_excludes_quarantined_tags() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let principal = PgPrincipalRepository
         .insert(
             &mut txn,

@@ -1,9 +1,9 @@
 //! Integration tests for repository implementations.
 //!
 //! Each test owns an isolated database via
-//! [`tribal_test_utils::TestDb`], created per [`TestDb::new`] call, so
-//! tests are isolated at the database level rather than sharing a single
-//! instance.
+//! [`tribal_test_utils::TestDb`] — one [`tribal_test_utils::TestDb::new`]
+//! call per test — so tests are isolated at the database level rather than
+//! sharing a single instance.
 
 #[path = "repositories/advisory_lock.rs"]
 mod advisory_lock;

@@ -133,7 +133,7 @@ async fn insert_thread(txn: &mut sqlx::PgConnection, suffix: &str) -> AgentThrea
 #[tokio::test]
 async fn test_binding_version_record_is_idempotent_by_hash() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let new = NewAgentBindingVersion::builder()
         .hash(HASH_A.to_owned())
@@ -172,7 +172,7 @@ async fn test_binding_version_record_is_idempotent_by_hash() {
 #[tokio::test]
 async fn test_thread_inserts_queued_with_stage_driver() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let prerequisites = setup_thread_prerequisites(&mut txn, "insert").await;
 
     let thread = PgAgentThreadRepository
@@ -199,7 +199,7 @@ async fn test_thread_inserts_queued_with_stage_driver() {
 #[tokio::test]
 async fn test_one_thread_per_stage_task_ever() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let prerequisites = setup_thread_prerequisites(&mut txn, "dup").await;
 
     PgAgentThreadRepository
@@ -217,7 +217,7 @@ async fn test_one_thread_per_stage_task_ever() {
 #[tokio::test]
 async fn test_find_by_job_lists_only_the_jobs_stage_threads() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     // Job A drives two stage threads across two tasks.
     let prerequisites = setup_thread_prerequisites(&mut txn, "by-job-a").await;
@@ -289,7 +289,7 @@ async fn test_find_by_job_lists_only_the_jobs_stage_threads() {
 #[tokio::test]
 async fn test_status_cas_misses_return_zero_rows() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "cas").await;
 
     let moved = PgAgentThreadRepository
@@ -308,7 +308,7 @@ async fn test_status_cas_misses_return_zero_rows() {
 #[tokio::test]
 async fn test_suspend_round_trips_the_typed_cause_and_resume_clears_it() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "suspend").await;
     PgAgentThreadRepository
         .mark_running(&mut txn, thread.id(), AgentThreadStatus::Queued)
@@ -351,7 +351,7 @@ async fn test_suspend_round_trips_the_typed_cause_and_resume_clears_it() {
 #[tokio::test]
 async fn test_suspend_refuses_to_commit_over_a_cancel_intent() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "cancel-window").await;
     PgAgentThreadRepository
         .mark_running(&mut txn, thread.id(), AgentThreadStatus::Queued)
@@ -381,7 +381,7 @@ async fn test_suspend_refuses_to_commit_over_a_cancel_intent() {
 #[tokio::test]
 async fn test_cancel_intent_is_idempotent_and_first_writer_wins() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "intent").await;
 
     PgAgentThreadRepository
@@ -405,7 +405,7 @@ async fn test_cancel_intent_is_idempotent_and_first_writer_wins() {
 #[tokio::test]
 async fn test_terminal_transition_stamps_completed_at_and_is_final() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "terminal").await;
     PgAgentThreadRepository
         .mark_running(&mut txn, thread.id(), AgentThreadStatus::Queued)
@@ -446,7 +446,7 @@ async fn test_terminal_transition_stamps_completed_at_and_is_final() {
 #[tokio::test]
 async fn test_recovery_attempts_accumulate() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "recovery").await;
 
     let first = PgAgentThreadRepository
@@ -469,7 +469,7 @@ async fn test_recovery_attempts_accumulate() {
 #[tokio::test]
 async fn test_record_append_advances_seq_and_lists_in_order() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "log").await;
 
     let first_seq = PgAgentThreadRecordRepository
@@ -529,7 +529,7 @@ async fn test_record_append_advances_seq_and_lists_in_order() {
 #[tokio::test]
 async fn test_record_pages_chain_through_the_log_without_gaps() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "page").await;
 
     for position in 0..5 {
@@ -582,7 +582,7 @@ async fn test_record_pages_chain_through_the_log_without_gaps() {
 #[tokio::test]
 async fn test_duplicate_seq_is_a_unique_violation() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "dup-seq").await;
 
     let record = NewAgentThreadRecord::builder()
@@ -607,7 +607,7 @@ async fn test_duplicate_seq_is_a_unique_violation() {
 #[tokio::test]
 async fn test_tool_result_without_fence_columns_is_rejected() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "fence-cols").await;
 
     let err = PgAgentThreadRecordRepository
@@ -629,7 +629,7 @@ async fn test_tool_result_without_fence_columns_is_rejected() {
 #[tokio::test]
 async fn test_executed_tool_results_are_exactly_once_per_call() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "fence").await;
 
     let result = |seq: i64| {
@@ -667,7 +667,7 @@ async fn test_executed_tool_results_are_exactly_once_per_call() {
 #[tokio::test]
 async fn test_observed_tool_events_never_claim_the_fence() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "observed").await;
 
     // Two observations of the same external call: both commit, because
@@ -697,7 +697,7 @@ async fn test_observed_tool_events_never_claim_the_fence() {
 #[tokio::test]
 async fn test_driver_task_lease_round_trip() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "driver").await;
 
     let inserted = PgAgentDriverTaskRepository
@@ -735,7 +735,7 @@ async fn test_driver_task_lease_round_trip() {
 #[tokio::test]
 async fn test_driver_task_requeue_resets_the_lease() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "requeue").await;
 
     let inserted = PgAgentDriverTaskRepository
@@ -781,7 +781,7 @@ async fn test_driver_task_requeue_resets_the_lease() {
 #[tokio::test]
 async fn test_dispose_unclaimed_never_touches_a_claimed_row() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "dispose").await;
 
     let inserted = PgAgentDriverTaskRepository
@@ -844,7 +844,7 @@ async fn test_driver_task_insert_honours_a_client_generated_id() {
     // thread row before the task exists, under the deferred FK, so the
     // insert must take the caller's id rather than minting its own.
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "client-id").await;
 
     let chosen = AgentDriverTaskId::from(uuid::Uuid::new_v4());
@@ -879,7 +879,7 @@ async fn test_driver_task_insert_honours_a_client_generated_id() {
 #[tokio::test]
 async fn test_lock_stale_selects_only_lapsed_claimed_rows() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "stale-driver").await;
 
     let inserted = PgAgentDriverTaskRepository
@@ -932,7 +932,7 @@ async fn test_lock_stale_selects_only_lapsed_claimed_rows() {
 #[tokio::test]
 async fn test_timer_wake_scan_selects_only_due_intentless_stage_threads() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     // Due, intentless, stage-driven: the one row the predicate returns.
     let due = insert_thread(&mut txn, "wake-due").await;
@@ -1046,7 +1046,7 @@ async fn test_timer_wake_scan_selects_only_due_intentless_stage_threads() {
 #[tokio::test]
 async fn test_complete_from_suspended_clears_the_suspension_payload() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let thread = insert_thread(&mut txn, "complete-suspended").await;
     PgAgentThreadRepository
@@ -1093,7 +1093,7 @@ async fn test_complete_from_suspended_clears_the_suspension_payload() {
 #[tokio::test]
 async fn test_driver_holds_claim_tracks_the_lease() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "driver-guard").await;
 
     let inserted = PgAgentDriverTaskRepository
@@ -1141,7 +1141,7 @@ async fn test_driver_holds_claim_tracks_the_lease() {
 #[tokio::test]
 async fn test_driver_heartbeat_is_claim_guarded() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "driver-beat").await;
 
     PgAgentDriverTaskRepository
@@ -1181,7 +1181,7 @@ async fn test_driver_heartbeat_is_claim_guarded() {
 #[tokio::test]
 async fn test_sum_thread_spend_counts_only_the_thread() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "spend-sum").await;
 
     for tokens in [100, 60] {
@@ -1212,7 +1212,7 @@ async fn test_sum_thread_spend_counts_only_the_thread() {
 #[tokio::test]
 async fn test_sum_thread_spend_counts_cache_write_but_not_cache_read() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "spend-cache").await;
 
     // Cache-write is additive spend and is counted; cache-read is a subset
@@ -1246,7 +1246,7 @@ async fn test_sum_thread_spend_counts_cache_write_but_not_cache_read() {
 #[tokio::test]
 async fn test_thread_link_picks_only_the_most_recent_unlinked_row() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let thread = insert_thread(&mut txn, "thread-link").await;
 
     let earlier = PgTokenUsageRepository
@@ -1332,7 +1332,7 @@ fn prune_now(cascade: bool) -> ThreadPruneCriteria {
 #[tokio::test]
 async fn test_prune_deletes_only_aged_terminal_threads() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     // A terminal thread with a record, and a live one.
     let terminal = insert_thread(&mut txn, "prune-terminal").await;
@@ -1424,7 +1424,7 @@ async fn test_prune_deletes_only_aged_terminal_threads() {
 #[tokio::test]
 async fn test_prune_refuses_a_root_with_a_live_descendant_even_cascading() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     // A terminal parent with a live child.
     let parent = insert_thread(&mut txn, "prune-parent-live").await;
@@ -1475,7 +1475,7 @@ async fn test_prune_refuses_a_root_with_a_live_descendant_even_cascading() {
 #[tokio::test]
 async fn test_prune_cascade_collects_a_terminal_subtree() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let parent = insert_thread(&mut txn, "prune-subtree-parent").await;
     PgAgentThreadRepository
@@ -1533,7 +1533,7 @@ async fn test_prune_cascade_collects_a_terminal_subtree() {
 #[tokio::test]
 async fn test_stuck_relating_scan_keys_on_resolver_liveness() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let prereq = setup_thread_prerequisites(&mut txn, "stuck-relating").await;
 
@@ -1656,7 +1656,7 @@ async fn test_stuck_relating_scan_keys_on_resolver_liveness() {
 #[tokio::test]
 async fn test_stuck_relating_scan_spares_a_budget_suspended_thread() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let prereq = setup_thread_prerequisites(&mut txn, "stuck-relating-budget").await;
     PgJobRepository
@@ -1763,7 +1763,7 @@ async fn insert_child(
 #[tokio::test]
 async fn test_orphan_cascade_marks_only_live_children_of_terminal_parents() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let terminal_parent = insert_thread(&mut txn, "cascade-terminal-parent").await;
     make_terminal(&mut txn, &terminal_parent).await;
@@ -1812,7 +1812,7 @@ async fn test_orphan_cascade_marks_only_live_children_of_terminal_parents() {
 #[tokio::test]
 async fn test_cascade_to_children_skips_terminal_and_already_marked_children() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let parent = insert_thread(&mut txn, "children-parent").await;
     let live = insert_child(&mut txn, "children-live", parent.id()).await;
@@ -1846,7 +1846,7 @@ async fn test_cascade_to_children_skips_terminal_and_already_marked_children() {
 #[tokio::test]
 async fn test_orphan_cascade_marks_a_child_whose_driver_task_is_terminal() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     // A live parent (so the parent clause does not fire) with a live child
     // whose driver task has gone terminal: the deferred-death orphan no other

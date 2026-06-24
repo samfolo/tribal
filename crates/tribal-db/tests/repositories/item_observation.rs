@@ -64,7 +64,7 @@ async fn setup_prerequisites(
 #[tokio::test]
 async fn test_insert_returns_populated_observation() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgItemObservationRepository;
 
     let (principal_id, item_id) = setup_prerequisites(&mut txn, "insert").await;
@@ -94,7 +94,7 @@ async fn test_insert_returns_populated_observation() {
 #[tokio::test]
 async fn test_find_by_knowledge_item_id_returns_observations_ordered_by_observed_at() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgItemObservationRepository;
 
     let (principal_id, item_id) = setup_prerequisites(&mut txn, "find-ordered").await;
@@ -152,7 +152,7 @@ async fn test_find_by_knowledge_item_id_returns_observations_ordered_by_observed
 #[tokio::test]
 async fn test_find_by_knowledge_item_id_returns_empty_for_unknown_item() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgItemObservationRepository;
 
     let results = repo

@@ -815,7 +815,7 @@ mod tests {
     #[tokio::test]
     async fn test_candidate_search_embeds_the_candidate_then_searches_only_the_project() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let (principal_id, project_a) = seed_actors(&mut txn, "search-a").await;
         let (_, project_b) = seed_actors(&mut txn, "search-b").await;
         let profile = ensure_genesis_profile(&mut txn, EMBEDDING_MODEL, DIMENSIONS).await;
@@ -887,7 +887,7 @@ mod tests {
     #[tokio::test]
     async fn test_candidate_search_shrinks_an_oversized_page_to_fit_its_bound() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let (principal_id, project) = seed_actors(&mut txn, "search-oversized").await;
         let profile = ensure_genesis_profile(&mut txn, EMBEDDING_MODEL, DIMENSIONS).await;
 
@@ -952,7 +952,7 @@ mod tests {
     #[tokio::test]
     async fn test_candidate_search_elides_a_single_item_larger_than_its_bound() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let (principal_id, project) = seed_actors(&mut txn, "search-elide").await;
         let profile = ensure_genesis_profile(&mut txn, EMBEDDING_MODEL, DIMENSIONS).await;
 
@@ -1025,7 +1025,7 @@ mod tests {
     #[tokio::test]
     async fn test_candidate_search_elides_an_item_with_oversized_tags() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let (principal_id, project) = seed_actors(&mut txn, "search-elide-tags").await;
         let profile = ensure_genesis_profile(&mut txn, EMBEDDING_MODEL, DIMENSIONS).await;
 
@@ -1093,7 +1093,7 @@ mod tests {
     #[tokio::test]
     async fn test_candidate_search_maps_a_stale_cursor_to_a_recoverable_failure() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let profile = an_embedding_profile().build();
         let embedding = Arc::new(
             MockEmbeddingProvider::builder()
@@ -1128,7 +1128,7 @@ mod tests {
     #[tokio::test]
     async fn test_candidate_search_executed_without_its_prepared_embedding_is_a_system_failure() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let profile = an_embedding_profile().build();
         let embedding = Arc::new(MockEmbeddingProvider::builder().build());
         let tool = SearchCandidateSimilarItemsTool::new(
@@ -1196,7 +1196,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_knowledge_item_renders_the_item_and_hides_foreign_projects() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let (principal_id, project_a) = seed_actors(&mut txn, "read-a").await;
         let (_, project_b) = seed_actors(&mut txn, "read-b").await;
         let item_a = seed_item(&mut txn, principal_id, project_a, "the project's own claim").await;
@@ -1252,7 +1252,7 @@ mod tests {
     #[tokio::test]
     async fn test_neighbourhood_omits_relations_crossing_the_project_fence() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let (principal_id, project_a) = seed_actors(&mut txn, "hood-a").await;
         let (_, project_b) = seed_actors(&mut txn, "hood-b").await;
 
@@ -1362,7 +1362,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_tag_registry_renders_the_repository_entries() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
 
         PgTagRegistryRepository
             .upsert(&mut txn, "error-handling")

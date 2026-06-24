@@ -81,7 +81,7 @@ fn make_test_embedding(dominant_index: usize) -> Vec<f32> {
 #[tokio::test]
 async fn test_insert_returns_populated_embedding() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgEmbeddingRepository;
 
     let (item_id, profile_id) = setup_prerequisites(&mut txn, "emb-insert-pop").await;
@@ -106,7 +106,7 @@ async fn test_insert_returns_populated_embedding() {
 #[tokio::test]
 async fn test_insert_generates_prefixed_id() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgEmbeddingRepository;
 
     let (item_id, profile_id) = setup_prerequisites(&mut txn, "emb-insert-prefix").await;
@@ -128,7 +128,7 @@ async fn test_insert_generates_prefixed_id() {
 #[tokio::test]
 async fn test_insert_duplicate_item_profile_returns_unique_violation() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgEmbeddingRepository;
 
     let (item_id, profile_id) = setup_prerequisites(&mut txn, "emb-insert-dup").await;
@@ -160,7 +160,7 @@ async fn test_insert_duplicate_item_profile_returns_unique_violation() {
 #[tokio::test]
 async fn test_find_by_knowledge_item_id_returns_embedding() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgEmbeddingRepository;
 
     let (item_id, profile_id) = setup_prerequisites(&mut txn, "emb-find").await;
@@ -192,7 +192,7 @@ async fn test_find_by_knowledge_item_id_returns_embedding() {
 #[tokio::test]
 async fn test_find_by_knowledge_item_id_not_found_returns_none() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgEmbeddingRepository;
 
     let found = repo
@@ -210,7 +210,7 @@ async fn test_find_by_knowledge_item_id_not_found_returns_none() {
 #[tokio::test]
 async fn test_items_without_embedding_is_the_set_difference() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgEmbeddingRepository;
 
     let principal = PgPrincipalRepository
@@ -322,7 +322,7 @@ async fn test_items_without_embedding_is_the_set_difference() {
 #[tokio::test]
 async fn test_batch_insert_skipping_existing_skips_embedded_pairs() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgEmbeddingRepository;
 
     let principal = PgPrincipalRepository
@@ -405,7 +405,7 @@ async fn test_batch_insert_skipping_existing_skips_embedded_pairs() {
 #[tokio::test]
 async fn test_find_items_without_embedding_pages_by_cursor() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgEmbeddingRepository;
 
     let principal = PgPrincipalRepository
