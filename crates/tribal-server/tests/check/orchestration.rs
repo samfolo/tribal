@@ -321,8 +321,13 @@ async fn test_embedding_profile_fails_on_an_unresolvable_active_credential() {
     assert_eq!(row_status(&output, "embedding_profile"), Some("fail"));
 }
 
-#[test]
-fn test_app_run_returns_check_failed_when_any_row_fails() {
+#[tokio::test(flavor = "multi_thread")]
+async fn test_app_run_returns_check_failed_when_any_row_fails() {
+    // app.run() reads process-global env (PATH, XDG, figment layers), so hold
+    // env_lock to serialise against the env-mutating sibling tests in this
+    // binary under `cargo test`. app.run() builds its own runtime, so invoke it
+    // via spawn_blocking to avoid nesting runtimes.
+    let _env = env_lock().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config_path = dir.path().join("tribal.yaml");
     std::fs::write(&config_path, "not: : valid: yaml: :").expect("write malformed yaml");
@@ -336,7 +341,9 @@ fn test_app_run_returns_check_failed_when_any_row_fails() {
     ])
     .expect("parse args");
 
-    let result = app.run();
+    let result = tokio::task::spawn_blocking(move || app.run())
+        .await
+        .expect("run task");
     assert!(
         matches!(result, Err(AppError::CheckFailed)),
         "expected CheckFailed, got: {result:?}",

@@ -26,6 +26,11 @@ slow-timeout = "180s"
 # so they run one at a time; the parallelism win is in the non-e2e suite.
 [test-groups]
 e2e = { max-threads = 1 }
+# The reindex/cutover tests take fixed-key, cluster-global Postgres advisory
+# locks (REINDEX_SINGLE_FLIGHT / CUTOVER) that per-test databases do NOT
+# isolate, so they must not run concurrently. (Under `cargo test`, an in-process
+# cluster_serial_lock() serialises the same tests across threads.)
+serial-cluster = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'package(tribal-e2e)'
@@ -34,3 +39,11 @@ test-group = 'e2e'
 [[profile.ci.overrides]]
 filter = 'package(tribal-e2e)'
 test-group = 'e2e'
+
+[[profile.default.overrides]]
+filter = 'package(tribal-worker) & test(/reindex/)'
+test-group = 'serial-cluster'
+
+[[profile.ci.overrides]]
+filter = 'package(tribal-worker) & test(/reindex/)'
+test-group = 'serial-cluster'

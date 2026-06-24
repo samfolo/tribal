@@ -2,8 +2,8 @@
 //!
 //! Every test runs against its own physical Postgres database, cloned from a
 //! single migrated *template* via `CREATE DATABASE … TEMPLATE` (a ~10–20ms
-//! copy). Each test owns its database, so committed data is isolated with
-//! nothing to serialise.
+//! copy). Each test owns its database, so committed data needs no cross-test
+//! serialisation.
 //!
 //! # Two runner modes, one code path
 //!
@@ -15,9 +15,11 @@
 //!   container is started once per process via testcontainers and the template
 //!   is built in-process; each [`TestDb`] clones a fresh database from it.
 //!
-//! Either way every test owns its database. Tests that mutate process-global
-//! state — environment variables or the working directory — serialise on
-//! [`env_lock`], since that state is shared across all threads in a process.
+//! Either way every test owns its database. Two kinds of state are NOT
+//! per-database and still need serialising: process-global state (environment
+//! variables, the working directory) via [`env_lock`], and cluster-global
+//! Postgres advisory locks via [`cluster_serial_lock`] plus a nextest
+//! test-group.
 //!
 //! [`TestTransaction`] uses a raw [`PgConnection`] rather than a pooled one:
 //! pooled- and transaction-connection drops in sqlx spawn async cleanup, which
@@ -470,14 +472,20 @@ impl Drop for TestDb {
                 return;
             };
             rt.block_on(async {
-                if let Ok(mut admin) = PgConnection::connect(&admin_url).await {
-                    let _ = admin
-                        .execute(
-                            format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)").as_str(),
-                        )
-                        .await;
-                    let _ = admin.close().await;
-                }
+                // Bound both the connect and the DROP: a slow or unreachable
+                // maintenance server at teardown must never wedge the thread.
+                // On timeout the database is left for the ephemeral server's
+                // teardown to reclaim.
+                let Ok(Ok(mut admin)) =
+                    tokio::time::timeout(Duration::from_secs(5), PgConnection::connect(&admin_url))
+                        .await
+                else {
+                    return;
+                };
+                let sql = format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)");
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(5), admin.execute(sql.as_str())).await;
+                let _ = admin.close().await;
             });
         })
         .join();
@@ -550,6 +558,20 @@ pub fn lazy_pool() -> PgPool {
 /// Acquire it as the first line of the test and hold the guard for the whole
 /// test. Uses [`tokio::sync::Mutex`] so the guard is `Send` across `.await`.
 pub async fn env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
+}
+
+/// Serialises tests that contend on a *cluster-global* Postgres advisory lock.
+///
+/// Postgres advisory locks (`pg_advisory_lock`) are keyed only by an integer
+/// and are shared across the whole server, so per-test-database isolation does
+/// not separate them. Tests that take a fixed-key advisory lock — the reindex
+/// single-flight and cutover paths — must not run concurrently with one
+/// another. This lock serialises them within a process (`cargo test`); a
+/// nextest test-group serialises them across processes (`cargo nextest`).
+/// Acquire it as the first line of such a test and hold the guard for the test.
+pub async fn cluster_serial_lock() -> tokio::sync::MutexGuard<'static, ()> {
     static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     LOCK.lock().await
 }
