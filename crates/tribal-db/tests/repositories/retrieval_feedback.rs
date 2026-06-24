@@ -33,7 +33,7 @@ async fn setup_principal(txn: &mut sqlx::PgConnection, suffix: &str) -> Principa
 #[tokio::test]
 async fn test_insert_returns_populated_retrieval_feedback() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRetrievalFeedbackRepository;
 
     let principal_id = setup_principal(&mut txn, "insert").await;
@@ -68,7 +68,7 @@ async fn test_insert_returns_populated_retrieval_feedback() {
 #[tokio::test]
 async fn test_insert_with_populated_uuid_arrays() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRetrievalFeedbackRepository;
 
     let principal_id = setup_principal(&mut txn, "arrays").await;
@@ -94,7 +94,7 @@ async fn test_insert_with_populated_uuid_arrays() {
 #[tokio::test]
 async fn test_insert_with_empty_arrays() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRetrievalFeedbackRepository;
 
     let principal_id = setup_principal(&mut txn, "empty-arrays").await;
@@ -119,7 +119,7 @@ async fn test_insert_with_empty_arrays() {
 #[tokio::test]
 async fn test_find_by_id_returns_retrieval_feedback() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRetrievalFeedbackRepository;
 
     let principal_id = setup_principal(&mut txn, "find").await;
@@ -145,7 +145,7 @@ async fn test_find_by_id_returns_retrieval_feedback() {
 #[tokio::test]
 async fn test_find_by_id_not_found() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgRetrievalFeedbackRepository;
 
     let result = repo.find_by_id(&mut txn, RetrievalFeedbackId::new()).await;

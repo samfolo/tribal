@@ -1411,7 +1411,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_reindex_run_creates_building_profile_and_queued_run() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let principal = insert_principal(&mut txn, "user:reindex-create").await;
 
         let outcome = create_reindex_run(&mut txn, &a_target(), principal)
@@ -1434,7 +1434,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_reindex_run_no_ops_on_an_unchanged_target() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let principal = insert_principal(&mut txn, "user:reindex-noop").await;
 
         // An active profile already in the target's exact geometry.
@@ -1525,7 +1525,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_reindex_run_force_rebuilds_with_a_stamped_token_on_probe_drift() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let principal = insert_principal(&mut txn, "user:reindex-force").await;
 
         // An active profile in the target's declared identity whose stored probe
@@ -1572,7 +1572,7 @@ mod tests {
     #[tokio::test]
     async fn test_quarantine_over_a_quarter_of_items_exceeds_the_cap() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let principal = insert_principal(&mut txn, "user:reindex-qcap").await;
 
         let ReindexCreationOutcome::Created(run) =
@@ -1656,7 +1656,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_reindex_run_is_single_flight() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let principal = insert_principal(&mut txn, "user:reindex-sf").await;
 
         let first = create_reindex_run(&mut txn, &a_target(), principal)
@@ -1675,7 +1675,7 @@ mod tests {
     #[tokio::test]
     async fn test_reconcile_fails_an_orphan_building_profile() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
 
         // A building profile with no live run is an orphan from a crashed run.
         PgEmbeddingProfileRepository
@@ -1702,7 +1702,7 @@ mod tests {
     #[tokio::test]
     async fn test_reconcile_leaves_a_building_profile_a_live_run_owns() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let principal = insert_principal(&mut txn, "user:reindex-reconcile-live").await;
 
         // Creation leaves a building profile under a live run; not an orphan.
@@ -1730,7 +1730,7 @@ mod tests {
     #[tokio::test]
     async fn test_dead_lettered_task_fails_the_run() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let principal = insert_principal(&mut txn, "user:reindex-deadletter").await;
         let ReindexCreationOutcome::Created(run) =
             create_reindex_run(&mut txn, &a_target(), principal)
@@ -1883,7 +1883,7 @@ mod tests {
     #[tokio::test]
     async fn test_rate_limited_failure_records_the_class_and_honours_retry_after() {
         let ctx_db = TestDb::new().await;
-        let mut txn = ctx_db.begin().await.expect("begin_test");
+        let mut txn = ctx_db.begin().await.expect("begin");
         let (run, building, task) = a_claimed_tag_task(&mut txn, "user:reindex-rate-limited").await;
 
         // The provider rate-limits with a 90-second Retry-After, longer than any
@@ -1922,7 +1922,7 @@ mod tests {
     #[tokio::test]
     async fn test_overloaded_failure_records_the_overloaded_class() {
         let ctx_db = TestDb::new().await;
-        let mut txn = ctx_db.begin().await.expect("begin_test");
+        let mut txn = ctx_db.begin().await.expect("begin");
         let (run, building, task) = a_claimed_tag_task(&mut txn, "user:reindex-overloaded").await;
 
         // A 529 with no Retry-After falls back to the exponential backoff.
@@ -1961,7 +1961,7 @@ mod tests {
     #[tokio::test]
     async fn test_drive_reindex_promotes_a_queued_run_and_enrols_the_backlog() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
 
         // Seed a corpus of three items and a tag against the active profile; none
         // carry the building geometry, so all fall in the building set-difference.
@@ -2025,7 +2025,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_tasks_embeds_the_backlog_into_the_building_profile() {
         let ctx_db = TestDb::new().await;
-        let mut txn = ctx_db.begin().await.expect("begin_test");
+        let mut txn = ctx_db.begin().await.expect("begin");
 
         // A two-item corpus against the active profile; neither carries the
         // building geometry, so both fall in the building set-difference.

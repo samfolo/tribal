@@ -64,7 +64,7 @@ async fn setup_job_prerequisites(
 #[tokio::test]
 async fn test_insert_returns_populated_job() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -107,7 +107,7 @@ async fn test_insert_returns_populated_job() {
 #[tokio::test]
 async fn test_insert_with_optional_fields_round_trips() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -155,7 +155,7 @@ async fn test_insert_with_optional_fields_round_trips() {
 #[tokio::test]
 async fn test_find_by_id_returns_job() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -187,7 +187,7 @@ async fn test_find_by_id_returns_job() {
 #[tokio::test]
 async fn test_find_by_id_not_found() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let result = repo.find_by_id(&mut txn, JobId::new()).await;
@@ -205,7 +205,7 @@ async fn test_find_by_id_not_found() {
 #[tokio::test]
 async fn test_find_by_project_id_returns_jobs() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -248,7 +248,7 @@ async fn test_find_by_project_id_returns_jobs() {
 #[tokio::test]
 async fn test_find_by_project_id_empty() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let jobs = repo
@@ -266,7 +266,7 @@ async fn test_find_by_project_id_empty() {
 #[tokio::test]
 async fn test_update_status_valid_transition() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -303,7 +303,7 @@ async fn test_update_status_valid_transition() {
 #[tokio::test]
 async fn test_update_status_to_completed() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -345,7 +345,7 @@ async fn test_update_status_to_completed() {
 #[tokio::test]
 async fn test_update_status_to_failed() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -388,7 +388,7 @@ async fn test_update_status_to_failed() {
 #[tokio::test]
 async fn test_update_status_invalid_transition() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -425,7 +425,7 @@ async fn test_update_status_invalid_transition() {
 #[tokio::test]
 async fn test_update_status_on_a_terminal_job_is_a_silent_no_op() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -478,7 +478,7 @@ async fn test_update_status_on_a_terminal_job_is_a_silent_no_op() {
 #[tokio::test]
 async fn test_update_status_not_found() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let transition = a_job_status_transition()
@@ -501,7 +501,7 @@ async fn test_update_status_not_found() {
 #[tokio::test]
 async fn test_update_batch_size() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -533,7 +533,7 @@ async fn test_update_batch_size() {
 #[tokio::test]
 async fn test_update_batch_size_not_found() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let result = repo.update_batch_size(&mut txn, JobId::new(), 10, 15).await;
@@ -551,7 +551,7 @@ async fn test_update_batch_size_not_found() {
 #[tokio::test]
 async fn test_set_committed_batch_id() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -584,7 +584,7 @@ async fn test_set_committed_batch_id() {
 #[tokio::test]
 async fn test_set_committed_batch_id_already_set_returns_none() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -622,7 +622,7 @@ async fn test_set_committed_batch_id_already_set_returns_none() {
 #[tokio::test]
 async fn test_set_committed_batch_id_not_found() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let result = repo
@@ -642,7 +642,7 @@ async fn test_set_committed_batch_id_not_found() {
 #[tokio::test]
 async fn test_fail_stale_dead_lettered_jobs_transitions_stuck_job() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -712,7 +712,7 @@ async fn test_fail_stale_dead_lettered_jobs_transitions_stuck_job() {
 #[tokio::test]
 async fn test_fail_stale_dead_lettered_jobs_skips_triage() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -775,7 +775,7 @@ async fn test_fail_stale_dead_lettered_jobs_skips_triage() {
 #[tokio::test]
 async fn test_fail_stale_dead_lettered_jobs_skips_already_failed() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =
@@ -833,7 +833,7 @@ async fn test_fail_stale_dead_lettered_jobs_skips_already_failed() {
 #[tokio::test]
 async fn test_find_stuck_triaging_skips_a_job_with_a_blocked_sibling() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
 
     let (principal_id, project_id, pv_id, fingerprint_hash) =

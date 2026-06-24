@@ -5,7 +5,7 @@ use tribal_test_utils::{TestDb, a_new_principal};
 #[tokio::test]
 async fn test_insert_with_none_optional_fields_returns_none() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgPrincipalRepository;
 
     let new = a_new_principal()
@@ -19,7 +19,7 @@ async fn test_insert_with_none_optional_fields_returns_none() {
 #[tokio::test]
 async fn test_insert_returns_populated_principal() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgPrincipalRepository;
 
     let new = a_new_principal()
@@ -37,7 +37,7 @@ async fn test_insert_returns_populated_principal() {
 #[tokio::test]
 async fn test_insert_duplicate_principal_key_returns_unique_violation() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgPrincipalRepository;
 
     let new = a_new_principal()
@@ -55,7 +55,7 @@ async fn test_insert_duplicate_principal_key_returns_unique_violation() {
 #[tokio::test]
 async fn test_find_by_id_returns_principal() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgPrincipalRepository;
 
     let new = a_new_principal()
@@ -75,7 +75,7 @@ async fn test_find_by_id_returns_principal() {
 #[tokio::test]
 async fn test_find_by_id_not_found_returns_error() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgPrincipalRepository;
 
     let result = repo.find_by_id(&mut txn, PrincipalId::new()).await;
@@ -88,7 +88,7 @@ async fn test_find_by_id_not_found_returns_error() {
 #[tokio::test]
 async fn test_find_by_key_returns_principal() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgPrincipalRepository;
 
     let new = a_new_principal()
@@ -108,7 +108,7 @@ async fn test_find_by_key_returns_principal() {
 #[tokio::test]
 async fn test_find_by_key_not_found_returns_none() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgPrincipalRepository;
 
     let result = repo
@@ -126,7 +126,7 @@ async fn test_find_by_key_not_found_returns_none() {
 #[tokio::test]
 async fn test_find_by_ids_returns_matching_principals() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgPrincipalRepository;
 
     let mut ids = Vec::new();
@@ -150,7 +150,7 @@ async fn test_find_by_ids_returns_matching_principals() {
 #[tokio::test]
 async fn test_find_by_ids_omits_missing_ids() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgPrincipalRepository;
 
     let new = a_new_principal()
@@ -168,7 +168,7 @@ async fn test_find_by_ids_omits_missing_ids() {
 #[tokio::test]
 async fn test_find_by_ids_empty_input_returns_empty_vec() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgPrincipalRepository;
 
     let found = repo.find_by_ids(&mut txn, &[]).await.expect("find_by_ids");
@@ -179,7 +179,7 @@ async fn test_find_by_ids_empty_input_returns_empty_vec() {
 #[tokio::test]
 async fn test_find_by_ids_all_missing_returns_empty_vec() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgPrincipalRepository;
 
     let ids = vec![PrincipalId::new(), PrincipalId::new()];

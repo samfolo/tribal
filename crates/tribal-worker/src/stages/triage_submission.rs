@@ -636,7 +636,7 @@ mod tests {
     #[tokio::test]
     async fn test_reconstruct_pins_scores_to_the_latest_embedding_profile() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let principal = PgPrincipalRepository
             .insert(
                 &mut txn,
@@ -697,7 +697,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_malformed_submission_bounces_with_the_schema_diagnostics() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let pipeline = TriageSubmissionPipeline::new(ProjectId::new());
         let thread = an_agent_thread().build();
 
@@ -719,7 +719,7 @@ mod tests {
     #[tokio::test]
     async fn test_an_unseen_id_bounces_by_membership() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let pipeline = TriageSubmissionPipeline::new(ProjectId::new());
         let thread = an_agent_thread().build();
 
@@ -743,7 +743,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_repeated_assessment_bounces_before_commit() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let pipeline = TriageSubmissionPipeline::new(ProjectId::new());
         let thread = an_agent_thread().build();
         let id = "ki_00000000-0000-0000-0000-0000000000a1";
@@ -907,7 +907,7 @@ mod tests {
     #[tokio::test]
     async fn test_the_duplicate_recheck_requires_a_live_in_project_unsuperseded_match() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
         let RecheckFixture {
             pipeline,
             corpus,
@@ -977,7 +977,7 @@ mod tests {
     #[tokio::test]
     async fn test_contradicting_any_examined_claim_bounces_a_duplicate() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
 
         let principal = PgPrincipalRepository
             .insert(
@@ -1086,7 +1086,7 @@ mod tests {
     #[tokio::test]
     async fn test_the_verifier_launch_renders_the_child_with_the_rubric_and_verdict_schema() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
 
         let principal = PgPrincipalRepository
             .insert(
@@ -1222,7 +1222,7 @@ mod tests {
     #[tokio::test]
     async fn test_the_must_search_gate_bounces_unsearched_and_ungrounded_submissions() {
         let ctx = TestDb::new().await;
-        let mut txn = ctx.begin().await.expect("begin_test");
+        let mut txn = ctx.begin().await.expect("begin");
 
         let principal = PgPrincipalRepository
             .insert(

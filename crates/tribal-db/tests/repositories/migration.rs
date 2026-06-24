@@ -26,7 +26,7 @@ fn binary_head() -> i64 {
 #[tokio::test]
 async fn test_current_head_matches_returns_matches_when_versions_agree() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let status = PgMigrationRepository
         .current_head_matches(&mut txn, binary_head())
@@ -39,7 +39,7 @@ async fn test_current_head_matches_returns_matches_when_versions_agree() {
 #[tokio::test]
 async fn test_current_head_matches_returns_behind_when_expected_newer_than_db() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let head = binary_head();
     let expected = head + 1;
@@ -61,7 +61,7 @@ async fn test_current_head_matches_returns_behind_when_expected_newer_than_db() 
 #[tokio::test]
 async fn test_current_head_matches_returns_ahead_when_db_newer_than_expected() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let head = binary_head();
     let synthetic = head + 1;
@@ -88,7 +88,7 @@ async fn test_current_head_matches_returns_ahead_when_db_newer_than_expected() {
 #[tokio::test]
 async fn test_current_head_matches_returns_behind_with_found_zero_when_table_empty() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     PgMigrationRepository
         .truncate_migrations_table_for_test(&mut txn)
@@ -112,7 +112,7 @@ async fn test_current_head_matches_returns_behind_with_found_zero_when_table_emp
 #[tokio::test]
 async fn test_current_head_matches_returns_missing_table_when_table_absent() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     PgMigrationRepository
         .drop_migrations_table_for_test(&mut txn)

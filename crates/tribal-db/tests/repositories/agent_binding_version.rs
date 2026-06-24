@@ -7,7 +7,7 @@ use tribal_test_utils::TestDb;
 #[tokio::test]
 async fn test_find_by_id_fails_closed_on_a_malformed_definition() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
 
     let id = AgentBindingVersionId::new();
     PgAgentBindingVersionRepository

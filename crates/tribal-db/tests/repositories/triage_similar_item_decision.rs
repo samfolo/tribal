@@ -98,7 +98,7 @@ async fn setup_item(
 #[tokio::test]
 async fn test_batch_insert_returns_populated_decisions() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageSimilarItemDecisionRepository;
 
     let (principal_id, project_id, job_id) = setup_prerequisites(&mut txn, "batch").await;
@@ -143,7 +143,7 @@ async fn test_batch_insert_returns_populated_decisions() {
 #[tokio::test]
 async fn test_batch_insert_duplicate_returns_unique_violation() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageSimilarItemDecisionRepository;
 
     let (principal_id, project_id, job_id) = setup_prerequisites(&mut txn, "batch-uv").await;
@@ -176,7 +176,7 @@ async fn test_batch_insert_duplicate_returns_unique_violation() {
 #[tokio::test]
 async fn test_batch_insert_empty_returns_empty() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageSimilarItemDecisionRepository;
 
     let results = repo
@@ -194,7 +194,7 @@ async fn test_batch_insert_empty_returns_empty() {
 #[tokio::test]
 async fn test_find_by_job_id_returns_all_ordered() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageSimilarItemDecisionRepository;
 
     let (principal_id, project_id, job_id) = setup_prerequisites(&mut txn, "find-all").await;
@@ -226,7 +226,7 @@ async fn test_find_by_job_id_returns_all_ordered() {
 #[tokio::test]
 async fn test_find_by_job_id_returns_empty_for_unknown_job() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageSimilarItemDecisionRepository;
 
     let results = repo
@@ -244,7 +244,7 @@ async fn test_find_by_job_id_returns_empty_for_unknown_job() {
 #[tokio::test]
 async fn test_find_by_job_id_and_batch_index_returns_matching_ordered_by_created_at() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageSimilarItemDecisionRepository;
 
     let (principal_id, project_id, job_id) = setup_prerequisites(&mut txn, "find-bi").await;
@@ -304,7 +304,7 @@ async fn test_find_by_job_id_and_batch_index_returns_matching_ordered_by_created
 #[tokio::test]
 async fn test_find_by_job_id_and_batch_index_returns_empty_for_unknown() {
     let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin_test");
+    let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTriageSimilarItemDecisionRepository;
 
     let results = repo
