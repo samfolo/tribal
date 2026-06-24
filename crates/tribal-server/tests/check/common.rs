@@ -16,6 +16,9 @@ use tribal_ui::Theme;
 // Env-var lifecycle guard
 // ---------------------------------------------------------------------------
 
+/// Restores a process-global env var on drop. The `unsafe` `set_var` /
+/// `remove_var` are sound only while the test holds `env_lock`, which
+/// serialises every env-touching test in this binary.
 #[must_use = "binding the guard is what scopes the env mutation"]
 pub(crate) struct EnvGuard {
     key: &'static str,
@@ -25,8 +28,10 @@ pub(crate) struct EnvGuard {
 impl EnvGuard {
     pub(crate) fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
         let previous = std::env::var_os(key);
-        // SAFETY: no foreign thread is reading these process-global env
-        // vars during the guarded scope.
+        // SAFETY: `setenv` is not thread-safe, but every test in this binary
+        // that touches the process environment holds `env_lock` for its whole
+        // body, serialising them. So no other thread reads or writes the
+        // environment during the guarded scope.
         unsafe {
             std::env::set_var(key, value);
         }
