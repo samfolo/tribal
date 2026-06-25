@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/tribal-common",
     "crates/tribal-domain",
+    "crates/tribal-wire",
     "crates/tribal-db",
     "crates/tribal-inference",
     "crates/tribal-worker",
@@ -173,6 +174,7 @@ tribal-common = { path = "crates/tribal-common" }
 tribal-config = { path = "crates/tribal-config" }
 tribal-db = { path = "crates/tribal-db" }
 tribal-domain = { path = "crates/tribal-domain" }
+tribal-wire = { path = "crates/tribal-wire" }
 tribal-inference = { path = "crates/tribal-inference" }
 tribal-mcp = { path = "crates/tribal-mcp" }
 tribal-telemetry = { path = "crates/tribal-telemetry" }

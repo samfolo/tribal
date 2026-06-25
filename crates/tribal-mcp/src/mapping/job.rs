@@ -2,10 +2,8 @@
 
 use std::fmt::Write;
 
-use chrono::{DateTime, Utc};
 use rmcp::model::{CallToolResult, Content};
-use serde::{Deserialize, Serialize};
-use tribal_domain::{Job, JobId, JobOutcome, JobStatus};
+use tribal_wire::{McpIngestResponse, McpJobStatusResponse};
 
 use crate::error::IntoCallToolResult;
 
@@ -20,27 +18,6 @@ const SERIALISE_JOB_STATUS_RESPONSE: &str =
 // ---------------------------------------------------------------------------
 // Ingest
 // ---------------------------------------------------------------------------
-
-/// Deserialisation target for `tribal_ingest` input.
-#[derive(Debug, Deserialize)]
-pub(crate) struct McpIngestRequest {
-    pub(crate) content: String,
-    pub(crate) project_id: Option<String>,
-}
-
-/// Response for `tribal_ingest`.
-#[derive(Debug, Serialize)]
-pub(crate) struct McpIngestResponse {
-    pub(crate) job_id: String,
-}
-
-impl From<JobId> for McpIngestResponse {
-    fn from(id: JobId) -> Self {
-        Self {
-            job_id: id.to_string(),
-        }
-    }
-}
 
 impl IntoCallToolResult for McpIngestResponse {
     fn into_call_tool_result(self) -> CallToolResult {
@@ -58,58 +35,6 @@ impl IntoCallToolResult for McpIngestResponse {
 // ---------------------------------------------------------------------------
 // Job status
 // ---------------------------------------------------------------------------
-
-/// Deserialisation target for `tribal_job_status` input.
-#[derive(Debug, Deserialize)]
-pub(crate) struct McpJobStatusRequest {
-    pub(crate) job_id: String,
-    pub(crate) wait_seconds: Option<u32>,
-}
-
-/// Response for `tribal_job_status`.
-///
-/// Constructed via `from_domain` because the `Job` domain type does not
-/// carry aggregate task counts.
-#[derive(Debug, Serialize)]
-pub(crate) struct McpJobStatusResponse {
-    pub(crate) job_id: String,
-    pub(crate) status: JobStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) outcome: Option<JobOutcome>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) batch_size: Option<u32>,
-    pub(crate) tasks_completed: u32,
-    pub(crate) tasks_failed: u32,
-    pub(crate) items_created: u32,
-    pub(crate) observations_created: u32,
-    pub(crate) created_at: DateTime<Utc>,
-    pub(crate) updated_at: DateTime<Utc>,
-}
-
-impl McpJobStatusResponse {
-    /// Builds a response from a domain `Job` and aggregate task counts.
-    #[must_use]
-    pub(crate) fn from_domain(
-        job: &Job,
-        tasks_completed: u32,
-        tasks_failed: u32,
-        items_created: u32,
-        observations_created: u32,
-    ) -> Self {
-        Self {
-            job_id: job.id().to_string(),
-            status: job.status(),
-            outcome: job.outcome(),
-            batch_size: job.batch_size(),
-            tasks_completed,
-            tasks_failed,
-            items_created,
-            observations_created,
-            created_at: job.created_at(),
-            updated_at: job.updated_at(),
-        }
-    }
-}
 
 impl IntoCallToolResult for McpJobStatusResponse {
     fn into_call_tool_result(self) -> CallToolResult {
@@ -132,7 +57,9 @@ impl IntoCallToolResult for McpJobStatusResponse {
 #[cfg(test)]
 mod tests {
     use rmcp::model::RawContent;
-    use tribal_domain::{PrincipalId, ProjectId, PromptVersionId};
+    use tribal_domain::{
+        Job, JobId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId,
+    };
 
     use super::*;
 
@@ -161,14 +88,6 @@ mod tests {
     // -- Ingest -----------------------------------------------------------
 
     #[test]
-    fn test_ingest_request_deserialises() {
-        let json = serde_json::json!({"content": "learned something"});
-        let req: McpIngestRequest = serde_json::from_value(json).expect("deserialises");
-        assert_eq!(req.content, "learned something");
-        assert!(req.project_id.is_none());
-    }
-
-    #[test]
     fn test_ingest_response_into_call_tool_result() {
         let resp = McpIngestResponse::from(JobId::new());
         let result = resp.into_call_tool_result();
@@ -183,46 +102,6 @@ mod tests {
     }
 
     // -- Job status -------------------------------------------------------
-
-    #[test]
-    fn test_job_status_request_deserialises() {
-        let json = serde_json::json!({"job_id": "job_abc", "wait_seconds": 5});
-        let req: McpJobStatusRequest = serde_json::from_value(json).expect("deserialises");
-        assert_eq!(req.job_id, "job_abc");
-        assert_eq!(req.wait_seconds, Some(5));
-    }
-
-    #[test]
-    fn test_job_status_response_serialises_non_required_absent() {
-        let job = sample_job();
-        let resp = McpJobStatusResponse::from_domain(&job, 2, 1, 3, 0);
-        let json = serde_json::to_value(&resp).expect("serialises");
-
-        // outcome and batch_size present when Some
-        assert!(json.get("outcome").is_some());
-        assert!(json.get("batch_size").is_some());
-
-        // Verify non-required absent scenario
-        let mut resp_no_outcome = resp;
-        resp_no_outcome.outcome = None;
-        resp_no_outcome.batch_size = None;
-        let json2 = serde_json::to_value(&resp_no_outcome).expect("serialises");
-        assert!(json2.get("outcome").is_none());
-        assert!(json2.get("batch_size").is_none());
-    }
-
-    #[test]
-    fn test_job_status_response_from_domain() {
-        let job = sample_job();
-        let resp = McpJobStatusResponse::from_domain(&job, 5, 1, 3, 2);
-        assert!(resp.job_id.starts_with("job_"));
-        assert_eq!(resp.status, JobStatus::Completed);
-        assert_eq!(resp.outcome, Some(JobOutcome::Success));
-        assert_eq!(resp.tasks_completed, 5);
-        assert_eq!(resp.tasks_failed, 1);
-        assert_eq!(resp.items_created, 3);
-        assert_eq!(resp.observations_created, 2);
-    }
 
     #[test]
     fn test_job_status_response_into_call_tool_result() {
