@@ -5,7 +5,7 @@
 //! the domain ID types.
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tribal_domain::{Confidence, KnowledgeItem, KnowledgeKind, Reference, ReferenceKind, Standing};
 
 // ---------------------------------------------------------------------------
@@ -16,9 +16,9 @@ use tribal_domain::{Confidence, KnowledgeItem, KnowledgeKind, Reference, Referen
 ///
 /// Maps from the internal `source_context` JSONB discriminator to the
 /// three values exposed to clients.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum McpSourceType {
+pub enum McpSourceType {
     /// Captured via a model-mediated pipeline (e.g. agent ingesting via MCP).
     AgentMediated,
     /// Human-initiated capture without model mediation.
@@ -33,19 +33,19 @@ pub(crate) enum McpSourceType {
 
 /// Flattened provenance summary extracted from the opaque JSONB
 /// `source_context` column.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct McpSourceContext {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpSourceContext {
     /// Discriminator — always present.
     #[serde(rename = "type")]
-    pub(crate) source_type: McpSourceType,
+    pub source_type: McpSourceType,
 
     /// Inference provider name (e.g. `"anthropic"`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) provider: Option<String>,
+    pub provider: Option<String>,
 
     /// Model identifier (e.g. `"claude-opus-4-6"`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) model: Option<String>,
+    pub model: Option<String>,
 }
 
 impl From<&serde_json::Value> for McpSourceContext {
@@ -86,23 +86,23 @@ impl From<&serde_json::Value> for McpSourceContext {
 ///
 /// All ID fields carry their type prefix (e.g. `ki_`, `proj_`, `ep_`).
 /// The `principal_key` field is the human-readable string, not the UUID.
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct McpKnowledgeItem {
-    pub(crate) id: String,
-    pub(crate) project_id: String,
-    pub(crate) principal_key: String,
-    pub(crate) kind: KnowledgeKind,
-    pub(crate) content: String,
-    pub(crate) tags: Vec<String>,
-    pub(crate) confidence: Confidence,
-    pub(crate) source_context: McpSourceContext,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpKnowledgeItem {
+    pub id: String,
+    pub project_id: String,
+    pub principal_key: String,
+    pub kind: KnowledgeKind,
+    pub content: String,
+    pub tags: Vec<String>,
+    pub confidence: Confidence,
+    pub source_context: McpSourceContext,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) episode_id: Option<String>,
+    pub episode_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) capture_commit: Option<String>,
+    pub capture_commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) capture_branch: Option<String>,
-    pub(crate) created_at: DateTime<Utc>,
+    pub capture_branch: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
 impl McpKnowledgeItem {
@@ -113,7 +113,7 @@ impl McpKnowledgeItem {
     /// `principal_id` (a UUID) while the MCP surface requires the
     /// human-readable `principal_key`.
     #[must_use]
-    pub(crate) fn from_item_with_principal_key(item: &KnowledgeItem, principal_key: &str) -> Self {
+    pub fn from_item_with_principal_key(item: &KnowledgeItem, principal_key: &str) -> Self {
         Self {
             id: item.id().to_string(),
             project_id: item.project_id().to_string(),
@@ -139,19 +139,19 @@ impl McpKnowledgeItem {
 ///
 /// ID fields are rendered as prefixed strings. Optional IDs are omitted
 /// from serialised JSON when absent.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct McpStanding {
-    pub(crate) supporting_count: u32,
-    pub(crate) contradicting_count: u32,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpStanding {
+    pub supporting_count: u32,
+    pub contradicting_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) superseded_by: Option<String>,
-    pub(crate) observation_count: u32,
+    pub superseded_by: Option<String>,
+    pub observation_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) newest_supporting_id: Option<String>,
+    pub newest_supporting_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) newest_contradicting_id: Option<String>,
-    pub(crate) supporting_episode_count: u32,
-    pub(crate) supporting_project_count: u32,
+    pub newest_contradicting_id: Option<String>,
+    pub supporting_episode_count: u32,
+    pub supporting_project_count: u32,
 }
 
 impl From<&Standing> for McpStanding {
@@ -177,15 +177,15 @@ impl From<&Standing> for McpStanding {
 ///
 /// Projects a subset of the domain `Reference` fields — excludes
 /// `knowledge_item_id`, `project_id`, and `branch`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct McpReference {
-    pub(crate) id: String,
-    pub(crate) kind: ReferenceKind,
-    pub(crate) value: String,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpReference {
+    pub id: String,
+    pub kind: ReferenceKind,
+    pub value: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) description: Option<String>,
+    pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) commit: Option<String>,
+    pub commit: Option<String>,
 }
 
 impl From<&Reference> for McpReference {

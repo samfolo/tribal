@@ -1,8 +1,11 @@
-//! MCP request and response types for `tribal_set_context`, plus the
-//! existing raw JSON conversion for the session resource.
+//! MCP server glue for `tribal_set_context`, plus the existing raw JSON
+//! conversion for the session resource.
+//!
+//! The wire DTOs themselves live in [`tribal_wire`]; this module builds
+//! them from session state and renders them as MCP tool results.
 
 use rmcp::model::{CallToolResult, Content};
-use serde::{Deserialize, Serialize};
+use tribal_wire::mcp::{McpSessionActor, McpSessionProject, McpSetContextResponse};
 
 use crate::{error::IntoCallToolResult, session::SessionContext};
 
@@ -43,54 +46,8 @@ pub(crate) fn session_to_json(ctx: &SessionContext, principal_key: &str) -> serd
 }
 
 // ---------------------------------------------------------------------------
-// Request
+// Response builder
 // ---------------------------------------------------------------------------
-
-/// Deserialisation target for `tribal_set_context` input.
-#[derive(Debug, Default, Deserialize, PartialEq)]
-pub(crate) struct McpSetContextRequest {
-    pub(crate) project_id: Option<String>,
-    pub(crate) model: Option<String>,
-    pub(crate) provider: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// Response types
-// ---------------------------------------------------------------------------
-
-/// Project on the MCP `set_context` response surface.
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct McpSessionProject {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) git_remote: String,
-}
-
-/// Actor metadata on the MCP `set_context` response surface.
-///
-/// All fields are always present in serialised JSON (null when absent),
-/// matching the existing session resource representation.
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct McpSessionActor {
-    pub(crate) client_name: Option<String>,
-    pub(crate) client_version: Option<String>,
-    pub(crate) model: Option<String>,
-    pub(crate) provider: Option<String>,
-}
-
-/// Typed response for `tribal_set_context`.
-///
-/// The `project` field is non-required in the output schema but always
-/// included (null when absent) for consistency with the session
-/// resource representation.
-#[derive(Debug, Serialize)]
-pub(crate) struct McpSetContextResponse {
-    pub(crate) project: Option<McpSessionProject>,
-    pub(crate) principal_key: String,
-    pub(crate) actor: McpSessionActor,
-    #[serde(skip)]
-    pub(crate) mutated: bool,
-}
 
 /// Builds an [`McpSetContextResponse`] from session state and the
 /// authenticated principal key.
@@ -212,18 +169,7 @@ mod tests {
         assert!(actor["provider"].is_null());
     }
 
-    // -- McpSetContextRequest ---------------------------------------------
-
-    #[test]
-    fn test_set_context_request_deserialises_empty() {
-        let json = serde_json::json!({});
-        let req: McpSetContextRequest = serde_json::from_value(json).expect("deserialises");
-        assert!(req.project_id.is_none());
-        assert!(req.model.is_none());
-        assert!(req.provider.is_none());
-    }
-
-    // -- McpSetContextResponse --------------------------------------------
+    // -- set_context_response builder -------------------------------------
 
     #[test]
     fn test_set_context_response_with_project() {

@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/tribal-common",
     "crates/tribal-domain",
+    "crates/tribal-wire",
     "crates/tribal-db",
     "crates/tribal-inference",
     "crates/tribal-worker",
@@ -178,6 +179,7 @@ tribal-mcp = { path = "crates/tribal-mcp" }
 tribal-telemetry = { path = "crates/tribal-telemetry" }
 tribal-test-utils = { path = "crates/tribal-test-utils" }
 tribal-ui = { path = "crates/tribal-ui" }
+tribal-wire = { path = "crates/tribal-wire" }
 tribal-worker = { path = "crates/tribal-worker" }
 
 # The profile that 'dist' will build with

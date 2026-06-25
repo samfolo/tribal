@@ -5602,6 +5602,7 @@ dependencies = [
  "tribal-inference",
  "tribal-telemetry",
  "tribal-test-utils",
+ "tribal-wire",
  "tribal-worker",
  "typed-builder",
  "uuid",
@@ -5668,6 +5669,17 @@ dependencies = [
  "textwrap",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "tribal-wire"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "tribal-domain",
 ]
 
 [[package]]

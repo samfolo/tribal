@@ -21,7 +21,7 @@ use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
     mapping::{
         McpExplorationResult, McpExploreRequest, McpExploreResponse, McpKnowledgeItem,
-        McpReference, McpRelationDirection, McpStanding,
+        McpReference, McpStanding, relation_direction_from_db,
     },
     server_handler::{ConnectionRepositories, TribalServerHandler},
 };
@@ -268,7 +268,7 @@ impl TribalServerHandler {
             .map(|r| McpExplorationResult {
                 item: McpKnowledgeItem::from_item_with_principal_key(&r.item, &r.principal_key),
                 relation_type: r.relation_type,
-                relation_direction: McpRelationDirection::from(r.traversal_direction),
+                relation_direction: relation_direction_from_db(r.traversal_direction),
                 depth: r.depth,
                 relation_created_at: r.relation_created_at,
                 standing: r.standing.as_ref().map(McpStanding::from),

@@ -1,14 +1,12 @@
-//! MCP request and response types for `tribal_explore`.
+//! MCP server glue for `tribal_explore`: result rendering and DB conversions.
 
 use std::fmt::Write;
 
-use chrono::{DateTime, Utc};
 use rmcp::model::{CallToolResult, Content};
-use serde::{Deserialize, Serialize};
 use tribal_db::TraversalDirection;
 use tribal_domain::RelationKind;
+use tribal_wire::mcp::{McpExploreResponse, McpRelationDirection};
 
-use super::common::{McpKnowledgeItem, McpReference, McpStanding};
 use crate::error::IntoCallToolResult;
 
 // ---------------------------------------------------------------------------
@@ -21,70 +19,14 @@ const SERIALISE_EXPLORE_RESPONSE: &str = "McpExploreResponse should always seria
 // McpRelationDirection
 // ---------------------------------------------------------------------------
 
-/// Direction of a relationship edge relative to the exploration anchor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum McpRelationDirection {
-    /// This item asserts something about the anchor.
-    Inbound,
-    /// The anchor asserts something about this item.
-    Outbound,
-}
-
-impl From<TraversalDirection> for McpRelationDirection {
-    fn from(d: TraversalDirection) -> Self {
-        match d {
-            TraversalDirection::Inbound => Self::Inbound,
-            TraversalDirection::Outbound => Self::Outbound,
-        }
+/// Map a database traversal direction onto its wire representation.
+pub(crate) fn relation_direction_from_db(
+    direction: tribal_db::TraversalDirection,
+) -> tribal_wire::mcp::McpRelationDirection {
+    match direction {
+        TraversalDirection::Inbound => McpRelationDirection::Inbound,
+        TraversalDirection::Outbound => McpRelationDirection::Outbound,
     }
-}
-
-// ---------------------------------------------------------------------------
-// Request
-// ---------------------------------------------------------------------------
-
-/// Deserialisation target for `tribal_explore` input.
-#[derive(Debug, Deserialize)]
-pub(crate) struct McpExploreRequest {
-    pub(crate) item_id: String,
-    pub(crate) session_trace_id: Option<String>,
-    pub(crate) direction: Option<String>,
-    pub(crate) relation_types: Option<Vec<String>>,
-    pub(crate) depth: Option<u32>,
-    pub(crate) include_standing: Option<bool>,
-    pub(crate) include_references: Option<bool>,
-    pub(crate) limit: Option<u32>,
-}
-
-// ---------------------------------------------------------------------------
-// Response
-// ---------------------------------------------------------------------------
-
-/// Response for `tribal_explore`.
-#[derive(Debug, Serialize)]
-pub(crate) struct McpExploreResponse {
-    /// The full knowledge item for the exploration anchor.
-    pub(crate) anchor: McpKnowledgeItem,
-    /// Evidential profile of the anchor — always present.
-    pub(crate) anchor_standing: McpStanding,
-    pub(crate) related_items: Vec<McpExplorationResult>,
-    pub(crate) trace_id: String,
-    pub(crate) exact: bool,
-}
-
-/// A single exploration result with relationship metadata.
-#[derive(Debug, Serialize)]
-pub(crate) struct McpExplorationResult {
-    pub(crate) item: McpKnowledgeItem,
-    pub(crate) relation_type: RelationKind,
-    pub(crate) relation_direction: McpRelationDirection,
-    pub(crate) depth: u32,
-    pub(crate) relation_created_at: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) standing: Option<McpStanding>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) references: Option<Vec<McpReference>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -131,11 +73,11 @@ impl IntoCallToolResult for McpExploreResponse {
 mod tests {
     use rmcp::model::RawContent;
     use tribal_domain::{ProjectId, Standing};
-
-    use super::{
-        super::common::{McpSourceContext, McpSourceType},
-        *,
+    use tribal_wire::mcp::{
+        McpExplorationResult, McpKnowledgeItem, McpSourceContext, McpSourceType, McpStanding,
     };
+
+    use super::*;
 
     fn sample_item(id: &str) -> McpKnowledgeItem {
         McpKnowledgeItem {
@@ -171,54 +113,15 @@ mod tests {
     }
 
     #[test]
-    fn test_traversal_direction_to_mcp_direction() {
+    fn test_relation_direction_from_db() {
         assert_eq!(
-            McpRelationDirection::from(TraversalDirection::Inbound),
+            relation_direction_from_db(TraversalDirection::Inbound),
             McpRelationDirection::Inbound,
         );
         assert_eq!(
-            McpRelationDirection::from(TraversalDirection::Outbound),
+            relation_direction_from_db(TraversalDirection::Outbound),
             McpRelationDirection::Outbound,
         );
-    }
-
-    #[test]
-    fn test_explore_request_deserialises_minimal() {
-        let json = serde_json::json!({"item_id": "ki_abc"});
-        let req: McpExploreRequest = serde_json::from_value(json).expect("deserialises");
-        assert_eq!(req.item_id, "ki_abc");
-        assert!(req.direction.is_none());
-    }
-
-    #[test]
-    fn test_explore_request_deserialises_full() {
-        let json = serde_json::json!({
-            "item_id": "ki_abc",
-            "session_trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-            "direction": "both",
-            "relation_types": ["supports", "contradicts"],
-            "depth": 2,
-            "include_standing": true,
-            "include_references": false,
-            "limit": 50
-        });
-        let req: McpExploreRequest = serde_json::from_value(json).expect("deserialises");
-        assert_eq!(req.depth, Some(2));
-        assert_eq!(req.relation_types.as_ref().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn test_explore_response_serialises_anchor_standing_required() {
-        let resp = McpExploreResponse {
-            anchor: sample_item("ki_anchor"),
-            anchor_standing: sample_standing(),
-            related_items: vec![],
-            trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".into(),
-            exact: true,
-        };
-        let json = serde_json::to_value(&resp).expect("serialises");
-        assert!(json.get("anchor_standing").is_some());
-        assert!(json["anchor_standing"].is_object());
     }
 
     #[test]
