@@ -15,17 +15,31 @@ use super::common::{McpKnowledgeItem, McpReference, McpStanding};
 pub struct McpDiscoverRequest {
     pub query: String,
     /// Three-way semantics: absent → use session project; explicit null →
-    /// search globally; present → filter to this project.
-    #[serde(default, deserialize_with = "deserialise_optional_nullable")]
+    /// search globally; present → filter to this project. `skip_serializing_if`
+    /// keeps an absent value absent (not `null`) on the way out, so a client
+    /// sending only a query stays session-scoped rather than going global.
+    #[serde(
+        default,
+        deserialize_with = "deserialise_optional_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[allow(clippy::option_option)]
     pub project_id: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kinds: Option<Vec<KnowledgeKind>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub time_range: Option<McpTimeRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub include_superseded: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub include_standing: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub include_references: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 }
 
