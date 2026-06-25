@@ -1,7 +1,7 @@
 //! Mapping types for the reindex operator tools.
 
 use rmcp::model::{CallToolResult, Content};
-use tribal_wire::{McpReindexCancelResponse, McpReindexPruneResponse, McpReindexResponse};
+use tribal_wire::mcp::{McpReindexCancelResponse, McpReindexPruneResponse, McpReindexResponse};
 
 use crate::error::IntoCallToolResult;
 

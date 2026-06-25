@@ -5,7 +5,7 @@
 //! them from session state and renders them as MCP tool results.
 
 use rmcp::model::{CallToolResult, Content};
-use tribal_wire::{McpSessionActor, McpSessionProject, McpSetContextResponse};
+use tribal_wire::mcp::{McpSessionActor, McpSessionProject, McpSetContextResponse};
 
 use crate::{error::IntoCallToolResult, session::SessionContext};
 

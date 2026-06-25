@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 use rmcp::model::{CallToolResult, Content};
-use tribal_wire::McpGetItemResponse;
+use tribal_wire::mcp::McpGetItemResponse;
 
 use crate::error::IntoCallToolResult;
 

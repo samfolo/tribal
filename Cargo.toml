@@ -174,12 +174,12 @@ tribal-common = { path = "crates/tribal-common" }
 tribal-config = { path = "crates/tribal-config" }
 tribal-db = { path = "crates/tribal-db" }
 tribal-domain = { path = "crates/tribal-domain" }
-tribal-wire = { path = "crates/tribal-wire" }
 tribal-inference = { path = "crates/tribal-inference" }
 tribal-mcp = { path = "crates/tribal-mcp" }
 tribal-telemetry = { path = "crates/tribal-telemetry" }
 tribal-test-utils = { path = "crates/tribal-test-utils" }
 tribal-ui = { path = "crates/tribal-ui" }
+tribal-wire = { path = "crates/tribal-wire" }
 tribal-worker = { path = "crates/tribal-worker" }
 
 # The profile that 'dist' will build with

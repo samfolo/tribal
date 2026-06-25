@@ -1,21 +1,9 @@
-//! Wire DTOs for the Tribal MCP contract — the request/response types exchanged
-//! over the MCP/JSON-RPC surface. Shared by the server (`tribal-mcp`) and
-//! clients (the eval harness, future SDKs) so the contract has one source of
-//! truth; drift between producer and consumer becomes a compile error.
+//! Wire DTOs for Tribal's client-facing surfaces. Each surface is its own
+//! module — `mcp` today; an HTTP API or a desktop-client surface would be a
+//! sibling module — so the contract has one source of truth and clients (the
+//! eval harness, future SDKs) share exactly the types the server emits.
 //!
-//! These types are pure data: every type derives `Serialize` + `Deserialize`
-//! and depends only on `tribal-domain`, `serde`, and `chrono` — never on the
-//! server, rmcp, or the database. Domain → wire conversions (`From`/`from_domain`)
-//! live here; the rmcp response glue stays in `tribal-mcp`.
+//! The types are pure data: `serde` + `chrono` + `tribal-domain` only — never
+//! the server, rmcp, or the database.
 
-pub mod feedback;
-pub mod job;
-pub mod knowledge;
-pub mod reindex;
-pub mod session;
-
-pub use feedback::*;
-pub use job::*;
-pub use knowledge::*;
-pub use reindex::*;
-pub use session::*;
+pub mod mcp;

@@ -5,7 +5,7 @@ use std::fmt::Write;
 use rmcp::model::{CallToolResult, Content};
 use tribal_db::TraversalDirection;
 use tribal_domain::RelationKind;
-use tribal_wire::{McpExploreResponse, McpRelationDirection};
+use tribal_wire::mcp::{McpExploreResponse, McpRelationDirection};
 
 use crate::error::IntoCallToolResult;
 
@@ -22,7 +22,7 @@ const SERIALISE_EXPLORE_RESPONSE: &str = "McpExploreResponse should always seria
 /// Map a database traversal direction onto its wire representation.
 pub(crate) fn relation_direction_from_db(
     direction: tribal_db::TraversalDirection,
-) -> tribal_wire::McpRelationDirection {
+) -> tribal_wire::mcp::McpRelationDirection {
     match direction {
         TraversalDirection::Inbound => McpRelationDirection::Inbound,
         TraversalDirection::Outbound => McpRelationDirection::Outbound,
@@ -73,7 +73,7 @@ impl IntoCallToolResult for McpExploreResponse {
 mod tests {
     use rmcp::model::RawContent;
     use tribal_domain::{ProjectId, Standing};
-    use tribal_wire::{
+    use tribal_wire::mcp::{
         McpExplorationResult, McpKnowledgeItem, McpSourceContext, McpSourceType, McpStanding,
     };
 

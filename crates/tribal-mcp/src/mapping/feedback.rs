@@ -1,7 +1,7 @@
 //! rmcp response glue for `tribal_feedback`.
 
 use rmcp::model::{CallToolResult, Content};
-use tribal_wire::McpFeedbackResponse;
+use tribal_wire::mcp::McpFeedbackResponse;
 
 use crate::error::IntoCallToolResult;
 
