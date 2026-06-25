@@ -1,0 +1,10 @@
+# Toolchain pin for the whole monorepo. `core/rust-toolchain.toml` MUST be
+# byte-identical to this file (CI asserts it via `just check-toolchain`) so the
+# public `core/` slice builds standalone on the same compiler. Pinned to the
+# latest stable (1.96.0), comfortably above the workspace MSRV (rust-version =
+# "1.93", edition 2024). `rustfmt` runs via a separate nightly invocation
+# (`cargo +nightly fmt`), as in core today.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
