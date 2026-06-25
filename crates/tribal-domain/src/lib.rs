@@ -10,6 +10,7 @@
 /// Includes a compile-time exhaustiveness guard: if a variant is added to
 /// the enum but not listed in the macro invocation, the embedded `match`
 /// becomes non-exhaustive and the build fails.
+#[macro_export]
 macro_rules! enum_text_conversions {
     ($type:ty { $($variant:path => $str:literal),+ $(,)? }) => {
         impl $type {
