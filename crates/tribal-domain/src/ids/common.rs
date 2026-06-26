@@ -37,6 +37,7 @@ pub enum IdParseError {
 /// - `TryFrom<String>` — delegates to `FromStr`
 /// - `From<Type> for String` — delegates to `Display`
 /// - `Copy`, `Clone`, `Eq`, `Hash`, `Serialize`, `Deserialize`, `Default`
+#[macro_export]
 macro_rules! define_id {
     ($(#[$meta:meta])* $name:ident, $prefix:literal) => {
         $(#[$meta])*
@@ -63,6 +64,16 @@ macro_rules! define_id {
 
             /// The string prefix used when displaying and parsing this ID type.
             pub const PREFIX: &'static str = $prefix;
+
+            /// Number of hex chars in the [`Self::short_inner`] short form.
+            pub const SHORT_INNER_LEN: usize = 8;
+
+            /// First [`Self::SHORT_INNER_LEN`] hex chars of the inner UUID, for
+            /// filenames and log excerpts.
+            #[must_use]
+            pub fn short_inner(&self) -> String {
+                self.0.simple().to_string()[..Self::SHORT_INNER_LEN].to_owned()
+            }
         }
 
         impl Default for $name {
@@ -185,6 +196,13 @@ macro_rules! id_tests {
             let raw = uuid::Uuid::new_v4();
             let id = <$type>::from(raw);
             assert_eq!(id.inner(), &raw);
+        }
+
+        #[test]
+        fn test_short_inner() {
+            let id = <$type>::new();
+            assert_eq!(id.short_inner().len(), <$type>::SHORT_INNER_LEN);
+            assert!(id.short_inner().chars().all(|c| c.is_ascii_hexdigit()));
         }
     };
 }

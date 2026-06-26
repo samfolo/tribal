@@ -87,6 +87,16 @@ impl ProviderKind {
             Self::OpenAi => Self::DEFAULT_OPENAI_BASE_URL,
         }
     }
+
+    /// Returns this provider's chat-completion request path.
+    #[must_use]
+    pub const fn request_path(self) -> &'static str {
+        match self {
+            Self::Ollama => "/api/chat",
+            Self::Anthropic => "/v1/messages",
+            Self::OpenAi => "/v1/chat/completions",
+        }
+    }
 }
 
 impl FromStr for ProviderKind {
@@ -141,6 +151,13 @@ mod tests {
         assert!(!ProviderKind::Ollama.requires_api_key());
         assert!(ProviderKind::Anthropic.requires_api_key());
         assert!(ProviderKind::OpenAi.requires_api_key());
+    }
+
+    #[test]
+    fn test_request_path() {
+        assert_eq!(ProviderKind::Ollama.request_path(), "/api/chat");
+        assert_eq!(ProviderKind::Anthropic.request_path(), "/v1/messages");
+        assert_eq!(ProviderKind::OpenAi.request_path(), "/v1/chat/completions");
     }
 
     #[test]
