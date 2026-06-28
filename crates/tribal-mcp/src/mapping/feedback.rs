@@ -18,10 +18,7 @@ const SERIALISE_FEEDBACK_RESPONSE: &str =
 
 impl IntoCallToolResult for McpFeedbackResponse {
     fn into_call_tool_result(self) -> CallToolResult {
-        let text = format!(
-            "Feedback recorded: {} (rating: {})",
-            self.feedback_id, self.rating,
-        );
+        let text = format!("Feedback recorded: {}", self.feedback_id);
         let structured = serde_json::to_value(&self).expect(SERIALISE_FEEDBACK_RESPONSE);
         let mut result = CallToolResult::success(vec![Content::text(text)]);
         result.structured_content = Some(structured);
@@ -52,7 +49,6 @@ mod tests {
         let RawContent::Text(text) = &result.content[0].raw else {
             panic!("expected text content");
         };
-        assert!(text.text.contains("positive"));
         assert!(text.text.contains("fb_"));
     }
 }
