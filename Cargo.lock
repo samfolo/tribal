@@ -5357,7 +5357,7 @@ dependencies = [
 
 [[package]]
 name = "tribal"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anstream 1.0.0",
  "axum",
@@ -5408,7 +5408,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-agent-runtime"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5431,7 +5431,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-auth"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "askama",
  "async-trait",
@@ -5463,7 +5463,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-common"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "dashmap",
  "rand 0.10.1",
@@ -5474,7 +5474,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-config"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "dirs",
  "figment",
@@ -5490,7 +5490,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-db"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5511,7 +5511,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-domain"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "schemars 0.8.22",
@@ -5526,7 +5526,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-e2e"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "dashmap",
@@ -5554,7 +5554,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-inference"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "dashmap",
@@ -5573,7 +5573,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-mcp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -5610,7 +5610,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-telemetry"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
@@ -5632,7 +5632,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-test-utils"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anstream 1.0.0",
  "async-trait",
@@ -5658,7 +5658,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-ui"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anstream 1.0.0",
  "anstyle",
@@ -5673,7 +5673,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-wire"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "schemars 0.8.22",
@@ -5684,7 +5684,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-worker"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "chrono",

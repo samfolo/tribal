@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-28
+
 ### Changed
 
 - Release tooling and CI hardening; no functional changes to the binary.
@@ -115,7 +117,8 @@ This release makes the embedding geometry configurable and adds zero-downtime re
 
 - Docker Compose provider configuration through `.env`, letting the containerised path target a cloud provider (OpenAI, Anthropic) instead of only a local Ollama.
 
-[Unreleased]: https://github.com/tribal-memory/tribal/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/tribal-memory/tribal/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/tribal-memory/tribal/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/tribal-memory/tribal/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/tribal-memory/tribal/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tribal-memory/tribal/compare/v0.2.5...v0.3.0
