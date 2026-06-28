@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Release tooling and CI hardening; no functional changes to the binary.
+
 ## [0.4.0] - 2026-06-20
 
 ### Changed
