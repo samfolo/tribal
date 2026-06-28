@@ -32,21 +32,15 @@ pub struct McpFeedbackRequest {
 // ---------------------------------------------------------------------------
 
 /// Response for `tribal_feedback`.
-///
-/// The `rating` field is `#[serde(skip)]` — it is not part of the output
-/// schema but is needed for the human-readable text summary.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct McpFeedbackResponse {
     pub feedback_id: String,
-    #[serde(skip)]
-    pub rating: tribal_domain::FeedbackRating,
 }
 
 impl From<&RetrievalFeedback> for McpFeedbackResponse {
     fn from(feedback: &RetrievalFeedback) -> Self {
         Self {
             feedback_id: feedback.id().to_string(),
-            rating: feedback.rating(),
         }
     }
 }
@@ -71,5 +65,15 @@ mod tests {
         assert_eq!(req.rating, "positive");
         assert!(req.explored_anchor_ids.is_none());
         assert!(req.notes.is_none());
+    }
+
+    #[test]
+    fn test_feedback_response_round_trips() {
+        let resp = McpFeedbackResponse {
+            feedback_id: "fb_123".into(),
+        };
+        let json = serde_json::to_value(&resp).expect("serialises");
+        let back: McpFeedbackResponse = serde_json::from_value(json).expect("deserialises");
+        assert_eq!(back, resp);
     }
 }
