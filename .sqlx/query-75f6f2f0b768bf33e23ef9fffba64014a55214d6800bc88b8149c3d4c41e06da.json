@@ -22,6 +22,16 @@
         "ordinal": 3,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "account_reference",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "platform_user_id",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -33,7 +43,9 @@
       false,
       false,
       true,
-      false
+      false,
+      true,
+      true
     ]
   },
   "hash": "75f6f2f0b768bf33e23ef9fffba64014a55214d6800bc88b8149c3d4c41e06da"
