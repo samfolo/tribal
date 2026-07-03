@@ -4,7 +4,8 @@ use tribal_db::{
     ReindexRunRepository, TokenUsageRepository,
 };
 use tribal_domain::{
-    EmbeddingPurpose, GitRemote, JobId, PipelineStage, PrincipalId, ProjectId, TokenUsageStage,
+    EmbeddingPurpose, ExecutionLocus, GitRemote, JobId, PipelineStage, PrincipalId, ProjectId,
+    TokenUsageStage,
 };
 use tribal_test_utils::{
     TestDb, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
@@ -12,9 +13,36 @@ use tribal_test_utils::{
     shift_timestamp_by_id, upsert_system_fingerprint,
 };
 
+// A platform-bound principal has no repository writer until C5, so this
+// aggregation-setup insert lives in a fixture rather than inline.
+const INSERT_BOUND_PRINCIPAL: &str = include_str!("sql/insert_bound_principal.sql");
+
+// The execution_locus CHECK is exercised by a raw insert the repository's typed
+// writer cannot express, so its SQL lives in a fixture.
+const INSERT_TOKEN_USAGE_BAD_LOCUS: &str = include_str!("sql/insert_token_usage_bad_locus.sql");
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Inserts a platform-bound principal and returns its id.
+async fn insert_bound_principal(
+    txn: &mut sqlx::PgConnection,
+    principal_key: &str,
+    platform_user_id: &str,
+    account_reference: &str,
+) -> PrincipalId {
+    let id = PrincipalId::new();
+    sqlx::query(INSERT_BOUND_PRINCIPAL)
+        .bind(id.inner())
+        .bind(principal_key)
+        .bind(platform_user_id)
+        .bind(account_reference)
+        .execute(&mut *txn)
+        .await
+        .expect("insert bound principal");
+    id
+}
 
 /// Inserts a principal and project, returning their IDs.
 async fn setup_prerequisites(
@@ -329,5 +357,153 @@ async fn test_find_by_job_id_surfaces_verifier_child_spend() {
     assert!(
         for_job.iter().any(|tu| tu.id() == inserted.id()),
         "the child's task-less spend surfaces in the job's accounting",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Principal-attributed aggregation
+// ---------------------------------------------------------------------------
+
+/// Attributes a metered call to a principal at a locus.
+fn a_usage_for(
+    principal: PrincipalId,
+    locus: ExecutionLocus,
+    tokens_input: i32,
+    tokens_output: i32,
+) -> tribal_db::NewTokenUsage {
+    a_new_token_usage()
+        .principal_id(Some(principal))
+        .execution_locus(locus)
+        .stage(TokenUsageStage::Embedding {
+            purpose: EmbeddingPurpose::Candidate,
+        })
+        .tokens_input(tokens_input)
+        .tokens_output(tokens_output)
+        .build()
+}
+
+#[tokio::test]
+async fn test_per_user_totals_separate_edge_from_managed_spend() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgTokenUsageRepository;
+
+    let user =
+        insert_bound_principal(&mut txn, "platform:account_1/user_1", "user_1", "account_1").await;
+
+    // Two edge calls locally, one managed enrichment run elsewhere.
+    for usage in [
+        a_usage_for(user, ExecutionLocus::Edge, 100, 50),
+        a_usage_for(user, ExecutionLocus::Edge, 10, 5),
+        a_usage_for(user, ExecutionLocus::Managed, 200, 0),
+    ] {
+        repo.insert(&mut txn, &usage).await.expect("insert");
+    }
+
+    let totals = repo
+        .totals_by_platform_user(&mut txn, "user_1")
+        .await
+        .expect("totals");
+
+    let edge = totals
+        .iter()
+        .find(|t| t.execution_locus == ExecutionLocus::Edge)
+        .expect("edge totals present");
+    assert_eq!(edge.records, 2);
+    assert_eq!(edge.tokens_input, 110);
+    assert_eq!(edge.tokens_output, 55);
+
+    let managed = totals
+        .iter()
+        .find(|t| t.execution_locus == ExecutionLocus::Managed)
+        .expect("managed enrichment is distinguishable");
+    assert_eq!(managed.records, 1);
+    assert_eq!(managed.tokens_input, 200);
+    assert_eq!(managed.tokens_output, 0);
+}
+
+#[tokio::test]
+async fn test_per_account_totals_sum_across_the_accounts_users() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgTokenUsageRepository;
+
+    // Two users bound to one account.
+    let user_a =
+        insert_bound_principal(&mut txn, "platform:account_9/user_a", "user_a", "account_9").await;
+    let user_b =
+        insert_bound_principal(&mut txn, "platform:account_9/user_b", "user_b", "account_9").await;
+
+    repo.insert(
+        &mut txn,
+        &a_usage_for(user_a, ExecutionLocus::Edge, 100, 10),
+    )
+    .await
+    .expect("insert a");
+    repo.insert(&mut txn, &a_usage_for(user_b, ExecutionLocus::Edge, 1, 1))
+        .await
+        .expect("insert b");
+
+    // The account view sums both users' edge spend.
+    let account = repo
+        .totals_by_account_reference(&mut txn, "account_9")
+        .await
+        .expect("account totals");
+    let account_edge = account
+        .iter()
+        .find(|t| t.execution_locus == ExecutionLocus::Edge)
+        .expect("edge totals present");
+    assert_eq!(account_edge.records, 2);
+    assert_eq!(account_edge.tokens_input, 101);
+
+    // The per-user view isolates one user's spend from the other's.
+    let user_a_totals = repo
+        .totals_by_platform_user(&mut txn, "user_a")
+        .await
+        .expect("user a totals");
+    let user_a_edge = user_a_totals
+        .iter()
+        .find(|t| t.execution_locus == ExecutionLocus::Edge)
+        .expect("edge totals present");
+    assert_eq!(user_a_edge.records, 1);
+    assert_eq!(user_a_edge.tokens_input, 100);
+}
+
+#[tokio::test]
+async fn test_unattributed_usage_survives_and_is_absent_from_per_user_totals() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgTokenUsageRepository;
+
+    // A pre-attribution write: no principal, default locus. The new columns
+    // leave existing usage shape intact — it inserts and reads back as edge,
+    // unattributed.
+    let tu = repo
+        .insert(&mut txn, &a_new_token_usage().build())
+        .await
+        .expect("insert");
+    assert_eq!(tu.principal_id(), None);
+    assert_eq!(tu.execution_locus(), ExecutionLocus::Edge);
+
+    // With no linkage it never enters a per-user total.
+    let totals = repo
+        .totals_by_platform_user(&mut txn, "user_1")
+        .await
+        .expect("totals");
+    assert!(totals.is_empty());
+}
+
+#[tokio::test]
+async fn test_execution_locus_check_refuses_an_unknown_value() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    let result = sqlx::query(INSERT_TOKEN_USAGE_BAD_LOCUS)
+        .execute(&mut *txn)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "an out-of-vocabulary execution_locus must be refused",
     );
 }

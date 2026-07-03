@@ -9,8 +9,9 @@ use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
 use strum::IntoEnumIterator;
 use tribal_domain::{
-    AgentThreadId, AgentThreadRecordId, EmbeddingPurpose, JobId, PipelineStage, PromptVersionId,
-    ReindexRunId, TaskId, TaskType, TokenUsage, TokenUsageId, TokenUsageStage,
+    AgentThreadId, AgentThreadRecordId, EmbeddingPurpose, ExecutionLocus, JobId, PipelineStage,
+    PrincipalId, PromptVersionId, ReindexRunId, TaskId, TaskType, TokenUsage, TokenUsageId,
+    TokenUsageStage, UsageTotals,
 };
 use typed_builder::TypedBuilder;
 
@@ -25,6 +26,8 @@ const COLUMNS: Columns = Columns(&[
     "id",
     "job_id",
     "task_id",
+    "principal_id",
+    "execution_locus",
     "reindex_run_id",
     "agent_thread_id",
     "agent_thread_record_id",
@@ -49,6 +52,8 @@ const UNKNOWN_PIPELINE_STAGE_IN_DB: &str =
     "unrecognised pipeline stage in database — schema mismatch";
 const UNKNOWN_EMBEDDING_PURPOSE_IN_DB: &str =
     "unrecognised embedding purpose in database — schema mismatch";
+const UNKNOWN_EXECUTION_LOCUS_IN_DB: &str =
+    "unrecognised execution locus in database — schema mismatch";
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -68,6 +73,13 @@ pub struct NewTokenUsage {
     /// The task this usage belongs to (null for read-path calls).
     #[builder(default)]
     pub task_id: Option<TaskId>,
+    /// The contributing principal, when the spend is attributed to one (null
+    /// for system work and calls made before a principal binds).
+    #[builder(default)]
+    pub principal_id: Option<PrincipalId>,
+    /// Where the metered work ran (defaults to the edge runtime — local work).
+    #[builder(default)]
+    pub execution_locus: ExecutionLocus,
     /// The reindex run this usage belongs to (set only for reindex backfill
     /// and catch-up embedding, null otherwise).
     #[builder(default)]
@@ -199,6 +211,34 @@ pub trait TokenUsageRepository {
         conn: &mut PgConnection,
         job_id: JobId,
     ) -> Result<Vec<TokenUsage>, DbError>;
+
+    /// Totals one platform user's attributed spend, grouped by execution
+    /// locus. Joins the ledger to `principals` through the M1 linkage, so a
+    /// binary bound to a platform user reads its own per-user cost. Returns
+    /// one [`UsageTotals`] per locus the user has spend at (empty for a user
+    /// with none).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn totals_by_platform_user(
+        &self,
+        conn: &mut PgConnection,
+        platform_user_id: &str,
+    ) -> Result<Vec<UsageTotals>, DbError>;
+
+    /// Totals an account's attributed spend across every principal bound to
+    /// it, grouped by execution locus — the account-wide view of the same
+    /// ledger. Returns one [`UsageTotals`] per locus the account has spend at.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn totals_by_account_reference(
+        &self,
+        conn: &mut PgConnection,
+        account_reference: &str,
+    ) -> Result<Vec<UsageTotals>, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,9 +380,9 @@ impl TokenUsageRepository for PgTokenUsageRepository {
                   attempt, stage, purpose, provider, model, \
                   tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, \
                   tokens_total, latency_ms, system_prompt_version_id, user_prompt_version_id, \
-                  trace_id) \
+                  trace_id, principal_id, execution_locus) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $11 + $12, \
-                     $15, $16, $17, $18) \
+                     $15, $16, $17, $18, $19, $20) \
              RETURNING {COLUMNS}",
         );
 
@@ -365,6 +405,8 @@ impl TokenUsageRepository for PgTokenUsageRepository {
             .bind(new.system_prompt_version_id.map(|id| *id.inner()))
             .bind(new.user_prompt_version_id.map(|id| *id.inner()))
             .bind(&new.trace_id)
+            .bind(new.principal_id.map(|id| *id.inner()))
+            .bind(new.execution_locus.as_str())
             .fetch_one(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {
@@ -397,6 +439,58 @@ impl TokenUsageRepository for PgTokenUsageRepository {
 
         Ok(rows.iter().map(map_token_usage_row).collect())
     }
+
+    async fn totals_by_platform_user(
+        &self,
+        conn: &mut PgConnection,
+        platform_user_id: &str,
+    ) -> Result<Vec<UsageTotals>, DbError> {
+        let rows = sqlx::query(&usage_totals_sql("platform_user_id"))
+            .bind(platform_user_id)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("totalling spend for platform user {platform_user_id}"),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_usage_totals_row).collect())
+    }
+
+    async fn totals_by_account_reference(
+        &self,
+        conn: &mut PgConnection,
+        account_reference: &str,
+    ) -> Result<Vec<UsageTotals>, DbError> {
+        let rows = sqlx::query(&usage_totals_sql("account_reference"))
+            .bind(account_reference)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("totalling spend for account {account_reference}"),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_usage_totals_row).collect())
+    }
+}
+
+/// Builds the per-locus usage-totals query, filtered on one `principals`
+/// linkage column. The column name is a fixed in-crate literal, never caller
+/// input, so interpolating it carries no injection.
+fn usage_totals_sql(principal_filter_column: &str) -> String {
+    format!(
+        "SELECT tu.execution_locus AS execution_locus, \
+                COUNT(*) AS records, \
+                COALESCE(SUM(tu.tokens_input), 0) AS tokens_input, \
+                COALESCE(SUM(tu.tokens_output), 0) AS tokens_output, \
+                COALESCE(SUM(tu.tokens_cache_read), 0) AS tokens_cache_read, \
+                COALESCE(SUM(tu.tokens_cache_write), 0) AS tokens_cache_write \
+         FROM token_usage tu \
+         JOIN principals p ON p.id = tu.principal_id \
+         WHERE p.{principal_filter_column} = $1 \
+         GROUP BY tu.execution_locus",
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +540,15 @@ fn map_token_usage_row(r: &sqlx::postgres::PgRow) -> TokenUsage {
         .id(TokenUsageId::from(r.get::<uuid::Uuid, _>("id")))
         .job_id(r.get::<Option<uuid::Uuid>, _>("job_id").map(JobId::from))
         .task_id(r.get::<Option<uuid::Uuid>, _>("task_id").map(TaskId::from))
+        .principal_id(
+            r.get::<Option<uuid::Uuid>, _>("principal_id")
+                .map(PrincipalId::from),
+        )
+        .execution_locus(
+            r.get::<String, _>("execution_locus")
+                .parse::<ExecutionLocus>()
+                .expect(UNKNOWN_EXECUTION_LOCUS_IN_DB),
+        )
         .reindex_run_id(
             r.get::<Option<uuid::Uuid>, _>("reindex_run_id")
                 .map(ReindexRunId::from),
@@ -487,4 +590,19 @@ fn map_token_usage_row(r: &sqlx::postgres::PgRow) -> TokenUsage {
         .trace_id(r.get("trace_id"))
         .created_at(r.get("created_at"))
         .build()
+}
+
+/// Maps a grouped-totals row into a [`UsageTotals`].
+fn map_usage_totals_row(r: &sqlx::postgres::PgRow) -> UsageTotals {
+    UsageTotals {
+        execution_locus: r
+            .get::<String, _>("execution_locus")
+            .parse::<ExecutionLocus>()
+            .expect(UNKNOWN_EXECUTION_LOCUS_IN_DB),
+        records: r.get("records"),
+        tokens_input: r.get("tokens_input"),
+        tokens_output: r.get("tokens_output"),
+        tokens_cache_read: r.get("tokens_cache_read"),
+        tokens_cache_write: r.get("tokens_cache_write"),
+    }
 }

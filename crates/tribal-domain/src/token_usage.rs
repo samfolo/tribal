@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
 use crate::{
-    AgentThreadId, AgentThreadRecordId, EmbeddingPurpose, JobId, PipelineStage, PromptVersionId,
-    ReindexRunId, TaskId, TaskType, TokenUsageId,
+    AgentThreadId, AgentThreadRecordId, EmbeddingPurpose, ExecutionLocus, JobId, PipelineStage,
+    PrincipalId, PromptVersionId, ReindexRunId, TaskId, TaskType, TokenUsageId,
 };
 
 /// A token usage record for a single LLM or embedding call.
@@ -27,6 +27,14 @@ pub struct TokenUsage {
     /// The task this usage belongs to.
     #[builder(default)]
     task_id: Option<TaskId>,
+    /// The contributing principal, when the meter attributed the spend to one.
+    /// `None` for system work and calls made before a principal binds.
+    #[builder(default)]
+    principal_id: Option<PrincipalId>,
+    /// Where the metered work ran — the edge runtime locally, or the managed
+    /// runtime elsewhere.
+    #[builder(default)]
+    execution_locus: ExecutionLocus,
     /// The reindex run this usage belongs to (set only for reindex backfill
     /// and catch-up embedding, null otherwise).
     #[builder(default)]
@@ -87,6 +95,16 @@ impl TokenUsage {
     /// Returns the task identifier, if applicable.
     pub fn task_id(&self) -> Option<TaskId> {
         self.task_id
+    }
+
+    /// Returns the contributing principal, if the spend was attributed.
+    pub fn principal_id(&self) -> Option<PrincipalId> {
+        self.principal_id
+    }
+
+    /// Returns where the metered work ran.
+    pub fn execution_locus(&self) -> ExecutionLocus {
+        self.execution_locus
     }
 
     /// Returns the reindex run identifier, if applicable.
@@ -180,6 +198,32 @@ impl TokenUsage {
     pub fn created_at(&self) -> DateTime<Utc> {
         self.created_at
     }
+}
+
+// ---------------------------------------------------------------------------
+// Usage totals
+// ---------------------------------------------------------------------------
+
+/// Summed token spend for one attribution scope at one execution locus.
+///
+/// Per-user and per-account aggregation groups by [`ExecutionLocus`], so a
+/// scope's edge spend and managed spend stay separable — the ledger keeps what
+/// the user ran locally distinct from the managed enrichment run for them. The
+/// summed counts are `i64` because Postgres `SUM`/`COUNT` widen to `bigint`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageTotals {
+    /// Where the summed work ran.
+    pub execution_locus: ExecutionLocus,
+    /// Number of usage records in this scope-and-locus group.
+    pub records: i64,
+    /// Summed input tokens.
+    pub tokens_input: i64,
+    /// Summed output tokens.
+    pub tokens_output: i64,
+    /// Summed cache-read tokens.
+    pub tokens_cache_read: i64,
+    /// Summed cache-write tokens.
+    pub tokens_cache_write: i64,
 }
 
 // ---------------------------------------------------------------------------

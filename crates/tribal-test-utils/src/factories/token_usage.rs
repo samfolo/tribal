@@ -1,8 +1,8 @@
 use chrono::Utc;
 use tribal_db::NewTokenUsage;
 use tribal_domain::{
-    AgentThreadId, AgentThreadRecordId, JobId, PipelineStage, PromptVersionId, ReindexRunId,
-    TaskId, TokenUsage, TokenUsageId, TokenUsageStage,
+    AgentThreadId, AgentThreadRecordId, ExecutionLocus, JobId, PipelineStage, PrincipalId,
+    PromptVersionId, ReindexRunId, TaskId, TokenUsage, TokenUsageId, TokenUsageStage,
 };
 
 define_factory! {
@@ -11,6 +11,8 @@ define_factory! {
         id: TokenUsageId = TokenUsageId::new(),
         job_id: Option<JobId> = None,
         task_id: Option<TaskId> = None,
+        principal_id: Option<PrincipalId> = None,
+        execution_locus: ExecutionLocus = ExecutionLocus::Edge,
         reindex_run_id: Option<ReindexRunId> = None,
         attempt: i32 = 0,
         stage: PipelineStage = PipelineStage::Extraction,
@@ -41,6 +43,8 @@ define_factory! {
     pub struct NewTokenUsageFactory for NewTokenUsage {
         job_id: Option<JobId> = None,
         task_id: Option<TaskId> = None,
+        principal_id: Option<PrincipalId> = None,
+        execution_locus: ExecutionLocus = ExecutionLocus::Edge,
         reindex_run_id: Option<ReindexRunId> = None,
         agent_thread_id: Option<AgentThreadId> = None,
         agent_thread_record_id: Option<AgentThreadRecordId> = None,
