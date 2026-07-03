@@ -230,6 +230,13 @@ pub enum GatewayBuildError {
         /// The unresolvable key.
         key: ProviderKey,
     },
+
+    /// The platform provider is served by the managed gateway, which this build
+    /// does not construct as a local completion provider.
+    #[error(
+        "the platform provider is served by the managed gateway, not a local completion provider"
+    )]
+    ManagedGatewayTransport,
 }
 
 // ----------------------------------------------------------------------------
@@ -817,6 +824,7 @@ fn build_binding(
             &spec.model,
             &spec.api_key,
         )),
+        ProviderKind::Platform => return Err(GatewayBuildError::ManagedGatewayTransport),
     };
 
     Ok(CompletionBinding { provider, key })

@@ -254,10 +254,13 @@ fn add_entry(
 }
 
 /// Resolves the base URL for a provider, falling back to the provider's
-/// default when no explicit URL is configured.
+/// default when no explicit URL is configured, or empty when the provider has
+/// no default (the platform, whose gateway endpoint config validation requires).
 pub(super) fn resolve_base_url(provider: ProviderKind, config_url: Option<&String>) -> String {
     config_url
-        .map_or(provider.default_base_url(), String::as_str)
+        .map(String::as_str)
+        .or_else(|| provider.default_base_url())
+        .unwrap_or_default()
         .to_owned()
 }
 

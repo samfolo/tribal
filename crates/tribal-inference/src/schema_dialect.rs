@@ -101,6 +101,9 @@ pub fn apply_dialect(provider: ProviderKind, schema: Value) -> Value {
     match provider {
         ProviderKind::Anthropic | ProviderKind::Ollama => apply_grammar_subset(schema),
         ProviderKind::OpenAi => apply_openai_strict(schema),
+        // The gateway adapts the schema to its upstream provider server-side,
+        // so the canonical schema crosses the wire unchanged.
+        ProviderKind::Platform => schema,
     }
 }
 

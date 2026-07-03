@@ -6,6 +6,11 @@ use tribal_domain::ProviderKind;
 // ---------------------------------------------------------------------------
 
 /// Wraps stage content in the provider-specific chat response format.
+///
+/// # Panics
+///
+/// Panics for the platform provider, which the harness does not mock: its
+/// transport is the managed gateway, not a raw HTTP chat endpoint.
 #[must_use]
 pub fn wrap_completion(content: &Value, provider: ProviderKind) -> Value {
     match provider {
@@ -35,6 +40,9 @@ pub fn wrap_completion(content: &Value, provider: ProviderKind) -> Value {
             }, "finish_reason": "stop" }],
             "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 },
         }),
+        ProviderKind::Platform => {
+            panic!("the e2e harness does not mock the platform gateway provider")
+        }
     }
 }
 
@@ -66,6 +74,9 @@ pub fn wrap_completion_stream(fixture: &Value, provider: ProviderKind) -> (Strin
             "the agentic E2E streams the Ollama wire format; streaming framing for {provider:?} \
              is covered by the inference-tier tests and intentionally unbuilt in this harness",
         ),
+        ProviderKind::Platform => {
+            panic!("the e2e harness does not mock the platform gateway provider")
+        }
     }
 }
 
@@ -108,8 +119,9 @@ fn ollama_stream_body(fixture: &Value) -> String {
 ///
 /// # Panics
 ///
-/// Panics if `provider` is `Anthropic` — Anthropic does not provide an
-/// embedding service.
+/// Panics if `provider` is `Anthropic` — which provides no embedding service —
+/// or the platform, whose embeddings the gateway serves and the harness does
+/// not mock.
 #[must_use]
 pub fn wrap_embedding(vector: &[f32], provider: ProviderKind) -> Value {
     match provider {
@@ -132,6 +144,9 @@ pub fn wrap_embedding(vector: &[f32], provider: ProviderKind) -> Value {
         ProviderKind::Anthropic => {
             panic!("Anthropic does not provide an embedding service")
         }
+        ProviderKind::Platform => {
+            panic!("the e2e harness does not mock the platform gateway provider")
+        }
     }
 }
 
@@ -140,12 +155,20 @@ pub fn wrap_embedding(vector: &[f32], provider: ProviderKind) -> Value {
 // ---------------------------------------------------------------------------
 
 /// Returns the chat endpoint path for the given provider.
+///
+/// # Panics
+///
+/// Panics for the platform provider, which is addressed over the gateway wire
+/// contract, not a raw HTTP chat path.
 #[must_use]
 pub fn chat_path(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Ollama => tribal_inference::OLLAMA_CHAT_PATH,
         ProviderKind::OpenAi => tribal_inference::OPENAI_CHAT_PATH,
         ProviderKind::Anthropic => tribal_inference::ANTHROPIC_MESSAGES_PATH,
+        ProviderKind::Platform => {
+            panic!("the e2e harness does not mock the platform gateway provider")
+        }
     }
 }
 
@@ -153,13 +176,17 @@ pub fn chat_path(provider: ProviderKind) -> &'static str {
 ///
 /// # Panics
 ///
-/// Panics if `provider` is `Anthropic`.
+/// Panics if `provider` is `Anthropic`, or the platform, whose embeddings the
+/// gateway serves and the harness does not mock.
 #[must_use]
 pub fn embed_path(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Ollama => tribal_inference::OLLAMA_EMBED_PATH,
         ProviderKind::OpenAi => tribal_inference::OPENAI_EMBED_PATH,
         ProviderKind::Anthropic => panic!("Anthropic does not provide an embedding service"),
+        ProviderKind::Platform => {
+            panic!("the e2e harness does not mock the platform gateway provider")
+        }
     }
 }
 
@@ -171,7 +198,7 @@ pub fn embed_path(provider: ProviderKind) -> &'static str {
 pub fn tags_path(provider: ProviderKind) -> Option<&'static str> {
     match provider {
         ProviderKind::Ollama => Some(tribal_inference::OLLAMA_TAGS_PATH),
-        ProviderKind::OpenAi | ProviderKind::Anthropic => None,
+        ProviderKind::OpenAi | ProviderKind::Anthropic | ProviderKind::Platform => None,
     }
 }
 

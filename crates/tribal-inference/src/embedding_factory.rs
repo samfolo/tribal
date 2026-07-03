@@ -12,12 +12,22 @@ use tribal_domain::ProviderKind;
 
 use crate::{EmbeddingProvider, ollama::OllamaEmbeddingProvider, openai::OpenAiEmbeddingProvider};
 
-/// A provider kind that has no embedding API was requested.
+/// An embedding provider that cannot be constructed for the requested kind.
 #[derive(Debug, thiserror::Error)]
-#[error("{provider} does not provide an embedding API; use Ollama or OpenAI for embeddings")]
-pub struct UnsupportedEmbeddingProvider {
-    /// The unsupported provider kind.
-    pub provider: ProviderKind,
+pub enum EmbeddingProviderUnavailable {
+    /// The kind has no embedding API at all.
+    #[error("{provider} does not provide an embedding API; use Ollama or OpenAI for embeddings")]
+    NoEmbeddingApi {
+        /// The kind with no embedding API.
+        provider: ProviderKind,
+    },
+    /// The platform serves embeddings through the managed gateway, not a
+    /// locally-constructed embedding provider.
+    #[error(
+        "the platform provider serves embeddings through the managed gateway, \
+         not a local embedding provider"
+    )]
+    ManagedGatewayTransport,
 }
 
 /// Rejects a provider kind with no embedding API.
@@ -28,15 +38,15 @@ pub struct UnsupportedEmbeddingProvider {
 ///
 /// # Errors
 ///
-/// Returns [`UnsupportedEmbeddingProvider`] for a provider kind with no
-/// embedding API (Anthropic).
+/// Returns [`EmbeddingProviderUnavailable::NoEmbeddingApi`] for a provider kind
+/// with no embedding API (Anthropic).
 pub(crate) fn ensure_embedding_support(
     provider_kind: ProviderKind,
-) -> Result<(), UnsupportedEmbeddingProvider> {
+) -> Result<(), EmbeddingProviderUnavailable> {
     if provider_kind.supports_embedding() {
         Ok(())
     } else {
-        Err(UnsupportedEmbeddingProvider {
+        Err(EmbeddingProviderUnavailable::NoEmbeddingApi {
             provider: provider_kind,
         })
     }
@@ -49,8 +59,10 @@ pub(crate) fn ensure_embedding_support(
 ///
 /// # Errors
 ///
-/// Returns [`UnsupportedEmbeddingProvider`] for a provider kind with no
-/// embedding API (Anthropic).
+/// Returns [`EmbeddingProviderUnavailable::NoEmbeddingApi`] for a kind with no
+/// embedding API (Anthropic), and
+/// [`EmbeddingProviderUnavailable::ManagedGatewayTransport`] for the platform,
+/// whose embeddings are served by the gateway rather than a local provider.
 pub fn make_embedding_provider(
     provider_kind: ProviderKind,
     client: reqwest::Client,
@@ -58,7 +70,7 @@ pub fn make_embedding_provider(
     model: &str,
     dimensions: u32,
     api_key: &str,
-) -> Result<Arc<dyn EmbeddingProvider>, UnsupportedEmbeddingProvider> {
+) -> Result<Arc<dyn EmbeddingProvider>, EmbeddingProviderUnavailable> {
     match provider_kind {
         ProviderKind::Ollama => Ok(Arc::new(OllamaEmbeddingProvider::new(
             client, base_url, model, dimensions,
@@ -66,8 +78,9 @@ pub fn make_embedding_provider(
         ProviderKind::OpenAi => Ok(Arc::new(OpenAiEmbeddingProvider::new(
             client, base_url, model, api_key, dimensions,
         ))),
-        ProviderKind::Anthropic => Err(UnsupportedEmbeddingProvider {
+        ProviderKind::Anthropic => Err(EmbeddingProviderUnavailable::NoEmbeddingApi {
             provider: ProviderKind::Anthropic,
         }),
+        ProviderKind::Platform => Err(EmbeddingProviderUnavailable::ManagedGatewayTransport),
     }
 }

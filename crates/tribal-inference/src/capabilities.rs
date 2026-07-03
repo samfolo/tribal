@@ -204,9 +204,12 @@ pub fn resolve(provider: ProviderKind, model: &str) -> ModelCapabilities {
         ProviderKind::Anthropic if ANTHROPIC_ADAPTIVE_MODELS.contains(&model) => {
             ModelCapabilities::ANTHROPIC_ADAPTIVE
         }
-        ProviderKind::Ollama | ProviderKind::Anthropic | ProviderKind::OpenAi => {
-            ModelCapabilities::SEND_ALL
-        }
+        // The platform gateway enforces the upstream model's admissibility
+        // server-side, so the client sends every field and lets it adapt.
+        ProviderKind::Ollama
+        | ProviderKind::Anthropic
+        | ProviderKind::OpenAi
+        | ProviderKind::Platform => ModelCapabilities::SEND_ALL,
     }
 }
 

@@ -255,7 +255,8 @@ async fn test_embedding_profile_reports_the_active_seed() {
     let env = TestEnv::new();
     let pool = fresh_db(&ctx).await;
     let mut conn = pool.acquire().await.expect("acquire connection");
-    let base_url = normalise_endpoint_url(ProviderKind::Ollama.default_base_url()).unwrap();
+    let base_url =
+        normalise_endpoint_url(ProviderKind::Ollama.default_base_url().unwrap()).unwrap();
     // A local Ollama seed needs no credential, so the active profile resolves.
     ensure_genesis_profile_with_endpoint(
         &mut conn,
@@ -291,7 +292,8 @@ async fn test_embedding_profile_fails_on_an_unresolvable_active_credential() {
     let env = TestEnv::new();
     let pool = fresh_db(&ctx).await;
     let mut conn = pool.acquire().await.expect("acquire connection");
-    let base_url = normalise_endpoint_url(ProviderKind::OpenAi.default_base_url()).unwrap();
+    let base_url =
+        normalise_endpoint_url(ProviderKind::OpenAi.default_base_url().unwrap()).unwrap();
     // An OpenAI active profile with no matching catalogue entry is the
     // fail-closed condition the next boot would trip.
     ensure_genesis_profile_with_endpoint(

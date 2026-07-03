@@ -25,6 +25,12 @@ pub enum ProviderKind {
     /// `OpenAI` cloud API.
     #[serde(rename = "openai")]
     OpenAi,
+
+    /// Tribal's managed platform. A metered provider whose transport is the
+    /// control-plane gateway, not a raw HTTP endpoint — so it authenticates
+    /// with the platform credential and has no built-in base URL or request
+    /// path of its own.
+    Platform,
 }
 
 impl ProviderKind {
@@ -33,7 +39,7 @@ impl ProviderKind {
     /// Compile-time forced: every variant must be listed in [`Self::as_str`]
     /// to satisfy the exhaustive match, so any new variant added to the enum
     /// will fail the build until it is added to [`Self::as_str`].
-    pub const ALL: [Self; 3] = [Self::Ollama, Self::Anthropic, Self::OpenAi];
+    pub const ALL: [Self; 4] = [Self::Ollama, Self::Anthropic, Self::OpenAi, Self::Platform];
 
     /// Default base URL for local `Ollama` instances.
     pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
@@ -55,46 +61,61 @@ impl ProviderKind {
             Self::Ollama => "ollama",
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
+            Self::Platform => "platform",
         }
     }
 
-    /// Returns `true` for cloud providers that require an API key.
+    /// Returns `true` for providers that require an API key.
+    ///
+    /// The platform authenticates with its own credential (the device grant),
+    /// not an API key, so it needs none here.
     #[must_use]
     pub fn requires_api_key(self) -> bool {
         match self {
             Self::Anthropic | Self::OpenAi => true,
-            Self::Ollama => false,
+            Self::Ollama | Self::Platform => false,
         }
     }
 
     /// Returns `true` if this provider exposes an embedding API.
+    ///
+    /// The platform serves embeddings through the gateway's metered bracket.
     #[must_use]
     pub fn supports_embedding(self) -> bool {
         match self {
-            Self::Ollama | Self::OpenAi => true,
+            Self::Ollama | Self::OpenAi | Self::Platform => true,
             Self::Anthropic => false,
         }
     }
 
-    /// Returns the default base URL for this provider kind.
+    /// Returns the built-in default base URL for this provider kind, or `None`
+    /// for a provider with no compile-time default.
     ///
-    /// Used when the configuration does not specify a `base_url` override.
+    /// Used when the configuration does not specify a `base_url` override. The
+    /// platform's gateway endpoint is deployment-specific — bound at sign-in,
+    /// never defaulted — so a platform configuration must set its base URL.
     #[must_use]
-    pub fn default_base_url(self) -> &'static str {
+    pub fn default_base_url(self) -> Option<&'static str> {
         match self {
-            Self::Ollama => Self::DEFAULT_OLLAMA_BASE_URL,
-            Self::Anthropic => Self::DEFAULT_ANTHROPIC_BASE_URL,
-            Self::OpenAi => Self::DEFAULT_OPENAI_BASE_URL,
+            Self::Ollama => Some(Self::DEFAULT_OLLAMA_BASE_URL),
+            Self::Anthropic => Some(Self::DEFAULT_ANTHROPIC_BASE_URL),
+            Self::OpenAi => Some(Self::DEFAULT_OPENAI_BASE_URL),
+            Self::Platform => None,
         }
     }
 
-    /// Returns this provider's chat-completion request path.
+    /// Returns this provider's chat-completion request path, or `None` for a
+    /// provider that is not addressed over a raw HTTP path.
+    ///
+    /// The platform is transported by the gateway wire contract, not a raw
+    /// chat-completion endpoint, so it has no such path.
     #[must_use]
-    pub const fn request_path(self) -> &'static str {
+    pub const fn request_path(self) -> Option<&'static str> {
         match self {
-            Self::Ollama => "/api/chat",
-            Self::Anthropic => "/v1/messages",
-            Self::OpenAi => "/v1/chat/completions",
+            Self::Ollama => Some("/api/chat"),
+            Self::Anthropic => Some("/v1/messages"),
+            Self::OpenAi => Some("/v1/chat/completions"),
+            Self::Platform => None,
         }
     }
 }
@@ -132,6 +153,7 @@ mod tests {
         ProviderKind::Ollama => "ollama",
         ProviderKind::Anthropic => "anthropic",
         ProviderKind::OpenAi => "openai",
+        ProviderKind::Platform => "platform",
     });
 
     #[test]
@@ -144,6 +166,7 @@ mod tests {
         assert_eq!(ProviderKind::Ollama.to_string(), "ollama");
         assert_eq!(ProviderKind::Anthropic.to_string(), "anthropic");
         assert_eq!(ProviderKind::OpenAi.to_string(), "openai");
+        assert_eq!(ProviderKind::Platform.to_string(), "platform");
     }
 
     #[test]
@@ -151,13 +174,18 @@ mod tests {
         assert!(!ProviderKind::Ollama.requires_api_key());
         assert!(ProviderKind::Anthropic.requires_api_key());
         assert!(ProviderKind::OpenAi.requires_api_key());
+        assert!(!ProviderKind::Platform.requires_api_key());
     }
 
     #[test]
     fn test_request_path() {
-        assert_eq!(ProviderKind::Ollama.request_path(), "/api/chat");
-        assert_eq!(ProviderKind::Anthropic.request_path(), "/v1/messages");
-        assert_eq!(ProviderKind::OpenAi.request_path(), "/v1/chat/completions");
+        assert_eq!(ProviderKind::Ollama.request_path(), Some("/api/chat"));
+        assert_eq!(ProviderKind::Anthropic.request_path(), Some("/v1/messages"));
+        assert_eq!(
+            ProviderKind::OpenAi.request_path(),
+            Some("/v1/chat/completions"),
+        );
+        assert_eq!(ProviderKind::Platform.request_path(), None);
     }
 
     #[test]
@@ -165,22 +193,24 @@ mod tests {
         assert!(ProviderKind::Ollama.supports_embedding());
         assert!(!ProviderKind::Anthropic.supports_embedding());
         assert!(ProviderKind::OpenAi.supports_embedding());
+        assert!(ProviderKind::Platform.supports_embedding());
     }
 
     #[test]
     fn test_default_base_url() {
         assert_eq!(
             ProviderKind::Ollama.default_base_url(),
-            ProviderKind::DEFAULT_OLLAMA_BASE_URL,
+            Some(ProviderKind::DEFAULT_OLLAMA_BASE_URL),
         );
         assert_eq!(
             ProviderKind::Anthropic.default_base_url(),
-            ProviderKind::DEFAULT_ANTHROPIC_BASE_URL,
+            Some(ProviderKind::DEFAULT_ANTHROPIC_BASE_URL),
         );
         assert_eq!(
             ProviderKind::OpenAi.default_base_url(),
-            ProviderKind::DEFAULT_OPENAI_BASE_URL,
+            Some(ProviderKind::DEFAULT_OPENAI_BASE_URL),
         );
+        assert_eq!(ProviderKind::Platform.default_base_url(), None);
     }
 
     #[test]
@@ -195,7 +225,7 @@ mod tests {
         let err = "grpc".parse::<ProviderKind>().unwrap_err();
         assert_eq!(
             err,
-            "unknown provider: grpc (expected one of ollama, anthropic, openai)",
+            "unknown provider: grpc (expected one of ollama, anthropic, openai, platform)",
         );
     }
 }

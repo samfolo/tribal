@@ -164,7 +164,8 @@ fn genesis_drift(genesis: &InitEmbeddingConfig, active: &EmbeddingProfile) -> Op
     let genesis_base_url = genesis
         .base_url
         .as_deref()
-        .unwrap_or_else(|| genesis.provider.default_base_url());
+        .or_else(|| genesis.provider.default_base_url())
+        .unwrap_or_default();
     let genesis_normalised = normalise_endpoint_url(genesis_base_url);
     let endpoint_differs = match &genesis_normalised {
         Ok(normalised) => normalised != active.normalised_base_url(),

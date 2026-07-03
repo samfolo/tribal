@@ -44,7 +44,7 @@ pub struct ProviderLimitsConfig {
 pub struct LimitsConfig {
     /// Per-provider limits, keyed by provider kind.
     ///
-    /// Pre-populated with defaults for all three providers.  Typed keys
+    /// Pre-populated with a default for every provider kind.  Typed keys
     /// mean a YAML typo fails at parse time rather than silently creating
     /// an unreferenced entry.
     #[serde(default = "default_providers")]
@@ -60,7 +60,11 @@ impl Default for LimitsConfig {
 }
 
 fn default_providers() -> HashMap<ProviderKind, ProviderLimitsConfig> {
-    let mut map = HashMap::with_capacity(3);
+    let cloud = ProviderLimitsConfig {
+        max_in_flight: CLOUD_MAX_IN_FLIGHT,
+        request_timeout_ms: CLOUD_REQUEST_TIMEOUT_MS,
+    };
+    let mut map = HashMap::with_capacity(4);
     map.insert(
         ProviderKind::Ollama,
         ProviderLimitsConfig {
@@ -68,20 +72,11 @@ fn default_providers() -> HashMap<ProviderKind, ProviderLimitsConfig> {
             request_timeout_ms: LOCAL_REQUEST_TIMEOUT_MS,
         },
     );
-    map.insert(
-        ProviderKind::Anthropic,
-        ProviderLimitsConfig {
-            max_in_flight: CLOUD_MAX_IN_FLIGHT,
-            request_timeout_ms: CLOUD_REQUEST_TIMEOUT_MS,
-        },
-    );
-    map.insert(
-        ProviderKind::OpenAi,
-        ProviderLimitsConfig {
-            max_in_flight: CLOUD_MAX_IN_FLIGHT,
-            request_timeout_ms: CLOUD_REQUEST_TIMEOUT_MS,
-        },
-    );
+    map.insert(ProviderKind::Anthropic, cloud.clone());
+    map.insert(ProviderKind::OpenAi, cloud.clone());
+    // The platform's calls cross the network through the gateway, so it takes
+    // the cloud limits rather than the local ones.
+    map.insert(ProviderKind::Platform, cloud);
     map
 }
 
@@ -96,10 +91,11 @@ mod tests {
     #[test]
     fn test_default_has_all_providers() {
         let config = LimitsConfig::default();
-        assert_eq!(config.providers.len(), 3);
+        assert_eq!(config.providers.len(), 4);
         assert!(config.providers.contains_key(&ProviderKind::Ollama));
         assert!(config.providers.contains_key(&ProviderKind::Anthropic));
         assert!(config.providers.contains_key(&ProviderKind::OpenAi));
+        assert!(config.providers.contains_key(&ProviderKind::Platform));
     }
 
     #[test]

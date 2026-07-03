@@ -112,7 +112,7 @@ pub fn use_openai_embedding(config: &mut TribalConfig, api_key: &str) {
         .embedding
         .base_url
         .clone()
-        .unwrap_or_else(|| ProviderKind::OpenAi.default_base_url().to_owned());
+        .unwrap_or_else(|| ProviderKind::OpenAi.default_base_url().unwrap().to_owned());
     config.credentials.insert(
         "openai_default".to_owned(),
         CredentialEntry {
@@ -135,7 +135,8 @@ pub async fn seed_genesis_from_init(pool: &PgPool, config: &TribalConfig) {
     let base_url = init
         .base_url
         .clone()
-        .unwrap_or_else(|| init.provider.default_base_url().to_owned());
+        .or_else(|| init.provider.default_base_url().map(ToOwned::to_owned))
+        .expect("init.embedding.base_url or a provider default must be present");
     let normalised =
         normalise_endpoint_url(&base_url).expect("init.embedding.base_url must normalise");
     let dimensions = resolve_dimensions(init.provider, &init.model, init.dimensions)

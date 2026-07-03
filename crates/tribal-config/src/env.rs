@@ -70,7 +70,7 @@ pub fn env_var_for_path(config_path: &str) -> String {
 #[must_use]
 pub fn standard_env_var_name(kind: ProviderKind) -> Option<&'static str> {
     match kind {
-        ProviderKind::Ollama => None,
+        ProviderKind::Ollama | ProviderKind::Platform => None,
         ProviderKind::Anthropic => Some(ENV_ANTHROPIC_API_KEY),
         ProviderKind::OpenAi => Some(ENV_OPENAI_API_KEY),
     }
@@ -98,6 +98,7 @@ mod tests {
     #[test]
     fn test_standard_env_var_name() {
         assert_eq!(standard_env_var_name(ProviderKind::Ollama), None);
+        assert_eq!(standard_env_var_name(ProviderKind::Platform), None);
         assert_eq!(
             standard_env_var_name(ProviderKind::Anthropic),
             Some(ENV_ANTHROPIC_API_KEY),
