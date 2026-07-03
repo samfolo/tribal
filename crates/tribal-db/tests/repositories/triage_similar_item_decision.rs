@@ -314,3 +314,28 @@ async fn test_find_by_job_id_and_batch_index_returns_empty_for_unknown() {
 
     assert!(results.is_empty());
 }
+
+#[tokio::test]
+async fn test_decision_carries_its_principal() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgTriageSimilarItemDecisionRepository;
+
+    let (principal_id, project_id, job_id) = setup_prerequisites(&mut txn, "principal").await;
+    let item_id = setup_item(&mut txn, project_id, principal_id).await;
+
+    let inserted = repo
+        .batch_insert(
+            &mut txn,
+            &[a_new_triage_similar_item_decision()
+                .job_id(job_id)
+                .principal_id(Some(principal_id))
+                .matched_item_id(item_id)
+                .build()],
+        )
+        .await
+        .expect("insert");
+
+    assert_eq!(inserted.len(), 1);
+    assert_eq!(inserted[0].principal_id(), Some(principal_id));
+}

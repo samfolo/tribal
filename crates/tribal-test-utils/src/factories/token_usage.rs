@@ -1,8 +1,8 @@
 use chrono::Utc;
 use tribal_db::NewTokenUsage;
 use tribal_domain::{
-    AgentThreadId, AgentThreadRecordId, JobId, PipelineStage, PromptVersionId, ReindexRunId,
-    TaskId, TokenUsage, TokenUsageId, TokenUsageStage,
+    AgentThreadId, AgentThreadRecordId, ExecutionLocus, JobId, PipelineStage, PrincipalId,
+    PromptVersionId, ReindexRunId, TaskId, TokenUsage, TokenUsageId, TokenUsageStage,
 };
 
 define_factory! {
@@ -11,6 +11,8 @@ define_factory! {
         id: TokenUsageId = TokenUsageId::new(),
         job_id: Option<JobId> = None,
         task_id: Option<TaskId> = None,
+        principal_id: Option<PrincipalId> = None,
+        execution_locus: ExecutionLocus = ExecutionLocus::Edge,
         reindex_run_id: Option<ReindexRunId> = None,
         attempt: i32 = 0,
         stage: PipelineStage = PipelineStage::Extraction,
@@ -41,6 +43,8 @@ define_factory! {
     pub struct NewTokenUsageFactory for NewTokenUsage {
         job_id: Option<JobId> = None,
         task_id: Option<TaskId> = None,
+        principal_id: Option<PrincipalId> = None,
+        execution_locus: ExecutionLocus = ExecutionLocus::Edge,
         reindex_run_id: Option<ReindexRunId> = None,
         agent_thread_id: Option<AgentThreadId> = None,
         agent_thread_record_id: Option<AgentThreadRecordId> = None,
@@ -73,6 +77,8 @@ mod tests {
         let tu = a_token_usage().build();
         assert_eq!(tu.stage(), PipelineStage::Extraction);
         assert_eq!(tu.tokens_total(), 150);
+        assert!(tu.principal_id().is_none());
+        assert_eq!(tu.execution_locus(), ExecutionLocus::Edge);
     }
 
     #[test]
@@ -80,6 +86,8 @@ mod tests {
         let new = a_new_token_usage().build();
         assert!(new.job_id.is_none());
         assert!(new.task_id.is_none());
+        assert!(new.principal_id.is_none());
+        assert_eq!(new.execution_locus, ExecutionLocus::Edge);
         assert_eq!(new.attempt, 0);
         assert_eq!(new.provider, "test-provider");
         assert_eq!(new.model, "test-model");

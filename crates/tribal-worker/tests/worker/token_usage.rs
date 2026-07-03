@@ -114,6 +114,16 @@ async fn test_extraction_records_token_usage() {
     assert_eq!(r.system_prompt_version_id(), Some(system_pv_id));
     assert_eq!(r.user_prompt_version_id(), Some(user_pv_id));
     assert_eq!(r.trace_id(), Some("4bf92f3577b34da6a3ce929d0e0e4736"));
+    assert_eq!(
+        r.principal_id(),
+        Some(principal_id),
+        "the meter attributes the record to the job's principal",
+    );
+    assert_eq!(
+        r.execution_locus(),
+        tribal_domain::ExecutionLocus::Edge,
+        "work run in the binary is recorded at the edge",
+    );
 }
 
 /// Runs an extraction job with the given `trace_context` and asserts that
@@ -720,6 +730,11 @@ async fn test_backfill_records_token_usage() {
     for r in &records {
         assert_eq!(r.job_id(), None, "backfill records have no job");
         assert_eq!(r.task_id(), None, "backfill records have no task");
+        assert_eq!(
+            r.principal_id(),
+            None,
+            "unowned backfill spend attributes to no principal",
+        );
         assert_eq!(r.stage(), PipelineStage::Embedding);
         assert_eq!(r.purpose(), Some(EmbeddingPurpose::Tag));
         assert_eq!(r.attempt(), 0);

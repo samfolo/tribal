@@ -82,6 +82,11 @@ async fn test_triage_novel_path() {
         .await
         .expect("find triage result")
         .expect("triage result should exist");
+    assert_eq!(
+        triage_result.principal_id(),
+        Some(principal_id),
+        "a committed triage result is attributed to the run's principal",
+    );
 
     let TriageOutcome::Created { item_id } = triage_result.outcome() else {
         panic!(

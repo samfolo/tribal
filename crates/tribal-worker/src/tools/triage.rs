@@ -709,6 +709,7 @@ mod tests {
     fn unowned_attribution() -> UsageAttribution {
         UsageAttribution {
             owner: UsageOwner::Unowned,
+            principal_id: None,
             system_prompt_version_id: None,
             user_prompt_version_id: None,
             trace_id: None,

@@ -181,7 +181,7 @@ fn persisted_genesis_credentials(
     let base_url = init
         .base_url
         .clone()
-        .unwrap_or_else(|| init.provider.default_base_url().to_owned());
+        .or_else(|| init.provider.default_base_url().map(ToOwned::to_owned))?;
     let name = format!("{}_default", init.provider.as_str());
     Some(BTreeMap::from([(
         name,
@@ -583,7 +583,8 @@ mod tests {
         assert_eq!(parsed.init.embedding.model, "text-embedding-3-small");
         // The synthesised skeleton round-trips into a keyless catalogue entry.
         let normalised =
-            tribal_domain::normalise_endpoint_url(ProviderKind::OpenAi.default_base_url()).unwrap();
+            tribal_domain::normalise_endpoint_url(ProviderKind::OpenAi.default_base_url().unwrap())
+                .unwrap();
         assert!(
             parsed
                 .credentials

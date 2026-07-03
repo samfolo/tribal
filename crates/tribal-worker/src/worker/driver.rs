@@ -620,6 +620,7 @@ fn child_attribution(child: &AgentThread, attempt: u32) -> UsageAttribution {
             record_id: None,
             attempt: clamp_to_i32(attempt),
         },
+        principal_id: Some(child.principal_id()),
         system_prompt_version_id: None,
         user_prompt_version_id: None,
         trace_id: tribal_telemetry::current_trace_id(),

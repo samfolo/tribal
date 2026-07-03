@@ -1,6 +1,6 @@
 use chrono::Utc;
 use tribal_db::NewPrincipal;
-use tribal_domain::{Principal, PrincipalId};
+use tribal_domain::{PlatformBinding, Principal, PrincipalId};
 
 /// Default principal key used across test factories and handler tests.
 pub const TEST_PRINCIPAL_KEY: &str = "user:test";
@@ -11,6 +11,7 @@ define_factory! {
         id: PrincipalId = PrincipalId::new(),
         principal_key: String = TEST_PRINCIPAL_KEY.to_owned(),
         display_name: Option<String> = None,
+        platform_binding: Option<PlatformBinding> = None,
         created_at: chrono::DateTime<Utc> = Utc::now(),
     }
 }
@@ -20,6 +21,7 @@ define_factory! {
     pub struct NewPrincipalFactory for NewPrincipal {
         principal_key: String = TEST_PRINCIPAL_KEY.to_owned(),
         display_name: Option<String> = None,
+        platform_binding: Option<PlatformBinding> = None,
     }
 }
 

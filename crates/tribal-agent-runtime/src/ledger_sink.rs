@@ -51,6 +51,7 @@ impl PgLedgerSink {
                 .agent_thread_id(owner.agent_thread_id())
                 .agent_thread_record_id(owner.agent_thread_record_id())
                 .attempt(owner.attempt())
+                .principal_id(attribution.principal_id)
                 .stage(stage)
                 .provider(cu.provider.clone())
                 .model(cu.model.clone())
@@ -70,6 +71,7 @@ impl PgLedgerSink {
                 .agent_thread_id(owner.agent_thread_id())
                 .agent_thread_record_id(owner.agent_thread_record_id())
                 .attempt(owner.attempt())
+                .principal_id(attribution.principal_id)
                 .stage(stage)
                 .provider(eu.provider.clone())
                 .model(eu.model.clone())
@@ -161,7 +163,7 @@ mod tests {
 
     use tribal_domain::{
         AgentThreadId, AgentThreadRecordId, CompletionUsage, EmbeddingPurpose, EmbeddingUsage,
-        JobId, ReindexRunId, TaskId, UsageOwner,
+        JobId, PrincipalId, ReindexRunId, TaskId, UsageOwner,
     };
 
     use super::*;
@@ -206,8 +208,10 @@ mod tests {
     #[test]
     fn test_completion_row_carries_full_attribution() {
         let owner = a_pipeline_owner(3);
+        let principal_id = PrincipalId::new();
         let attribution = UsageAttribution {
             owner,
+            principal_id: Some(principal_id),
             trace_id: Some("trace-9".to_owned()),
             ..UsageAttribution::default()
         };
@@ -218,6 +222,7 @@ mod tests {
             &attribution,
         );
 
+        assert_eq!(row.principal_id, Some(principal_id));
         assert_eq!(row.job_id, owner.job_id());
         assert_eq!(row.task_id, owner.task_id());
         assert_eq!(row.agent_thread_id, owner.agent_thread_id());

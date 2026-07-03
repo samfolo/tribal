@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tribal_domain::{PromptVersionId, TokenUsageStage, Usage, UsageOwner};
+use tribal_domain::{PrincipalId, PromptVersionId, TokenUsageStage, Usage, UsageOwner};
 
 /// Caller-supplied attribution for one inference or embedding request.
 ///
@@ -21,6 +21,9 @@ use tribal_domain::{PromptVersionId, TokenUsageStage, Usage, UsageOwner};
 pub struct UsageAttribution {
     /// The owner the request's spend attributes to.
     pub owner: UsageOwner,
+    /// The principal the request's spend attributes to, when one is in scope;
+    /// `None` for unowned work (probes, backfills, read-path queries).
+    pub principal_id: Option<PrincipalId>,
     /// The system prompt version used, for completion calls.
     pub system_prompt_version_id: Option<PromptVersionId>,
     /// The user prompt version used, for completion calls.

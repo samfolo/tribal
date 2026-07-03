@@ -937,6 +937,7 @@ async fn commit_novel(
 
     let triage_result = NewTriageResult::builder()
         .job_id(job_id)
+        .principal_id(Some(knowledge_item.principal_id))
         .batch_index(batch_index)
         .outcome(TriageOutcome::Created { item_id: ki_id })
         .build();
@@ -965,6 +966,7 @@ async fn commit_duplicate(
 
     let triage_result = NewTriageResult::builder()
         .job_id(job_id)
+        .principal_id(Some(observation.principal_id))
         .batch_index(batch_index)
         .outcome(TriageOutcome::Duplicate {
             observation_id: obs.id(),

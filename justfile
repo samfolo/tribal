@@ -45,14 +45,16 @@ test:
     cargo run -q -p tribal-test-utils --bin build-test-template
     # Worker/server/db/auth/mcp run with the test-helpers feature; e2e uses real
     # HTTP mocks (wiremock) and must NOT enable the inference test-helper.
-    cargo nextest run --workspace --exclude tribal-e2e --features tribal/test-helpers
+    # tribal-wire/schema rides the main pass: one feature set means one compiled
+    # graph — a separate feature-flipped pass would rebuild the workspace twice.
+    cargo nextest run --workspace --exclude tribal-e2e --features tribal/test-helpers,tribal-wire/schema
     cargo nextest run -p tribal-e2e
     # nextest does not run doctests; run them separately (none require a database).
-    cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers --doc
+    cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers,tribal-wire/schema --doc
 
 # Run the suite via plain `cargo test` (in-process testcontainers fallback).
 test-cargo:
-    SQLX_OFFLINE=true cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers
+    SQLX_OFFLINE=true cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers,tribal-wire/schema
     SQLX_OFFLINE=true cargo test -p tribal-e2e
 
 # Run only unit tests
@@ -62,7 +64,9 @@ test-unit:
 # Format and lint check (no live database required)
 check:
     cargo +nightly fmt --all -- --check
-    SQLX_OFFLINE=true cargo clippy --workspace --all-targets -- -D warnings
+    # tribal-wire/schema rides the one workspace pass; a second feature-flipped
+    # clippy would recompile the graph.
+    SQLX_OFFLINE=true cargo clippy --workspace --all-targets --features tribal-wire/schema -- -D warnings
 
 # Format code
 fmt:

@@ -80,6 +80,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_pool_sizing(config, &mut diags);
     validate_init(config, &mut diags);
     validate_inference(config, &mut diags);
+    validate_provider_locality(config, &mut diags);
     validate_provider_limits(config, &mut diags);
     validate_api_key_presence(config, &mut diags);
     validate_credentials(config, &mut diags);
@@ -522,6 +523,25 @@ fn validate_inference(config: &TribalConfig, diags: &mut Diagnostics) {
                 prefix,
                 "max_tokens",
             )));
+        }
+    }
+}
+
+/// Rejects the platform provider selected for any local-provider stage — the
+/// embedding genesis seed or an inference stage.
+fn validate_provider_locality(config: &TribalConfig, diags: &mut Diagnostics) {
+    let stages = [
+        (ProviderStage::Embedding, config.init.embedding.provider),
+        (
+            ProviderStage::Extraction,
+            config.inference.extraction.provider,
+        ),
+        (ProviderStage::Triage, config.inference.triage.provider),
+        (ProviderStage::Relation, config.inference.relation.provider),
+    ];
+    for (stage, provider) in stages {
+        if provider == ProviderKind::Platform {
+            diags.push(ValidationError::PlatformProviderNotLocal { stage });
         }
     }
 }
@@ -1579,6 +1599,30 @@ mod tests {
                         if *s == stage,
                 )),
                 "no MissingApiKey for {stage:?}; diagnostics: {diags:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_platform_as_a_local_provider() {
+        let mut config = valid_config();
+        config.init.embedding.provider = ProviderKind::Platform;
+        config.inference.extraction.provider = ProviderKind::Platform;
+        config.inference.triage.provider = ProviderKind::Platform;
+        config.inference.relation.provider = ProviderKind::Platform;
+        let diags = diagnostics_for(&config);
+        for stage in [
+            ProviderStage::Embedding,
+            ProviderStage::Extraction,
+            ProviderStage::Triage,
+            ProviderStage::Relation,
+        ] {
+            assert!(
+                any(&diags, |d| matches!(
+                    d,
+                    ValidationError::PlatformProviderNotLocal { stage: s } if *s == stage,
+                )),
+                "platform not rejected for {stage:?}; diagnostics: {diags:?}",
             );
         }
     }

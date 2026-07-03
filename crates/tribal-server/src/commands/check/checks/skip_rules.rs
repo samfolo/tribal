@@ -60,7 +60,8 @@ impl SkipMask {
             | ValidationError::NonLoopbackDcrConflict => {
                 self.bits |= flag::ADVERTISED_URL;
             }
-            ValidationError::MissingApiKey { stage, .. } => match stage {
+            ValidationError::MissingApiKey { stage, .. }
+            | ValidationError::PlatformProviderNotLocal { stage } => match stage {
                 ProviderStage::Embedding => self.bits |= flag::PROVIDER_EMBEDDING,
                 ProviderStage::Extraction => self.bits |= flag::PROVIDER_EXTRACTION,
                 ProviderStage::Triage => self.bits |= flag::PROVIDER_TRIAGE,

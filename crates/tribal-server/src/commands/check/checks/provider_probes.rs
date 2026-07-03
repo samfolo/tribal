@@ -248,7 +248,8 @@ fn genesis_embedding_target(config: &TribalConfig) -> Result<EmbeddingTarget, St
     let base_url = init
         .base_url
         .as_deref()
-        .unwrap_or_else(|| provider.default_base_url());
+        .or_else(|| provider.default_base_url())
+        .ok_or_else(|| format!("{provider} requires a base URL and has no default"))?;
     let dimensions =
         resolve_dimensions(provider, &init.model, init.dimensions).map_err(|e| e.to_string())?;
     let normalised_base_url = normalise_endpoint_url(base_url).map_err(|e| e.to_string())?;

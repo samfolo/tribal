@@ -328,6 +328,10 @@ pub enum ValidationError {
     /// `embedding.provider` is a provider that does not support
     /// embedding.  Renders the provider name in both clauses for clarity.
     EmbeddingProviderUnsupported { provider: ProviderKind },
+    /// A local-provider stage — the embedding genesis seed or an inference
+    /// stage — selects the platform provider, which is served through the
+    /// managed gateway, not addressed by URL as a local provider.
+    PlatformProviderNotLocal { stage: ProviderStage },
     /// A credential connection name does not match the `[a-z][a-z0-9_]*`
     /// grammar required by the environment-override path.
     InvalidCredentialName { name: String },
@@ -453,6 +457,13 @@ impl fmt::Display for ValidationError {
                 f,
                 "embedding.provider cannot be {provider}: \
                  {provider} does not provide an embedding API",
+            ),
+
+            Self::PlatformProviderNotLocal { stage } => write!(
+                f,
+                "{} cannot be platform: the platform provider is served by the \
+                 managed gateway, not a local provider",
+                stage.provider_path(),
             ),
 
             Self::InvalidCredentialName { name } => write!(

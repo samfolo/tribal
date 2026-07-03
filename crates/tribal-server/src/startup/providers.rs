@@ -226,6 +226,16 @@ fn add_entry(
     request_class: RequestClass,
     config: &TribalConfig,
 ) -> Result<(), AppError> {
+    // Platform is served by the managed gateway, not a local endpoint; reject it
+    // here with an honest reason rather than let its absent base URL fail opaquely below.
+    if provider == ProviderKind::Platform {
+        return Err(AppError::ProviderSetup {
+            context: "the platform provider is served by the managed gateway, \
+                      not a local provider"
+                .to_owned(),
+        });
+    }
+
     let url = resolve_base_url(provider, base_url);
     let key = ProviderKey::new(provider.to_string(), &url, request_class)
         .map_err(|source| AppError::ProviderRegistry { source })?;
@@ -253,11 +263,16 @@ fn add_entry(
     Ok(())
 }
 
-/// Resolves the base URL for a provider, falling back to the provider's
-/// default when no explicit URL is configured.
+/// Resolves a provider's base URL: the configured URL when set, else the
+/// provider's compile-time default, else an empty string for a provider with no
+/// default (the platform, whose gateway endpoint is deployment-bound, not
+/// defaulted). An empty result is not a usable endpoint — it is rejected where
+/// the provider URL is parsed, never silently accepted.
 pub(super) fn resolve_base_url(provider: ProviderKind, config_url: Option<&String>) -> String {
     config_url
-        .map_or(provider.default_base_url(), String::as_str)
+        .map(String::as_str)
+        .or_else(|| provider.default_base_url())
+        .unwrap_or_default()
         .to_owned()
 }
 
@@ -328,6 +343,17 @@ mod tests {
             .resolve(ProviderKind::Ollama, "http://localhost:11434")
             .expect("ollama needs no key");
         assert_eq!(key, "");
+    }
+
+    #[test]
+    fn test_registry_rejects_platform_inference_provider() {
+        let mut config = TribalConfig::default();
+        config.inference.extraction.provider = ProviderKind::Platform;
+        let err = build_command_registry(&config).expect_err("platform is not a local provider");
+        assert!(
+            matches!(err, AppError::ProviderSetup { .. }),
+            "expected the honest ProviderSetup rejection, got {err:?}",
+        );
     }
 
     // -- validate_embedding_identity -------------------------------------------

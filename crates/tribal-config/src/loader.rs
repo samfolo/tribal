@@ -291,12 +291,15 @@ fn apply_genesis_credential_fallback(config: &mut TribalConfig) {
     else {
         return;
     };
-    let base_url = config
+    let Some(base_url) = config
         .init
         .embedding
         .base_url
         .clone()
-        .unwrap_or_else(|| provider.default_base_url().to_owned());
+        .or_else(|| provider.default_base_url().map(ToOwned::to_owned))
+    else {
+        return;
+    };
     if let Ok(normalised) = normalise_endpoint_url(&base_url) {
         config
             .credentials
@@ -805,7 +808,7 @@ prompts:
     }
 
     fn openai_endpoint() -> String {
-        normalise_endpoint_url(ProviderKind::OpenAi.default_base_url()).unwrap()
+        normalise_endpoint_url(ProviderKind::OpenAi.default_base_url().unwrap()).unwrap()
     }
 
     #[test]

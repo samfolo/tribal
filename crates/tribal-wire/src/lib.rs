@@ -6,4 +6,5 @@
 //! The types are pure data: `serde` + `chrono` + `tribal-domain` only — never
 //! the server, rmcp, or the database.
 
+pub mod gateway;
 pub mod mcp;

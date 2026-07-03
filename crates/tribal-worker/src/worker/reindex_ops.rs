@@ -155,7 +155,13 @@ pub async fn reindex_run(
     let base_url = request
         .base_url
         .clone()
-        .unwrap_or_else(|| provider.default_base_url().to_owned());
+        .or_else(|| provider.default_base_url().map(ToOwned::to_owned))
+        .ok_or_else(|| {
+            ReindexOpError::Provider(InferenceError::provider_unavailable(
+                provider.to_string(),
+                "no base URL configured and this provider has no default",
+            ))
+        })?;
     let normalised_base_url = normalise_endpoint_url(&base_url)?;
     let dimensions = resolve_dimensions(provider, &request.model, request.dimensions)?;
 

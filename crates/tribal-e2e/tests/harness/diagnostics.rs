@@ -221,7 +221,8 @@ fn extract_embed_input(json: &Value, provider: ProviderKind) -> String {
         ProviderKind::Ollama | ProviderKind::OpenAi => {
             json["input"].as_str().unwrap_or("<nil>").to_owned()
         }
-        // `Anthropic` does not provide an embedding service.
-        ProviderKind::Anthropic => "<nil>".to_owned(),
+        // `Anthropic` has no embedding service; the platform gateway is not
+        // mocked in this harness.
+        ProviderKind::Anthropic | ProviderKind::Platform => "<nil>".to_owned(),
     }
 }

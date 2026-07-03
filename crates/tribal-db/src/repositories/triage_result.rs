@@ -13,7 +13,8 @@
 use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
-    ItemObservationId, JobId, KnowledgeItemId, TriageOutcome, TriageResult, TriageResultId,
+    ItemObservationId, JobId, KnowledgeItemId, PrincipalId, TriageOutcome, TriageResult,
+    TriageResultId,
 };
 use typed_builder::TypedBuilder;
 
@@ -27,6 +28,7 @@ use crate::DbError;
 const COLUMNS: Columns = Columns(&[
     "id",
     "job_id",
+    "principal_id",
     "batch_index",
     "outcome_type",
     "knowledge_item_id",
@@ -55,6 +57,10 @@ const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database — data co
 pub struct NewTriageResult {
     /// The job this result belongs to.
     pub job_id: JobId,
+    /// The contributing principal — the node's principal, stamped so the
+    /// triage record shares its attribution. `None` before one resolves.
+    #[builder(default)]
+    pub principal_id: Option<PrincipalId>,
     /// The candidate's position in the extraction batch.
     pub batch_index: u32,
     /// The triage outcome for this candidate.
@@ -134,14 +140,15 @@ impl TriageResultRepository for PgTriageResultRepository {
 
         let sql = format!(
             "INSERT INTO triage_results \
-                 (job_id, batch_index, outcome_type, knowledge_item_id, \
+                 (job_id, principal_id, batch_index, outcome_type, knowledge_item_id, \
                   observation_id, matched_item_id, error_message, retryable) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              RETURNING {COLUMNS}",
         );
 
         let result = sqlx::query(&sql)
             .bind(new.job_id.inner())
+            .bind(new.principal_id.map(|id| *id.inner()))
             .bind(batch_index_i32)
             .bind(flat.outcome_type)
             .bind(flat.knowledge_item_id)
@@ -294,6 +301,10 @@ fn map_triage_result_row(r: &sqlx::postgres::PgRow) -> TriageResult {
     TriageResult::builder()
         .id(TriageResultId::from(r.get::<uuid::Uuid, _>("id")))
         .job_id(JobId::from(r.get::<uuid::Uuid, _>("job_id")))
+        .principal_id(
+            r.get::<Option<uuid::Uuid>, _>("principal_id")
+                .map(PrincipalId::from),
+        )
         .batch_index(u32::try_from(r.get::<i32, _>("batch_index")).expect(BATCH_INDEX_OVERFLOW))
         .outcome(outcome)
         .created_at(r.get("created_at"))

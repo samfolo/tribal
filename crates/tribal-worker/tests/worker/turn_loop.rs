@@ -376,6 +376,7 @@ impl LoopHarness {
                 record_id: None,
                 attempt: 0,
             },
+            principal_id: None,
             system_prompt_version_id: None,
             user_prompt_version_id: None,
             trace_id: None,
