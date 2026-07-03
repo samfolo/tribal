@@ -47,6 +47,9 @@ test:
     # HTTP mocks (wiremock) and must NOT enable the inference test-helper.
     cargo nextest run --workspace --exclude tribal-e2e --features tribal/test-helpers
     cargo nextest run -p tribal-e2e
+    # The gateway wire contract's golden schemas generate only under the schema
+    # feature, so exercise it explicitly; drift fails here and in CI.
+    cargo nextest run -p tribal-wire --features schema
     # nextest does not run doctests; run them separately (none require a database).
     cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers --doc
 
@@ -54,6 +57,7 @@ test:
 test-cargo:
     SQLX_OFFLINE=true cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers
     SQLX_OFFLINE=true cargo test -p tribal-e2e
+    SQLX_OFFLINE=true cargo test -p tribal-wire --features schema
 
 # Run only unit tests
 test-unit:
@@ -63,6 +67,9 @@ test-unit:
 check:
     cargo +nightly fmt --all -- --check
     SQLX_OFFLINE=true cargo clippy --workspace --all-targets -- -D warnings
+    # The schema feature gates the wire crate's JsonSchema derives and golden
+    # test; the workspace pass above leaves the feature off, so lint it here too.
+    SQLX_OFFLINE=true cargo clippy -p tribal-wire --all-targets --features schema -- -D warnings
 
 # Format code
 fmt:

@@ -1,0 +1,917 @@
+{
+  "Acknowledgement": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Acknowledgement",
+    "description": "A run's post-commit acknowledgement that a stored response is durable — the signal the gateway's response store drops the row on. Sent only after the run's own record commit succeeds, so a stale runner never produces one.",
+    "type": "object",
+    "required": [
+      "position_key"
+    ],
+    "properties": {
+      "position_key": {
+        "description": "The call whose stored output the run has committed.",
+        "type": "string"
+      }
+    }
+  },
+  "CapSync": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CapSync",
+    "description": "The per-tenant concurrency cap the control plane pushes on plan change. The account is named because the control plane issues this, not a client.",
+    "type": "object",
+    "required": [
+      "account",
+      "cap"
+    ],
+    "properties": {
+      "account": {
+        "description": "The tenant whose cap changed.",
+        "type": "string"
+      },
+      "cap": {
+        "description": "The concurrent-run ceiling for the tenant.",
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0.0
+      }
+    }
+  },
+  "CompletionChunk": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CompletionChunk",
+    "description": "One streamed piece of a completion — an incremental text delta.",
+    "type": "object",
+    "required": [
+      "text"
+    ],
+    "properties": {
+      "text": {
+        "description": "The text produced since the previous chunk.",
+        "type": "string"
+      }
+    }
+  },
+  "CompletionTerminal": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CompletionTerminal",
+    "description": "The terminal of a completion stream — the final output the run commits.",
+    "type": "object",
+    "required": [
+      "finish_reason",
+      "tool_calls"
+    ],
+    "properties": {
+      "finish_reason": {
+        "description": "Why the stream ended.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/FinishReason"
+          }
+        ]
+      },
+      "tool_calls": {
+        "description": "The tool calls the turn requested, if any.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/ToolCall"
+        }
+      }
+    },
+    "definitions": {
+      "FinishReason": {
+        "description": "Why a completion stopped.",
+        "oneOf": [
+          {
+            "description": "The model ended its turn.",
+            "type": "string",
+            "enum": [
+              "stop"
+            ]
+          },
+          {
+            "description": "The output-token ceiling was reached.",
+            "type": "string",
+            "enum": [
+              "length"
+            ]
+          },
+          {
+            "description": "The turn stopped to call tools.",
+            "type": "string",
+            "enum": [
+              "tool_use"
+            ]
+          }
+        ]
+      },
+      "ToolCall": {
+        "description": "A tool call the model requested.",
+        "type": "object",
+        "required": [
+          "arguments",
+          "id",
+          "name"
+        ],
+        "properties": {
+          "arguments": {
+            "description": "The call arguments as a JSON value."
+          },
+          "id": {
+            "description": "The identifier a later tool result answers.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The tool name called.",
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "GatewayError": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "GatewayError",
+    "description": "A typed non-delivery outcome, distinct so a client never misreads one for another — an over-cap for a live call, or a transient in-flight for an overdraft.",
+    "oneOf": [
+      {
+        "description": "The account's plan does not entitle this capability.",
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "not_entitled"
+            ]
+          }
+        }
+      },
+      {
+        "description": "The account has no credit or headroom under its caps.",
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "over_cap"
+            ]
+          }
+        }
+      },
+      {
+        "description": "The rate card has no rate for this call, so it cannot be priced.",
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "unpriceable"
+            ]
+          }
+        }
+      },
+      {
+        "description": "Another presentation owns the live call; retry after the delay.",
+        "type": "object",
+        "required": [
+          "kind",
+          "retry_after_ms"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "in_flight"
+            ]
+          },
+          "retry_after_ms": {
+            "description": "How long to wait before retrying, in milliseconds.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          }
+        }
+      },
+      {
+        "description": "The provider failed the call; its partial cost is already settled.",
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "failed"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "GatewayUsage": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "GatewayUsage",
+    "description": "A settled call's metered usage: the rate-card key, its attribution, and the token counts it incurred.",
+    "type": "object",
+    "required": [
+      "account",
+      "mode",
+      "model",
+      "operation",
+      "position_key",
+      "quality",
+      "quantities"
+    ],
+    "properties": {
+      "account": {
+        "description": "The account billed for the call.",
+        "type": "string"
+      },
+      "mode": {
+        "description": "The mode axis of the rate-card key.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/Mode"
+          }
+        ]
+      },
+      "model": {
+        "description": "The model served.",
+        "type": "string"
+      },
+      "operation": {
+        "description": "The operation axis of the rate-card key.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/Operation"
+          }
+        ]
+      },
+      "position_key": {
+        "description": "The call this usage settles, scoped to its run.",
+        "type": "string"
+      },
+      "principal": {
+        "description": "The contributor this usage is attributed to; absent for unattributed automation the platform allows.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "quality": {
+        "description": "The quality axis of the rate-card key.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/Quality"
+          }
+        ]
+      },
+      "quantities": {
+        "description": "The token counts, one entry per `(dimension, tier)` measured.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/UsageQuantity"
+        }
+      }
+    },
+    "definitions": {
+      "CacheTier": {
+        "description": "The tier a metered quantity falls in — the cache-write time-to-live bands, the large-context band, and `none` for an untiered dimension.",
+        "oneOf": [
+          {
+            "description": "The five-minute cache-write band.",
+            "type": "string",
+            "enum": [
+              "five_minute"
+            ]
+          },
+          {
+            "description": "The one-hour cache-write band.",
+            "type": "string",
+            "enum": [
+              "one_hour"
+            ]
+          },
+          {
+            "description": "The band for input above the large-context threshold.",
+            "type": "string",
+            "enum": [
+              "above_200k"
+            ]
+          },
+          {
+            "description": "No tier applies to this dimension.",
+            "type": "string",
+            "enum": [
+              "none"
+            ]
+          }
+        ]
+      },
+      "Mode": {
+        "description": "Whether a call is interactive or scheduled, one of the four rate-card lookup axes.",
+        "oneOf": [
+          {
+            "description": "An on-demand call a user is waiting on.",
+            "type": "string",
+            "enum": [
+              "interactive"
+            ]
+          },
+          {
+            "description": "A call made by unattended, scheduled work.",
+            "type": "string",
+            "enum": [
+              "scheduled"
+            ]
+          }
+        ]
+      },
+      "Operation": {
+        "description": "The kind of provider call, one of the four rate-card lookup axes.",
+        "oneOf": [
+          {
+            "description": "A chat/text completion call.",
+            "type": "string",
+            "enum": [
+              "completion"
+            ]
+          },
+          {
+            "description": "An embedding-generation call.",
+            "type": "string",
+            "enum": [
+              "embedding"
+            ]
+          }
+        ]
+      },
+      "Quality": {
+        "description": "The quality band a call was served at, one of the four rate-card lookup axes. v1 carries a single band; a priced band lands as a new value under a new contract version.",
+        "oneOf": [
+          {
+            "description": "The default quality band.",
+            "type": "string",
+            "enum": [
+              "standard"
+            ]
+          }
+        ]
+      },
+      "UsageDimension": {
+        "description": "A billable token axis. A superset with room to grow under a new contract version; v1 emits the token dimensions.",
+        "oneOf": [
+          {
+            "description": "Input tokens consumed, including any cached.",
+            "type": "string",
+            "enum": [
+              "input_token"
+            ]
+          },
+          {
+            "description": "Output tokens generated.",
+            "type": "string",
+            "enum": [
+              "output_token"
+            ]
+          },
+          {
+            "description": "Input tokens served from the provider's prompt cache.",
+            "type": "string",
+            "enum": [
+              "cache_read_token"
+            ]
+          },
+          {
+            "description": "Input tokens written into the provider's prompt cache.",
+            "type": "string",
+            "enum": [
+              "cache_write_token"
+            ]
+          }
+        ]
+      },
+      "UsageQuantity": {
+        "description": "One metered quantity on one `(dimension, tier)` axis.",
+        "type": "object",
+        "required": [
+          "dimension",
+          "quantity",
+          "tier"
+        ],
+        "properties": {
+          "dimension": {
+            "description": "The token axis measured.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/UsageDimension"
+              }
+            ]
+          },
+          "quantity": {
+            "description": "How many units on this axis.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "tier": {
+            "description": "The tier the quantity falls in.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/CacheTier"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "GrantSet": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "GrantSet",
+    "description": "The run-scoped authority the control plane mints at claim: the tenant the run acts for and the tools it may name. An ungranted tool is simply absent from the list; the capability detail behind each name lives in the worker's registry, not on the wire.",
+    "type": "object",
+    "required": [
+      "account",
+      "tools"
+    ],
+    "properties": {
+      "account": {
+        "description": "The account the run is scoped to.",
+        "type": "string"
+      },
+      "principal": {
+        "description": "The initiating principal, absent for account-level automation.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tools": {
+        "description": "The tool names the run is granted.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "HoldsReport": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "HoldsReport",
+    "description": "The unresolved-holds report a run polls at terminalization and in cancel teardown.",
+    "type": "object",
+    "required": [
+      "holds"
+    ],
+    "properties": {
+      "holds": {
+        "description": "The run's holds and where each stands.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/HoldEntry"
+        }
+      }
+    },
+    "definitions": {
+      "HoldEntry": {
+        "description": "One hold of a run and its current disposition.",
+        "type": "object",
+        "required": [
+          "position_key",
+          "status"
+        ],
+        "properties": {
+          "position_key": {
+            "description": "The call the hold reserves for.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Where the hold stands.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/HoldStatus"
+              }
+            ]
+          }
+        }
+      },
+      "HoldStatus": {
+        "description": "Where one of a run's holds stands. A run is terminal only once none of its holds is `active` or `settle_pending`.",
+        "oneOf": [
+          {
+            "description": "Reserved, provider not yet dispatched — releasable.",
+            "type": "string",
+            "enum": [
+              "active"
+            ]
+          },
+          {
+            "description": "Dispatched; its credit keeps counting and it is not releasable.",
+            "type": "string",
+            "enum": [
+              "settle_pending"
+            ]
+          },
+          {
+            "description": "Charged at actual usage.",
+            "type": "string",
+            "enum": [
+              "settled"
+            ]
+          },
+          {
+            "description": "Freed without a charge — the call never reached the provider.",
+            "type": "string",
+            "enum": [
+              "released"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "InferenceRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "InferenceRequest",
+    "description": "A managed run's metered call: the call itself and the position key that scopes it, stamped with the contract version the client speaks.",
+    "type": "object",
+    "required": [
+      "call",
+      "contract_version",
+      "position_key"
+    ],
+    "properties": {
+      "call": {
+        "description": "The call to make.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/InferenceCall"
+          }
+        ]
+      },
+      "contract_version": {
+        "description": "The gateway contract version this request is built against.",
+        "type": "integer",
+        "format": "uint16",
+        "minimum": 0.0
+      },
+      "position_key": {
+        "description": "The call within its run.",
+        "type": "string"
+      }
+    },
+    "definitions": {
+      "ChatMessage": {
+        "description": "A message in a completion conversation. Each variant carries exactly the fields its role admits, so a user message with tool calls is unrepresentable.",
+        "oneOf": [
+          {
+            "description": "A user-authored message.",
+            "type": "object",
+            "required": [
+              "content",
+              "role"
+            ],
+            "properties": {
+              "content": {
+                "description": "The message content.",
+                "type": "string"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "user"
+                ]
+              }
+            }
+          },
+          {
+            "description": "An assistant turn: text, tool calls, or both.",
+            "type": "object",
+            "required": [
+              "content",
+              "role",
+              "tool_calls"
+            ],
+            "properties": {
+              "content": {
+                "description": "The assistant's text, empty when the turn was tool calls alone.",
+                "type": "string"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "assistant"
+                ]
+              },
+              "tool_calls": {
+                "description": "The tool calls this turn requested, in response order.",
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/ToolCall"
+                }
+              }
+            }
+          },
+          {
+            "description": "A tool result answering an earlier assistant turn's call.",
+            "type": "object",
+            "required": [
+              "content",
+              "role",
+              "tool_call_id"
+            ],
+            "properties": {
+              "content": {
+                "description": "The serialised result content.",
+                "type": "string"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "tool"
+                ]
+              },
+              "tool_call_id": {
+                "description": "The call this result answers.",
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "InferenceCall": {
+        "description": "The call an inference-bracket request carries.",
+        "oneOf": [
+          {
+            "description": "A streamed completion.",
+            "type": "object",
+            "required": [
+              "max_tokens",
+              "messages",
+              "model",
+              "operation",
+              "stop_sequences",
+              "tools"
+            ],
+            "properties": {
+              "max_tokens": {
+                "description": "The output-token ceiling — the worst-case hold is sized against it.",
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0.0
+              },
+              "messages": {
+                "description": "The conversation so far.",
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/ChatMessage"
+                }
+              },
+              "model": {
+                "description": "The model to serve the call.",
+                "type": "string"
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "completion"
+                ]
+              },
+              "response_format": {
+                "description": "The requested response format, when constrained.",
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/ResponseFormat"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stop_sequences": {
+                "description": "Sequences that end generation, when set.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "system": {
+                "description": "The system prompt prepended to the conversation, when set.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "temperature": {
+                "description": "The sampling temperature, when overridden.",
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "format": "float"
+              },
+              "tools": {
+                "description": "The tools offered to the model.",
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/ToolDefinition"
+                }
+              },
+              "top_p": {
+                "description": "The nucleus-sampling probability mass, when overridden.",
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "format": "float"
+              }
+            }
+          },
+          {
+            "description": "A batch embedding.",
+            "type": "object",
+            "required": [
+              "inputs",
+              "model",
+              "operation"
+            ],
+            "properties": {
+              "inputs": {
+                "description": "The inputs to embed, one vector per entry.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "model": {
+                "description": "The model to embed with.",
+                "type": "string"
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "embedding"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ResponseFormat": {
+        "description": "The response format a completion requests.",
+        "oneOf": [
+          {
+            "description": "A JSON response the provider validates for syntax.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "json"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A JSON response conforming to a schema.",
+            "type": "object",
+            "required": [
+              "kind",
+              "schema"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "json_schema"
+                ]
+              },
+              "schema": {
+                "description": "The JSON Schema the response must conform to."
+              }
+            }
+          }
+        ]
+      },
+      "ToolCall": {
+        "description": "A tool call the model requested.",
+        "type": "object",
+        "required": [
+          "arguments",
+          "id",
+          "name"
+        ],
+        "properties": {
+          "arguments": {
+            "description": "The call arguments as a JSON value."
+          },
+          "id": {
+            "description": "The identifier a later tool result answers.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The tool name called.",
+            "type": "string"
+          }
+        }
+      },
+      "ToolDefinition": {
+        "description": "A tool offered to the model for one call — the wire projection of a tool's registry descriptor: only what the provider needs to offer it.",
+        "type": "object",
+        "required": [
+          "description",
+          "input_schema",
+          "name"
+        ],
+        "properties": {
+          "description": {
+            "description": "The model-facing description.",
+            "type": "string"
+          },
+          "input_schema": {
+            "description": "The JSON Schema for the tool's arguments."
+          },
+          "name": {
+            "description": "The tool name the model calls.",
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "JobEnqueue": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "JobEnqueue",
+    "description": "A job entering the plane. The account is derived from the presenting credential, so the enqueue carries only the work and its dedup key.",
+    "type": "object",
+    "required": [
+      "idempotency_key",
+      "kind",
+      "payload",
+      "priority"
+    ],
+    "properties": {
+      "idempotency_key": {
+        "description": "The caller-supplied key that dedups a re-enqueue.",
+        "type": "string"
+      },
+      "kind": {
+        "description": "What kind of work this is.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/JobKind"
+          }
+        ]
+      },
+      "payload": {
+        "description": "The opaque, task-generic payload."
+      },
+      "priority": {
+        "description": "Ordering within the tenant only; never across tenants.",
+        "type": "integer",
+        "format": "int16"
+      }
+    },
+    "definitions": {
+      "JobKind": {
+        "description": "The kind of managed job. A closed set the metering path can price and the plane can route; it grows only under a new contract version.",
+        "oneOf": [
+          {
+            "description": "A graph consolidation / dedup pass.",
+            "type": "string",
+            "enum": [
+              "consolidate"
+            ]
+          },
+          {
+            "description": "Scheduled cadence work.",
+            "type": "string",
+            "enum": [
+              "cron"
+            ]
+          },
+          {
+            "description": "A synthetic runtime-proof job carrying no product semantics.",
+            "type": "string",
+            "enum": [
+              "probe"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
