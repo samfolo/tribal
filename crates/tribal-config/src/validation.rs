@@ -1608,25 +1608,23 @@ mod tests {
         let mut config = valid_config();
         config.init.embedding.provider = ProviderKind::Platform;
         config.inference.extraction.provider = ProviderKind::Platform;
+        config.inference.triage.provider = ProviderKind::Platform;
+        config.inference.relation.provider = ProviderKind::Platform;
         let diags = diagnostics_for(&config);
-        assert!(
-            any(&diags, |d| matches!(
-                d,
-                ValidationError::PlatformProviderNotLocal {
-                    stage: ProviderStage::Embedding,
-                },
-            )),
-            "platform embedding provider not rejected; diagnostics: {diags:?}",
-        );
-        assert!(
-            any(&diags, |d| matches!(
-                d,
-                ValidationError::PlatformProviderNotLocal {
-                    stage: ProviderStage::Extraction,
-                },
-            )),
-            "platform inference provider not rejected; diagnostics: {diags:?}",
-        );
+        for stage in [
+            ProviderStage::Embedding,
+            ProviderStage::Extraction,
+            ProviderStage::Triage,
+            ProviderStage::Relation,
+        ] {
+            assert!(
+                any(&diags, |d| matches!(
+                    d,
+                    ValidationError::PlatformProviderNotLocal { stage: s } if *s == stage,
+                )),
+                "platform not rejected for {stage:?}; diagnostics: {diags:?}",
+            );
+        }
     }
 
     // -- discovery ---------------------------------------------------------

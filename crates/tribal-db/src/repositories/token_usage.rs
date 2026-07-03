@@ -476,8 +476,10 @@ impl TokenUsageRepository for PgTokenUsageRepository {
 }
 
 /// Builds the per-locus usage-totals query, filtered on one `principals`
-/// linkage column. The column name is a fixed in-crate literal, never caller
-/// input, so interpolating it carries no injection.
+/// linkage column. A column name cannot be a bind parameter and the filter
+/// column varies per caller (`platform_user_id` or `account_reference`), so the
+/// compile-time macros cannot carry one query for both; the interpolated column
+/// is a fixed in-crate literal, never caller input, so it carries no injection.
 fn usage_totals_sql(principal_filter_column: &str) -> String {
     format!(
         "SELECT tu.execution_locus AS execution_locus, \
