@@ -221,6 +221,7 @@ pub(crate) fn attribution_with_prompts(
             record_id: None,
             attempt: clamp_to_i32(task.retry_count()),
         },
+        principal_id: Some(job.principal_id()),
         system_prompt_version_id: Some(system_pv_id),
         user_prompt_version_id: Some(user_pv_id),
         trace_id: job

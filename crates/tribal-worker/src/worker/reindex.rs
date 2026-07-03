@@ -882,6 +882,7 @@ pub async fn drive_reindex_cycle(
             target,
             attribution: UsageAttribution {
                 owner: UsageOwner::Reindex { run_id: run.id() },
+                principal_id: Some(run.initiated_by_principal_id()),
                 ..UsageAttribution::default()
             },
         };
