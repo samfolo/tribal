@@ -77,6 +77,8 @@ mod tests {
         let tu = a_token_usage().build();
         assert_eq!(tu.stage(), PipelineStage::Extraction);
         assert_eq!(tu.tokens_total(), 150);
+        assert!(tu.principal_id().is_none());
+        assert_eq!(tu.execution_locus(), ExecutionLocus::Edge);
     }
 
     #[test]
@@ -84,6 +86,8 @@ mod tests {
         let new = a_new_token_usage().build();
         assert!(new.job_id.is_none());
         assert!(new.task_id.is_none());
+        assert!(new.principal_id.is_none());
+        assert_eq!(new.execution_locus, ExecutionLocus::Edge);
         assert_eq!(new.attempt, 0);
         assert_eq!(new.provider, "test-provider");
         assert_eq!(new.model, "test-model");
