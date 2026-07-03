@@ -376,3 +376,95 @@ async fn test_find_by_job_id_and_batch_index_returns_none_for_unknown() {
 
     assert!(found.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// principal attribution
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_triage_result_carries_its_principal() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgTriageResultRepository;
+
+    let (principal_id, _project_id, job_id) = setup_prerequisites(&mut txn, "principal").await;
+
+    let inserted = repo
+        .insert(
+            &mut txn,
+            &a_new_triage_result_failed()
+                .job_id(job_id)
+                .principal_id(Some(principal_id))
+                .batch_index(0)
+                .build(),
+        )
+        .await
+        .expect("insert");
+    assert_eq!(inserted.principal_id(), Some(principal_id));
+
+    // The attribution round-trips through a read.
+    let read = repo
+        .find_by_job_id_and_batch_index(&mut txn, job_id, 0)
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(read.principal_id(), Some(principal_id));
+}
+
+#[tokio::test]
+async fn test_two_users_in_one_account_stamp_distinct_principals_on_nodes() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgTriageResultRepository;
+
+    let (_principal_id, _project_id, job_id) = setup_prerequisites(&mut txn, "two-users").await;
+
+    // Two users bound to one account resolve to two distinct principals.
+    let account = "account_c5".to_owned();
+    let user_a = PgPrincipalRepository
+        .find_or_create_platform_bound(
+            &mut txn,
+            &tribal_domain::PlatformBinding::new(account.clone(), "user_a".to_owned()),
+        )
+        .await
+        .expect("resolve user a");
+    let user_b = PgPrincipalRepository
+        .find_or_create_platform_bound(
+            &mut txn,
+            &tribal_domain::PlatformBinding::new(account, "user_b".to_owned()),
+        )
+        .await
+        .expect("resolve user b");
+
+    // A node stamped for each carries that user's distinct principal.
+    let node_a = repo
+        .insert(
+            &mut txn,
+            &a_new_triage_result_failed()
+                .job_id(job_id)
+                .principal_id(Some(user_a.id()))
+                .batch_index(0)
+                .build(),
+        )
+        .await
+        .expect("insert a");
+    let node_b = repo
+        .insert(
+            &mut txn,
+            &a_new_triage_result_failed()
+                .job_id(job_id)
+                .principal_id(Some(user_b.id()))
+                .batch_index(1)
+                .build(),
+        )
+        .await
+        .expect("insert b");
+
+    assert_eq!(node_a.principal_id(), Some(user_a.id()));
+    assert_eq!(node_b.principal_id(), Some(user_b.id()));
+    assert_ne!(
+        node_a.principal_id(),
+        node_b.principal_id(),
+        "two users in one account stamp two distinct principals",
+    );
+}

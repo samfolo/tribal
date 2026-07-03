@@ -6,8 +6,9 @@
 //! outcome in find-or-create flows.
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
-use tribal_domain::{Principal, PrincipalId};
+use tribal_domain::{PlatformBinding, Principal, PrincipalId};
 use typed_builder::TypedBuilder;
 
 use crate::DbError;
@@ -21,9 +22,15 @@ use crate::DbError;
 pub struct NewPrincipal {
     /// Human-readable key (e.g. `"user:sam"`, `"principal:local"`).
     pub principal_key: String,
-    /// Optional display name.
+    /// Optional display name. Must be `None` when `platform_binding` is set —
+    /// a platform-bound principal derives its name and stores none (enforced by
+    /// a CHECK on `principals`).
     #[builder(default)]
     pub display_name: Option<String>,
+    /// The platform `(user, account)` to bind, or `None` for a local-only
+    /// principal.
+    #[builder(default)]
+    pub platform_binding: Option<PlatformBinding>,
 }
 
 /// Data access operations for principals.
@@ -43,6 +50,22 @@ pub trait PrincipalRepository {
         &self,
         conn: &mut PgConnection,
         new_principal: &NewPrincipal,
+    ) -> Result<Principal, DbError>;
+
+    /// Finds the principal bound to a platform `(user, account)`, creating it
+    /// if none exists, and returns it. Keyed on the binding, so two users in
+    /// one account resolve to two distinct principals and a re-resolve returns
+    /// the same one. Idempotent under concurrency through the binding's unique
+    /// index — a racing second caller reads the existing row rather than
+    /// minting a second principal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_or_create_platform_bound(
+        &self,
+        conn: &mut PgConnection,
+        binding: &PlatformBinding,
     ) -> Result<Principal, DbError>;
 
     /// Finds a principal by its ID.
@@ -98,25 +121,38 @@ impl PrincipalRepository for PgPrincipalRepository {
         conn: &mut PgConnection,
         new_principal: &NewPrincipal,
     ) -> Result<Principal, DbError> {
+        let account_reference = new_principal
+            .platform_binding
+            .as_ref()
+            .map(PlatformBinding::account_reference);
+        let platform_user_id = new_principal
+            .platform_binding
+            .as_ref()
+            .map(PlatformBinding::platform_user_id);
+
         let row = sqlx::query!(
             r#"
-            INSERT INTO principals (principal_key, display_name)
-            VALUES ($1, $2)
+            INSERT INTO principals (principal_key, display_name, account_reference, platform_user_id)
+            VALUES ($1, $2, $3, $4)
             RETURNING *
             "#,
             new_principal.principal_key,
             new_principal.display_name,
+            account_reference,
+            platform_user_id,
         )
         .fetch_one(&mut *conn)
         .await;
 
         match row {
-            Ok(r) => Ok(Principal::builder()
-                .id(PrincipalId::from(r.id))
-                .principal_key(r.principal_key)
-                .display_name(r.display_name)
-                .created_at(r.created_at)
-                .build()),
+            Ok(r) => Ok(build_principal(
+                r.id,
+                r.principal_key,
+                r.display_name,
+                r.account_reference,
+                r.platform_user_id,
+                r.created_at,
+            )),
             Err(e) => {
                 if let Some(uv) = super::common::constraint::try_into_unique_violation(&e) {
                     Err(uv)
@@ -128,6 +164,58 @@ impl PrincipalRepository for PgPrincipalRepository {
                 }
             }
         }
+    }
+
+    async fn find_or_create_platform_bound(
+        &self,
+        conn: &mut PgConnection,
+        binding: &PlatformBinding,
+    ) -> Result<Principal, DbError> {
+        // A stable key derived one-to-one from the binding — deterministic, so
+        // every resolve of one binding computes the same key.
+        let principal_key = format!(
+            "platform:{}/{}",
+            binding.account_reference(),
+            binding.platform_user_id(),
+        );
+
+        // The arbiter is the total `principal_key` index, not the partial
+        // binding index: every concurrent resolve of one binding computes the
+        // same key, so they all conflict there first and read the existing row
+        // through the no-op update. Arbitrating on the partial binding index
+        // would instead let a racer trip the (non-arbiter) `principal_key`
+        // constraint and error. The binding index still forbids a second
+        // principal for one `(user, account)` independently of the key.
+        let r = sqlx::query!(
+            r#"
+            INSERT INTO principals (principal_key, platform_user_id, account_reference)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (principal_key)
+            DO UPDATE SET account_reference = EXCLUDED.account_reference
+            RETURNING *
+            "#,
+            principal_key,
+            binding.platform_user_id(),
+            binding.account_reference(),
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!(
+                "finding or creating platform-bound principal for user {}",
+                binding.platform_user_id(),
+            ),
+            source: e,
+        })?;
+
+        Ok(build_principal(
+            r.id,
+            r.principal_key,
+            r.display_name,
+            r.account_reference,
+            r.platform_user_id,
+            r.created_at,
+        ))
     }
 
     async fn find_by_id(
@@ -147,12 +235,14 @@ impl PrincipalRepository for PgPrincipalRepository {
                 id: id.to_string(),
             })?;
 
-        Ok(Principal::builder()
-            .id(PrincipalId::from(r.id))
-            .principal_key(r.principal_key)
-            .display_name(r.display_name)
-            .created_at(r.created_at)
-            .build())
+        Ok(build_principal(
+            r.id,
+            r.principal_key,
+            r.display_name,
+            r.account_reference,
+            r.platform_user_id,
+            r.created_at,
+        ))
     }
 
     async fn find_by_key(
@@ -172,12 +262,14 @@ impl PrincipalRepository for PgPrincipalRepository {
         })?;
 
         Ok(r.map(|r| {
-            Principal::builder()
-                .id(PrincipalId::from(r.id))
-                .principal_key(r.principal_key)
-                .display_name(r.display_name)
-                .created_at(r.created_at)
-                .build()
+            build_principal(
+                r.id,
+                r.principal_key,
+                r.display_name,
+                r.account_reference,
+                r.platform_user_id,
+                r.created_at,
+            )
         }))
     }
 
@@ -203,13 +295,57 @@ impl PrincipalRepository for PgPrincipalRepository {
         Ok(rows
             .into_iter()
             .map(|r| {
-                Principal::builder()
-                    .id(PrincipalId::from(r.id))
-                    .principal_key(r.principal_key)
-                    .display_name(r.display_name)
-                    .created_at(r.created_at)
-                    .build()
+                build_principal(
+                    r.id,
+                    r.principal_key,
+                    r.display_name,
+                    r.account_reference,
+                    r.platform_user_id,
+                    r.created_at,
+                )
             })
             .collect())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row mapping
+// ---------------------------------------------------------------------------
+
+/// Builds a [`Principal`] from its stored columns, folding the paired linkage
+/// columns into an [`Option<PlatformBinding>`].
+fn build_principal(
+    id: uuid::Uuid,
+    principal_key: String,
+    display_name: Option<String>,
+    account_reference: Option<String>,
+    platform_user_id: Option<String>,
+    created_at: DateTime<Utc>,
+) -> Principal {
+    Principal::builder()
+        .id(PrincipalId::from(id))
+        .principal_key(principal_key)
+        .display_name(display_name)
+        .platform_binding(platform_binding_from_columns(
+            account_reference,
+            platform_user_id,
+        ))
+        .created_at(created_at)
+        .build()
+}
+
+/// Folds the two nullable linkage columns into a binding. The paired-null
+/// CHECK on `principals` guarantees they are both set or both null, so a
+/// half-set pair is a schema violation, not a representable state.
+fn platform_binding_from_columns(
+    account_reference: Option<String>,
+    platform_user_id: Option<String>,
+) -> Option<PlatformBinding> {
+    match (account_reference, platform_user_id) {
+        (Some(account_reference), Some(platform_user_id)) => {
+            Some(PlatformBinding::new(account_reference, platform_user_id))
+        }
+        (None, None) => None,
+        _ => panic!("half-bound principal in database — the paired-null CHECK is missing"),
     }
 }

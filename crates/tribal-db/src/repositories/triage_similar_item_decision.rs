@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
-    JobId, KnowledgeItemId, RelationSuggestion, TriageSimilarItemDecision,
+    JobId, KnowledgeItemId, PrincipalId, RelationSuggestion, TriageSimilarItemDecision,
     TriageSimilarItemDecisionId,
 };
 use typed_builder::TypedBuilder;
@@ -23,6 +23,7 @@ use crate::DbError;
 const COLUMNS: Columns = Columns(&[
     "id",
     "job_id",
+    "principal_id",
     "batch_index",
     "matched_item_id",
     "similarity_score",
@@ -48,6 +49,10 @@ const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database — data co
 pub struct NewTriageSimilarItemDecision {
     /// The job this decision belongs to.
     pub job_id: JobId,
+    /// The contributing principal — the node's principal, stamped so the
+    /// decision shares its attribution. `None` before one resolves.
+    #[builder(default)]
+    pub principal_id: Option<PrincipalId>,
     /// The candidate's position in the extraction batch.
     pub batch_index: u32,
     /// The existing item that was compared against.
@@ -137,6 +142,10 @@ impl TriageSimilarItemDecisionRepository for PgTriageSimilarItemDecisionReposito
         }
 
         let job_ids: Vec<uuid::Uuid> = batch.iter().map(|d| *d.job_id.inner()).collect();
+        let principal_ids: Vec<Option<uuid::Uuid>> = batch
+            .iter()
+            .map(|d| d.principal_id.map(|id| *id.inner()))
+            .collect();
         let batch_indices: Vec<i32> = batch
             .iter()
             .map(|d| i32::try_from(d.batch_index).expect(BATCH_INDEX_EXCEEDS_I32))
@@ -153,16 +162,17 @@ impl TriageSimilarItemDecisionRepository for PgTriageSimilarItemDecisionReposito
 
         let sql = format!(
             "INSERT INTO triage_similar_item_decisions \
-                 (job_id, batch_index, matched_item_id, similarity_score, \
+                 (job_id, principal_id, batch_index, matched_item_id, similarity_score, \
                   suggested_relation, justification_text) \
              SELECT * FROM UNNEST(\
-                 $1::uuid[], $2::int[], $3::uuid[], $4::real[], \
-                 $5::text[], $6::text[]) \
+                 $1::uuid[], $2::uuid[], $3::int[], $4::uuid[], $5::real[], \
+                 $6::text[], $7::text[]) \
              RETURNING {COLUMNS}",
         );
 
         let result = sqlx::query(&sql)
             .bind(&job_ids)
+            .bind(&principal_ids)
             .bind(&batch_indices)
             .bind(&matched_item_ids)
             .bind(&similarity_scores)
@@ -267,6 +277,10 @@ fn map_triage_similar_item_decision_row(r: &sqlx::postgres::PgRow) -> TriageSimi
             r.get::<uuid::Uuid, _>("id"),
         ))
         .job_id(JobId::from(r.get::<uuid::Uuid, _>("job_id")))
+        .principal_id(
+            r.get::<Option<uuid::Uuid>, _>("principal_id")
+                .map(PrincipalId::from),
+        )
         .batch_index(u32::try_from(r.get::<i32, _>("batch_index")).expect(BATCH_INDEX_OVERFLOW))
         .matched_item_id(KnowledgeItemId::from(
             r.get::<uuid::Uuid, _>("matched_item_id"),

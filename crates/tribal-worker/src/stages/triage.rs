@@ -9,7 +9,8 @@ use tribal_db::{
 };
 use tribal_domain::{
     Candidate, CompletionResponse, Confidence, EmbeddingProfile, EmbeddingPurpose, Job, JobId,
-    KnowledgeItemId, SourceType, StageExecutorKind, TagRegistryEntry, Task, TaskType, span_attrs,
+    KnowledgeItemId, PrincipalId, SourceType, StageExecutorKind, TagRegistryEntry, Task, TaskType,
+    span_attrs,
 };
 use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, EmbeddingTarget, PermitWait, UsageAttribution,
@@ -567,6 +568,7 @@ impl Worker {
     ) -> StageCommit {
         let similar_item_decisions = build_similar_item_decisions(
             ctx.job.id(),
+            ctx.job.principal_id(),
             ctx.batch_index,
             similar_item_decisions,
             slots,
@@ -742,6 +744,7 @@ fn resolve_triage_outcome(
 /// those lists.
 fn build_similar_item_decisions(
     job_id: JobId,
+    principal_id: PrincipalId,
     batch_index: u32,
     classifications: &[SimilarItemClassification],
     slots: &[SimilarItemSlot],
@@ -768,6 +771,7 @@ fn build_similar_item_decisions(
             Some(
                 NewTriageSimilarItemDecision::builder()
                     .job_id(job_id)
+                    .principal_id(Some(principal_id))
                     .batch_index(batch_index)
                     .matched_item_id(slot.item_id)
                     .similarity_score(similarity_score)
@@ -897,11 +901,14 @@ mod tests {
             },
         ];
 
-        let rows = build_similar_item_decisions(JobId::new(), 0, &classifications, &slots);
+        let principal_id = PrincipalId::new();
+        let rows =
+            build_similar_item_decisions(JobId::new(), principal_id, 0, &classifications, &slots);
 
         // Out-of-range dropped; survivors keep classification order and each
         // resolves by index value to the right item and that entry's similarity.
         assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].principal_id, Some(principal_id));
         assert_eq!(rows[0].matched_item_id, id_c);
         assert!((rows[0].similarity_score - 0.75).abs() < f32::EPSILON);
         assert_eq!(rows[1].matched_item_id, id_a);

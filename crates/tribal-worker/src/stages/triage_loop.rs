@@ -21,8 +21,8 @@ use tribal_agent_runtime::{
 use tribal_config::{DEFAULT_AGENTIC_RECHECK_BOUND, DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS};
 use tribal_db::{NewTriageSimilarItemDecision, PgPromptVersionRepository, PromptVersionRepository};
 use tribal_domain::{
-    AgentBinding, Candidate, Job, JobId, KnowledgeItemId, PromptClass, PromptRole, PromptStage,
-    PromptVersion, Task, TaskType, span_attrs,
+    AgentBinding, Candidate, Job, JobId, KnowledgeItemId, PrincipalId, PromptClass, PromptRole,
+    PromptStage, PromptVersion, Task, TaskType, span_attrs,
 };
 use tribal_inference::{EmbeddingTarget, UsageAttribution};
 
@@ -363,6 +363,7 @@ impl Worker {
             decision,
             similar_item_decisions: decisions_from_submission(
                 ctx.job.id(),
+                ctx.job.principal_id(),
                 ctx.batch_index,
                 submission,
                 &scores,
@@ -544,6 +545,7 @@ async fn resolve_recorded_prompt(
 /// validated submission; the guard is defence, not an expected path.
 fn decisions_from_submission(
     job_id: JobId,
+    principal_id: PrincipalId,
     batch_index: u32,
     submission: &TriageSubmission,
     scores: &HashMap<String, f64>,
@@ -573,6 +575,7 @@ fn decisions_from_submission(
             Some(
                 NewTriageSimilarItemDecision::builder()
                     .job_id(job_id)
+                    .principal_id(Some(principal_id))
                     .batch_index(batch_index)
                     .matched_item_id(matched_item_id)
                     .similarity_score(similarity_score)

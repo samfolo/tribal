@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
 use crate::{
-    ItemObservationId, JobId, KnowledgeItemId, RelationSuggestion, TriageResultId,
+    ItemObservationId, JobId, KnowledgeItemId, PrincipalId, RelationSuggestion, TriageResultId,
     TriageSimilarItemDecisionId,
 };
 
@@ -107,6 +107,10 @@ pub struct TriageResult {
     id: TriageResultId,
     /// The job this result belongs to.
     job_id: JobId,
+    /// The contributing principal — the same one stamped on the node this
+    /// result concerns. `None` for a record written before one resolves.
+    #[builder(default)]
+    principal_id: Option<PrincipalId>,
     /// The candidate's position in the extraction batch.
     batch_index: u32,
     /// Similar existing items found during semantic search.
@@ -127,6 +131,11 @@ impl TriageResult {
     /// Returns the job identifier.
     pub fn job_id(&self) -> JobId {
         self.job_id
+    }
+
+    /// Returns the contributing principal, if the record is attributed.
+    pub fn principal_id(&self) -> Option<PrincipalId> {
+        self.principal_id
     }
 
     /// Returns the batch index.
@@ -165,6 +174,10 @@ pub struct TriageSimilarItemDecision {
     id: TriageSimilarItemDecisionId,
     /// The job this decision belongs to.
     job_id: JobId,
+    /// The contributing principal — the same one stamped on the node this
+    /// decision concerns. `None` for a record written before one resolves.
+    #[builder(default)]
+    principal_id: Option<PrincipalId>,
     /// The candidate's position in the extraction batch.
     batch_index: u32,
     /// The existing item that was compared against.
@@ -188,6 +201,11 @@ impl TriageSimilarItemDecision {
     /// Returns the job identifier.
     pub fn job_id(&self) -> JobId {
         self.job_id
+    }
+
+    /// Returns the contributing principal, if the record is attributed.
+    pub fn principal_id(&self) -> Option<PrincipalId> {
+        self.principal_id
     }
 
     /// Returns the batch index.

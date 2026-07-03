@@ -1,8 +1,9 @@
 use chrono::Utc;
 use tribal_db::{NewTriageResult, NewTriageSimilarItemDecision};
 use tribal_domain::{
-    ItemObservationId, JobId, KnowledgeItemId, RelationSuggestion, SimilarItem, TriageOutcome,
-    TriageResult, TriageResultId, TriageSimilarItemDecision, TriageSimilarItemDecisionId,
+    ItemObservationId, JobId, KnowledgeItemId, PrincipalId, RelationSuggestion, SimilarItem,
+    TriageOutcome, TriageResult, TriageResultId, TriageSimilarItemDecision,
+    TriageSimilarItemDecisionId,
 };
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,7 @@ define_factory! {
     pub struct TriageSimilarItemDecisionFactory for TriageSimilarItemDecision {
         id: TriageSimilarItemDecisionId = TriageSimilarItemDecisionId::new(),
         job_id: JobId = JobId::new(),
+        principal_id: Option<PrincipalId> = None,
         batch_index: u32 = 0,
         matched_item_id: KnowledgeItemId = KnowledgeItemId::new(),
         similarity_score: f32 = 0.0,
@@ -58,6 +60,7 @@ define_factory! {
     pub struct TriageResultFactory for TriageResult {
         id: TriageResultId = TriageResultId::new(),
         job_id: JobId = JobId::new(),
+        principal_id: Option<PrincipalId> = None,
         batch_index: u32 = 0,
         similar_items: Vec<SimilarItem> = Vec::new(),
         created_at: chrono::DateTime<Utc> = Utc::now(),
@@ -98,6 +101,7 @@ define_factory! {
     /// [`a_new_triage_result_duplicate`], or [`a_new_triage_result_failed`].
     pub struct NewTriageResultFactory for NewTriageResult {
         job_id: JobId = JobId::new(),
+        principal_id: Option<PrincipalId> = None,
         batch_index: u32 = 0,
         outcome: TriageOutcome = TriageOutcome::Created { item_id: KnowledgeItemId::new() },
     }
@@ -133,6 +137,7 @@ define_factory! {
     /// repository batch insert operations.
     pub struct NewTriageSimilarItemDecisionFactory for NewTriageSimilarItemDecision {
         job_id: JobId = JobId::new(),
+        principal_id: Option<PrincipalId> = None,
         batch_index: u32 = 0,
         matched_item_id: KnowledgeItemId = KnowledgeItemId::new(),
         similarity_score: f32 = 0.0,
