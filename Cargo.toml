@@ -113,7 +113,7 @@ async-trait = "0.1"
 tera = "1"
 
 # JSON Schema generation
-schemars = { version = "0.8", features = ["uuid1"] }
+schemars = { version = "0.8", features = ["uuid1", "chrono"] }
 
 # JSON Schema validation
 jsonschema = "0.46"
