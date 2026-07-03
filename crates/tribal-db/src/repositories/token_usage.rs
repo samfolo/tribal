@@ -213,8 +213,8 @@ pub trait TokenUsageRepository {
     ) -> Result<Vec<TokenUsage>, DbError>;
 
     /// Totals one platform user's attributed spend, grouped by execution
-    /// locus. Joins the ledger to `principals` through the M1 linkage, so a
-    /// binary bound to a platform user reads its own per-user cost. Returns
+    /// locus. Joins the ledger to `principals` through the platform linkage, so
+    /// a binary bound to a platform user reads its own per-user cost. Returns
     /// one [`UsageTotals`] per locus the user has spend at (empty for a user
     /// with none).
     ///

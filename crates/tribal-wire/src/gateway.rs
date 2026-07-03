@@ -1,9 +1,9 @@
 //! The gateway wire contract: the DTOs a managed run and the metering gateway
 //! exchange across the wire/domain seam.
 //!
-//! This module authors every gateway crossing this branch ships — the inference
-//! bracket, the acknowledgement, the holds report, job enqueue, cap sync, and
-//! the grant set — plus the metering shape the gateway writes. The types are
+//! This module authors the gateway crossings — the inference bracket, the
+//! acknowledgement, the holds report, job enqueue, cap sync, and the grant set —
+//! plus the metering shape the gateway writes. The types are
 //! pure serde; forward compatibility rests on two pins: an unknown value on any
 //! closed axis is rejected at deserialization, and the vocabulary grows only
 //! with [`GATEWAY_CONTRACT_VERSION`].

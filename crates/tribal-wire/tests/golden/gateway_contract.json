@@ -318,7 +318,7 @@
         ]
       },
       "Mode": {
-        "description": "Whether a call is interactive or scheduled, one of the four rate-card lookup axes.",
+        "description": "Whether a call is interactive or scheduled, one of the rate-card lookup axes.",
         "oneOf": [
           {
             "description": "An on-demand call a user is waiting on.",
@@ -337,7 +337,7 @@
         ]
       },
       "Operation": {
-        "description": "The kind of provider call, one of the four rate-card lookup axes.",
+        "description": "The kind of provider call, one of the rate-card lookup axes.",
         "oneOf": [
           {
             "description": "A chat/text completion call.",
@@ -356,7 +356,7 @@
         ]
       },
       "Quality": {
-        "description": "The quality band a call was served at, one of the four rate-card lookup axes. v1 carries a single band; a priced band lands as a new value under a new contract version.",
+        "description": "The quality band a call was served at, one of the rate-card lookup axes.",
         "oneOf": [
           {
             "description": "The default quality band.",
@@ -368,7 +368,7 @@
         ]
       },
       "UsageDimension": {
-        "description": "A billable token axis. A superset with room to grow under a new contract version; v1 emits the token dimensions.",
+        "description": "A billable token axis.",
         "oneOf": [
           {
             "description": "Input tokens consumed, including any cached.",

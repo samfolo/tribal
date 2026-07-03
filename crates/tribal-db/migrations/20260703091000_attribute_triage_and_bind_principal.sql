@@ -1,6 +1,5 @@
--- Extend node attribution to the two triage-stage tables — the last record
--- classes that lacked a contributing principal — and make a principal's
--- platform binding a stable, unique key.
+-- Extend node attribution to the two triage-stage tables, and make a
+-- principal's platform binding a stable, unique key.
 --
 -- A triage record is attributed to the same principal as the node it concerns.
 -- The column is nullable because a record written before a principal resolves

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 // Rate-card key axes
 // ---------------------------------------------------------------------------
 
-/// The kind of provider call, one of the four rate-card lookup axes.
+/// The kind of provider call, one of the rate-card lookup axes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -22,9 +22,7 @@ pub enum Operation {
     Embedding,
 }
 
-/// The quality band a call was served at, one of the four rate-card lookup
-/// axes. v1 carries a single band; a priced band lands as a new value under a
-/// new contract version.
+/// The quality band a call was served at, one of the rate-card lookup axes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -33,8 +31,8 @@ pub enum Quality {
     Standard,
 }
 
-/// Whether a call is interactive or scheduled, one of the four rate-card
-/// lookup axes.
+/// Whether a call is interactive or scheduled, one of the rate-card lookup
+/// axes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -49,8 +47,7 @@ pub enum Mode {
 // Metered quantity axes
 // ---------------------------------------------------------------------------
 
-/// A billable token axis. A superset with room to grow under a new contract
-/// version; v1 emits the token dimensions.
+/// A billable token axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
