@@ -80,6 +80,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_pool_sizing(config, &mut diags);
     validate_init(config, &mut diags);
     validate_inference(config, &mut diags);
+    validate_inference_providers(config, &mut diags);
     validate_provider_limits(config, &mut diags);
     validate_api_key_presence(config, &mut diags);
     validate_credentials(config, &mut diags);
@@ -522,6 +523,20 @@ fn validate_inference(config: &TribalConfig, diags: &mut Diagnostics) {
                 prefix,
                 "max_tokens",
             )));
+        }
+    }
+}
+
+/// Rejects the platform provider selected for any inference stage.
+fn validate_inference_providers(config: &TribalConfig, diags: &mut Diagnostics) {
+    let stages = [
+        (ProviderStage::Extraction, &config.inference.extraction),
+        (ProviderStage::Triage, &config.inference.triage),
+        (ProviderStage::Relation, &config.inference.relation),
+    ];
+    for (stage, cfg) in stages {
+        if cfg.provider == ProviderKind::Platform {
+            diags.push(ValidationError::PlatformInferenceProvider { stage });
         }
     }
 }
@@ -1581,6 +1596,22 @@ mod tests {
                 "no MissingApiKey for {stage:?}; diagnostics: {diags:?}",
             );
         }
+    }
+
+    #[test]
+    fn test_validate_rejects_platform_as_an_inference_provider() {
+        let mut config = valid_config();
+        config.inference.extraction.provider = ProviderKind::Platform;
+        let diags = diagnostics_for(&config);
+        assert!(
+            any(&diags, |d| matches!(
+                d,
+                ValidationError::PlatformInferenceProvider {
+                    stage: ProviderStage::Extraction,
+                },
+            )),
+            "platform inference provider not rejected; diagnostics: {diags:?}",
+        );
     }
 
     // -- discovery ---------------------------------------------------------

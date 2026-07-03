@@ -226,6 +226,16 @@ fn add_entry(
     request_class: RequestClass,
     config: &TribalConfig,
 ) -> Result<(), AppError> {
+    // Platform is served by the managed gateway, not a local endpoint; reject it
+    // here with an honest reason rather than let its absent base URL fail opaquely below.
+    if provider == ProviderKind::Platform {
+        return Err(AppError::ProviderSetup {
+            context: "the platform provider is served by the managed gateway, \
+                      not a local provider"
+                .to_owned(),
+        });
+    }
+
     let url = resolve_base_url(provider, base_url);
     let key = ProviderKey::new(provider.to_string(), &url, request_class)
         .map_err(|source| AppError::ProviderRegistry { source })?;
@@ -333,6 +343,17 @@ mod tests {
             .resolve(ProviderKind::Ollama, "http://localhost:11434")
             .expect("ollama needs no key");
         assert_eq!(key, "");
+    }
+
+    #[test]
+    fn test_registry_rejects_platform_inference_provider() {
+        let mut config = TribalConfig::default();
+        config.inference.extraction.provider = ProviderKind::Platform;
+        let err = build_command_registry(&config).expect_err("platform is not a local provider");
+        assert!(
+            matches!(err, AppError::ProviderSetup { .. }),
+            "expected the honest ProviderSetup rejection, got {err:?}",
+        );
     }
 
     // -- validate_embedding_identity -------------------------------------------
