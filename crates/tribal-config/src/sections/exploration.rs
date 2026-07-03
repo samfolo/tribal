@@ -26,6 +26,7 @@ pub const DEFAULT_MAX_LIMIT: u32 = 100;
 ///
 /// Controls depth and result limits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ExplorationConfig {
     /// Maximum traversal depth (hard cap).

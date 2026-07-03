@@ -84,6 +84,7 @@ pub fn is_valid_connection_name(name: &str) -> bool {
 
 /// One named connection: an endpoint plus its credential.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct CredentialEntry {
     /// The provider kind this connection serves.
@@ -119,6 +120,7 @@ impl CredentialEntry {
 ///
 /// Serialises transparently as a bare YAML map of `name -> entry`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct CredentialCatalogue(BTreeMap<String, CredentialEntry>);
 

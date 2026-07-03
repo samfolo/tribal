@@ -44,6 +44,7 @@ pub const DEFAULT_MAX_CONNECT_ATTEMPTS: u32 = 5;
 /// settings (max connections, statement timeout) are selected by the startup
 /// sequence based on the pool name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseConfig {
     /// `PostgreSQL` connection URL (e.g.

@@ -8,6 +8,8 @@
 #![warn(clippy::pedantic)]
 
 mod cli_overrides;
+#[cfg(feature = "schema")]
+mod config_schema;
 mod divergence;
 mod env;
 mod error;
@@ -17,6 +19,11 @@ mod redact;
 mod render;
 mod sections;
 mod validation;
+
+#[cfg(feature = "schema")]
+pub use config_schema::{
+    ConfigFieldMeta, ConfigSchema, ReloadClass, config_schema, structural_schema,
+};
 
 pub use cli_overrides::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,

@@ -132,6 +132,27 @@ impl<K: SecretKind> From<RedactedSecret<K>> for String {
     }
 }
 
+// A secret serialises as its raw string but must never render as one in a
+// schema a client reads: the schema marks it a write-only `password` string, so
+// a settings form treats the field as a secret and never displays its value.
+// Named for the concrete secret so distinct kinds keep distinct schema names.
+#[cfg(feature = "schema")]
+impl<K: SecretKind> schemars::JsonSchema for RedactedSecret<K> {
+    fn schema_name() -> String {
+        K::DEBUG_NAME.to_owned()
+    }
+
+    fn json_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        let mut schema = schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            format: Some("password".to_owned()),
+            ..Default::default()
+        };
+        schema.metadata().write_only = true;
+        schema.into()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------

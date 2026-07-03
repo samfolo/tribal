@@ -43,6 +43,7 @@ fn default_model() -> String {
 /// must follow the active one. `dimensions` is optional: `None` resolves
 /// through the embedding service's native-dimension chain at provisioning.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct InitEmbeddingConfig {
     /// Genesis embedding provider.
@@ -82,6 +83,7 @@ impl Default for InitEmbeddingConfig {
 
 /// Fresh-system seed values, applied only when first creating a corpus.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct InitConfig {
     /// Genesis embedding identity.

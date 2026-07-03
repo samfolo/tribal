@@ -32,6 +32,7 @@ const fn default_token_ttl_hours() -> u64 {
 ///
 /// Controls token lifetime defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AuthConfig {
     /// Default token lifetime in hours.

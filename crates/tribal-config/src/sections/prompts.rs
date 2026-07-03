@@ -22,6 +22,7 @@ fn default_directory() -> String {
 /// The shape makes invalid states unrepresentable — `hot_reload` is only
 /// reachable when an on-disk source actually exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PromptSource {
     /// Prompts compiled into the binary.
@@ -59,6 +60,7 @@ impl Default for PromptSource {
 /// A struct rather than an inline enum so future prompt-wide knobs (e.g.
 /// global cache settings) can land without breaking the YAML schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct PromptsConfig {
     /// Where the active prompts are loaded from.

@@ -90,6 +90,7 @@ pub const ONE_SHOT_BUDGET_INERT_ADVISORY: &str = "a one-shot stage sets max_turn
 
 /// Which executor a stage's binding selects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutorChoice {
     /// The single completion call, with no tools.
@@ -105,6 +106,7 @@ pub enum ExecutorChoice {
 
 /// The `[agents]` section: per-stage executor selection and budgets.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AgentsConfig {
     /// The extraction stage's agentic configuration.
@@ -120,6 +122,7 @@ pub struct AgentsConfig {
 
 /// One stage's agentic configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StageAgentConfig {
     /// The executor the stage runs under.

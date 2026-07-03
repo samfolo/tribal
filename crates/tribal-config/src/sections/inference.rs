@@ -37,6 +37,7 @@ fn default_small_model() -> String {
 /// When `base_url` is `None`, the provider implementation supplies its
 /// own default URL.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StageInferenceConfig {
     /// LLM provider.
@@ -73,6 +74,7 @@ pub struct StageInferenceConfig {
 /// — e.g. a capable model for extraction and a fast/cheap model for
 /// classification stages.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct InferenceConfig {
     /// Extraction stage configuration.

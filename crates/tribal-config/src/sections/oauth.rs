@@ -176,6 +176,7 @@ fn url_is_explicit_non_loopback(value: Option<&str>) -> bool {
 /// audience-bound tokens for. When either is `None`, the consumer
 /// derives it from the server bind address at startup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct OAuthConfig {
     /// Canonical authorisation-server issuer URL. Derived from the

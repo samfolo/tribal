@@ -51,6 +51,7 @@ pub const DEFAULT_TAG_SIMILARITY_THRESHOLD: f64 = 0.85;
 /// `serde(default)` so that an empty YAML object deserialises to a valid
 /// configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
     /// Maximum number of concurrently executing tasks.
