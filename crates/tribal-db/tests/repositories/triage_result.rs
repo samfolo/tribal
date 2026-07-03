@@ -420,7 +420,7 @@ async fn test_two_users_in_one_account_stamp_distinct_principals_on_nodes() {
     let (_principal_id, _project_id, job_id) = setup_prerequisites(&mut txn, "two-users").await;
 
     // Two users bound to one account resolve to two distinct principals.
-    let account = "account_c5".to_owned();
+    let account = "account_shared".to_owned();
     let user_a = PgPrincipalRepository
         .find_or_create_platform_bound(
             &mut txn,

@@ -296,7 +296,7 @@ async fn test_local_principal_has_no_platform_linkage() {
 }
 
 // ---------------------------------------------------------------------------
-// find_or_create_platform_bound — the binding-keyed resolver C5 stamps through
+// find_or_create_platform_bound — the binding-keyed principal resolver
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

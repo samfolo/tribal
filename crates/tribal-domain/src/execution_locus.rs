@@ -10,9 +10,8 @@ use serde::{Deserialize, Serialize};
 
 /// Where a metered operation ran.
 ///
-/// Named for the design's two agent runtimes: the edge runtime runs in the
-/// binary against the user's own keys; the managed runtime runs on the
-/// platform and is metered.
+/// The edge runtime runs in the binary against the user's own keys; the managed
+/// runtime runs on the platform and is metered.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionLocus {

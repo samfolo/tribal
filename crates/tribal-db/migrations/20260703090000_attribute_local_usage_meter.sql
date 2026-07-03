@@ -8,9 +8,8 @@
 -- no one.
 --
 -- execution_locus separates the work the edge runtime ran locally from the
--- managed enrichment the platform ran elsewhere on the account's behalf. Rows
--- written before this milestone predate the managed runtime, so they are edge
--- by backfill.
+-- managed enrichment the platform ran elsewhere on the account's behalf.
+-- Existing rows predate the managed runtime, so they backfill to edge.
 
 ALTER TABLE token_usage
     ADD COLUMN principal_id UUID REFERENCES principals(id),

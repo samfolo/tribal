@@ -4,18 +4,14 @@ use tribal_db::{
     ReindexRunRepository, TokenUsageRepository,
 };
 use tribal_domain::{
-    EmbeddingPurpose, ExecutionLocus, GitRemote, JobId, PipelineStage, PrincipalId, ProjectId,
-    TokenUsageStage,
+    EmbeddingPurpose, ExecutionLocus, GitRemote, JobId, PipelineStage, PlatformBinding,
+    PrincipalId, ProjectId, TokenUsageStage,
 };
 use tribal_test_utils::{
     TestDb, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
     a_new_system_fingerprint, a_new_token_usage, ensure_genesis_profile, insert_prompt_version,
     shift_timestamp_by_id, upsert_system_fingerprint,
 };
-
-// A platform-bound principal has no repository writer until C5, so this
-// aggregation-setup insert lives in a fixture rather than inline.
-const INSERT_BOUND_PRINCIPAL: &str = include_str!("sql/insert_bound_principal.sql");
 
 // The execution_locus CHECK is exercised by a raw insert the repository's typed
 // writer cannot express, so its SQL lives in a fixture.
@@ -25,23 +21,21 @@ const INSERT_TOKEN_USAGE_BAD_LOCUS: &str = include_str!("sql/insert_token_usage_
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Inserts a platform-bound principal and returns its id.
-async fn insert_bound_principal(
+/// Resolves a platform-bound principal, giving aggregation a `(user, account)`
+/// to attribute spend against.
+async fn bound_principal(
     txn: &mut sqlx::PgConnection,
-    principal_key: &str,
-    platform_user_id: &str,
     account_reference: &str,
+    platform_user_id: &str,
 ) -> PrincipalId {
-    let id = PrincipalId::new();
-    sqlx::query(INSERT_BOUND_PRINCIPAL)
-        .bind(id.inner())
-        .bind(principal_key)
-        .bind(platform_user_id)
-        .bind(account_reference)
-        .execute(&mut *txn)
+    PgPrincipalRepository
+        .find_or_create_platform_bound(
+            txn,
+            &PlatformBinding::new(account_reference.to_owned(), platform_user_id.to_owned()),
+        )
         .await
-        .expect("insert bound principal");
-    id
+        .expect("resolve bound principal")
+        .id()
 }
 
 /// Inserts a principal and project, returning their IDs.
@@ -388,8 +382,7 @@ async fn test_per_user_totals_separate_edge_from_managed_spend() {
     let mut txn = ctx.begin().await.expect("begin");
     let repo = PgTokenUsageRepository;
 
-    let user =
-        insert_bound_principal(&mut txn, "platform:account_1/user_1", "user_1", "account_1").await;
+    let user = bound_principal(&mut txn, "account_1", "user_1").await;
 
     // Two edge calls locally, one managed enrichment run elsewhere.
     for usage in [
@@ -429,10 +422,8 @@ async fn test_per_account_totals_sum_across_the_accounts_users() {
     let repo = PgTokenUsageRepository;
 
     // Two users bound to one account.
-    let user_a =
-        insert_bound_principal(&mut txn, "platform:account_9/user_a", "user_a", "account_9").await;
-    let user_b =
-        insert_bound_principal(&mut txn, "platform:account_9/user_b", "user_b", "account_9").await;
+    let user_a = bound_principal(&mut txn, "account_9", "user_a").await;
+    let user_b = bound_principal(&mut txn, "account_9", "user_b").await;
 
     repo.insert(
         &mut txn,
