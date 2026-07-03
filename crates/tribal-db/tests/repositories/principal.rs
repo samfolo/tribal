@@ -2,6 +2,16 @@ use tribal_db::{DbError, PgPrincipalRepository, PrincipalRepository};
 use tribal_domain::PrincipalId;
 use tribal_test_utils::{TestDb, a_new_principal};
 
+// The platform-linkage checks exercise raw schema constraints there is no
+// repository writer for yet, so their SQL lives in sql/ rather than inline.
+const INSERT_PLATFORM_BOUND_PRINCIPAL: &str =
+    include_str!("sql/insert_platform_bound_principal.sql");
+const INSERT_PLATFORM_BOUND_PRINCIPAL_WITH_NAME: &str =
+    include_str!("sql/insert_platform_bound_principal_with_name.sql");
+const INSERT_HALF_BOUND_PRINCIPAL: &str = include_str!("sql/insert_half_bound_principal.sql");
+const SELECT_PRINCIPAL_LINKAGE_BY_KEY: &str =
+    include_str!("sql/select_principal_linkage_by_key.sql");
+
 #[tokio::test]
 async fn test_insert_with_none_optional_fields_returns_none() {
     let ctx = TestDb::new().await;
@@ -186,4 +196,95 @@ async fn test_find_by_ids_all_missing_returns_empty_vec() {
     let found = repo.find_by_ids(&mut txn, &ids).await.expect("find_by_ids");
 
     assert!(found.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Platform linkage — the account reference and opaque platform user id, and the
+// rule that a platform-bound principal derives its display name and stores none.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_platform_bound_principal_stores_reference_and_key_only() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    sqlx::query(INSERT_PLATFORM_BOUND_PRINCIPAL)
+        .execute(&mut *txn)
+        .await
+        .expect("a platform-bound principal without a display name inserts");
+
+    let (account_reference, platform_user_id, display_name): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(SELECT_PRINCIPAL_LINKAGE_BY_KEY)
+        .bind("user:platform-bound")
+        .fetch_one(&mut *txn)
+        .await
+        .expect("read the platform-bound principal");
+
+    assert_eq!(account_reference.as_deref(), Some("account_1"));
+    assert_eq!(platform_user_id.as_deref(), Some("user_1"));
+    assert_eq!(
+        display_name, None,
+        "a platform-bound principal stores no name"
+    );
+}
+
+#[tokio::test]
+async fn test_platform_bound_principal_rejects_a_stored_display_name() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    let result = sqlx::query(INSERT_PLATFORM_BOUND_PRINCIPAL_WITH_NAME)
+        .execute(&mut *txn)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "a platform-bound principal must not store a display name"
+    );
+}
+
+#[tokio::test]
+async fn test_platform_binding_requires_both_columns() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    let result = sqlx::query(INSERT_HALF_BOUND_PRINCIPAL)
+        .execute(&mut *txn)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "an account reference without the opaque user id must be refused"
+    );
+}
+
+#[tokio::test]
+async fn test_local_principal_has_no_platform_linkage() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgPrincipalRepository;
+
+    let new = a_new_principal()
+        .principal_key("user:local-only".to_owned())
+        .display_name(Some("Local User".to_owned()))
+        .build();
+    let inserted = repo.insert(&mut txn, &new).await.expect("insert");
+
+    let (account_reference, platform_user_id, display_name): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(SELECT_PRINCIPAL_LINKAGE_BY_KEY)
+        .bind("user:local-only")
+        .fetch_one(&mut *txn)
+        .await
+        .expect("read the local principal");
+
+    assert_eq!(account_reference, None);
+    assert_eq!(platform_user_id, None);
+    assert_eq!(display_name.as_deref(), Some("Local User"));
+    assert_eq!(inserted.display_name(), Some("Local User"));
 }
