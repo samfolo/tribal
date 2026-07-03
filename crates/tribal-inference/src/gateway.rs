@@ -796,6 +796,13 @@ fn build_binding(
     stage: TaskType,
     spec: &CompletionStageSpec,
 ) -> Result<CompletionBinding, GatewayBuildError> {
+    // Platform is served by the managed gateway, not addressed by URL; refuse it
+    // before constructing a key so an absent base URL yields this honest error
+    // rather than an opaque endpoint-parse failure.
+    if spec.provider == ProviderKind::Platform {
+        return Err(GatewayBuildError::ManagedGatewayTransport);
+    }
+
     let key = ProviderKey::new(
         spec.provider.to_string(),
         &spec.base_url,
@@ -1025,6 +1032,27 @@ mod tests {
 
     const STAGE_URL: &str = "http://localhost:11434";
     const EMBED_URL: &str = "http://localhost:11500";
+
+    #[test]
+    fn test_build_binding_refuses_platform_with_the_managed_gateway_error() {
+        // A Platform spec carries no local base URL; the binding must refuse it
+        // with the managed-gateway error before it tries to parse an endpoint.
+        let registry = ProviderRegistry::new(vec![]).expect("an empty registry");
+        let spec = CompletionStageSpec {
+            provider: ProviderKind::Platform,
+            model: "any".to_owned(),
+            base_url: String::new(),
+            api_key: String::new(),
+            parameters: StageParameters::default(),
+        };
+        let Err(err) = build_binding(&registry, TaskType::Triage, &spec) else {
+            panic!("platform must be refused, not bound to a local endpoint");
+        };
+        assert!(
+            matches!(err, GatewayBuildError::ManagedGatewayTransport),
+            "expected ManagedGatewayTransport, got {err:?}",
+        );
+    }
 
     // -- Scripted providers and a recording sink -----------------------------
 
