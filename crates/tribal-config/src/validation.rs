@@ -80,7 +80,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_pool_sizing(config, &mut diags);
     validate_init(config, &mut diags);
     validate_inference(config, &mut diags);
-    validate_inference_providers(config, &mut diags);
+    validate_provider_locality(config, &mut diags);
     validate_provider_limits(config, &mut diags);
     validate_api_key_presence(config, &mut diags);
     validate_credentials(config, &mut diags);
@@ -527,16 +527,21 @@ fn validate_inference(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 }
 
-/// Rejects the platform provider selected for any inference stage.
-fn validate_inference_providers(config: &TribalConfig, diags: &mut Diagnostics) {
+/// Rejects the platform provider selected for any local-provider stage — the
+/// embedding genesis seed or an inference stage.
+fn validate_provider_locality(config: &TribalConfig, diags: &mut Diagnostics) {
     let stages = [
-        (ProviderStage::Extraction, &config.inference.extraction),
-        (ProviderStage::Triage, &config.inference.triage),
-        (ProviderStage::Relation, &config.inference.relation),
+        (ProviderStage::Embedding, config.init.embedding.provider),
+        (
+            ProviderStage::Extraction,
+            config.inference.extraction.provider,
+        ),
+        (ProviderStage::Triage, config.inference.triage.provider),
+        (ProviderStage::Relation, config.inference.relation.provider),
     ];
-    for (stage, cfg) in stages {
-        if cfg.provider == ProviderKind::Platform {
-            diags.push(ValidationError::PlatformInferenceProvider { stage });
+    for (stage, provider) in stages {
+        if provider == ProviderKind::Platform {
+            diags.push(ValidationError::PlatformProviderNotLocal { stage });
         }
     }
 }
@@ -1599,14 +1604,24 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_rejects_platform_as_an_inference_provider() {
+    fn test_validate_rejects_platform_as_a_local_provider() {
         let mut config = valid_config();
+        config.init.embedding.provider = ProviderKind::Platform;
         config.inference.extraction.provider = ProviderKind::Platform;
         let diags = diagnostics_for(&config);
         assert!(
             any(&diags, |d| matches!(
                 d,
-                ValidationError::PlatformInferenceProvider {
+                ValidationError::PlatformProviderNotLocal {
+                    stage: ProviderStage::Embedding,
+                },
+            )),
+            "platform embedding provider not rejected; diagnostics: {diags:?}",
+        );
+        assert!(
+            any(&diags, |d| matches!(
+                d,
+                ValidationError::PlatformProviderNotLocal {
                     stage: ProviderStage::Extraction,
                 },
             )),

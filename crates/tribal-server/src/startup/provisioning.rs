@@ -23,7 +23,6 @@ use tribal_inference::resolve_dimensions;
 use super::{
     POOL_NAME_MCP,
     constants::{MIGRATION_MAX_ATTEMPTS, MIGRATION_RETRY_SLEEP_MAX, MIGRATION_RETRY_SLEEP_MIN},
-    providers::resolve_base_url,
 };
 use crate::error::AppError;
 
@@ -168,7 +167,7 @@ async fn insert_genesis(
     config: &TribalConfig,
 ) -> Result<EmbeddingProfile, AppError> {
     let provider = config.init.embedding.provider;
-    let base_url = resolve_base_url(provider, config.init.embedding.base_url.as_ref());
+    let base_url = genesis_base_url(config)?;
     let normalised_base_url =
         normalise_endpoint_url(&base_url).map_err(|e| AppError::ConfigInvariant {
             reason: e.to_string(),
@@ -202,6 +201,44 @@ async fn insert_genesis(
         .map_err(database_error)
 }
 
+/// Resolves the genesis embedding endpoint from the `init.embedding` seed: the
+/// configured URL, else the provider's built-in default, erroring when the
+/// provider has no local endpoint.
+fn genesis_base_url(config: &TribalConfig) -> Result<String, AppError> {
+    let provider = config.init.embedding.provider;
+    config
+        .init
+        .embedding
+        .base_url
+        .as_deref()
+        .or_else(|| provider.default_base_url())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| AppError::ProviderSetup {
+            context: format!(
+                "{provider} has no local endpoint: it is served through the \
+                 managed gateway, not addressed by URL"
+            ),
+        })
+}
+
 fn database_error(source: tribal_db::DbError) -> AppError {
     AppError::Database { source }
+}
+
+#[cfg(test)]
+mod tests {
+    use tribal_domain::ProviderKind;
+
+    use super::*;
+
+    #[test]
+    fn test_genesis_base_url_refuses_a_provider_with_no_local_endpoint() {
+        let mut config = TribalConfig::default();
+        config.init.embedding.provider = ProviderKind::Platform;
+        let err = genesis_base_url(&config).expect_err("platform has no local endpoint");
+        assert!(
+            matches!(err, AppError::ProviderSetup { .. }),
+            "expected an honest ProviderSetup rejection, got {err:?}",
+        );
+    }
 }

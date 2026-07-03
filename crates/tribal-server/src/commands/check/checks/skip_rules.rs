@@ -61,7 +61,7 @@ impl SkipMask {
                 self.bits |= flag::ADVERTISED_URL;
             }
             ValidationError::MissingApiKey { stage, .. }
-            | ValidationError::PlatformInferenceProvider { stage } => match stage {
+            | ValidationError::PlatformProviderNotLocal { stage } => match stage {
                 ProviderStage::Embedding => self.bits |= flag::PROVIDER_EMBEDDING,
                 ProviderStage::Extraction => self.bits |= flag::PROVIDER_EXTRACTION,
                 ProviderStage::Triage => self.bits |= flag::PROVIDER_TRIAGE,

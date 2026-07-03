@@ -58,7 +58,7 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
         | ValidationError::FieldOrdering { .. }
         | ValidationError::DerivedFloor { .. }
         | ValidationError::EmbeddingProviderUnsupported { .. }
-        | ValidationError::PlatformInferenceProvider { .. }
+        | ValidationError::PlatformProviderNotLocal { .. }
         | ValidationError::UrlMalformed { .. }
         | ValidationError::UrlUnsupportedForm { .. }
         | ValidationError::NonLoopbackDcrConflict
