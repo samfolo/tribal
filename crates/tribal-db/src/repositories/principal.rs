@@ -171,9 +171,12 @@ impl PrincipalRepository for PgPrincipalRepository {
         conn: &mut PgConnection,
         binding: &PlatformBinding,
     ) -> Result<Principal, DbError> {
-        // A stable key derived one-to-one from the binding.
+        // A stable key derived one-to-one from the binding. The account
+        // reference is length-prefixed so two distinct bindings whose opaque
+        // tokens straddle the delimiter cannot collide onto one key.
         let principal_key = format!(
-            "platform:{}/{}",
+            "platform:{}:{}/{}",
+            binding.account_reference().len(),
             binding.account_reference(),
             binding.platform_user_id(),
         );

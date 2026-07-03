@@ -373,6 +373,38 @@ async fn test_two_users_in_one_account_resolve_to_distinct_principals() {
 }
 
 #[tokio::test]
+async fn test_delimiter_straddling_bindings_resolve_to_distinct_principals() {
+    // The two bindings differ only in where the account/user boundary falls,
+    // so a naive "platform:{account}/{user}" key would collapse both onto
+    // "platform:a/x/b" and fail the second resolve. Each must still get its own
+    // principal.
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgPrincipalRepository;
+
+    let left = repo
+        .find_or_create_platform_bound(
+            &mut txn,
+            &PlatformBinding::new("a/x".to_owned(), "b".to_owned()),
+        )
+        .await
+        .expect("resolve left");
+    let right = repo
+        .find_or_create_platform_bound(
+            &mut txn,
+            &PlatformBinding::new("a".to_owned(), "x/b".to_owned()),
+        )
+        .await
+        .expect("resolve right");
+
+    assert_ne!(
+        left.id(),
+        right.id(),
+        "bindings that straddle the delimiter are distinct principals",
+    );
+}
+
+#[tokio::test]
 async fn test_concurrent_resolves_mint_at_most_one_principal() {
     // The partial unique index makes the "one principal per binding" property
     // unrepresentable to break: racing resolves converge on a single row.
