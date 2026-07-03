@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO principals (principal_key, platform_user_id, account_reference)\n            VALUES ($1, $2, $3)\n            ON CONFLICT (principal_key)\n            DO UPDATE SET account_reference = EXCLUDED.account_reference\n            RETURNING *\n            ",
+  "query": "\n            INSERT INTO principals (principal_key, platform_user_id, account_reference)\n            VALUES ($1, $2, $3)\n            ON CONFLICT DO NOTHING\n            RETURNING *\n            ",
   "describe": {
     "columns": [
       {
@@ -50,5 +50,5 @@
       true
     ]
   },
-  "hash": "4ca7b7698294ea3a8ceffae6e714706f345a2641d4089c2bca885e18fdc307e6"
+  "hash": "4d95cbc0337d5cf3a9fda11289c6068762116f4fc9d5be64aad800deded85865"
 }

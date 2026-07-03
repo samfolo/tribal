@@ -171,30 +171,56 @@ impl PrincipalRepository for PgPrincipalRepository {
         conn: &mut PgConnection,
         binding: &PlatformBinding,
     ) -> Result<Principal, DbError> {
-        // A stable key derived one-to-one from the binding — deterministic, so
-        // every resolve of one binding computes the same key.
+        // A stable key derived one-to-one from the binding.
         let principal_key = format!(
             "platform:{}/{}",
             binding.account_reference(),
             binding.platform_user_id(),
         );
 
-        // The arbiter is the total `principal_key` index, not the partial
-        // binding index: every concurrent resolve of one binding computes the
-        // same key, so they all conflict there first and read the existing row
-        // through the no-op update. Arbitrating on the partial binding index
-        // would instead let a racer trip the (non-arbiter) `principal_key`
-        // constraint and error. The binding index still forbids a second
-        // principal for one `(user, account)` independently of the key.
-        let r = sqlx::query!(
+        // A bound row hits two unique indexes at once — the total principal_key
+        // and the partial binding index — so a single-target ON CONFLICT would
+        // let a racer trip the other and error. Targetless DO NOTHING suppresses
+        // a conflict on either without error: it inserts when new, and returns
+        // no row when a concurrent resolve already created it.
+        let inserted = sqlx::query!(
             r#"
             INSERT INTO principals (principal_key, platform_user_id, account_reference)
             VALUES ($1, $2, $3)
-            ON CONFLICT (principal_key)
-            DO UPDATE SET account_reference = EXCLUDED.account_reference
+            ON CONFLICT DO NOTHING
             RETURNING *
             "#,
             principal_key,
+            binding.platform_user_id(),
+            binding.account_reference(),
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!(
+                "creating platform-bound principal for user {}",
+                binding.platform_user_id(),
+            ),
+            source: e,
+        })?;
+
+        if let Some(r) = inserted {
+            return Ok(build_principal(
+                r.id,
+                r.principal_key,
+                r.display_name,
+                r.account_reference,
+                r.platform_user_id,
+                r.created_at,
+            ));
+        }
+
+        // The conflict means the row already exists; read it back by binding.
+        let r = sqlx::query!(
+            r#"
+            SELECT * FROM principals
+            WHERE platform_user_id = $1 AND account_reference = $2
+            "#,
             binding.platform_user_id(),
             binding.account_reference(),
         )
@@ -202,7 +228,7 @@ impl PrincipalRepository for PgPrincipalRepository {
         .await
         .map_err(|e| DbError::QueryFailed {
             context: format!(
-                "finding or creating platform-bound principal for user {}",
+                "reading platform-bound principal for user {}",
                 binding.platform_user_id(),
             ),
             source: e,
