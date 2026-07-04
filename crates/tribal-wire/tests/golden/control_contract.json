@@ -92,6 +92,9 @@
           "shadowed"
         ],
         "properties": {
+          "default_value": {
+            "description": "The key's fixed default, for a reset-to-default affordance. Absent for a machine-resolved key whose default is computed per host and stripped."
+          },
           "path": {
             "description": "The dotted key, e.g. `logging.level`.",
             "type": "string"

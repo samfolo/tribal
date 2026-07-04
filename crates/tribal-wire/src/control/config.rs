@@ -43,7 +43,7 @@ pub enum WriteEffect {
 
 /// The metadata overlay for one configurable key, paired with the structural
 /// schema so a client can render and gate the settings form.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ConfigFieldMeta {
     /// The dotted key, e.g. `logging.level`.
@@ -55,6 +55,10 @@ pub struct ConfigFieldMeta {
     /// Whether a higher-precedence layer currently shadows this key, computed
     /// against the live cascade at the time of the call.
     pub shadowed: bool,
+    /// The key's fixed default, for a reset-to-default affordance. Absent for a
+    /// machine-resolved key whose default is computed per host and stripped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +224,7 @@ mod tests {
                 secret: false,
                 reload_class: ReloadClass::RequiresRestart,
                 shadowed: true,
+                default_value: Some(serde_json::json!("info")),
             }],
         };
         let parsed: ConfigSchema =

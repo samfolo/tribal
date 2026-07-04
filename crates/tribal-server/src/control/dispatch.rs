@@ -145,6 +145,7 @@ fn config_schema(cli_shadow: &CliShadow) -> wire::ConfigSchema {
             shadowed: tribal_config::shadowed_by(&field.path, cli_shadow).is_some(),
             reload_class: reload_class(field.reload_class),
             secret: field.secret,
+            default_value: field.default,
             path: field.path,
         })
         .collect();

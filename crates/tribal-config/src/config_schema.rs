@@ -39,7 +39,7 @@ pub enum ReloadClass {
 /// The metadata overlay for one fixed configuration leaf, paired with the
 /// structural schema so a client can render and gate the settings form.
 #[cfg(feature = "schema")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConfigFieldMeta {
     /// The dotted key, e.g. `logging.level`.
     pub path: String,
@@ -47,6 +47,9 @@ pub struct ConfigFieldMeta {
     pub secret: bool,
     /// Whether the key takes effect live or only on restart.
     pub reload_class: ReloadClass,
+    /// The leaf's fixed default, for a reset-to-default affordance. Absent for a
+    /// machine-resolved leaf, whose default is computed per host and stripped.
+    pub default: Option<Value>,
 }
 
 /// The whole writable configuration surface: the structural JSON Schema the
@@ -230,14 +233,16 @@ pub fn structural_schema() -> Value {
 pub fn config_schema() -> ConfigSchema {
     let schema = structural_schema();
     let secret: BTreeSet<&str> = SecretField::ALL.iter().map(|field| field.path()).collect();
-    let fields = leaf_paths(&schema)
+    let mut fields: Vec<ConfigFieldMeta> = leaf_entries(&schema)
         .into_iter()
-        .map(|path| ConfigFieldMeta {
+        .map(|(path, node)| ConfigFieldMeta {
             secret: secret.contains(path.as_str()),
             reload_class: reload_class(&path),
+            default: node.get("default").cloned(),
             path,
         })
         .collect();
+    fields.sort_by(|left, right| left.path.cmp(&right.path));
     ConfigSchema { schema, fields }
 }
 
@@ -263,17 +268,6 @@ fn strip_machine_resolved_defaults(schema: &mut Value) {
 // ---------------------------------------------------------------------------
 // Leaf enumeration
 // ---------------------------------------------------------------------------
-
-/// The dotted paths of every fixed scalar leaf in the structural schema, sorted.
-#[cfg(feature = "schema")]
-fn leaf_paths(schema: &Value) -> Vec<String> {
-    let mut paths: Vec<String> = leaf_entries(schema)
-        .into_iter()
-        .map(|(path, _)| path)
-        .collect();
-    paths.sort();
-    paths
-}
 
 /// Every fixed scalar leaf paired with the schema node it resolves to, so a
 /// caller can both name the leaf and inspect its type — whether it is the
@@ -394,6 +388,17 @@ mod classifier_tests {
 #[cfg(all(test, feature = "schema"))]
 mod tests {
     use super::*;
+
+    /// The sorted dotted paths of every fixed scalar leaf — the leaf identities,
+    /// dropping the nodes `leaf_entries` pairs with them.
+    fn leaf_paths(schema: &Value) -> Vec<String> {
+        let mut paths: Vec<String> = leaf_entries(schema)
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        paths.sort();
+        paths
+    }
 
     /// The reload classifier must be total over the live schema: every fixed
     /// leaf `TribalConfig` exposes is `Hot` or `RequiresRestart`, never
@@ -548,6 +553,31 @@ mod tests {
             schema["definitions"]["LoggingConfig"]["properties"]["level"]["default"],
             Value::String("info".to_owned()),
             "logging.level must keep its literal default",
+        );
+    }
+
+    /// The overlay carries each fixed default for a reset affordance, and omits
+    /// it for a machine-resolved leaf whose default was stripped.
+    #[test]
+    fn test_the_overlay_carries_fixed_defaults_and_omits_machine_resolved_ones() {
+        let fields = config_schema().fields;
+        let default_of = |path: &str| {
+            fields
+                .iter()
+                .find(|field| field.path == path)
+                .unwrap_or_else(|| panic!("{path} is a leaf"))
+                .default
+                .clone()
+        };
+        assert_eq!(
+            default_of("logging.level"),
+            Some(Value::String("info".to_owned())),
+            "a fixed literal default rides the overlay for the reset affordance",
+        );
+        assert_eq!(
+            default_of("logging.file_directory"),
+            None,
+            "a machine-resolved leaf carries no default to reset to",
         );
     }
 
