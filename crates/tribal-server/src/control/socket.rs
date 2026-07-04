@@ -563,6 +563,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_forward_events_survives_a_lagged_subscriber() {
+        use tribal_wire::control::WriteEffect;
+
+        let (events_tx, events_rx) = broadcast::channel(2);
+        // Overflow the two-slot buffer before the forwarder reads: the receiver
+        // is now behind by more than the capacity, so its next read lags.
+        for _ in 0..3 {
+            events_tx
+                .send(ControlEvent::ConfigChanged {
+                    keys: Vec::new(),
+                    effect: WriteEffect::NeedsRestart,
+                })
+                .expect("a subscriber is present");
+        }
+        let (out_tx, mut out_rx) = mpsc::channel(16);
+        // Closing the bus ends the forwarder once the buffered events drain.
+        drop(events_tx);
+
+        forward_events(events_rx, out_tx).await;
+
+        // The lagged read dropped the overflow but never ended the loop: the two
+        // still-buffered events were encoded and forwarded before the bus closed.
+        let mut forwarded = 0;
+        while out_rx.try_recv().is_ok() {
+            forwarded += 1;
+        }
+        assert_eq!(
+            forwarded, 2,
+            "a lagged subscriber drops the overflow and forwards the rest",
+        );
+    }
+
+    #[tokio::test]
     async fn test_the_descriptor_is_written_on_serve_and_removed_on_shutdown() {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket_path = dir.path().join("control.sock");

@@ -128,14 +128,24 @@ pub(crate) fn descriptor_path() -> PathBuf {
 /// Returns [`ControlError::SocketPathTooLong`] when even the fallback exceeds
 /// the platform's `sun_path` capacity.
 pub(crate) fn socket_path() -> Result<PathBuf, ControlError> {
-    let runtime = dirs::runtime_dir().unwrap_or_else(std::env::temp_dir);
+    resolve_socket_path(
+        &dirs::runtime_dir().unwrap_or_else(std::env::temp_dir),
+        &std::env::temp_dir(),
+    )
+}
+
+/// Derives the socket path from a `runtime` and `temp` directory: the runtime
+/// path when it fits, else a flat per-runtime-unique name under `temp`, else the
+/// too-long error. Split from [`socket_path`] so the fallback and error branches
+/// test without the platform's real directories.
+fn resolve_socket_path(runtime: &Path, temp: &Path) -> Result<PathBuf, ControlError> {
     let preferred = runtime.join(TRIBAL_DIRECTORY_NAME).join(SOCKET_FILENAME);
     if fits_sun_path(&preferred) {
         return Ok(preferred);
     }
 
     let digest = short_digest(runtime.as_os_str().as_bytes());
-    let fallback = std::env::temp_dir().join(format!("tribal-{digest}.sock"));
+    let fallback = temp.join(format!("tribal-{digest}.sock"));
     if fits_sun_path(&fallback) {
         return Ok(fallback);
     }
@@ -235,6 +245,38 @@ mod tests {
         assert!(
             !fits_sun_path(&long),
             "a path at the capacity must be rejected, leaving room for the NUL",
+        );
+    }
+
+    #[test]
+    fn test_socket_path_prefers_the_runtime_directory_when_it_fits() {
+        let resolved = resolve_socket_path(Path::new("/run/user/1000"), Path::new("/tmp"))
+            .expect("a short runtime path fits");
+        assert!(
+            resolved.starts_with("/run/user/1000"),
+            "the runtime directory is preferred: {resolved:?}",
+        );
+    }
+
+    #[test]
+    fn test_socket_path_falls_back_to_temp_when_the_runtime_path_is_too_long() {
+        let long_runtime = PathBuf::from("/".to_owned() + &"x".repeat(SUN_PATH_CAPACITY));
+        let resolved = resolve_socket_path(&long_runtime, Path::new("/tmp"))
+            .expect("the flat temp fallback fits");
+        assert!(
+            resolved.starts_with("/tmp"),
+            "an over-long runtime path falls back under temp: {resolved:?}",
+        );
+        assert!(fits_sun_path(&resolved), "the fallback itself must fit");
+    }
+
+    #[test]
+    fn test_socket_path_errors_when_even_the_fallback_is_too_long() {
+        let long = PathBuf::from("/".to_owned() + &"x".repeat(SUN_PATH_CAPACITY));
+        let error = resolve_socket_path(&long, &long).expect_err("no path fits");
+        assert!(
+            matches!(error, ControlError::SocketPathTooLong { .. }),
+            "when neither directory fits, the derivation errors rather than binding",
         );
     }
 
