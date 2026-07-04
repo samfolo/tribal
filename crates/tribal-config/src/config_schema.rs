@@ -6,13 +6,13 @@
 //! on restart. The overlay is config-native — the wire layer maps it to its
 //! DTO — so this crate never depends on the wire contract.
 
-use std::collections::BTreeSet;
-
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-use crate::redact::SecretField;
-use crate::sections::TribalConfig;
+#[cfg(feature = "schema")]
+use {
+    crate::{redact::SecretField, sections::TribalConfig},
+    serde_json::Value,
+    std::collections::BTreeSet,
+};
 
 // ---------------------------------------------------------------------------
 // Metadata overlay
@@ -38,6 +38,7 @@ pub enum ReloadClass {
 
 /// The metadata overlay for one fixed configuration leaf, paired with the
 /// structural schema so a client can render and gate the settings form.
+#[cfg(feature = "schema")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigFieldMeta {
     /// The dotted key, e.g. `logging.level`.
@@ -50,6 +51,7 @@ pub struct ConfigFieldMeta {
 
 /// The whole writable configuration surface: the structural JSON Schema the
 /// form renders, paired with the per-leaf metadata overlay.
+#[cfg(feature = "schema")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConfigSchema {
     /// The structural JSON Schema of [`TribalConfig`], carried opaquely.
@@ -168,8 +170,9 @@ const RESTART_KEYS: &[&str] = &[
 const HOT_KEYS: &[&str] = &[];
 
 /// Classifies how a write to `path` takes effect. A leaf in neither
-/// classification list is [`ReloadClass::Unclassified`].
-fn classify_reload(path: &str) -> ReloadClass {
+/// classification list is [`ReloadClass::Unclassified`]. This is the source
+/// both `config.schema`'s overlay and `config.set`'s write effect read from.
+pub(crate) fn reload_class(path: &str) -> ReloadClass {
     if HOT_KEYS.contains(&path) {
         ReloadClass::Hot
     } else if RESTART_KEYS.contains(&path) {
@@ -195,6 +198,7 @@ fn classify_reload(path: &str) -> ReloadClass {
 /// # Panics
 ///
 /// Panics if `TribalConfig`'s derived schema fails to serialise to JSON.
+#[cfg(feature = "schema")]
 #[must_use]
 pub fn structural_schema() -> Value {
     let mut schema = serde_json::to_value(schemars::schema_for!(TribalConfig))
@@ -204,6 +208,7 @@ pub fn structural_schema() -> Value {
 }
 
 /// The whole config surface: the structural schema and its per-leaf overlay.
+#[cfg(feature = "schema")]
 #[must_use]
 pub fn config_schema() -> ConfigSchema {
     let schema = structural_schema();
@@ -212,7 +217,7 @@ pub fn config_schema() -> ConfigSchema {
         .into_iter()
         .map(|path| ConfigFieldMeta {
             secret: secret.contains(path.as_str()),
-            reload_class: classify_reload(&path),
+            reload_class: reload_class(&path),
             path,
         })
         .collect();
@@ -220,6 +225,7 @@ pub fn config_schema() -> ConfigSchema {
 }
 
 /// Recursively removes every `default` key from a JSON Schema value.
+#[cfg(feature = "schema")]
 fn strip_defaults(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -247,6 +253,7 @@ fn strip_defaults(value: &mut Value) {
 /// tagged union (`oneOf`/`anyOf`) as a single leaf set as one value; and stops
 /// at a dynamic map (`additionalProperties`), whose arbitrary keys are no fixed
 /// leaf.
+#[cfg(feature = "schema")]
 fn leaf_paths(schema: &Value) -> Vec<String> {
     let definitions = schema.get("definitions");
     let mut leaves = Vec::new();
@@ -255,6 +262,7 @@ fn leaf_paths(schema: &Value) -> Vec<String> {
     leaves
 }
 
+#[cfg(feature = "schema")]
 fn collect_leaves(
     node: &Value,
     prefix: String,
@@ -311,19 +319,21 @@ fn collect_leaves(
 
 /// Resolves a local `#/definitions/Name` reference against the schema's
 /// definitions map.
+#[cfg(feature = "schema")]
 fn resolve<'a>(reference: &str, definitions: Option<&'a Value>) -> Option<&'a Value> {
     let name = reference.strip_prefix("#/definitions/")?;
     definitions?.get(name)
 }
 
 /// Records a leaf at `prefix`, unless the prefix is empty (the schema root).
+#[cfg(feature = "schema")]
 fn push_leaf(prefix: String, out: &mut Vec<String>) {
     if !prefix.is_empty() {
         out.push(prefix);
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "schema"))]
 mod tests {
     use super::*;
 

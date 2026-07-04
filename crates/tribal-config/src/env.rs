@@ -15,6 +15,16 @@ pub const ENV_PREFIX: &str = "TRIBAL_";
 /// `TRIBAL_DATABASE__URL`.
 pub const ENV_NESTED_SEPARATOR: &str = "__";
 
+/// The convenience alias environment variables: each overrides one config key
+/// at a precedence above the YAML file. The single source the loader's alias
+/// layer and `config.set`'s shadow detection both read, so the two never drift.
+pub(crate) const ALIAS_ENV_VARS: &[(&str, &str)] = &[
+    ("database.url", "TRIBAL_DATABASE_URL"),
+    ("server.transport", "TRIBAL_TRANSPORT"),
+    ("server.bind_address", "TRIBAL_BIND_ADDRESS"),
+    ("logging.level", "TRIBAL_LOG"),
+];
+
 /// Environment variable for the configuration file path.
 pub const ENV_CONFIG_PATH: &str = "TRIBAL_CONFIG_PATH";
 

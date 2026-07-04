@@ -8,22 +8,21 @@
 #![warn(clippy::pedantic)]
 
 mod cli_overrides;
-#[cfg(feature = "schema")]
 mod config_schema;
 mod divergence;
 mod env;
 mod error;
 mod loader;
+mod operations;
 mod paths;
 mod redact;
 mod render;
 mod sections;
 mod validation;
 
+pub use config_schema::ReloadClass;
 #[cfg(feature = "schema")]
-pub use config_schema::{
-    ConfigFieldMeta, ConfigSchema, ReloadClass, config_schema, structural_schema,
-};
+pub use config_schema::{ConfigFieldMeta, ConfigSchema, config_schema, structural_schema};
 
 pub use cli_overrides::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
@@ -40,6 +39,9 @@ pub use env::{
 };
 pub use error::{ConfigError, RemovedEmbeddingSource};
 pub use loader::load_config;
+pub use operations::{
+    ConfigViolation, SetError, UnknownConfigKey, WriteEffect, get, get_all, set, validate_write,
+};
 pub use paths::{
     CREDENTIALS_FILENAME, ConfigDirError, TRIBAL_DIRECTORY_NAME, default_config_file_path,
 };
