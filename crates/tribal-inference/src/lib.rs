@@ -14,6 +14,7 @@ mod http;
 mod ledger;
 mod ollama;
 mod openai;
+mod platform;
 mod provider;
 mod registry;
 mod request;
@@ -50,7 +51,9 @@ pub use ollama::{
 };
 #[cfg(feature = "test-helpers")]
 pub use openai::{CHAT_PATH as OPENAI_CHAT_PATH, EMBED_PATH as OPENAI_EMBED_PATH};
-pub use provider::{BatchEmbeddingResult, EmbeddingProvider, InferenceProvider, ProviderIdentity};
+pub use provider::{
+    BatchEmbeddingResult, CallContext, EmbeddingProvider, InferenceProvider, ProviderIdentity,
+};
 pub use registry::{
     ProviderKey, ProviderLimits, ProviderRegistry, ProviderRegistryError, RequestClass,
 };

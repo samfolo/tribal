@@ -23,6 +23,7 @@ url.workspace = true
 
 tribal-common.workspace = true
 tribal-domain.workspace = true
+tribal-wire.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true

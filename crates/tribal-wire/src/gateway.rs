@@ -16,8 +16,8 @@ mod vocabulary;
 
 pub use inference::{
     ChatMessage, CompletionChunk, CompletionEnvelope, CompletionTerminal, EmbeddingEnvelope,
-    FinishReason, GatewayError, InferenceCall, InferenceRequest, ResponseFormat, ToolCall,
-    ToolDefinition,
+    FinishReason, GRANT_SET_HEADER, GatewayError, InferenceCall, InferenceRequest, ResponseFormat,
+    ToolCall, ToolDefinition,
 };
 pub use job_plane::{
     Acknowledgement, CapSync, GrantSet, HoldEntry, HoldStatus, HoldsReport, JobEnqueue, JobKind,

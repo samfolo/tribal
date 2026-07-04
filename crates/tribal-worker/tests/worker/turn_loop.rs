@@ -31,7 +31,8 @@ use tribal_domain::{
     UsageOwner, gen_ai, span_attrs,
 };
 use tribal_inference::{
-    CompletionRequest, InferenceError, InferenceEventStream, ProviderIdentity, UsageAttribution,
+    CallContext, CompletionRequest, InferenceError, InferenceEventStream, ProviderIdentity,
+    UsageAttribution,
 };
 use tribal_telemetry::{InferenceOperationRecord, MetricsRecorder};
 use tribal_test_utils::{TracingCapture, a_tool_call_response};
@@ -121,6 +122,7 @@ impl InferenceProvider for HangingStreamProvider {
     async fn complete_stream(
         &self,
         _request: CompletionRequest,
+        _context: &CallContext,
     ) -> Result<InferenceEventStream, InferenceError> {
         let never: InferenceEventStream = Box::pin(stream::pending());
         Ok(never)

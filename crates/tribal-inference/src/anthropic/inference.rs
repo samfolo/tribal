@@ -15,7 +15,7 @@ use tribal_domain::{
 
 use super::streaming::AnthropicStreamTranslator;
 use crate::{
-    CompletionRequest, InferenceError, InferenceProvider, Message, ProviderIdentity,
+    CallContext, CompletionRequest, InferenceError, InferenceProvider, Message, ProviderIdentity,
     ResponseFormat, apply_dialect,
     capabilities::{reconcile_temperature, resolve},
     error::{map_body_read_error, map_json_parse_error, map_send_error},
@@ -297,6 +297,7 @@ impl InferenceProvider for AnthropicInferenceProvider {
     async fn complete_stream(
         &self,
         request: CompletionRequest,
+        _context: &CallContext,
     ) -> Result<InferenceEventStream, InferenceError> {
         if request.messages.is_empty() {
             return Err(InferenceError::LlmCallFailed {

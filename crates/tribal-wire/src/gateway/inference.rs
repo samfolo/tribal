@@ -12,6 +12,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::gateway::reference::{ModelId, PositionKey};
 
+/// The HTTP header a metered call presents its run-scoped grant set on. The
+/// body cannot carry tenancy — a client-asserted account would make the spend
+/// cap opt-in — so the grant set rides beside the fleet bearer token, and the
+/// gateway derives `(account, principal)` from it. Its value is the JSON of a
+/// [`GrantSet`](crate::gateway::GrantSet).
+pub const GRANT_SET_HEADER: &str = "x-tribal-grant-set";
+
 // ---------------------------------------------------------------------------
 // Conversation
 // ---------------------------------------------------------------------------

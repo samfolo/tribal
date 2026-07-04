@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tribal_domain::{CompletionResponse, EmbeddingUsage, InferenceEvent};
+use tribal_wire::gateway::{GrantSet, PositionKey};
 
 use crate::{
     error::InferenceError,
@@ -17,6 +18,22 @@ use crate::{
     response::EmbeddingResponse,
     stream::InferenceEventStream,
 };
+
+// ---------------------------------------------------------------------------
+// CallContext
+// ---------------------------------------------------------------------------
+
+/// The run-scoped context a metered call presents beyond its request body: the
+/// position key that names the call within its run, and the grant set the
+/// gateway derives `(account, principal)` from. Local providers ignore it; only
+/// the Platform provider, crossing the metering seam, presents it.
+#[derive(Debug, Clone, Default)]
+pub struct CallContext {
+    /// The position key identifying this call within its run.
+    pub position_key: Option<PositionKey>,
+    /// The run's grant set — the credential tenancy is derived from.
+    pub grant: Option<GrantSet>,
+}
 
 // ---------------------------------------------------------------------------
 // ProviderIdentity
@@ -76,7 +93,11 @@ pub trait InferenceProvider: Send + Sync {
     async fn complete_stream(
         &self,
         request: CompletionRequest,
+        context: &CallContext,
     ) -> Result<InferenceEventStream, InferenceError> {
+        // The buffered fallback presents no run context; a metered provider
+        // overrides this and consumes it.
+        let _ = context;
         let response = self.complete(request).await?;
         Ok(Box::pin(futures_util::stream::once(async move {
             Ok(InferenceEvent::Completed { response })

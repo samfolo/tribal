@@ -305,8 +305,8 @@ mod tests {
 
     use super::super::inference::MESSAGES_PATH;
     use crate::{
-        CompletionRequest, InferenceProvider, Message, anthropic::AnthropicInferenceProvider,
-        collect_completion,
+        CallContext, CompletionRequest, InferenceProvider, Message,
+        anthropic::AnthropicInferenceProvider, collect_completion,
     };
 
     const MODEL: &str = "claude-haiku-4-5-20251001";
@@ -390,7 +390,7 @@ mod tests {
             .await;
 
         let streamed = setup(&stream_server)
-            .complete_stream(a_request("test"))
+            .complete_stream(a_request("test"), &CallContext::default())
             .await
             .unwrap();
         let streamed = collect_completion(streamed).await.unwrap();
@@ -421,7 +421,7 @@ mod tests {
         mount_stream(&server, a_stream_body()).await;
 
         let mut stream = setup(&server)
-            .complete_stream(a_request("test"))
+            .complete_stream(a_request("test"), &CallContext::default())
             .await
             .unwrap();
 
@@ -452,7 +452,7 @@ mod tests {
             .await;
 
         let _ = setup(&stream_server)
-            .complete_stream(a_request("identical input"))
+            .complete_stream(a_request("identical input"), &CallContext::default())
             .await
             .unwrap();
         let _ = setup(&buffered_server)
@@ -494,7 +494,7 @@ mod tests {
         mount_stream(&server, body).await;
 
         let stream = setup(&server)
-            .complete_stream(a_request("test"))
+            .complete_stream(a_request("test"), &CallContext::default())
             .await
             .unwrap();
         let events: Vec<_> = stream.collect().await;
@@ -531,7 +531,7 @@ mod tests {
         mount_stream(&server, body).await;
 
         let stream = setup(&server)
-            .complete_stream(a_request("test"))
+            .complete_stream(a_request("test"), &CallContext::default())
             .await
             .unwrap();
         let events: Vec<_> = stream.collect().await;
@@ -557,7 +557,7 @@ mod tests {
         mount_stream(&server, body).await;
 
         let stream = setup(&server)
-            .complete_stream(a_request("test"))
+            .complete_stream(a_request("test"), &CallContext::default())
             .await
             .unwrap();
         let err = collect_completion(stream).await.unwrap_err();
@@ -581,7 +581,7 @@ mod tests {
         mount_stream(&server, body).await;
 
         let stream = setup(&server)
-            .complete_stream(a_request("test"))
+            .complete_stream(a_request("test"), &CallContext::default())
             .await
             .unwrap();
         let err = collect_completion(stream).await.unwrap_err();
@@ -607,7 +607,7 @@ mod tests {
         mount_stream(&server, body).await;
 
         let stream = setup(&server)
-            .complete_stream(a_request("test"))
+            .complete_stream(a_request("test"), &CallContext::default())
             .await
             .unwrap();
         let err = collect_completion(stream).await.unwrap_err();
@@ -634,7 +634,7 @@ mod tests {
         mount_stream(&server, body).await;
 
         let stream = setup(&server)
-            .complete_stream(a_request("test"))
+            .complete_stream(a_request("test"), &CallContext::default())
             .await
             .unwrap();
         let response = collect_completion(stream).await.unwrap();
@@ -658,7 +658,7 @@ mod tests {
         mount_stream(&server, body).await;
 
         let stream = setup(&server)
-            .complete_stream(a_request("test"))
+            .complete_stream(a_request("test"), &CallContext::default())
             .await
             .unwrap();
         let response = collect_completion(stream).await.unwrap();
@@ -680,7 +680,7 @@ mod tests {
             .await;
 
         let err = setup(&server)
-            .complete_stream(a_request("test"))
+            .complete_stream(a_request("test"), &CallContext::default())
             .await
             .err()
             .expect("an error status must fail the call before the stream opens");
@@ -705,7 +705,7 @@ mod tests {
         };
 
         let err = setup(&server)
-            .complete_stream(request)
+            .complete_stream(request, &CallContext::default())
             .await
             .err()
             .expect("an empty messages list must fail the call before the wire");
@@ -737,7 +737,7 @@ mod tests {
         mount_stream(&server, body).await;
 
         let stream = setup(&server)
-            .complete_stream(a_request("test"))
+            .complete_stream(a_request("test"), &CallContext::default())
             .await
             .unwrap();
         let response = collect_completion(stream).await.unwrap();
