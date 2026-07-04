@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{Connection, PgConnection, Postgres, Row, Transaction};
 use tribal_domain::RunJobId;
 use uuid::Uuid;
 
@@ -152,7 +152,7 @@ pub trait RunJobRepository {
     /// Enqueues a job, deduping on `(account_id, idempotency_key)`.
     async fn enqueue(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         job: NewRunJob,
     ) -> Result<EnqueueOutcome, RuntimeDbError>;
 
@@ -164,7 +164,7 @@ pub trait RunJobRepository {
     /// upserted at `default_cap`.
     async fn claim(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         default_cap: i32,
         lease: Duration,
     ) -> Result<Option<ClaimedJob>, RuntimeDbError>;
@@ -173,7 +173,7 @@ pub trait RunJobRepository {
     /// longer matches a running job.
     async fn heartbeat(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         id: RunJobId,
         claim_token: Uuid,
         lease: Duration,
@@ -184,7 +184,7 @@ pub trait RunJobRepository {
     /// longer matches a running job.
     async fn leave_running(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         id: RunJobId,
         claim_token: Uuid,
         to: PostRunningState,
@@ -194,18 +194,22 @@ pub trait RunJobRepository {
     /// and releasing its slot in one transaction. Returns the reclaimed ids.
     async fn reclaim_expired(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         limit: i64,
     ) -> Result<Vec<RunJobId>, RuntimeDbError>;
 
     /// Records a durable cancel intent on a job, whatever its state — no claim
     /// token required. Returns whether the job exists.
-    async fn request_cancel(&self, pool: &PgPool, id: RunJobId) -> Result<bool, RuntimeDbError>;
+    async fn request_cancel(
+        &self,
+        conn: &mut PgConnection,
+        id: RunJobId,
+    ) -> Result<bool, RuntimeDbError>;
 
     /// Reads a job's current state, if it exists.
     async fn state_of(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         id: RunJobId,
     ) -> Result<Option<RunJobState>, RuntimeDbError>;
 }
@@ -217,7 +221,7 @@ pub struct PgRunJobRepository;
 impl RunJobRepository for PgRunJobRepository {
     async fn enqueue(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         job: NewRunJob,
     ) -> Result<EnqueueOutcome, RuntimeDbError> {
         let id = RunJobId::new();
@@ -233,7 +237,7 @@ impl RunJobRepository for PgRunJobRepository {
         .bind(&job.payload)
         .bind(&job.idempotency_key)
         .bind(job.priority)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "enqueuing a job".to_owned(),
@@ -250,7 +254,7 @@ impl RunJobRepository for PgRunJobRepository {
         )
         .bind(&job.account_id)
         .bind(&job.idempotency_key)
-        .fetch_one(pool)
+        .fetch_one(&mut *conn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "reading a deduplicated job".to_owned(),
@@ -261,11 +265,11 @@ impl RunJobRepository for PgRunJobRepository {
 
     async fn claim(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         default_cap: i32,
         lease: Duration,
     ) -> Result<Option<ClaimedJob>, RuntimeDbError> {
-        let mut tx = pool
+        let mut tx = conn
             .begin()
             .await
             .map_err(|source| RuntimeDbError::QueryFailed {
@@ -295,7 +299,7 @@ impl RunJobRepository for PgRunJobRepository {
 
     async fn heartbeat(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         id: RunJobId,
         claim_token: Uuid,
         lease: Duration,
@@ -309,7 +313,7 @@ impl RunJobRepository for PgRunJobRepository {
         .bind(id.to_string())
         .bind(claim_token)
         .bind(lease_seconds(lease))
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "renewing a lease".to_owned(),
@@ -320,12 +324,12 @@ impl RunJobRepository for PgRunJobRepository {
 
     async fn leave_running(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         id: RunJobId,
         claim_token: Uuid,
         to: PostRunningState,
     ) -> Result<WriteOutcome, RuntimeDbError> {
-        let mut tx = pool
+        let mut tx = conn
             .begin()
             .await
             .map_err(|source| RuntimeDbError::QueryFailed {
@@ -376,7 +380,7 @@ impl RunJobRepository for PgRunJobRepository {
 
     async fn reclaim_expired(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         limit: i64,
     ) -> Result<Vec<RunJobId>, RuntimeDbError> {
         // One transaction: requeue every stale running job and release its
@@ -405,7 +409,7 @@ impl RunJobRepository for PgRunJobRepository {
              SELECT id FROM requeued",
         )
         .bind(limit)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "reclaiming expired jobs".to_owned(),
@@ -417,13 +421,17 @@ impl RunJobRepository for PgRunJobRepository {
             .collect()
     }
 
-    async fn request_cancel(&self, pool: &PgPool, id: RunJobId) -> Result<bool, RuntimeDbError> {
+    async fn request_cancel(
+        &self,
+        conn: &mut PgConnection,
+        id: RunJobId,
+    ) -> Result<bool, RuntimeDbError> {
         let updated: Option<String> = sqlx::query_scalar(
             "UPDATE run_job SET cancel_requested = TRUE, updated_at = now()
              WHERE id = $1 RETURNING id",
         )
         .bind(id.to_string())
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "recording a cancel intent".to_owned(),
@@ -434,12 +442,12 @@ impl RunJobRepository for PgRunJobRepository {
 
     async fn state_of(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         id: RunJobId,
     ) -> Result<Option<RunJobState>, RuntimeDbError> {
         let state: Option<String> = sqlx::query_scalar("SELECT state FROM run_job WHERE id = $1")
             .bind(id.to_string())
-            .fetch_optional(pool)
+            .fetch_optional(&mut *conn)
             .await
             .map_err(|source| RuntimeDbError::QueryFailed {
                 context: "reading a job state".to_owned(),

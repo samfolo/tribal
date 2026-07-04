@@ -7,7 +7,7 @@ mod support;
 use std::sync::Arc;
 
 use chrono::Duration;
-use sqlx::PgPool;
+use sqlx::PgConnection;
 use tokio::sync::Barrier;
 use tribal_runtime_db::{
     NewRunJob, PgRunJobRepository, PgTenantSlotRepository, PostRunningState, RunJobRepository,
@@ -27,10 +27,10 @@ fn expired_lease() -> Duration {
 }
 
 /// Enqueues a probe job for `tenant`, returning nothing — the claim reads it back.
-async fn enqueue(pool: &PgPool, tenant: &str, key: &str) {
+async fn enqueue(conn: &mut PgConnection, tenant: &str, key: &str) {
     RUN_JOB
         .enqueue(
-            pool,
+            &mut *conn,
             NewRunJob {
                 account_id: tenant.to_owned(),
                 kind: "probe".to_owned(),
@@ -43,9 +43,9 @@ async fn enqueue(pool: &PgPool, tenant: &str, key: &str) {
         .expect("enqueue");
 }
 
-async fn running_count(pool: &PgPool, tenant: &str) -> i32 {
+async fn running_count(conn: &mut PgConnection, tenant: &str) -> i32 {
     TENANT_SLOT
-        .get(pool, tenant)
+        .get(&mut *conn, tenant)
         .await
         .expect("read slot")
         .map_or(0, |slot| slot.running)
@@ -58,9 +58,10 @@ async fn running_count(pool: &PgPool, tenant: &str) -> i32 {
 #[tokio::test]
 async fn enqueue_dedups_on_idempotency_key() {
     let db = support::provision().await;
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
     let first = RUN_JOB
         .enqueue(
-            db.pool(),
+            &mut conn,
             NewRunJob {
                 account_id: "account_a".to_owned(),
                 kind: "cron".to_owned(),
@@ -73,7 +74,7 @@ async fn enqueue_dedups_on_idempotency_key() {
         .expect("first enqueue");
     let second = RUN_JOB
         .enqueue(
-            db.pool(),
+            &mut conn,
             NewRunJob {
                 account_id: "account_a".to_owned(),
                 kind: "cron".to_owned(),
@@ -98,16 +99,17 @@ async fn enqueue_dedups_on_idempotency_key() {
 #[tokio::test]
 async fn an_enqueued_job_is_claimable_with_no_schedule() {
     let db = support::provision().await;
-    enqueue(db.pool(), "account_a", "job-1").await;
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
+    enqueue(&mut conn, "account_a", "job-1").await;
     let claimed = RUN_JOB
-        .claim(db.pool(), DEFAULT_CAP, lease())
+        .claim(&mut conn, DEFAULT_CAP, lease())
         .await
         .expect("claim");
     assert!(
         claimed.is_some(),
         "an enqueued job is claimable with no schedule"
     );
-    assert_eq!(running_count(db.pool(), "account_a").await, 1);
+    assert_eq!(running_count(&mut conn, "account_a").await, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -119,26 +121,28 @@ async fn two_concurrent_claimers_at_cap_minus_one_admit_exactly_one() {
     let db = support::provision().await;
     let pool = db.pool().clone();
     let tenant = "account_a";
+    let mut setup = pool.acquire().await.expect("acquire a setup connection");
 
     // cap = 5, pre-claim 4 so the tenant sits at running = cap - 1, with plenty
     // of queued jobs left for the racers to contend over.
     TENANT_SLOT
-        .apply_cap_sync(&pool, tenant, 5)
+        .apply_cap_sync(&mut setup, tenant, 5)
         .await
         .expect("cap sync");
     for i in 0..12 {
-        enqueue(&pool, tenant, &format!("job-{i}")).await;
+        enqueue(&mut setup, tenant, &format!("job-{i}")).await;
     }
     for _ in 0..4 {
         RUN_JOB
-            .claim(&pool, DEFAULT_CAP, lease())
+            .claim(&mut setup, DEFAULT_CAP, lease())
             .await
             .expect("pre-claim")
             .expect("pre-claim admitted");
     }
-    assert_eq!(running_count(&pool, tenant).await, 4, "at cap - 1");
+    assert_eq!(running_count(&mut setup, tenant).await, 4, "at cap - 1");
 
-    // 16 racers contend for the one remaining slot.
+    // 16 racers contend for the one remaining slot. Each acquires its own
+    // connection before the barrier, so the claims race rather than the acquires.
     let racers = 16;
     let barrier = Arc::new(Barrier::new(racers));
     let mut handles = Vec::new();
@@ -146,9 +150,10 @@ async fn two_concurrent_claimers_at_cap_minus_one_admit_exactly_one() {
         let pool = pool.clone();
         let barrier = Arc::clone(&barrier);
         handles.push(tokio::spawn(async move {
+            let mut conn = pool.acquire().await.expect("acquire a racing connection");
             barrier.wait().await;
             RUN_JOB
-                .claim(&pool, DEFAULT_CAP, lease())
+                .claim(&mut conn, DEFAULT_CAP, lease())
                 .await
                 .expect("racing claim")
                 .is_some()
@@ -163,7 +168,7 @@ async fn two_concurrent_claimers_at_cap_minus_one_admit_exactly_one() {
 
     assert_eq!(admitted, 1, "exactly one racer admits at cap - 1");
     assert_eq!(
-        running_count(&pool, tenant).await,
+        running_count(&mut setup, tenant).await,
         5,
         "running reaches the cap, never past"
     );
@@ -172,32 +177,32 @@ async fn two_concurrent_claimers_at_cap_minus_one_admit_exactly_one() {
 #[tokio::test]
 async fn a_saturated_tenant_is_skipped_for_another_tenants_claimable_job() {
     let db = support::provision().await;
-    let pool = db.pool();
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
     // Tenant A: cap 1, one job claimed (saturated), a second job queued and older
     // than B's — age order would prefer A, but saturation must skip it.
     TENANT_SLOT
-        .apply_cap_sync(pool, "account_a", 1)
+        .apply_cap_sync(&mut conn, "account_a", 1)
         .await
         .expect("cap a");
-    enqueue(pool, "account_a", "a-1").await;
+    enqueue(&mut conn, "account_a", "a-1").await;
     RUN_JOB
-        .claim(pool, DEFAULT_CAP, lease())
+        .claim(&mut conn, DEFAULT_CAP, lease())
         .await
         .expect("claim a-1")
         .expect("a-1 admitted");
-    enqueue(pool, "account_a", "a-2").await;
+    enqueue(&mut conn, "account_a", "a-2").await;
 
     // Tenant B: cap 1, one queued job, enqueued after A's second — so A's queued
     // job is the globally oldest, yet A is saturated.
     TENANT_SLOT
-        .apply_cap_sync(pool, "account_b", 1)
+        .apply_cap_sync(&mut conn, "account_b", 1)
         .await
         .expect("cap b");
-    enqueue(pool, "account_b", "b-1").await;
+    enqueue(&mut conn, "account_b", "b-1").await;
 
     let claimed = RUN_JOB
-        .claim(pool, DEFAULT_CAP, lease())
+        .claim(&mut conn, DEFAULT_CAP, lease())
         .await
         .expect("claim")
         .expect("a claimable job exists");
@@ -210,15 +215,15 @@ async fn a_saturated_tenant_is_skipped_for_another_tenants_claimable_job() {
 #[tokio::test]
 async fn two_tenants_with_headroom_drain_by_age() {
     let db = support::provision().await;
-    let pool = db.pool();
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
     // Both tenants have headroom; the globally-older queued job is claimed first
     // regardless of tenant — cross-tenant order is age only.
-    enqueue(pool, "account_a", "older").await;
-    enqueue(pool, "account_b", "newer").await;
+    enqueue(&mut conn, "account_a", "older").await;
+    enqueue(&mut conn, "account_b", "newer").await;
 
     let first = RUN_JOB
-        .claim(pool, DEFAULT_CAP, lease())
+        .claim(&mut conn, DEFAULT_CAP, lease())
         .await
         .expect("first")
         .expect("first job");
@@ -227,7 +232,7 @@ async fn two_tenants_with_headroom_drain_by_age() {
         "the older job's tenant claims first"
     );
     let second = RUN_JOB
-        .claim(pool, DEFAULT_CAP, lease())
+        .claim(&mut conn, DEFAULT_CAP, lease())
         .await
         .expect("second")
         .expect("second job");
@@ -241,17 +246,17 @@ async fn two_tenants_with_headroom_drain_by_age() {
 #[tokio::test]
 async fn a_cap_sync_updates_the_cap_and_a_missing_slot_admits_at_default() {
     let db = support::provision().await;
-    let pool = db.pool();
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
     // No slot row exists: the first claim admits at the conservative default.
-    enqueue(pool, "account_a", "job-0").await;
+    enqueue(&mut conn, "account_a", "job-0").await;
     RUN_JOB
-        .claim(pool, DEFAULT_CAP, lease())
+        .claim(&mut conn, DEFAULT_CAP, lease())
         .await
         .expect("claim")
         .expect("admitted at default");
     let slot = TENANT_SLOT
-        .get(pool, "account_a")
+        .get(&mut conn, "account_a")
         .await
         .expect("slot")
         .expect("slot exists");
@@ -263,11 +268,11 @@ async fn a_cap_sync_updates_the_cap_and_a_missing_slot_admits_at_default() {
 
     // A cap sync raises the ceiling without disturbing the running count.
     TENANT_SLOT
-        .apply_cap_sync(pool, "account_a", 9)
+        .apply_cap_sync(&mut conn, "account_a", 9)
         .await
         .expect("cap sync");
     let raised = TENANT_SLOT
-        .get(pool, "account_a")
+        .get(&mut conn, "account_a")
         .await
         .expect("slot")
         .expect("slot exists");
@@ -285,17 +290,20 @@ async fn a_cap_sync_updates_the_cap_and_a_missing_slot_admits_at_default() {
 #[tokio::test]
 async fn a_lost_lease_write_is_refused_by_the_token_fence_while_a_new_runner_holds_it() {
     let db = support::provision().await;
-    let pool = db.pool();
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
     // A runner claims with an expired lease and is reclaimed; a fresh runner then
     // re-claims the same job. The job is running again — but under a new token.
-    enqueue(pool, "account_a", "job-0").await;
+    enqueue(&mut conn, "account_a", "job-0").await;
     let stale_runner = RUN_JOB
-        .claim(pool, DEFAULT_CAP, expired_lease())
+        .claim(&mut conn, DEFAULT_CAP, expired_lease())
         .await
         .expect("claim")
         .expect("admitted");
-    let reclaimed = RUN_JOB.reclaim_expired(pool, 10).await.expect("reclaim");
+    let reclaimed = RUN_JOB
+        .reclaim_expired(&mut conn, 10)
+        .await
+        .expect("reclaim");
     assert_eq!(
         reclaimed,
         vec![stale_runner.id],
@@ -303,7 +311,7 @@ async fn a_lost_lease_write_is_refused_by_the_token_fence_while_a_new_runner_hol
     );
 
     let live_runner = RUN_JOB
-        .claim(pool, DEFAULT_CAP, lease())
+        .claim(&mut conn, DEFAULT_CAP, lease())
         .await
         .expect("re-claim")
         .expect("re-admitted");
@@ -320,7 +328,7 @@ async fn a_lost_lease_write_is_refused_by_the_token_fence_while_a_new_runner_hol
     // fence, not the state check, can refuse it. It must, and nothing changes.
     let stale = RUN_JOB
         .leave_running(
-            pool,
+            &mut conn,
             stale_runner.id,
             stale_runner.claim_token,
             PostRunningState::Done,
@@ -334,14 +342,14 @@ async fn a_lost_lease_write_is_refused_by_the_token_fence_while_a_new_runner_hol
     );
     assert_eq!(
         RUN_JOB
-            .state_of(pool, stale_runner.id)
+            .state_of(&mut conn, stale_runner.id)
             .await
             .expect("state"),
         Some(RunJobState::Running),
         "the live runner's job is untouched by the stale write",
     );
     assert_eq!(
-        running_count(pool, "account_a").await,
+        running_count(&mut conn, "account_a").await,
         1,
         "no double release of the slot"
     );
@@ -349,7 +357,7 @@ async fn a_lost_lease_write_is_refused_by_the_token_fence_while_a_new_runner_hol
     // The live runner, holding the current token, commits its transition.
     let live = RUN_JOB
         .leave_running(
-            pool,
+            &mut conn,
             live_runner.id,
             live_runner.claim_token,
             PostRunningState::Done,
@@ -362,25 +370,28 @@ async fn a_lost_lease_write_is_refused_by_the_token_fence_while_a_new_runner_hol
 #[tokio::test]
 async fn running_never_leaks_when_a_claimed_job_is_reclaimed() {
     let db = support::provision().await;
-    let pool = db.pool();
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
-    enqueue(pool, "account_a", "job-0").await;
+    enqueue(&mut conn, "account_a", "job-0").await;
     RUN_JOB
-        .claim(pool, DEFAULT_CAP, expired_lease())
+        .claim(&mut conn, DEFAULT_CAP, expired_lease())
         .await
         .expect("claim")
         .expect("admitted");
     assert_eq!(
-        running_count(pool, "account_a").await,
+        running_count(&mut conn, "account_a").await,
         1,
         "the claim took a slot"
     );
 
     // A crash between claim and terminal is reclaimed with the slot released in
     // the same transaction that moves the job out of running.
-    RUN_JOB.reclaim_expired(pool, 10).await.expect("reclaim");
+    RUN_JOB
+        .reclaim_expired(&mut conn, 10)
+        .await
+        .expect("reclaim");
     assert_eq!(
-        running_count(pool, "account_a").await,
+        running_count(&mut conn, "account_a").await,
         0,
         "the slot is released on reclaim"
     );
@@ -389,19 +400,19 @@ async fn running_never_leaks_when_a_claimed_job_is_reclaimed() {
 #[tokio::test]
 async fn leaving_running_releases_the_slot_under_the_token_fence() {
     let db = support::provision().await;
-    let pool = db.pool();
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
-    enqueue(pool, "account_a", "job-0").await;
+    enqueue(&mut conn, "account_a", "job-0").await;
     let claimed = RUN_JOB
-        .claim(pool, DEFAULT_CAP, lease())
+        .claim(&mut conn, DEFAULT_CAP, lease())
         .await
         .expect("claim")
         .expect("admitted");
-    assert_eq!(running_count(pool, "account_a").await, 1);
+    assert_eq!(running_count(&mut conn, "account_a").await, 1);
 
     let outcome = RUN_JOB
         .leave_running(
-            pool,
+            &mut conn,
             claimed.id,
             claimed.claim_token,
             PostRunningState::Settling,
@@ -410,11 +421,14 @@ async fn leaving_running_releases_the_slot_under_the_token_fence() {
         .expect("leave running");
     assert_eq!(outcome, WriteOutcome::Applied);
     assert_eq!(
-        RUN_JOB.state_of(pool, claimed.id).await.expect("state"),
+        RUN_JOB
+            .state_of(&mut conn, claimed.id)
+            .await
+            .expect("state"),
         Some(RunJobState::Settling),
     );
     assert_eq!(
-        running_count(pool, "account_a").await,
+        running_count(&mut conn, "account_a").await,
         0,
         "leaving running frees the slot"
     );
@@ -427,19 +441,19 @@ async fn leaving_running_releases_the_slot_under_the_token_fence() {
 #[tokio::test]
 async fn an_account_purge_removes_every_row_for_that_account_only() {
     let db = support::provision().await;
-    let pool = db.pool();
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
     // Two tenants with jobs and slots; a claim on one leaves a running row too.
-    enqueue(pool, "account_a", "a-1").await;
-    enqueue(pool, "account_a", "a-2").await;
+    enqueue(&mut conn, "account_a", "a-1").await;
+    enqueue(&mut conn, "account_a", "a-2").await;
     RUN_JOB
-        .claim(pool, DEFAULT_CAP, lease())
+        .claim(&mut conn, DEFAULT_CAP, lease())
         .await
         .expect("claim")
         .expect("admitted");
-    enqueue(pool, "account_b", "b-1").await;
+    enqueue(&mut conn, "account_b", "b-1").await;
 
-    let removed = tribal_runtime_db::purge_account(pool, "account_a")
+    let removed = tribal_runtime_db::purge_account(&mut conn, "account_a")
         .await
         .expect("purge");
     assert_eq!(removed, 2, "both of the account's jobs are removed");
@@ -447,7 +461,7 @@ async fn an_account_purge_removes_every_row_for_that_account_only() {
     // The purged account leaves no residue: no jobs, no slot.
     assert!(
         TENANT_SLOT
-            .get(pool, "account_a")
+            .get(&mut conn, "account_a")
             .await
             .expect("slot")
             .is_none(),
@@ -456,7 +470,7 @@ async fn an_account_purge_removes_every_row_for_that_account_only() {
 
     // The other account is untouched.
     let survivor = RUN_JOB
-        .claim(pool, DEFAULT_CAP, lease())
+        .claim(&mut conn, DEFAULT_CAP, lease())
         .await
         .expect("claim survivor")
         .expect("the other account's job survives");

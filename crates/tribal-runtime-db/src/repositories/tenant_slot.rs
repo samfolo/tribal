@@ -8,7 +8,7 @@
 //! [`run_job`]: super::run_job
 
 use async_trait::async_trait;
-use sqlx::{PgPool, Row};
+use sqlx::{PgConnection, Row};
 
 use crate::RuntimeDbError;
 
@@ -28,7 +28,7 @@ pub trait TenantSlotRepository {
     /// zero run count when it is absent so a later plan change is not lost.
     async fn apply_cap_sync(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         account_id: &str,
         cap: i32,
     ) -> Result<(), RuntimeDbError>;
@@ -36,7 +36,7 @@ pub trait TenantSlotRepository {
     /// Reads a tenant's slot, if the row exists.
     async fn get(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         account_id: &str,
     ) -> Result<Option<TenantSlot>, RuntimeDbError>;
 }
@@ -48,7 +48,7 @@ pub struct PgTenantSlotRepository;
 impl TenantSlotRepository for PgTenantSlotRepository {
     async fn apply_cap_sync(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         account_id: &str,
         cap: i32,
     ) -> Result<(), RuntimeDbError> {
@@ -58,7 +58,7 @@ impl TenantSlotRepository for PgTenantSlotRepository {
         )
         .bind(account_id)
         .bind(cap)
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "applying a cap sync".to_owned(),
@@ -69,12 +69,12 @@ impl TenantSlotRepository for PgTenantSlotRepository {
 
     async fn get(
         &self,
-        pool: &PgPool,
+        conn: &mut PgConnection,
         account_id: &str,
     ) -> Result<Option<TenantSlot>, RuntimeDbError> {
         let row = sqlx::query("SELECT running, cap FROM tenant_slot WHERE account_id = $1")
             .bind(account_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *conn)
             .await
             .map_err(|source| RuntimeDbError::QueryFailed {
                 context: "reading a tenant slot".to_owned(),

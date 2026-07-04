@@ -1,6 +1,6 @@
 //! Account-scoped erasure over the runtime database.
 
-use sqlx::PgPool;
+use sqlx::{Connection, PgConnection};
 
 use crate::RuntimeDbError;
 
@@ -12,8 +12,11 @@ use crate::RuntimeDbError;
 /// # Errors
 ///
 /// Returns [`RuntimeDbError::QueryFailed`] if a delete fails.
-pub async fn purge_account(pool: &PgPool, account_id: &str) -> Result<u64, RuntimeDbError> {
-    let mut tx = pool
+pub async fn purge_account(
+    conn: &mut PgConnection,
+    account_id: &str,
+) -> Result<u64, RuntimeDbError> {
+    let mut tx = conn
         .begin()
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
