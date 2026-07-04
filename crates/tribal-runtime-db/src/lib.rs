@@ -9,9 +9,15 @@
 
 mod error;
 mod pool;
+mod repositories;
 
 pub use error::RuntimeDbError;
 pub use pool::create_pool;
+pub use repositories::{
+    ClaimedJob, EnqueueOutcome, NewRunJob, PgRunJobRepository, PgTenantSlotRepository,
+    PostRunningState, RunJobRepository, RunJobState, TenantSlot, TenantSlotRepository,
+    WriteOutcome,
+};
 pub use tribal_domain::RunJobId;
 
 /// Compiled migrations for the runtime database schema, embedded at compile

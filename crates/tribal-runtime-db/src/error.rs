@@ -14,4 +14,12 @@ pub enum RuntimeDbError {
         #[source]
         source: sqlx::Error,
     },
+
+    /// A stored value did not parse back into its typed form — a row this layer
+    /// wrote is no longer well-formed.
+    #[error("runtime-db row is malformed [{context}]")]
+    Malformed {
+        /// What the layer was reading when the value failed to parse.
+        context: String,
+    },
 }
