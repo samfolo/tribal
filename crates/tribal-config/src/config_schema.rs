@@ -462,7 +462,8 @@ mod tests {
     fn test_every_password_leaf_is_a_registered_secret() {
         let schema = structural_schema();
         let password_refs = password_definition_refs(&schema);
-        let registered: BTreeSet<&str> = SecretField::ALL.iter().map(|field| field.path()).collect();
+        let registered: BTreeSet<&str> =
+            SecretField::ALL.iter().map(|field| field.path()).collect();
         for (path, node) in leaf_entries(&schema) {
             if leaf_is_password(node, &password_refs) {
                 assert!(

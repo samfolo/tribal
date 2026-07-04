@@ -28,12 +28,13 @@ use tribal_wire::control::{
 };
 
 use super::{
-    ControlContext, listening_bind_address,
+    ControlContext,
     descriptor::{self, RuntimeDescriptor},
     dispatch::dispatch,
     error::ControlError,
     event::notification_for,
     framing::{encode_frame, read_typed_frame, write_frame},
+    listening_bind_address,
 };
 
 /// The owner-only permission bits the socket is created with — defence in depth
@@ -696,7 +697,8 @@ mod tests {
         .expect("the first plane binds");
         let serve = tokio::spawn(first.serve());
 
-        match ControlPlane::bind_at(socket_path.clone(), descriptor_path.clone(), test_context()).await
+        match ControlPlane::bind_at(socket_path.clone(), descriptor_path.clone(), test_context())
+            .await
         {
             Err(ControlError::AlreadyServing { .. }) => {}
             other => panic!(
@@ -728,7 +730,8 @@ mod tests {
         // With the descriptor gone, only the bind-time connect probe can tell the
         // socket is live — it must still refuse rather than clobber the winner.
         std::fs::remove_file(&descriptor_path).expect("remove the descriptor");
-        match ControlPlane::bind_at(socket_path.clone(), descriptor_path.clone(), test_context()).await
+        match ControlPlane::bind_at(socket_path.clone(), descriptor_path.clone(), test_context())
+            .await
         {
             Err(ControlError::AlreadyServing { .. }) => {}
             other => panic!(
@@ -765,7 +768,9 @@ mod tests {
             bind_address: None,
             config_path: PathBuf::from("/tmp/tribal.yaml"),
         };
-        stale.write_atomically(&descriptor_path).expect("write the stale descriptor");
+        stale
+            .write_atomically(&descriptor_path)
+            .expect("write the stale descriptor");
 
         let plane =
             ControlPlane::bind_at(socket_path.clone(), descriptor_path.clone(), test_context())

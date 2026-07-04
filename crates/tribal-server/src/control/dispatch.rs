@@ -94,7 +94,11 @@ async fn config_set_and_publish(
         tokio::task::spawn_blocking(move || config_set(&config, &config_path, &cli, request))
             .await
             .map_err(|source| {
-                error(INTERNAL_ERROR, format!("config.set did not complete: {source}"), None)
+                error(
+                    INTERNAL_ERROR,
+                    format!("config.set did not complete: {source}"),
+                    None,
+                )
             })?
     }?;
 

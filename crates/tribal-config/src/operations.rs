@@ -19,7 +19,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    CliOverrides, ConfigError, TribalConfig, atomic_write::write_atomically,
+    CliOverrides, ConfigError, TribalConfig,
+    atomic_write::write_atomically,
     config_schema::{ReloadClass, reload_class},
     env::{ALIAS_ENV_VARS, env_var_for_path},
     redact::redact_secrets,
