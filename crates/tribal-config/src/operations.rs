@@ -12,7 +12,6 @@
 
 use std::{
     collections::BTreeSet,
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -20,12 +19,15 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    CliOverrides, ConfigError, TribalConfig,
+    CliOverrides, ConfigError, TribalConfig, atomic_write::write_atomically,
     config_schema::{ReloadClass, reload_class},
     env::{ALIAS_ENV_VARS, env_var_for_path},
     redact::redact_secrets,
     validate,
 };
+
+/// Owner-only permissions for the config file, which may hold a secret.
+const CONFIG_FILE_MODE: u32 = 0o600;
 
 // ---------------------------------------------------------------------------
 // Outcomes
@@ -49,6 +51,17 @@ pub enum WriteEffect {
         /// variable's name, or a command-line flag.
         by: String,
     },
+}
+
+/// A completed `config.set`: how the write takes effect, and the exact bytes
+/// written to the file — so a caller coordinating with a file watcher records
+/// what it wrote rather than re-reading and racing a concurrent edit.
+#[derive(Debug, Clone)]
+pub struct Persisted {
+    /// How the write takes effect for the running binary.
+    pub effect: WriteEffect,
+    /// The exact bytes written to the config file.
+    pub document: Vec<u8>,
 }
 
 /// One reason a proposed configuration write is unacceptable.
@@ -211,17 +224,21 @@ pub fn set(
     key: &str,
     value: Value,
     cli: &CliShadow,
-) -> Result<WriteEffect, SetError> {
+) -> Result<Persisted, SetError> {
     let violations = validate_write(config, key, value.clone());
     if !violations.is_empty() {
         return Err(SetError::Rejected { violations });
     }
-    persist(config_file, key, value)?;
-    Ok(write_effect(key, cli))
+    let document = persist(config_file, key, value)?;
+    Ok(Persisted {
+        effect: write_effect(key, cli),
+        document,
+    })
 }
 
-/// Writes one key into the config file's YAML document, atomically.
-fn persist(config_file: &Path, key: &str, value: Value) -> Result<(), SetError> {
+/// Writes one key into the config file's YAML document atomically, returning the
+/// bytes it wrote.
+fn persist(config_file: &Path, key: &str, value: Value) -> Result<Vec<u8>, SetError> {
     let mut document = read_document(config_file)?;
     apply_value(&mut document, key, value).map_err(|message| SetError::Rejected {
         violations: vec![ConfigViolation {
@@ -230,10 +247,14 @@ fn persist(config_file: &Path, key: &str, value: Value) -> Result<(), SetError> 
         }],
     })?;
     let yaml = serde_yaml::to_string(&document).map_err(|source| SetError::Serialise { source })?;
-    write_atomically(config_file, yaml.as_bytes()).map_err(|source| SetError::Io {
-        path: config_file.to_owned(),
-        source,
-    })
+    let bytes = yaml.into_bytes();
+    write_atomically(config_file, &bytes, Some(CONFIG_FILE_MODE)).map_err(|source| {
+        SetError::Io {
+            path: config_file.to_owned(),
+            source,
+        }
+    })?;
+    Ok(bytes)
 }
 
 /// Reads the config file into a JSON document, treating an absent or empty file
@@ -280,32 +301,6 @@ fn apply_value(root: &mut Value, key: &str, value: Value) -> Result<(), String> 
         .as_object_mut()
         .ok_or_else(|| non_object_error(key))?
         .insert((*last).to_owned(), value);
-    Ok(())
-}
-
-/// Writes bytes to `path` atomically via a sibling tempfile renamed into place,
-/// with owner-only permissions (the file may hold a secret). Modelled on the
-/// credentials writer.
-fn write_atomically(path: &Path, payload: &[u8]) -> std::io::Result<()> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty());
-    let parent = parent.unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)?;
-
-    let mut tempfile = tempfile::NamedTempFile::new_in(parent)?;
-    tempfile.write_all(payload)?;
-    tempfile.as_file().sync_all()?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tempfile
-            .as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    tempfile.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
 
@@ -501,7 +496,8 @@ mod tests {
                 json!("debug"),
                 &CliShadow::default(),
             )
-            .unwrap();
+            .unwrap()
+            .effect;
             assert_eq!(effect, WriteEffect::NeedsRestart);
 
             // The loader reads the persisted value back.
@@ -545,7 +541,8 @@ mod tests {
                 json!("debug"),
                 &CliShadow::default(),
             )
-            .unwrap();
+            .unwrap()
+            .effect;
             assert_eq!(
                 effect,
                 WriteEffect::Shadowed {
@@ -575,7 +572,8 @@ mod tests {
                 json!(42),
                 &CliShadow::default(),
             )
-            .unwrap();
+            .unwrap()
+            .effect;
             assert_eq!(
                 effect,
                 WriteEffect::Shadowed {
@@ -607,7 +605,8 @@ mod tests {
                 json!("postgres://file:pass@host:5432/db"),
                 &cli,
             )
-            .unwrap();
+            .unwrap()
+            .effect;
             assert_eq!(
                 effect,
                 WriteEffect::Shadowed {
@@ -616,8 +615,9 @@ mod tests {
             );
 
             // A key the flag did not set is unshadowed by the CLI layer.
-            let unshadowed =
-                set(&base_config(), &path, "logging.level", json!("debug"), &cli).unwrap();
+            let unshadowed = set(&base_config(), &path, "logging.level", json!("debug"), &cli)
+                .unwrap()
+                .effect;
             assert_eq!(unshadowed, WriteEffect::NeedsRestart);
             Ok(())
         });

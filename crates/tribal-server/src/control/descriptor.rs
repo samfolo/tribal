@@ -9,14 +9,13 @@
 //! never by trusting the file's mere presence.
 
 use std::{
-    io::Write as _,
     os::unix::ffi::OsStrExt as _,
     path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
 use tokio::net::UnixStream;
-use tribal_config::TRIBAL_DIRECTORY_NAME;
+use tribal_config::{TRIBAL_DIRECTORY_NAME, write_atomically};
 
 use super::error::ControlError;
 
@@ -60,13 +59,10 @@ impl RuntimeDescriptor {
     /// renamed into place, so a reader never sees a half-written file.
     pub(crate) fn write_atomically(&self, path: &Path) -> Result<(), ControlError> {
         let bytes = serde_json::to_vec_pretty(self).expect("a runtime descriptor serialises");
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(parent).map_err(|source| ControlError::Filesystem {
-            path: parent.to_owned(),
+        write_atomically(path, &bytes, None).map_err(|source| ControlError::Filesystem {
+            path: path.to_owned(),
             source,
-        })?;
-        let temporary = parent.join(format!(".{DESCRIPTOR_FILENAME}.{}.tmp", std::process::id()));
-        write_then_rename(&temporary, path, &bytes)
+        })
     }
 
     /// Reads a descriptor from `path`, returning `None` when it is absent or
@@ -82,28 +78,6 @@ impl RuntimeDescriptor {
     pub(crate) async fn is_reachable(&self) -> bool {
         UnixStream::connect(&self.socket_path).await.is_ok()
     }
-}
-
-/// Writes `bytes` to `temporary`, flushes it to disk, and renames it over
-/// `final_path`.
-fn write_then_rename(
-    temporary: &Path,
-    final_path: &Path,
-    bytes: &[u8],
-) -> Result<(), ControlError> {
-    let outcome = (|| {
-        let mut file = std::fs::File::create(temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::rename(temporary, final_path)
-    })();
-    outcome.map_err(|source| {
-        let _ = std::fs::remove_file(temporary);
-        ControlError::Filesystem {
-            path: final_path.to_owned(),
-            source,
-        }
-    })
 }
 
 // ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use sqlx::PgPool;
-use tokio::sync::broadcast;
+use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 use tribal_config::{CliShadow, TribalConfig};
 use tribal_telemetry::LogRing;
@@ -54,6 +54,9 @@ pub(crate) struct ControlContext {
     /// Marks a `config.set`'s own file write so the config-file watcher does not
     /// re-announce it as an out-of-band edit.
     pub self_write: SelfWriteSentinel,
+    /// Serialises the `config.set` read-modify-write persist, so two concurrent
+    /// writes to different keys cannot lose an update on the shared file.
+    pub config_write_lock: Mutex<()>,
     /// The MCP read-path pool, for principal resolution and `token.list`.
     pub pool: PgPool,
     /// The process event bus. Each connection subscribes to fan events out to

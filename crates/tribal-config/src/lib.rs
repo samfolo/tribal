@@ -7,6 +7,7 @@
 #![deny(warnings)]
 #![warn(clippy::pedantic)]
 
+mod atomic_write;
 mod cli_overrides;
 mod config_schema;
 mod divergence;
@@ -20,6 +21,7 @@ mod render;
 mod sections;
 mod validation;
 
+pub use atomic_write::write_atomically;
 pub use cli_overrides::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
     InferenceStageCliOverrides, InitCliOverrides, PersistedCredentialEntry, ServerCliOverrides,
@@ -39,8 +41,8 @@ pub use env::{
 pub use error::{ConfigError, RemovedEmbeddingSource};
 pub use loader::load_config;
 pub use operations::{
-    CliShadow, ConfigViolation, SetError, UnknownConfigKey, WriteEffect, get, get_all, set,
-    shadowed_by, validate_write,
+    CliShadow, ConfigViolation, Persisted, SetError, UnknownConfigKey, WriteEffect, get, get_all,
+    set, shadowed_by, validate_write,
 };
 pub use paths::{
     CREDENTIALS_FILENAME, ConfigDirError, TRIBAL_DIRECTORY_NAME, default_config_file_path,

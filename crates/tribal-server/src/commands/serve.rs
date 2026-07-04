@@ -129,6 +129,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
             config_path: expanded_config_path.clone(),
             cli_shadow: cli_shadow.clone(),
             self_write: self_write.clone(),
+            config_write_lock: tokio::sync::Mutex::new(()),
             pool: handle.state().mcp_pool().clone(),
             events: control_events.clone(),
             log_ring,

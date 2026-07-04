@@ -7,7 +7,7 @@
 //! and this binding is the one place those vocabularies meet. An `Ok` carries
 //! the result payload; an `Err` carries the JSON-RPC error the caller frames.
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -38,7 +38,7 @@ pub(crate) async fn dispatch(
     match method {
         // Handled here, not in `dispatch_config`, because a successful write
         // publishes a `config.changed` event to the bus.
-        "config.set" => config_set_and_publish(context, params),
+        "config.set" => config_set_and_publish(context, params).await,
         "server.status" => Ok(result(status(context))),
         "server.stop" => Ok(result(server_stop(context))),
         "server.restart" => Ok(result(server_restart(context))),
@@ -64,23 +64,31 @@ pub(crate) async fn dispatch(
 /// Persists a `config.set` and announces it on the bus. A change every
 /// subscriber learns of through `config.changed` — the binary is the only
 /// writer, so the client awaits the event rather than assuming the write took.
-fn config_set_and_publish(
+///
+/// The persist holds the write lock so concurrent sets serialise, and runs its
+/// blocking file I/O on a blocking thread rather than the async worker.
+async fn config_set_and_publish(
     context: &ControlContext,
     params: Option<Value>,
 ) -> Result<Value, wire::ResponseError> {
     let request: wire::ConfigSetRequest = parse_params(params)?;
     let key = request.key.clone();
-    let outcome = config_set(
-        &context.config,
-        &context.config_path,
-        &context.cli_shadow,
-        request,
-    )?;
-    // Mark the write so the file watcher does not re-announce it as an external
-    // edit contradicting this authoritative, per-key event.
-    if let Ok(persisted) = std::fs::read(&context.config_path) {
-        context.self_write.record(persisted);
-    }
+    let config = Arc::clone(&context.config);
+    let config_path = context.config_path.clone();
+    let cli = context.cli_shadow.clone();
+
+    let (outcome, document) = {
+        let _guard = context.config_write_lock.lock().await;
+        tokio::task::spawn_blocking(move || config_set(&config, &config_path, &cli, request))
+            .await
+            .map_err(|source| {
+                error(INTERNAL_ERROR, format!("config.set did not complete: {source}"), None)
+            })?
+    }?;
+
+    // Record the exact bytes written so the file watcher does not re-announce
+    // this write as an external edit contradicting the per-key event below.
+    context.self_write.record(document);
     // A send with no subscribers is not an error — no client is listening yet.
     let _ = context.events.send(ControlEvent::ConfigChanged {
         keys: vec![key],
@@ -153,14 +161,17 @@ fn config_get_all(config: &TribalConfig) -> wire::ConfigDocument {
     }
 }
 
+/// Persists the write and maps its result onto the wire outcome, returning the
+/// exact bytes written alongside so the caller records its own write. Runs on a
+/// blocking thread — the persist is synchronous file I/O.
 fn config_set(
     config: &TribalConfig,
     config_file: &Path,
     cli_shadow: &CliShadow,
     request: wire::ConfigSetRequest,
-) -> Result<wire::ConfigWriteOutcome, wire::ResponseError> {
+) -> Result<(wire::ConfigWriteOutcome, Vec<u8>), wire::ResponseError> {
     match tribal_config::set(config, config_file, &request.key, request.value, cli_shadow) {
-        Ok(effect) => Ok(write_outcome(effect)),
+        Ok(persisted) => Ok((write_outcome(persisted.effect), persisted.document)),
         Err(tribal_config::SetError::Rejected { violations }) => Err(error(
             INVALID_PARAMS,
             "the proposed configuration write is invalid".to_owned(),
@@ -452,6 +463,7 @@ mod tests {
             config_path,
             cli_shadow: CliShadow::default(),
             self_write: SelfWriteSentinel::default(),
+            config_write_lock: tokio::sync::Mutex::new(()),
             pool: tribal_test_utils::lazy_pool(),
             events,
             log_ring: LogRing::new(16),
@@ -568,7 +580,7 @@ mod tests {
     fn test_config_set_persists_and_reports_needs_restart() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("tribal.yaml");
-        let outcome = config_set(
+        let (outcome, _document) = config_set(
             &base_config(),
             &path,
             &CliShadow::default(),
@@ -621,6 +633,55 @@ mod tests {
             }
             other => panic!("expected ConfigChanged, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_config_sets_do_not_lose_an_update() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (context, _) = test_context(base_config(), dir.path().join("tribal.yaml"));
+        let path = dir.path().join("tribal.yaml");
+        let context = Arc::new(context);
+
+        // Two concurrent read-modify-write sets of different keys: the write lock
+        // serialises them, so neither drops the other's key from the document.
+        let first = {
+            let context = Arc::clone(&context);
+            tokio::spawn(async move {
+                dispatch(
+                    &context,
+                    None,
+                    "config.set",
+                    Some(json!({ "key": "logging.level", "value": "debug" })),
+                )
+                .await
+            })
+        };
+        let second = {
+            let context = Arc::clone(&context);
+            tokio::spawn(async move {
+                dispatch(
+                    &context,
+                    None,
+                    "config.set",
+                    Some(json!({ "key": "worker.poll_interval_ms", "value": 5000 })),
+                )
+                .await
+            })
+        };
+        first.await.unwrap().expect("first set succeeds");
+        second.await.unwrap().expect("second set succeeds");
+
+        // Both keys survived in the one document — neither set clobbered the
+        // other's write.
+        let document = std::fs::read_to_string(&path).expect("the file was written");
+        assert!(
+            document.contains("level: debug"),
+            "the first key survived: {document}",
+        );
+        assert!(
+            document.contains("poll_interval_ms: 5000"),
+            "the second key survived — no lost update: {document}",
+        );
     }
 
     #[tokio::test]

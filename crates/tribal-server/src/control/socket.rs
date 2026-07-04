@@ -402,6 +402,7 @@ mod tests {
             config_path: PathBuf::from("/tmp/tribal.yaml"),
             cli_shadow: CliShadow::default(),
             self_write: SelfWriteSentinel::default(),
+            config_write_lock: tokio::sync::Mutex::new(()),
             pool: lazy_pool(),
             events,
             log_ring: LogRing::new(16),

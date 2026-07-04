@@ -8,10 +8,10 @@ use std::sync::{Arc, Mutex};
 /// needs-restart, or shadowed — on the bus itself. The watcher, which watches
 /// the directory to catch external edits, also sees that rename; without this it
 /// would publish a second, keyless `config.changed` labelled `NeedsRestart`,
-/// contradicting a live or shadowed write. The writer records the bytes it
-/// persisted; the watcher suppresses the one fire whose file content still
-/// matches them and publishes every genuine edit — one whose content differs,
-/// including one that lands in the window between the write and the record.
+/// contradicting a live or shadowed write. The writer records the exact bytes it
+/// persisted (returned by the write, not re-read); the watcher suppresses the
+/// one fire whose file content still matches them, and publishes every genuine
+/// edit — one whose content differs.
 #[derive(Clone, Default)]
 pub(crate) struct SelfWriteSentinel {
     last: Arc<Mutex<Option<Vec<u8>>>>,
