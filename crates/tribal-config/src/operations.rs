@@ -314,7 +314,16 @@ fn write_effect(key: &str) -> WriteEffect {
     if let Some(source) = shadowed_by(key) {
         return WriteEffect::Shadowed { by: source };
     }
-    match reload_class(key) {
+    effect_for_class(reload_class(key))
+}
+
+/// The write effect an unshadowed key of `class` reports. The liveness-honesty
+/// contract (AC11): only [`ReloadClass::Hot`] reports [`WriteEffect::Live`] — a
+/// `RequiresRestart` key, and defensively an `Unclassified` one, never claims a
+/// live write, so a value the running binary has not adopted is never reported
+/// as adopted.
+fn effect_for_class(class: ReloadClass) -> WriteEffect {
+    match class {
         ReloadClass::Hot => WriteEffect::Live,
         ReloadClass::RequiresRestart | ReloadClass::Unclassified => WriteEffect::NeedsRestart,
     }
@@ -478,6 +487,23 @@ mod tests {
             );
             Ok(())
         });
+    }
+
+    /// AC11 liveness honesty: only a `Hot` key reports a live write. A
+    /// `RequiresRestart` key — and defensively an `Unclassified` one — reports
+    /// `NeedsRestart`, never `Live`, so the surface never claims the running
+    /// binary adopted a value it has not.
+    #[test]
+    fn test_only_a_hot_key_reports_a_live_write() {
+        assert_eq!(effect_for_class(ReloadClass::Hot), WriteEffect::Live);
+        assert_eq!(
+            effect_for_class(ReloadClass::RequiresRestart),
+            WriteEffect::NeedsRestart,
+        );
+        assert_eq!(
+            effect_for_class(ReloadClass::Unclassified),
+            WriteEffect::NeedsRestart,
+        );
     }
 
     #[test]

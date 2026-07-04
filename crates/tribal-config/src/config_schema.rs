@@ -165,8 +165,13 @@ const RESTART_KEYS: &[&str] = &[
     "worker.triage_search_limit",
 ];
 
-/// Every fixed configuration leaf that reloads live, without a restart. Empty
-/// in v1: no key has a live-reload substrate yet.
+/// Every fixed configuration leaf that reloads live, without a restart.
+///
+/// The promotion rule (roadmap A7): a key joins this list only once a substrate
+/// reloads it live in-process, and promoting it obliges a test proving it does —
+/// so a `Hot` classification always names a capability that exists, never an
+/// aspiration. Empty in v1: nothing in `TribalConfig` has a live-reload
+/// substrate, so every key is `RequiresRestart` and no write reports `Live`.
 const HOT_KEYS: &[&str] = &[];
 
 /// Classifies how a write to `path` takes effect. A leaf in neither
@@ -330,6 +335,34 @@ fn resolve<'a>(reference: &str, definitions: Option<&'a Value>) -> Option<&'a Va
 fn push_leaf(prefix: String, out: &mut Vec<String>) {
     if !prefix.is_empty() {
         out.push(prefix);
+    }
+}
+
+#[cfg(test)]
+mod classifier_tests {
+    use super::{HOT_KEYS, RESTART_KEYS, ReloadClass, reload_class};
+
+    /// AC11 liveness honesty at the classifier: every restart key classifies
+    /// `RequiresRestart` (never `Hot`), and the two lists are disjoint — so a
+    /// key that requires a restart can never surface as live-reloadable, and a
+    /// key in `HOT_KEYS` classifies `Hot`. Feature-independent: the classifier
+    /// is always compiled, so this contract holds in every build.
+    #[test]
+    fn test_a_requires_restart_key_is_never_hot() {
+        for &key in RESTART_KEYS {
+            assert_eq!(
+                reload_class(key),
+                ReloadClass::RequiresRestart,
+                "restart key {key} must classify RequiresRestart, never Hot",
+            );
+            assert!(
+                !HOT_KEYS.contains(&key),
+                "key {key} cannot be both requires-restart and hot",
+            );
+        }
+        for &key in HOT_KEYS {
+            assert_eq!(reload_class(key), ReloadClass::Hot);
+        }
     }
 }
 
