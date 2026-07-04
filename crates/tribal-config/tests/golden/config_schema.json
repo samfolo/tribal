@@ -1208,7 +1208,6 @@
           }
         ],
         "default": {
-          "file_directory": "/Users/sfolorunsho/Library/Application Support/tribal/logs",
           "file_rotation": "daily",
           "format": "json",
           "include_llm_content": false,
@@ -1274,7 +1273,6 @@
         "default": {
           "console_export": true,
           "enabled": true,
-          "file_directory": "/Users/sfolorunsho/Library/Application Support/tribal/traces",
           "file_export": false,
           "file_rotation": "daily",
           "otlp_endpoint": null,

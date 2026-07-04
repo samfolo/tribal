@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "schema")]
 use {
     crate::{redact::SecretField, sections::TribalConfig},
-    serde_json::Value,
+    serde_json::{Map, Value},
     std::collections::BTreeSet,
 };
 
@@ -246,23 +246,72 @@ pub fn config_schema() -> ConfigSchema {
     ConfigSchema { schema, fields }
 }
 
-/// Removes the `default` from each [`MACHINE_RESOLVED_DEFAULTS`] leaf, leaving
-/// every other default in place.
+/// Removes each [`MACHINE_RESOLVED_DEFAULTS`] entry wherever a host path leaks:
+/// the leaf's own `default`, and every aggregate `default` that inlines its
+/// struct. Every other default is left in place.
 #[cfg(feature = "schema")]
 fn strip_machine_resolved_defaults(schema: &mut Value) {
-    let Some(definitions) = schema.get_mut("definitions").and_then(Value::as_object_mut) else {
-        return;
-    };
-    for (definition, field) in MACHINE_RESOLVED_DEFAULTS {
-        if let Some(leaf) = definitions
-            .get_mut(*definition)
-            .and_then(|node| node.get_mut("properties"))
-            .and_then(|properties| properties.get_mut(*field))
-            .and_then(Value::as_object_mut)
-        {
-            leaf.remove("default");
+    if let Some(definitions) = schema.get_mut("definitions").and_then(Value::as_object_mut) {
+        for (definition, field) in MACHINE_RESOLVED_DEFAULTS {
+            if let Some(leaf) = definitions
+                .get_mut(*definition)
+                .and_then(|node| node.get_mut("properties"))
+                .and_then(|properties| properties.get_mut(*field))
+                .and_then(Value::as_object_mut)
+            {
+                leaf.remove("default");
+            }
         }
     }
+    strip_aggregate_defaults(schema);
+}
+
+/// Removes each machine-resolved field from every aggregate `default` that
+/// inlines its struct. A section default (`[logging]`, `[telemetry]`) serialises
+/// the whole struct, re-embedding the host path the leaf strip removed; without
+/// this the committed golden pins the generating machine's path.
+#[cfg(feature = "schema")]
+fn strip_aggregate_defaults(node: &mut Value) {
+    match node {
+        Value::Object(map) => {
+            let field_to_strip = referenced_definition(map).and_then(|definition| {
+                MACHINE_RESOLVED_DEFAULTS
+                    .iter()
+                    .find(|(machine_definition, _)| *machine_definition == definition)
+                    .map(|(_, field)| *field)
+            });
+            if let Some(field) = field_to_strip
+                && let Some(default) = map.get_mut("default").and_then(Value::as_object_mut)
+            {
+                default.remove(field);
+            }
+            for value in map.values_mut() {
+                strip_aggregate_defaults(value);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_aggregate_defaults(item);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+/// The definition a property node references, via a direct `$ref` or the single
+/// `allOf` wrapper schemars emits for a field that also carries a `default`.
+#[cfg(feature = "schema")]
+fn referenced_definition(map: &Map<String, Value>) -> Option<&str> {
+    let direct = map.get("$ref").and_then(Value::as_str);
+    let wrapped = map
+        .get("allOf")
+        .and_then(Value::as_array)
+        .and_then(|variants| variants.first())
+        .and_then(|first| first.get("$ref"))
+        .and_then(Value::as_str);
+    direct
+        .or(wrapped)
+        .and_then(|reference| reference.strip_prefix("#/definitions/"))
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +591,44 @@ mod tests {
                 leaf.get("default").is_none(),
                 "{definition}.{field} carries a machine-resolved default that must be stripped",
             );
+        }
+    }
+
+    /// The host path must survive in no `default` anywhere — not the leaf's own,
+    /// and not a section's aggregate default that serialises the whole struct.
+    /// The leaf strip alone leaves the aggregate path in, pinning the golden to
+    /// the generating machine; this walks every default to catch that.
+    #[test]
+    fn test_no_machine_resolved_default_leaks_anywhere() {
+        let schema = structural_schema();
+        let fields: Vec<&str> = MACHINE_RESOLVED_DEFAULTS
+            .iter()
+            .map(|(_, field)| *field)
+            .collect();
+        assert_no_machine_field_in_default(&schema, &fields);
+    }
+
+    fn assert_no_machine_field_in_default(node: &Value, fields: &[&str]) {
+        match node {
+            Value::Object(map) => {
+                if let Some(Value::Object(default)) = map.get("default") {
+                    for field in fields {
+                        assert!(
+                            !default.contains_key(*field),
+                            "machine-resolved `{field}` leaked into an aggregate default",
+                        );
+                    }
+                }
+                for value in map.values() {
+                    assert_no_machine_field_in_default(value, fields);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    assert_no_machine_field_in_default(item, fields);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
         }
     }
 
