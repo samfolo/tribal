@@ -5,6 +5,7 @@ members = [
     "crates/tribal-domain",
     "crates/tribal-wire",
     "crates/tribal-db",
+    "crates/tribal-runtime-db",
     "crates/tribal-inference",
     "crates/tribal-worker",
     "crates/tribal-agent-runtime",
@@ -176,6 +177,7 @@ tribal-db = { path = "crates/tribal-db" }
 tribal-domain = { path = "crates/tribal-domain" }
 tribal-inference = { path = "crates/tribal-inference" }
 tribal-mcp = { path = "crates/tribal-mcp" }
+tribal-runtime-db = { path = "crates/tribal-runtime-db" }
 tribal-telemetry = { path = "crates/tribal-telemetry" }
 tribal-test-utils = { path = "crates/tribal-test-utils" }
 tribal-ui = { path = "crates/tribal-ui" }

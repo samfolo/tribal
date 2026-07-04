@@ -5609,6 +5609,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tribal-runtime-db"
+version = "0.4.1"
+dependencies = [
+ "chrono",
+ "serde_json",
+ "sqlx",
+ "testcontainers",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tribal-domain",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "tribal-telemetry"
 version = "0.4.1"
 dependencies = [

@@ -142,7 +142,7 @@ pub use ids::{
     EmbeddingId, EmbeddingProfileId, EpisodeId, ExtractionResultId, IdParseError,
     ItemObservationId, JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId,
     ReferenceId, ReindexRunId, ReindexTaskId, RelationBatchId, RelationId, RetrievalFeedbackId,
-    SessionId, SystemFingerprintId, TaskId, TokenUsageId, TriageResultId,
+    RunJobId, SessionId, SystemFingerprintId, TaskId, TokenUsageId, TriageResultId,
     TriageSimilarItemDecisionId,
 };
 pub use inference_event::InferenceEvent;
