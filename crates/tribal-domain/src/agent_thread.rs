@@ -219,6 +219,7 @@ impl std::fmt::Display for AgentThreadRecordSeq {
 /// (suspension, cancellation) are runtime bookkeeping the model never
 /// sees. `ObservedToolEvent` carries an external agent's transcript
 /// observations, which never claim the executed-tool-result fence.
+/// `AppendArtifact` records a job's durable product, model-facing to no one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentThreadRecordKind {
@@ -238,6 +239,10 @@ pub enum AgentThreadRecordKind {
     Submission,
     /// An external agent's observed (not executed) tool activity.
     ObservedToolEvent,
+    /// A job's typed product, committed to the log as a durable output. Never
+    /// model-facing — the artifact is recorded for a later read surface, not
+    /// replayed into the conversation.
+    AppendArtifact,
 }
 
 enum_text_conversions!(AgentThreadRecordKind {
@@ -248,6 +253,7 @@ enum_text_conversions!(AgentThreadRecordKind {
     AgentThreadRecordKind::Cancellation => "cancellation",
     AgentThreadRecordKind::Submission => "submission",
     AgentThreadRecordKind::ObservedToolEvent => "observed_tool_event",
+    AgentThreadRecordKind::AppendArtifact => "append_artifact",
 });
 
 impl AgentThreadRecordKind {
@@ -586,6 +592,7 @@ mod tests {
         AgentThreadRecordKind::Cancellation => "cancellation",
         AgentThreadRecordKind::Submission => "submission",
         AgentThreadRecordKind::ObservedToolEvent => "observed_tool_event",
+        AgentThreadRecordKind::AppendArtifact => "append_artifact",
     });
 
     enum_text_tests!(test_record_kind_text_roundtrip, AgentThreadRecordKind {
@@ -596,6 +603,7 @@ mod tests {
         AgentThreadRecordKind::Cancellation => "cancellation",
         AgentThreadRecordKind::Submission => "submission",
         AgentThreadRecordKind::ObservedToolEvent => "observed_tool_event",
+        AgentThreadRecordKind::AppendArtifact => "append_artifact",
     });
 
     #[test]
@@ -653,6 +661,7 @@ mod tests {
         assert!(!AgentThreadRecordKind::Suspension.is_conversation());
         assert!(!AgentThreadRecordKind::Cancellation.is_conversation());
         assert!(!AgentThreadRecordKind::ObservedToolEvent.is_conversation());
+        assert!(!AgentThreadRecordKind::AppendArtifact.is_conversation());
     }
 
     #[test]

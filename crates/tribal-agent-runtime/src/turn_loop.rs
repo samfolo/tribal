@@ -1156,11 +1156,13 @@ fn project(
                     projection.child_launches += 1;
                 }
             }
-            // Control and terminal records are never model-facing; the
-            // observed kind belongs to the external executor.
+            // Control, terminal, and product records are never model-facing:
+            // the observed kind belongs to the external executor, and an
+            // appended artifact is a durable output, not a conversation turn.
             AgentThreadRecordKind::Cancellation
             | AgentThreadRecordKind::Submission
-            | AgentThreadRecordKind::ObservedToolEvent => {}
+            | AgentThreadRecordKind::ObservedToolEvent
+            | AgentThreadRecordKind::AppendArtifact => {}
         }
     }
 
@@ -1476,6 +1478,51 @@ async fn commit_result_record(
     reset_progress(&mut txn, deps).await?;
     commit(txn, "committing the tool-result transaction").await?;
     Ok(ResultCommit::Committed)
+}
+
+/// Commits an [`AppendArtifact`] record — a job's typed product — to the thread's
+/// log, guarding the driving claim so a stale runner never writes one: lock,
+/// next seq, append, commit. The artifact is durable the moment this returns,
+/// before any read surface exists to serve it.
+///
+/// [`AppendArtifact`]: AgentThreadRecordKind::AppendArtifact
+///
+/// # Errors
+///
+/// Returns [`AgentRuntimeError::LeaseLost`] when the claim guard misses (this is
+/// the whole transaction, rolled back on the error), plus the serialisation and
+/// database errors of the parts.
+pub async fn commit_artifact_record(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+    claim: DrivingClaim,
+    artifact: &serde_json::Value,
+) -> Result<AgentThreadRecordSeq, AgentRuntimeError> {
+    let mut txn = begin(conn, "beginning the artifact transaction").await?;
+    claim.require(&mut txn).await?;
+    PgAgentThreadRepository
+        .lock(&mut txn, thread.id())
+        .await
+        .map_err(|source| {
+            AgentRuntimeError::database("locking the thread for an artifact", source)
+        })?;
+    let seq = next_seq(&mut txn, thread).await?;
+    PgAgentThreadRecordRepository
+        .append(
+            &mut txn,
+            &NewAgentThreadRecord::builder()
+                .thread_id(thread.id())
+                .seq(seq)
+                .kind(AgentThreadRecordKind::AppendArtifact)
+                .content(artifact.clone())
+                .trace_id(current_trace_id())
+                .span_id(current_span_id())
+                .build(),
+        )
+        .await
+        .map_err(|source| AgentRuntimeError::database("committing an artifact", source))?;
+    commit(txn, "committing the artifact transaction").await?;
+    Ok(seq)
 }
 
 /// Commits the loop's terminal contribution inside the caller's
