@@ -96,10 +96,13 @@ pub enum SetError {
         violations: Vec<ConfigViolation>,
     },
     /// The existing config file could not be parsed, so it was not overwritten.
-    #[error("the config file at {path} could not be parsed, so it was left unchanged")]
+    #[error("the config file at {path} could not be parsed, so it was left unchanged: {source}")]
     Unparseable {
         /// The config file that failed to parse.
         path: PathBuf,
+        /// The parse failure, carrying the line and column it stopped at.
+        #[source]
+        source: serde_yaml::Error,
     },
     /// Serialising or writing the updated configuration failed.
     #[error("could not write the config file at {path}: {source}")]
@@ -263,8 +266,9 @@ fn read_document(config_file: &Path) -> Result<Value, SetError> {
     match std::fs::read_to_string(config_file) {
         Ok(content) => {
             let parsed: Value =
-                serde_yaml::from_str(&content).map_err(|_| SetError::Unparseable {
+                serde_yaml::from_str(&content).map_err(|source| SetError::Unparseable {
                     path: config_file.to_owned(),
+                    source,
                 })?;
             Ok(if parsed.is_null() {
                 empty_object()

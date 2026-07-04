@@ -47,7 +47,7 @@ pub use operations::{
 pub use paths::{
     CREDENTIALS_FILENAME, ConfigDirError, TRIBAL_DIRECTORY_NAME, default_config_file_path,
 };
-pub use redact::redact_secrets;
+pub use redact::{is_secret_key, redact_secrets};
 pub use render::{ConfigPersistence, render_minimal_config, render_persisted_config};
 pub use sections::{
     AgentsConfig, Auth, AuthConfig, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX,
