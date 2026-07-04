@@ -40,6 +40,8 @@ pub(crate) async fn dispatch(
         // publishes a `config.changed` event to the bus.
         "config.set" => config_set_and_publish(context, params),
         "server.status" => Ok(result(status(context))),
+        "server.stop" => Ok(result(server_stop(context))),
+        "server.restart" => Ok(result(server_restart(context))),
         "logs.tail" => logs_tail(context, params),
         "token.list" => token_list(&context.pool, principal).await,
         _ => match dispatch_config(&context.config, &context.config_path, method, params) {
@@ -217,6 +219,30 @@ fn server_status(
 }
 
 // ---------------------------------------------------------------------------
+// server.stop / server.restart — the lifecycle contract
+// ---------------------------------------------------------------------------
+
+/// Initiates graceful shutdown by cancelling the serve token, and reports that
+/// the binary is stopping.
+fn server_stop(context: &ControlContext) -> wire::StopOutcome {
+    context.cancellation_token.cancel();
+    wire::StopOutcome { stopping: true }
+}
+
+/// Answers `server.restart` — never by re-exec'ing the binary itself. When a
+/// supervisor owns the process it stops for the supervisor to relaunch; when
+/// none does it refuses, leaving the process running for the operator to stop
+/// and relaunch explicitly.
+fn server_restart(context: &ControlContext) -> wire::RestartOutcome {
+    if context.supervised {
+        context.cancellation_token.cancel();
+        wire::RestartOutcome::SupervisorMediated
+    } else {
+        wire::RestartOutcome::Unsupervised
+    }
+}
+
+// ---------------------------------------------------------------------------
 // logs.tail — a bounded window of recent lines from the capture ring
 // ---------------------------------------------------------------------------
 
@@ -377,8 +403,12 @@ fn error(code: i32, message: String, data: Option<Value>) -> wire::ResponseError
 
 #[cfg(test)]
 mod tests {
+    use std::{path::PathBuf, sync::Arc};
+
     use chrono::{Duration, Utc};
     use serde_json::json;
+    use tokio::sync::broadcast;
+    use tokio_util::sync::CancellationToken;
     use tribal_domain::{AuthTokenId, PrincipalId, Scope};
     use tribal_telemetry::LogRing;
 
@@ -386,6 +416,28 @@ mod tests {
 
     fn base_config() -> TribalConfig {
         TribalConfig::minimum_valid("postgres://user:pass@localhost:5432/tribal")
+    }
+
+    /// A context for the lifecycle crossings, carrying the token they cancel and
+    /// the supervision marker they read; the config surface is inert here.
+    fn lifecycle_context(
+        cancellation_token: CancellationToken,
+        supervised: bool,
+    ) -> ControlContext {
+        let (events, _) = broadcast::channel(4);
+        ControlContext {
+            config: Arc::new(base_config()),
+            config_path: PathBuf::from("/tmp/tribal.yaml"),
+            pool: tribal_test_utils::lazy_pool(),
+            events,
+            log_ring: LogRing::new(16),
+            project: None,
+            cancellation_token,
+            started_at: std::time::Instant::now(),
+            binary_version: Arc::from("v"),
+            instance_id: Arc::from("id"),
+            supervised,
+        }
     }
 
     fn dispatch_cfg(
@@ -505,11 +557,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_config_set_publishes_config_changed() {
-        use std::sync::Arc;
-
-        use tokio::sync::broadcast;
-        use tokio_util::sync::CancellationToken;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let (events, mut subscriber) = broadcast::channel(16);
         let context = ControlContext {
@@ -551,11 +598,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_logs_tail_routes_and_returns_a_log_lines_window() {
-        use std::sync::Arc;
-
-        use tokio::sync::broadcast;
-        use tokio_util::sync::CancellationToken;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let (events, _) = broadcast::channel(16);
         let context = ControlContext {
@@ -636,6 +678,39 @@ mod tests {
         assert_eq!(status.transport, "stdio");
         assert!(status.bind_address.is_none(), "stdio binds no address");
         assert_eq!(status.worker, wire::WorkerStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn test_server_stop_cancels_the_token_and_reports_stopping() {
+        let token = CancellationToken::new();
+        let context = lifecycle_context(token.clone(), false);
+        let outcome = server_stop(&context);
+        assert!(outcome.stopping, "stop reports the binary is shutting down");
+        assert!(token.is_cancelled(), "stop initiates graceful shutdown");
+    }
+
+    #[tokio::test]
+    async fn test_server_restart_unsupervised_refuses_without_stopping() {
+        let token = CancellationToken::new();
+        let context = lifecycle_context(token.clone(), false);
+        let outcome = server_restart(&context);
+        assert_eq!(outcome, wire::RestartOutcome::Unsupervised);
+        assert!(
+            !token.is_cancelled(),
+            "an unsupervised restart never self-execs — the process keeps running",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_server_restart_supervised_is_mediated_and_stops() {
+        let token = CancellationToken::new();
+        let context = lifecycle_context(token.clone(), true);
+        let outcome = server_restart(&context);
+        assert_eq!(outcome, wire::RestartOutcome::SupervisorMediated);
+        assert!(
+            token.is_cancelled(),
+            "a supervised restart stops for the supervisor to relaunch",
+        );
     }
 
     #[test]

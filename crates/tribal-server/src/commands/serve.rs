@@ -25,6 +25,26 @@ use crate::{
     transport,
 };
 
+/// The environment marker a supervisor (the desktop app, launchd) exports when
+/// it spawns the binary, declaring that it owns the process's lifecycle. It
+/// governs `server.restart`: mediated when set, refused otherwise.
+const SUPERVISED_MARKER: &str = "TRIBAL_SUPERVISED";
+
+/// Whether a supervisor owns this process, read from [`SUPERVISED_MARKER`].
+fn is_supervised() -> bool {
+    supervised_from(std::env::var(SUPERVISED_MARKER).ok().as_deref())
+}
+
+/// Interprets the supervision marker's value. Only an explicit truthy value
+/// counts, so a stray empty or `0` export never claims supervision the operator
+/// did not intend.
+fn supervised_from(value: Option<&str>) -> bool {
+    value.is_some_and(|raw| {
+        let value = raw.trim();
+        value == "1" || value.eq_ignore_ascii_case("true")
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -118,7 +138,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
             started_at: std::time::Instant::now(),
             binary_version: Arc::clone(handle.state().build_version()),
             instance_id: Arc::clone(handle.state().instance_id()),
-            supervised: false,
+            supervised: is_supervised(),
         };
         control::spawn_control_plane(control_context).await;
 
@@ -349,6 +369,19 @@ async fn await_shutdown_trigger(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_supervised_marker_counts_only_explicit_truthy_values() {
+        for truthy in ["1", "true", "TRUE", "True", "  true  "] {
+            assert!(supervised_from(Some(truthy)), "{truthy:?} means supervised");
+        }
+        for falsy in [None, Some(""), Some("0"), Some("false"), Some("yes")] {
+            assert!(
+                !supervised_from(falsy),
+                "{falsy:?} does not claim supervision"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn test_await_shutdown_trigger_returns_none_on_pre_cancelled_token() {
