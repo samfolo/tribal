@@ -4,12 +4,14 @@
 //! resolved configuration, `config.validate` by checking a proposed write
 //! against the whole invariant set, and `config.set` by persisting one key to
 //! the YAML file — layer four of the six-layer cascade — and reporting honestly
-//! whether it took effect. A higher layer (an environment variable) that also
-//! sets the key leaves the write persisted but shadowed. Every returned value
+//! whether it took effect. A higher layer (a command-line flag the process
+//! launched with, or an environment variable) that also sets the key leaves the
+//! write persisted but shadowed. Every returned value
 //! is config-native; the wire layer maps it to its DTO, so this crate never
 //! depends on the wire contract.
 
 use std::{
+    collections::BTreeSet,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -18,7 +20,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    ConfigError, TribalConfig,
+    CliOverrides, ConfigError, TribalConfig,
     config_schema::{ReloadClass, reload_class},
     env::{ALIAS_ENV_VARS, env_var_for_path},
     redact::redact_secrets,
@@ -41,9 +43,10 @@ pub enum WriteEffect {
     NeedsRestart,
     /// A higher-precedence layer overrides the write, so it is persisted but
     /// never effective until that layer is cleared. Carries the overriding
-    /// environment variable.
+    /// layer, named.
     Shadowed {
-        /// The environment variable whose value wins over the file.
+        /// The higher layer whose value wins over the file — an environment
+        /// variable's name, or a command-line flag.
         by: String,
     },
 }
@@ -195,7 +198,8 @@ fn apply_to_config(config: &TribalConfig, key: &str, value: Value) -> Result<Tri
 /// The write is validated against the whole configuration first and refused
 /// whole if invalid. On success the key is written atomically to the file, and
 /// the effect states whether it is live, awaits a restart, or is shadowed by a
-/// higher-precedence environment layer.
+/// higher-precedence layer — a command-line flag the process launched with, or
+/// an environment variable.
 ///
 /// # Errors
 ///
@@ -206,13 +210,14 @@ pub fn set(
     config_file: &Path,
     key: &str,
     value: Value,
+    cli: &CliShadow,
 ) -> Result<WriteEffect, SetError> {
     let violations = validate_write(config, key, value.clone());
     if !violations.is_empty() {
         return Err(SetError::Rejected { violations });
     }
     persist(config_file, key, value)?;
-    Ok(write_effect(key))
+    Ok(write_effect(key, cli))
 }
 
 /// Writes one key into the config file's YAML document, atomically.
@@ -305,13 +310,72 @@ fn write_atomically(path: &Path, payload: &[u8]) -> std::io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// CLI shadow
+// ---------------------------------------------------------------------------
+
+/// The command-line overrides a running binary launched with, reduced to the
+/// config paths they set.
+///
+/// The CLI layer is the cascade's highest, so a file write to one of these
+/// paths is persisted but shadowed — the process keeps using the flag's value
+/// until it restarts without the flag. Built once at startup from the resolved
+/// [`CliOverrides`]; the default is empty, the honest answer when no flag was
+/// passed and every read outside a live serve.
+#[derive(Debug, Clone, Default)]
+pub struct CliShadow {
+    paths: BTreeSet<String>,
+}
+
+impl CliShadow {
+    /// Collects the dotted paths the overrides set, walking their serialised
+    /// form so the set tracks the type with no hand-maintained mapping. The
+    /// synthesised credential skeleton, which no flag sets, does not appear in a
+    /// serve-time value and so needs no exclusion.
+    #[must_use]
+    pub fn from_overrides(overrides: &CliOverrides) -> Self {
+        let tree = serde_json::to_value(overrides).unwrap_or(Value::Null);
+        let mut paths = BTreeSet::new();
+        collect_leaf_paths(&tree, &mut String::new(), &mut paths);
+        Self { paths }
+    }
+
+    /// Whether a command-line flag set `key`.
+    fn shadows(&self, key: &str) -> bool {
+        self.paths.contains(key)
+    }
+}
+
+/// Records every scalar leaf's dotted path under `prefix` into `out`; nulls and
+/// empty containers contribute nothing, so the set is exactly the keys the
+/// overrides actually carry a value for.
+fn collect_leaf_paths(value: &Value, prefix: &mut String, out: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(members) => {
+            for (segment, child) in members {
+                let base = prefix.len();
+                if !prefix.is_empty() {
+                    prefix.push('.');
+                }
+                prefix.push_str(segment);
+                collect_leaf_paths(child, prefix, out);
+                prefix.truncate(base);
+            }
+        }
+        Value::Null => {}
+        _ => {
+            out.insert(prefix.clone());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Write effect
 // ---------------------------------------------------------------------------
 
 /// Classifies how a persisted write to `key` takes effect for the running
-/// binary: shadowed by an environment layer, live, or awaiting a restart.
-fn write_effect(key: &str) -> WriteEffect {
-    if let Some(source) = shadowed_by(key) {
+/// binary: shadowed by a higher cascade layer, live, or awaiting a restart.
+fn write_effect(key: &str, cli: &CliShadow) -> WriteEffect {
+    if let Some(source) = shadowed_by(key, cli) {
         return WriteEffect::Shadowed { by: source };
     }
     effect_for_class(reload_class(key))
@@ -329,15 +393,19 @@ fn effect_for_class(class: ReloadClass) -> WriteEffect {
     }
 }
 
-/// The environment variable a higher cascade layer sets to shadow `key`, if one
-/// is present — `None` when the file layer is the effective source.
+/// The higher cascade layer that shadows a file write to `key`, named, or
+/// `None` when the file is the effective source.
 ///
-/// The alias layer sits above the nested layer, so a set alias is named first,
-/// matching the loader's merge order. A present variable shadows regardless of
-/// value: the loader merges it over the file either way. `config.schema` reads
-/// this to mark a currently-shadowed key at call time.
+/// The layers are named in the loader's merge order, highest first: a
+/// command-line flag outranks both environment layers, and the alias layer sits
+/// above the nested one. A present variable shadows regardless of value — the
+/// loader merges it over the file either way. `config.schema` reads this to mark
+/// a currently-shadowed key at call time.
 #[must_use]
-pub fn shadowed_by(key: &str) -> Option<String> {
+pub fn shadowed_by(key: &str, cli: &CliShadow) -> Option<String> {
+    if cli.shadows(key) {
+        return Some("a command-line flag".to_owned());
+    }
     if let Some(&(_, alias)) = ALIAS_ENV_VARS.iter().find(|&&(path, _)| path == key)
         && is_set(alias)
     {
@@ -373,6 +441,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::DatabaseCliOverrides;
 
     /// A resolved config that passes validation, the base every operation reads.
     fn base_config() -> TribalConfig {
@@ -425,7 +494,14 @@ mod tests {
     fn test_set_persists_and_reads_back_through_the_loader() {
         figment::Jail::expect_with(|jail| {
             let path = jail.directory().join("tribal.yaml");
-            let effect = set(&base_config(), &path, "logging.level", json!("debug")).unwrap();
+            let effect = set(
+                &base_config(),
+                &path,
+                "logging.level",
+                json!("debug"),
+                &CliShadow::default(),
+            )
+            .unwrap();
             assert_eq!(effect, WriteEffect::NeedsRestart);
 
             // The loader reads the persisted value back.
@@ -440,7 +516,14 @@ mod tests {
         figment::Jail::expect_with(|jail| {
             let path = jail.directory().join("tribal.yaml");
             let secret = "postgres://written:secret@host:5432/db2";
-            set(&base_config(), &path, "database.url", json!(secret)).unwrap();
+            set(
+                &base_config(),
+                &path,
+                "database.url",
+                json!(secret),
+                &CliShadow::default(),
+            )
+            .unwrap();
 
             let reloaded = crate::load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(reloaded.database.url, secret);
@@ -455,7 +538,14 @@ mod tests {
         figment::Jail::expect_with(|jail| {
             jail.set_env("TRIBAL_LOG", "warn");
             let path = jail.directory().join("tribal.yaml");
-            let effect = set(&base_config(), &path, "logging.level", json!("debug")).unwrap();
+            let effect = set(
+                &base_config(),
+                &path,
+                "logging.level",
+                json!("debug"),
+                &CliShadow::default(),
+            )
+            .unwrap();
             assert_eq!(
                 effect,
                 WriteEffect::Shadowed {
@@ -478,13 +568,57 @@ mod tests {
         figment::Jail::expect_with(|jail| {
             jail.set_env("TRIBAL_DISCOVERY__MAX_LIMIT", "99");
             let path = jail.directory().join("tribal.yaml");
-            let effect = set(&base_config(), &path, "discovery.max_limit", json!(42)).unwrap();
+            let effect = set(
+                &base_config(),
+                &path,
+                "discovery.max_limit",
+                json!(42),
+                &CliShadow::default(),
+            )
+            .unwrap();
             assert_eq!(
                 effect,
                 WriteEffect::Shadowed {
                     by: "TRIBAL_DISCOVERY__MAX_LIMIT".to_owned()
                 },
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_set_shadowed_by_a_command_line_flag() {
+        figment::Jail::expect_with(|jail| {
+            // The binary launched with --database-url, so the CLI layer outranks
+            // the file: the write persists but never takes effect until a restart
+            // drops the flag.
+            let overrides = CliOverrides {
+                database: Some(DatabaseCliOverrides {
+                    url: Some("postgres://cli:pass@host:5432/db".to_owned()),
+                }),
+                ..CliOverrides::default()
+            };
+            let cli = CliShadow::from_overrides(&overrides);
+            let path = jail.directory().join("tribal.yaml");
+            let effect = set(
+                &base_config(),
+                &path,
+                "database.url",
+                json!("postgres://file:pass@host:5432/db"),
+                &cli,
+            )
+            .unwrap();
+            assert_eq!(
+                effect,
+                WriteEffect::Shadowed {
+                    by: "a command-line flag".to_owned()
+                },
+            );
+
+            // A key the flag did not set is unshadowed by the CLI layer.
+            let unshadowed =
+                set(&base_config(), &path, "logging.level", json!("debug"), &cli).unwrap();
+            assert_eq!(unshadowed, WriteEffect::NeedsRestart);
             Ok(())
         });
     }
@@ -510,7 +644,14 @@ mod tests {
     fn test_set_refuses_an_invalid_value_whole() {
         figment::Jail::expect_with(|jail| {
             let path = jail.directory().join("tribal.yaml");
-            let error = set(&base_config(), &path, "server.transport", json!("grpc")).unwrap_err();
+            let error = set(
+                &base_config(),
+                &path,
+                "server.transport",
+                json!("grpc"),
+                &CliShadow::default(),
+            )
+            .unwrap_err();
             assert!(matches!(error, SetError::Rejected { .. }));
             // The file is never created for a refused write.
             assert!(!path.exists(), "a refused write must not touch the file");
@@ -542,7 +683,14 @@ mod tests {
         figment::Jail::expect_with(|jail| {
             let dir = jail.directory().to_owned();
             let path = dir.join("tribal.yaml");
-            set(&base_config(), &path, "logging.level", json!("trace")).unwrap();
+            set(
+                &base_config(),
+                &path,
+                "logging.level",
+                json!("trace"),
+                &CliShadow::default(),
+            )
+            .unwrap();
 
             // The document round-trips as valid YAML, and no tempfile is orphaned.
             let content = std::fs::read_to_string(&path).unwrap();

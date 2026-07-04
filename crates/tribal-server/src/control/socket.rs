@@ -382,12 +382,13 @@ mod tests {
     use std::time::Instant;
 
     use tokio_util::sync::CancellationToken;
-    use tribal_config::TribalConfig;
+    use tribal_config::{CliShadow, TribalConfig};
     use tribal_telemetry::LogRing;
     use tribal_test_utils::lazy_pool;
     use tribal_wire::control::{ConfigPath, RequestId};
 
     use super::*;
+    use crate::startup::SelfWriteSentinel;
 
     fn test_context_with(cancellation_token: CancellationToken) -> Arc<ControlContext> {
         // A lazy pool never connects unless a principal-scoped method is called,
@@ -399,6 +400,8 @@ mod tests {
                 "postgres://user:pass@localhost:5432/tribal",
             )),
             config_path: PathBuf::from("/tmp/tribal.yaml"),
+            cli_shadow: CliShadow::default(),
+            self_write: SelfWriteSentinel::default(),
             pool: lazy_pool(),
             events,
             log_ring: LogRing::new(16),

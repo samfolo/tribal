@@ -17,9 +17,11 @@ use std::{path::PathBuf, sync::Arc, time::Instant};
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
-use tribal_config::TribalConfig;
+use tribal_config::{CliShadow, TribalConfig};
 use tribal_telemetry::LogRing;
 use tribal_wire::control::{ControlEvent, ProjectSummary};
+
+use crate::startup::SelfWriteSentinel;
 
 mod descriptor;
 mod dispatch;
@@ -46,6 +48,12 @@ pub(crate) struct ControlContext {
     pub config: Arc<TribalConfig>,
     /// The YAML file `config.set` writes.
     pub config_path: PathBuf,
+    /// The command-line overrides this serve launched with, so a `config.set`
+    /// to a flag-set key reports the file write as shadowed rather than live.
+    pub cli_shadow: CliShadow,
+    /// Marks a `config.set`'s own file write so the config-file watcher does not
+    /// re-announce it as an out-of-band edit.
+    pub self_write: SelfWriteSentinel,
     /// The MCP read-path pool, for principal resolution and `token.list`.
     pub pool: PgPool,
     /// The process event bus. Each connection subscribes to fan events out to

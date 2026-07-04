@@ -13,7 +13,7 @@ use tokio::signal;
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio_util::sync::CancellationToken;
 use tribal_auth::oauth::OAuthRuntimeConfig;
-use tribal_config::{TransportKind, config_warnings, load_config, validate};
+use tribal_config::{CliShadow, TransportKind, config_warnings, load_config, validate};
 use tribal_mcp::HandlerConfig;
 
 use crate::{
@@ -21,7 +21,7 @@ use crate::{
     control,
     error::AppError,
     orchestration,
-    startup::{POOL_NAME_MCP, init_config_watcher},
+    startup::{POOL_NAME_MCP, SelfWriteSentinel, init_config_watcher},
     transport,
 };
 
@@ -61,6 +61,7 @@ fn supervised_from(value: Option<&str>) -> bool {
 /// dies unexpectedly during operation.
 pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let (cli_overrides, cli_project) = args.into_cli_overrides();
+    let cli_shadow = CliShadow::from_overrides(&cli_overrides);
 
     let config = load_config(config_path, Some(cli_overrides), None)?;
     validate(&config)?;
@@ -122,9 +123,12 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         // whole run; it binds best-effort and never blocks MCP from serving.
         let expanded_config_path =
             std::path::PathBuf::from(shellexpand::tilde(config_path).into_owned());
+        let self_write = SelfWriteSentinel::default();
         let control_context = control::ControlContext {
             config: Arc::new(config.clone()),
             config_path: expanded_config_path.clone(),
+            cli_shadow: cli_shadow.clone(),
+            self_write: self_write.clone(),
             pool: handle.state().mcp_pool().clone(),
             events: control_events.clone(),
             log_ring,
@@ -148,6 +152,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         match init_config_watcher(
             &expanded_config_path,
             control_events.clone(),
+            self_write,
             cancellation_token.clone(),
         ) {
             Ok(watcher) => drop(tokio::spawn(watcher)),

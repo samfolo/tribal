@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::PgPool;
 use tribal_auth::AuthenticatedPrincipal;
-use tribal_config::{TransportKind, TribalConfig};
+use tribal_config::{CliShadow, TransportKind, TribalConfig};
 use tribal_db::{AuthTokenRepository, PgAuthTokenRepository};
 use tribal_domain::AuthToken;
 use tribal_wire::control::{self as wire, CONTROL_CONTRACT_VERSION, ControlEvent};
@@ -44,7 +44,13 @@ pub(crate) async fn dispatch(
         "server.restart" => Ok(result(server_restart(context))),
         "logs.tail" => logs_tail(context, params),
         "token.list" => token_list(&context.pool, principal).await,
-        _ => match dispatch_config(&context.config, &context.config_path, method, params) {
+        _ => match dispatch_config(
+            &context.config,
+            &context.config_path,
+            &context.cli_shadow,
+            method,
+            params,
+        ) {
             Some(outcome) => outcome,
             None => Err(error(
                 METHOD_NOT_FOUND,
@@ -64,7 +70,17 @@ fn config_set_and_publish(
 ) -> Result<Value, wire::ResponseError> {
     let request: wire::ConfigSetRequest = parse_params(params)?;
     let key = request.key.clone();
-    let outcome = config_set(&context.config, &context.config_path, request)?;
+    let outcome = config_set(
+        &context.config,
+        &context.config_path,
+        &context.cli_shadow,
+        request,
+    )?;
+    // Mark the write so the file watcher does not re-announce it as an external
+    // edit contradicting this authoritative, per-key event.
+    if let Ok(persisted) = std::fs::read(&context.config_path) {
+        context.self_write.record(persisted);
+    }
     // A send with no subscribers is not an error — no client is listening yet.
     let _ = context.events.send(ControlEvent::ConfigChanged {
         keys: vec![key],
@@ -77,15 +93,18 @@ fn config_set_and_publish(
 // config.* — pure over the config surface, so it tests without an AppState
 // ---------------------------------------------------------------------------
 
-/// Dispatches a `config.*` method, or `None` when the method is not one.
+/// Dispatches a `config.*` method, or `None` when the method is not one. It
+/// reads only the config surface — never the pool — so it tests without an
+/// `AppState`.
 fn dispatch_config(
     config: &TribalConfig,
     config_file: &Path,
+    cli_shadow: &CliShadow,
     method: &str,
     params: Option<Value>,
 ) -> Option<Result<Value, wire::ResponseError>> {
     let outcome = match method {
-        "config.schema" => Ok(result(config_schema())),
+        "config.schema" => Ok(result(config_schema(cli_shadow))),
         "config.get" => parse_params(params).and_then(|request| config_get(config, request)),
         "config.getAll" => Ok(result(config_get_all(config))),
         "config.validate" => {
@@ -97,13 +116,13 @@ fn dispatch_config(
     Some(outcome)
 }
 
-fn config_schema() -> wire::ConfigSchema {
+fn config_schema(cli_shadow: &CliShadow) -> wire::ConfigSchema {
     let assembled = tribal_config::config_schema();
     let fields = assembled
         .fields
         .into_iter()
         .map(|field| wire::ConfigFieldMeta {
-            shadowed: tribal_config::shadowed_by(&field.path).is_some(),
+            shadowed: tribal_config::shadowed_by(&field.path, cli_shadow).is_some(),
             reload_class: reload_class(field.reload_class),
             secret: field.secret,
             path: field.path,
@@ -137,9 +156,10 @@ fn config_get_all(config: &TribalConfig) -> wire::ConfigDocument {
 fn config_set(
     config: &TribalConfig,
     config_file: &Path,
+    cli_shadow: &CliShadow,
     request: wire::ConfigSetRequest,
 ) -> Result<wire::ConfigWriteOutcome, wire::ResponseError> {
-    match tribal_config::set(config, config_file, &request.key, request.value) {
+    match tribal_config::set(config, config_file, &request.key, request.value, cli_shadow) {
         Ok(effect) => Ok(write_outcome(effect)),
         Err(tribal_config::SetError::Rejected { violations }) => Err(error(
             INVALID_PARAMS,
@@ -413,9 +433,36 @@ mod tests {
     use tribal_telemetry::LogRing;
 
     use super::*;
+    use crate::startup::SelfWriteSentinel;
 
     fn base_config() -> TribalConfig {
         TribalConfig::minimum_valid("postgres://user:pass@localhost:5432/tribal")
+    }
+
+    /// A control context over `config` and `config_path` with a fresh event bus,
+    /// for the crossings that need no live pool. Callers that assert on published
+    /// events keep the returned subscriber; the rest discard it.
+    fn test_context(
+        config: TribalConfig,
+        config_path: PathBuf,
+    ) -> (ControlContext, broadcast::Receiver<ControlEvent>) {
+        let (events, subscriber) = broadcast::channel(16);
+        let context = ControlContext {
+            config: Arc::new(config),
+            config_path,
+            cli_shadow: CliShadow::default(),
+            self_write: SelfWriteSentinel::default(),
+            pool: tribal_test_utils::lazy_pool(),
+            events,
+            log_ring: LogRing::new(16),
+            project: None,
+            cancellation_token: CancellationToken::new(),
+            started_at: std::time::Instant::now(),
+            binary_version: Arc::from("v"),
+            instance_id: Arc::from("id"),
+            supervised: false,
+        };
+        (context, subscriber)
     }
 
     /// A context for the lifecycle crossings, carrying the token they cancel and
@@ -424,20 +471,10 @@ mod tests {
         cancellation_token: CancellationToken,
         supervised: bool,
     ) -> ControlContext {
-        let (events, _) = broadcast::channel(4);
-        ControlContext {
-            config: Arc::new(base_config()),
-            config_path: PathBuf::from("/tmp/tribal.yaml"),
-            pool: tribal_test_utils::lazy_pool(),
-            events,
-            log_ring: LogRing::new(16),
-            project: None,
-            cancellation_token,
-            started_at: std::time::Instant::now(),
-            binary_version: Arc::from("v"),
-            instance_id: Arc::from("id"),
-            supervised,
-        }
+        let (mut context, _) = test_context(base_config(), PathBuf::from("/tmp/tribal.yaml"));
+        context.cancellation_token = cancellation_token;
+        context.supervised = supervised;
+        context
     }
 
     fn dispatch_cfg(
@@ -446,7 +483,8 @@ mod tests {
         method: &str,
         params: Option<Value>,
     ) -> Result<Value, wire::ResponseError> {
-        dispatch_config(config, path, method, params).expect("a config.* method")
+        dispatch_config(config, path, &CliShadow::default(), method, params)
+            .expect("a config.* method")
     }
 
     #[test]
@@ -533,6 +571,7 @@ mod tests {
         let outcome = config_set(
             &base_config(),
             &path,
+            &CliShadow::default(),
             set_request("logging.level", json!("debug")),
         )
         .expect("config.set succeeds");
@@ -547,6 +586,7 @@ mod tests {
         let error = config_set(
             &base_config(),
             &path,
+            &CliShadow::default(),
             set_request("server.transport", json!("grpc")),
         )
         .expect_err("an invalid write errors");
@@ -558,20 +598,7 @@ mod tests {
     #[tokio::test]
     async fn test_config_set_publishes_config_changed() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (events, mut subscriber) = broadcast::channel(16);
-        let context = ControlContext {
-            config: Arc::new(base_config()),
-            config_path: dir.path().join("tribal.yaml"),
-            pool: tribal_test_utils::lazy_pool(),
-            events,
-            log_ring: LogRing::new(16),
-            project: None,
-            cancellation_token: CancellationToken::new(),
-            started_at: std::time::Instant::now(),
-            binary_version: Arc::from("v"),
-            instance_id: Arc::from("id"),
-            supervised: false,
-        };
+        let (context, mut subscriber) = test_context(base_config(), dir.path().join("tribal.yaml"));
 
         let value = dispatch(
             &context,
@@ -599,20 +626,7 @@ mod tests {
     #[tokio::test]
     async fn test_logs_tail_routes_and_returns_a_log_lines_window() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (events, _) = broadcast::channel(16);
-        let context = ControlContext {
-            config: Arc::new(base_config()),
-            config_path: dir.path().join("tribal.yaml"),
-            pool: tribal_test_utils::lazy_pool(),
-            events,
-            log_ring: LogRing::new(16),
-            project: None,
-            cancellation_token: CancellationToken::new(),
-            started_at: std::time::Instant::now(),
-            binary_version: Arc::from("v"),
-            instance_id: Arc::from("id"),
-            supervised: false,
-        };
+        let (context, _) = test_context(base_config(), dir.path().join("tribal.yaml"));
 
         let value = dispatch(&context, None, "logs.tail", Some(json!({ "lines": 10 })))
             .await
@@ -653,7 +667,14 @@ mod tests {
     #[test]
     fn test_a_non_config_method_is_not_dispatched_here() {
         assert!(
-            dispatch_config(&base_config(), Path::new("/tmp/x"), "server.status", None).is_none(),
+            dispatch_config(
+                &base_config(),
+                Path::new("/tmp/x"),
+                &CliShadow::default(),
+                "server.status",
+                None,
+            )
+            .is_none(),
             "server.status is not a config method",
         );
     }

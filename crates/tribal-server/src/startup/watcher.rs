@@ -9,6 +9,8 @@
 mod constants;
 mod init;
 mod reload;
+mod self_write;
 mod watch;
 
 pub(crate) use init::{init_config_watcher, init_prompt_watcher};
+pub(crate) use self_write::SelfWriteSentinel;

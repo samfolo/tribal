@@ -39,8 +39,8 @@ pub use env::{
 pub use error::{ConfigError, RemovedEmbeddingSource};
 pub use loader::load_config;
 pub use operations::{
-    ConfigViolation, SetError, UnknownConfigKey, WriteEffect, get, get_all, set, shadowed_by,
-    validate_write,
+    CliShadow, ConfigViolation, SetError, UnknownConfigKey, WriteEffect, get, get_all, set,
+    shadowed_by, validate_write,
 };
 pub use paths::{
     CREDENTIALS_FILENAME, ConfigDirError, TRIBAL_DIRECTORY_NAME, default_config_file_path,

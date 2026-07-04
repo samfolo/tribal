@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tribal_mcp::ActivePromptVersions;
 use tribal_wire::control::{ControlEvent, WriteEffect};
 
-use super::{reload::reload_single_prompt, watch::watch_path};
+use super::{reload::reload_single_prompt, self_write::SelfWriteSentinel, watch::watch_path};
 use crate::{error::AppError, startup::PromptTemplateLocation};
 
 /// Initialises the prompt hot-reload watcher on `prompts_dir`, publishing
@@ -95,6 +95,11 @@ async fn reload_and_publish(
 /// surface — and [`WriteEffect::NeedsRestart`], since v1 has no substrate to
 /// fold a file edit into the running snapshot live.
 ///
+/// The server's own `config.set` rename lands here too; `sentinel` lets that
+/// self-write be recognised by its content and suppressed, so the authoritative
+/// per-key event `config.set` already published is not shadowed by a second,
+/// keyless, restart-labelled one.
+///
 /// # Errors
 ///
 /// Returns [`AppError::FileWatcher`] when the underlying watcher cannot be
@@ -102,6 +107,7 @@ async fn reload_and_publish(
 pub(crate) fn init_config_watcher(
     config_path: &Path,
     events: broadcast::Sender<ControlEvent>,
+    sentinel: SelfWriteSentinel,
     cancellation_token: CancellationToken,
 ) -> Result<impl Future<Output = ()> + use<>, AppError> {
     let directory = config_path
@@ -109,6 +115,7 @@ pub(crate) fn init_config_watcher(
         .filter(|parent| !parent.as_os_str().is_empty())
         .map_or_else(|| PathBuf::from("."), Path::to_owned);
     let config_file_name = config_path.file_name().map(OsStr::to_owned);
+    let watched_file = config_path.to_owned();
 
     watch_path(
         &directory,
@@ -116,14 +123,17 @@ pub(crate) fn init_config_watcher(
         notify::RecursiveMode::NonRecursive,
         move |paths| {
             let config_file_name = config_file_name.clone();
+            let watched_file = watched_file.clone();
             let events = events.clone();
+            let sentinel = sentinel.clone();
             async move {
-                let Some(name) = config_file_name else {
-                    return;
-                };
-                if paths
-                    .iter()
-                    .any(|path| path.file_name() == Some(name.as_os_str()))
+                if is_external_config_edit(
+                    &paths,
+                    config_file_name.as_deref(),
+                    &watched_file,
+                    &sentinel,
+                )
+                .await
                 {
                     let _ = events.send(ControlEvent::ConfigChanged {
                         keys: Vec::new(),
@@ -134,6 +144,29 @@ pub(crate) fn init_config_watcher(
         },
         cancellation_token,
     )
+}
+
+/// Whether a settled watch batch is a config edit to announce: it touches the
+/// watched file by `name`, and its content is not the writer's own recorded
+/// persist — that self-write `config.set` already announced authoritatively.
+async fn is_external_config_edit(
+    paths: &[PathBuf],
+    name: Option<&OsStr>,
+    watched_file: &Path,
+    sentinel: &SelfWriteSentinel,
+) -> bool {
+    let Some(name) = name else {
+        return false;
+    };
+    if !paths.iter().any(|path| path.file_name() == Some(name)) {
+        return false;
+    }
+    if let Ok(current) = tokio::fs::read(watched_file).await
+        && sentinel.claims(&current)
+    {
+        return false;
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -160,8 +193,13 @@ mod tests {
         let (events, mut subscriber) = broadcast::channel(8);
         let cancellation_token = CancellationToken::new();
 
-        let watcher = init_config_watcher(&config_path, events, cancellation_token.clone())
-            .expect("the config watcher initialises");
+        let watcher = init_config_watcher(
+            &config_path,
+            events,
+            SelfWriteSentinel::default(),
+            cancellation_token.clone(),
+        )
+        .expect("the config watcher initialises");
         let handle = tokio::spawn(watcher);
 
         // Let the watch register before the edit.
@@ -179,6 +217,60 @@ mod tests {
 
         cancellation_token.cancel();
         let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_a_recorded_self_write_is_not_an_external_edit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("tribal.yaml");
+        let name = config_path.file_name().map(OsStr::to_owned);
+        let bytes = b"server: {}\nlogging: {}\n".to_vec();
+        std::fs::write(&config_path, &bytes).expect("write config");
+
+        let sentinel = SelfWriteSentinel::default();
+        sentinel.record(bytes);
+
+        // The writer's own persist is suppressed once, then a later edit of the
+        // same file publishes.
+        assert!(
+            !is_external_config_edit(
+                &[config_path.clone()],
+                name.as_deref(),
+                &config_path,
+                &sentinel
+            )
+            .await,
+            "the recorded self-write is not announced as an external edit",
+        );
+        std::fs::write(&config_path, "server: {}\n").expect("external edit");
+        assert!(
+            is_external_config_edit(
+                &[config_path.clone()],
+                name.as_deref(),
+                &config_path,
+                &sentinel
+            )
+            .await,
+            "a later edit with different content is announced",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_an_unrelated_file_is_not_a_config_edit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("tribal.yaml");
+        let name = config_path.file_name().map(OsStr::to_owned);
+        let other = dir.path().join("other.yaml");
+        assert!(
+            !is_external_config_edit(
+                &[other],
+                name.as_deref(),
+                &config_path,
+                &SelfWriteSentinel::default()
+            )
+            .await,
+            "a batch that does not touch the watched file is not a config edit",
+        );
     }
 
     async fn prompt_reload_harness() -> (
