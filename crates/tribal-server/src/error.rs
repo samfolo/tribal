@@ -148,9 +148,9 @@ pub enum AppError {
         source: io::Error,
     },
 
-    /// Prompt file watcher initialisation failed.
-    #[error("prompt watcher failed ({context}): {source}")]
-    PromptWatcher {
+    /// A filesystem watcher's initialisation failed.
+    #[error("file watcher failed ({context}): {source}")]
+    FileWatcher {
         /// Description of the failed operation.
         context: String,
         /// The underlying notify error.
@@ -750,8 +750,8 @@ mod tests {
     }
 
     #[test]
-    fn test_display_prompt_watcher() {
-        let err = AppError::PromptWatcher {
+    fn test_display_file_watcher() {
+        let err = AppError::FileWatcher {
             context: "watch /tmp/prompts".into(),
             source: notify::Error::generic("watcher failed"),
         };

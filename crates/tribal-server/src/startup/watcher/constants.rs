@@ -1,4 +1,4 @@
-//! Log and validation message constants for the prompt hot-reload watcher.
+//! Log and validation message constants for the filesystem watchers.
 
 pub(super) const LOG_PROMPT_RELOADED: &str = "hot-reloaded prompt version";
 pub(super) const LOG_PROMPT_VALIDATION_FAILED: &str =

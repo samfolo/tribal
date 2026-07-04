@@ -17,7 +17,12 @@ use tribal_config::{TransportKind, config_warnings, load_config, validate};
 use tribal_mcp::HandlerConfig;
 
 use crate::{
-    cli::ServeArgs, control, error::AppError, orchestration, startup::POOL_NAME_MCP, transport,
+    cli::ServeArgs,
+    control,
+    error::AppError,
+    orchestration,
+    startup::{POOL_NAME_MCP, init_config_watcher},
+    transport,
 };
 
 // ---------------------------------------------------------------------------
@@ -39,6 +44,11 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 
     let config = load_config(config_path, Some(cli_overrides), None)?;
     validate(&config)?;
+
+    // The control-plane event bus, created before telemetry init so a future
+    // log layer can share it: the prompt watcher, the config-file watcher, and
+    // the control socket all publish to and subscribe from this one channel.
+    let (control_events, _) = tokio::sync::broadcast::channel(control::EVENT_BUS_CAPACITY);
 
     // The OTLP gRPC exporter needs a reactor for init and for
     // background batch export.  This runtime lives for the duration
@@ -69,6 +79,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         cancellation_token.clone(),
         Some(telemetry_guard),
         metrics,
+        Some(control_events.clone()),
     )?;
 
     let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
@@ -85,12 +96,13 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let transport_error: Option<AppError> = handle.main_runtime().block_on(async {
         // The local control plane serves alongside the MCP transport for the
         // whole run; it binds best-effort and never blocks MCP from serving.
-        let (control_events, _) = tokio::sync::broadcast::channel(control::EVENT_BUS_CAPACITY);
+        let expanded_config_path =
+            std::path::PathBuf::from(shellexpand::tilde(config_path).into_owned());
         let control_context = control::ControlContext {
             config: Arc::new(config.clone()),
-            config_path: std::path::PathBuf::from(shellexpand::tilde(config_path).into_owned()),
+            config_path: expanded_config_path.clone(),
             pool: handle.state().mcp_pool().clone(),
-            events: control_events,
+            events: control_events.clone(),
             project: handle.state().resolved_project().map(|project| {
                 tribal_wire::control::ProjectSummary {
                     id: project.id().to_string(),
@@ -104,6 +116,21 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
             supervised: false,
         };
         control::spawn_control_plane(control_context).await;
+
+        // The config-file watcher announces an external edit to the file as
+        // `config.changed`; best-effort like the control plane, a failed init
+        // never blocks MCP from serving.
+        match init_config_watcher(
+            &expanded_config_path,
+            control_events.clone(),
+            cancellation_token.clone(),
+        ) {
+            Ok(watcher) => drop(tokio::spawn(watcher)),
+            Err(error) => tracing::warn!(
+                %error,
+                "config-file watcher init failed; external edits will not notify",
+            ),
+        }
 
         let mut transport_handle = tokio::spawn(run_transport(
             transport,

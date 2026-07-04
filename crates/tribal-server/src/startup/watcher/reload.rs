@@ -104,7 +104,19 @@ fn context_without_key(ctx: &tera::Context, key: &str) -> tera::Context {
         .expect("reduced context is valid JSON")
 }
 
-/// Reloads a single prompt version.
+/// The identity of a prompt version that reloaded live, for the `prompt.reloaded`
+/// event.
+pub(crate) struct PromptReloaded {
+    /// The pipeline stage whose prompt reloaded.
+    pub stage: String,
+    /// The prompt role within that stage.
+    pub role: String,
+    /// The id of the version now in force.
+    pub version_id: String,
+}
+
+/// Reloads a single prompt version, returning its identity when the active
+/// version actually changed, or `None` when nothing reloaded.
 ///
 /// All errors are logged and swallowed — the watcher never crashes.
 pub(crate) async fn reload_single_prompt(
@@ -112,7 +124,7 @@ pub(crate) async fn reload_single_prompt(
     file_path: &Path,
     pool: &PgPool,
     active_prompt_versions: &Arc<RwLock<ActivePromptVersions>>,
-) {
+) -> Option<PromptReloaded> {
     let stage = location.stage();
     let class = location.class();
     let role = location.role();
@@ -129,7 +141,7 @@ pub(crate) async fn reload_single_prompt(
                 path = %file_path.display(),
                 LOG_PROMPT_READ_FAILED,
             );
-            return;
+            return None;
         }
     };
 
@@ -143,7 +155,7 @@ pub(crate) async fn reload_single_prompt(
             path = %file_path.display(),
             LOG_PROMPT_VALIDATION_FAILED,
         );
-        return;
+        return None;
     }
 
     // -- Upsert --------------------------------------------------------------
@@ -160,7 +172,7 @@ pub(crate) async fn reload_single_prompt(
                 path = %file_path.display(),
                 LOG_PROMPT_UPSERT_FAILED,
             );
-            return;
+            return None;
         }
     };
 
@@ -183,7 +195,7 @@ pub(crate) async fn reload_single_prompt(
                 path = %file_path.display(),
                 LOG_PROMPT_UPSERT_FAILED,
             );
-            return;
+            return None;
         }
     };
 
@@ -194,7 +206,7 @@ pub(crate) async fn reload_single_prompt(
         .await
         .get_version(stage, class, role);
     if current_id == Some(version.id()) {
-        return;
+        return None;
     }
 
     active_prompt_versions
@@ -208,6 +220,12 @@ pub(crate) async fn reload_single_prompt(
         version_id = %version.id(),
         LOG_PROMPT_RELOADED,
     );
+
+    Some(PromptReloaded {
+        stage: stage.as_str().to_owned(),
+        role: role.as_str().to_owned(),
+        version_id: version.id().to_string(),
+    })
 }
 
 // ---------------------------------------------------------------------------
