@@ -16,7 +16,9 @@ use tribal_auth::oauth::OAuthRuntimeConfig;
 use tribal_config::{TransportKind, config_warnings, load_config, validate};
 use tribal_mcp::HandlerConfig;
 
-use crate::{cli::ServeArgs, error::AppError, orchestration, startup::POOL_NAME_MCP, transport};
+use crate::{
+    cli::ServeArgs, control, error::AppError, orchestration, startup::POOL_NAME_MCP, transport,
+};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -81,6 +83,17 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     // lets axum's graceful shutdown drain active connections before the
     // server exits.
     let transport_error: Option<AppError> = handle.main_runtime().block_on(async {
+        // The local control plane serves alongside the MCP transport for the
+        // whole run; it binds best-effort and never blocks MCP from serving.
+        let control_context = control::ControlContext {
+            config: Arc::new(config.clone()),
+            config_path: std::path::PathBuf::from(shellexpand::tilde(config_path).into_owned()),
+            binary_version: Arc::clone(handle.state().build_version()),
+            instance_id: Arc::clone(handle.state().instance_id()),
+            supervised: false,
+        };
+        control::spawn_control_plane(control_context, cancellation_token.clone()).await;
+
         let mut transport_handle = tokio::spawn(run_transport(
             transport,
             Arc::clone(handle.state()),

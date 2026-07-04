@@ -9,16 +9,21 @@
 //! is config-native; the wire layer maps it to its DTO, so this crate never
 //! depends on the wire contract.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::config_schema::{ReloadClass, reload_class};
-use crate::env::{ALIAS_ENV_VARS, env_var_for_path};
-use crate::redact::redact_secrets;
-use crate::{ConfigError, TribalConfig, validate};
+use crate::{
+    ConfigError, TribalConfig,
+    config_schema::{ReloadClass, reload_class},
+    env::{ALIAS_ENV_VARS, env_var_for_path},
+    redact::redact_secrets,
+    validate,
+};
 
 // ---------------------------------------------------------------------------
 // Outcomes
@@ -306,7 +311,7 @@ fn write_atomically(path: &Path, payload: &[u8]) -> std::io::Result<()> {
 /// Classifies how a persisted write to `key` takes effect for the running
 /// binary: shadowed by an environment layer, live, or awaiting a restart.
 fn write_effect(key: &str) -> WriteEffect {
-    if let Some(source) = shadowing_env_var(key) {
+    if let Some(source) = shadowed_by(key) {
         return WriteEffect::Shadowed { by: source };
     }
     match reload_class(key) {
@@ -315,12 +320,15 @@ fn write_effect(key: &str) -> WriteEffect {
     }
 }
 
-/// The environment variable that shadows `key`, if one is set.
+/// The environment variable a higher cascade layer sets to shadow `key`, if one
+/// is present — `None` when the file layer is the effective source.
 ///
 /// The alias layer sits above the nested layer, so a set alias is named first,
 /// matching the loader's merge order. A present variable shadows regardless of
-/// value: the loader merges it over the file either way.
-fn shadowing_env_var(key: &str) -> Option<String> {
+/// value: the loader merges it over the file either way. `config.schema` reads
+/// this to mark a currently-shadowed key at call time.
+#[must_use]
+pub fn shadowed_by(key: &str) -> Option<String> {
     if let Some(&(_, alias)) = ALIAS_ENV_VARS.iter().find(|&&(path, _)| path == key)
         && is_set(alias)
     {
@@ -353,8 +361,9 @@ fn non_object_error(key: &str) -> String {
 // which we cannot reduce without wrapping an upstream type.
 #[allow(clippy::result_large_err)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     /// A resolved config that passes validation, the base every operation reads.
     fn base_config() -> TribalConfig {

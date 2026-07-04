@@ -33,6 +33,7 @@ bytes.workspace = true
 chrono.workspace = true
 clap.workspace = true
 dashmap.workspace = true
+dirs.workspace = true
 gethostname.workspace = true
 gix.workspace = true
 http.workspace = true
@@ -61,13 +62,14 @@ uuid.workspace = true
 tribal-auth.workspace = true
 tribal-agent-runtime.workspace = true
 tribal-common.workspace = true
-tribal-config.workspace = true
+tribal-config = { workspace = true, features = ["schema"] }
 tribal-db.workspace = true
 tribal-domain.workspace = true
 tribal-inference.workspace = true
 tribal-mcp.workspace = true
 tribal-telemetry.workspace = true
 tribal-ui.workspace = true
+tribal-wire.workspace = true
 tribal-worker.workspace = true
 
 [features]
