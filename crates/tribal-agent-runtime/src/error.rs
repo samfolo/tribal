@@ -95,6 +95,12 @@ pub enum AgentRuntimeError {
         /// What the projection found.
         context: String,
     },
+
+    /// The run's cancellation watch closed while the loop was streaming. The
+    /// worker holds the sender for the loop's life, so a closed channel is a
+    /// wiring fault — surfaced rather than silently left uncancellable.
+    #[error("the cancellation watch closed while the loop was running")]
+    CancelWatchClosed,
 }
 
 impl AgentRuntimeError {

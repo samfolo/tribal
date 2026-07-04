@@ -5706,6 +5706,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
+ "futures-util",
  "jsonschema",
  "schemars 0.8.22",
  "serde",
