@@ -5616,6 +5616,7 @@ dependencies = [
 name = "tribal-telemetry"
 version = "0.4.1"
 dependencies = [
+ "chrono",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-proto",
@@ -5632,6 +5633,7 @@ dependencies = [
  "tracing-subscriber",
  "tribal-config",
  "tribal-domain",
+ "tribal-wire",
 ]
 
 [[package]]
