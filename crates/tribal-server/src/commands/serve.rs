@@ -88,11 +88,20 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         let control_context = control::ControlContext {
             config: Arc::new(config.clone()),
             config_path: std::path::PathBuf::from(shellexpand::tilde(config_path).into_owned()),
+            pool: handle.state().mcp_pool().clone(),
+            project: handle.state().resolved_project().map(|project| {
+                tribal_wire::control::ProjectSummary {
+                    id: project.id().to_string(),
+                    name: project.name().to_owned(),
+                }
+            }),
+            cancellation_token: cancellation_token.clone(),
+            started_at: std::time::Instant::now(),
             binary_version: Arc::clone(handle.state().build_version()),
             instance_id: Arc::clone(handle.state().instance_id()),
             supervised: false,
         };
-        control::spawn_control_plane(control_context, cancellation_token.clone()).await;
+        control::spawn_control_plane(control_context).await;
 
         let mut transport_handle = tokio::spawn(run_transport(
             transport,

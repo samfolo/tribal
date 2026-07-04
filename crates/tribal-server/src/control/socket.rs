@@ -14,20 +14,22 @@ use std::{
     sync::Arc,
 };
 
+use sqlx::PgPool;
 use tokio::{
     io::BufReader,
     net::{UnixListener, UnixStream},
 };
-use tokio_util::sync::CancellationToken;
-use tribal_config::TribalConfig;
+use tribal_auth::{AuthenticatedPrincipal, Authenticator};
+use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_wire::control::{
     CONTROL_CONTRACT_VERSION, ClientHello, ControlRequest, ControlResponse, JsonRpcVersion,
     ResponseResult, ServerHello,
 };
 
 use super::{
+    ControlContext,
     descriptor::{self, RuntimeDescriptor},
-    dispatch::{ConfigContext, dispatch},
+    dispatch::dispatch,
     error::ControlError,
     framing::{read_typed_frame, write_frame},
 };
@@ -35,26 +37,6 @@ use super::{
 /// The owner-only permission bits the socket is created with — defence in depth
 /// beside the peer-credential check.
 const SOCKET_MODE: u32 = 0o600;
-
-// ---------------------------------------------------------------------------
-// Context
-// ---------------------------------------------------------------------------
-
-/// Everything a served connection reads: the running configuration, the file a
-/// write persists to, and the identity the handshake and descriptor report.
-pub(crate) struct ControlContext {
-    /// The resolved configuration the server is running with.
-    pub config: Arc<TribalConfig>,
-    /// The YAML file `config.set` writes.
-    pub config_path: PathBuf,
-    /// The binary's build version, reported in the handshake and descriptor.
-    pub binary_version: Arc<str>,
-    /// The per-serve instance identity, reported in the descriptor.
-    pub instance_id: Arc<str>,
-    /// Whether a supervisor owns this process (governs the future restart
-    /// contract; recorded in the descriptor).
-    pub supervised: bool,
-}
 
 // ---------------------------------------------------------------------------
 // The plane
@@ -134,15 +116,16 @@ impl ControlPlane {
         })
     }
 
-    /// Serves connections until the token is cancelled, then removes the socket
-    /// and descriptor via the guard.
-    pub(crate) async fn serve(self, cancellation_token: CancellationToken) {
+    /// Serves connections until the serve token is cancelled, then removes the
+    /// socket and descriptor via the guard.
+    pub(crate) async fn serve(self) {
         let Self {
             listener,
             context,
             owner_uid,
             guard,
         } = self;
+        let cancellation_token = context.cancellation_token.clone();
         loop {
             tokio::select! {
                 () = cancellation_token.cancelled() => break,
@@ -179,12 +162,9 @@ impl Drop for DescriptorGuard {
 /// Binds the control plane and spawns its accept loop, logging and continuing
 /// without it on failure — the control plane never blocks the binary from
 /// serving MCP.
-pub(crate) async fn spawn_control_plane(
-    context: ControlContext,
-    cancellation_token: CancellationToken,
-) {
+pub(crate) async fn spawn_control_plane(context: ControlContext) {
     match ControlPlane::bind(Arc::new(context)).await {
-        Ok(plane) => drop(tokio::spawn(plane.serve(cancellation_token))),
+        Ok(plane) => drop(tokio::spawn(plane.serve())),
         Err(error) => tracing::warn!(%error, "control socket unavailable; serving without it"),
     }
 }
@@ -240,6 +220,11 @@ async fn handle_connection(stream: UnixStream, context: Arc<ControlContext>, own
         return;
     }
 
+    // Resolve the local principal once for the connection. Config crossings need
+    // none, so a failure here is not fatal — only the principal-scoped crossings
+    // refuse when it is absent.
+    let principal = resolve_principal(&context.pool).await;
+
     loop {
         let request: ControlRequest = match read_typed_frame(&mut reader).await {
             Ok(Some(request)) => request,
@@ -249,11 +234,14 @@ async fn handle_connection(stream: UnixStream, context: Arc<ControlContext>, own
                 break;
             }
         };
-        let config_context = ConfigContext {
-            config: context.config.as_ref(),
-            config_file: context.config_path.as_path(),
-        };
-        let outcome = match dispatch(&config_context, &request.method, request.params) {
+        let outcome = match dispatch(
+            &context,
+            principal.as_ref(),
+            &request.method,
+            request.params,
+        )
+        .await
+        {
             Ok(result) => ResponseResult::Success { result },
             Err(error) => ResponseResult::Failure { error },
         };
@@ -272,6 +260,21 @@ async fn handle_connection(stream: UnixStream, context: Arc<ControlContext>, own
 /// Whether a peer's UID is the socket owner's — the whole peer-credential check.
 fn peer_is_owner(peer_uid: u32, owner_uid: u32) -> bool {
     peer_uid == owner_uid
+}
+
+/// Resolves the local principal for the connection, best-effort. Config reads
+/// need no principal, so a failure (no database, `tribal setup` not run) leaves
+/// it `None`, and only the principal-scoped crossings refuse.
+async fn resolve_principal(pool: &PgPool) -> Option<AuthenticatedPrincipal> {
+    let authenticator = Authenticator::new(
+        Arc::new(PgAuthTokenRepository),
+        Arc::new(PgPrincipalRepository),
+    );
+    let mut connection = pool.acquire().await.ok()?;
+    authenticator
+        .resolve_stdio_principal(&mut connection)
+        .await
+        .ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -299,20 +302,36 @@ fn fs_error(path: &Path) -> impl FnOnce(std::io::Error) -> ControlError {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use tokio_util::sync::CancellationToken;
+    use tribal_config::TribalConfig;
+    use tribal_test_utils::lazy_pool;
     use tribal_wire::control::{ConfigPath, RequestId};
 
     use super::*;
 
-    fn test_context() -> Arc<ControlContext> {
+    fn test_context_with(cancellation_token: CancellationToken) -> Arc<ControlContext> {
+        // A lazy pool never connects unless a principal-scoped method is called,
+        // and `resolve_principal` treats its refusal as "no principal", so the
+        // transport tests need no live database.
         Arc::new(ControlContext {
             config: Arc::new(TribalConfig::minimum_valid(
                 "postgres://user:pass@localhost:5432/tribal",
             )),
             config_path: PathBuf::from("/tmp/tribal.yaml"),
+            pool: lazy_pool(),
+            project: None,
+            cancellation_token,
+            started_at: Instant::now(),
             binary_version: Arc::from("test-build"),
             instance_id: Arc::from("test-instance"),
             supervised: false,
         })
+    }
+
+    fn test_context() -> Arc<ControlContext> {
+        test_context_with(CancellationToken::new())
     }
 
     #[test]
@@ -416,11 +435,11 @@ mod tests {
         let socket_path = dir.path().join("control.sock");
         let descriptor_path = dir.path().join("control.json");
         let cancellation_token = CancellationToken::new();
+        let context = test_context_with(cancellation_token.clone());
 
-        let plane =
-            ControlPlane::bind_at(socket_path.clone(), descriptor_path.clone(), test_context())
-                .await
-                .expect("the plane binds");
+        let plane = ControlPlane::bind_at(socket_path.clone(), descriptor_path.clone(), context)
+            .await
+            .expect("the plane binds");
         assert!(
             descriptor_path.exists(),
             "the descriptor is written on serve"
@@ -428,7 +447,7 @@ mod tests {
         assert!(socket_path.exists(), "the socket is bound on serve");
 
         // A client connects and completes the handshake, proving the bound plane serves.
-        let serve = tokio::spawn(plane.serve(cancellation_token.clone()));
+        let serve = tokio::spawn(plane.serve());
         let client = UnixStream::connect(&socket_path).await.expect("connect");
         let (read_half, mut write_half) = client.into_split();
         let mut reader = BufReader::new(read_half);
