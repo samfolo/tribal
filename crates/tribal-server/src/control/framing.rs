@@ -69,12 +69,19 @@ where
     W: AsyncWrite + Unpin,
     T: Serialize,
 {
-    let body = serde_json::to_vec(value).map_err(|source| FramingError::Json { source })?;
-    let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    writer.write_all(header.as_bytes()).await?;
-    writer.write_all(&body).await?;
+    let frame = encode_frame(value)?;
+    writer.write_all(&frame).await?;
     writer.flush().await?;
     Ok(())
+}
+
+/// Encodes `value` as one `Content-Length` frame's bytes, header and body — for
+/// a caller that queues frames from several producers onto one writer.
+pub(crate) fn encode_frame<T: Serialize>(value: &T) -> Result<Vec<u8>, FramingError> {
+    let body = serde_json::to_vec(value).map_err(|source| FramingError::Json { source })?;
+    let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+    frame.extend_from_slice(&body);
+    Ok(frame)
 }
 
 /// Reads one frame's raw JSON bytes, or `None` on a clean end of stream before a

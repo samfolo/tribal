@@ -16,7 +16,7 @@ use tribal_auth::AuthenticatedPrincipal;
 use tribal_config::{TransportKind, TribalConfig};
 use tribal_db::{AuthTokenRepository, PgAuthTokenRepository};
 use tribal_domain::AuthToken;
-use tribal_wire::control::{self as wire, CONTROL_CONTRACT_VERSION};
+use tribal_wire::control::{self as wire, CONTROL_CONTRACT_VERSION, ControlEvent};
 
 use super::ControlContext;
 
@@ -35,18 +35,39 @@ pub(crate) async fn dispatch(
     method: &str,
     params: Option<Value>,
 ) -> Result<Value, wire::ResponseError> {
-    if let Some(outcome) = dispatch_config(&context.config, &context.config_path, method, params) {
-        return outcome;
-    }
     match method {
+        // Handled here, not in `dispatch_config`, because a successful write
+        // publishes a `config.changed` event to the bus.
+        "config.set" => config_set_and_publish(context, params),
         "server.status" => Ok(result(status(context))),
         "token.list" => token_list(&context.pool, principal).await,
-        other => Err(error(
-            METHOD_NOT_FOUND,
-            format!("no such control method: {other}"),
-            None,
-        )),
+        _ => match dispatch_config(&context.config, &context.config_path, method, params) {
+            Some(outcome) => outcome,
+            None => Err(error(
+                METHOD_NOT_FOUND,
+                format!("no such control method: {method}"),
+                None,
+            )),
+        },
     }
+}
+
+/// Persists a `config.set` and announces it on the bus. A change every
+/// subscriber learns of through `config.changed` — the binary is the only
+/// writer, so the client awaits the event rather than assuming the write took.
+fn config_set_and_publish(
+    context: &ControlContext,
+    params: Option<Value>,
+) -> Result<Value, wire::ResponseError> {
+    let request: wire::ConfigSetRequest = parse_params(params)?;
+    let key = request.key.clone();
+    let outcome = config_set(&context.config, &context.config_path, request)?;
+    // A send with no subscribers is not an error — no client is listening yet.
+    let _ = context.events.send(ControlEvent::ConfigChanged {
+        keys: vec![key],
+        effect: outcome.effect,
+    });
+    Ok(result(outcome))
 }
 
 // ---------------------------------------------------------------------------
@@ -64,9 +85,6 @@ fn dispatch_config(
         "config.schema" => Ok(result(config_schema())),
         "config.get" => parse_params(params).and_then(|request| config_get(config, request)),
         "config.getAll" => Ok(result(config_get_all(config))),
-        "config.set" => {
-            parse_params(params).and_then(|request| config_set(config, config_file, request))
-        }
         "config.validate" => {
             parse_params(params).map(|request| result(config_validate(config, request)))
         }
@@ -117,9 +135,9 @@ fn config_set(
     config: &TribalConfig,
     config_file: &Path,
     request: wire::ConfigSetRequest,
-) -> Result<Value, wire::ResponseError> {
+) -> Result<wire::ConfigWriteOutcome, wire::ResponseError> {
     match tribal_config::set(config, config_file, &request.key, request.value) {
-        Ok(effect) => Ok(result(write_outcome(effect))),
+        Ok(effect) => Ok(write_outcome(effect)),
         Err(tribal_config::SetError::Rejected { violations }) => Err(error(
             INVALID_PARAMS,
             "the proposed configuration write is invalid".to_owned(),
@@ -430,19 +448,24 @@ mod tests {
         assert!(!parsed.violations.is_empty());
     }
 
+    fn set_request(key: &str, value: Value) -> wire::ConfigSetRequest {
+        wire::ConfigSetRequest {
+            key: key.to_owned(),
+            value,
+        }
+    }
+
     #[test]
     fn test_config_set_persists_and_reports_needs_restart() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("tribal.yaml");
-        let value = dispatch_cfg(
+        let outcome = config_set(
             &base_config(),
             &path,
-            "config.set",
-            Some(json!({ "key": "logging.level", "value": "debug" })),
+            set_request("logging.level", json!("debug")),
         )
         .expect("config.set succeeds");
-        let parsed: wire::ConfigWriteOutcome = serde_json::from_value(value).unwrap();
-        assert_eq!(parsed.effect, wire::WriteEffect::NeedsRestart);
+        assert_eq!(outcome.effect, wire::WriteEffect::NeedsRestart);
         assert!(path.exists(), "the write persists to the file");
     }
 
@@ -450,16 +473,60 @@ mod tests {
     fn test_config_set_refuses_an_invalid_write_whole() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("tribal.yaml");
-        let error = dispatch_cfg(
+        let error = config_set(
             &base_config(),
             &path,
-            "config.set",
-            Some(json!({ "key": "server.transport", "value": "grpc" })),
+            set_request("server.transport", json!("grpc")),
         )
         .expect_err("an invalid write errors");
         assert_eq!(error.code, INVALID_PARAMS);
         assert!(error.data.is_some(), "the violations ride the error data");
         assert!(!path.exists(), "a refused write never touches the file");
+    }
+
+    #[tokio::test]
+    async fn test_config_set_publishes_config_changed() {
+        use std::sync::Arc;
+
+        use tokio::sync::broadcast;
+        use tokio_util::sync::CancellationToken;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (events, mut subscriber) = broadcast::channel(16);
+        let context = ControlContext {
+            config: Arc::new(base_config()),
+            config_path: dir.path().join("tribal.yaml"),
+            pool: tribal_test_utils::lazy_pool(),
+            events,
+            project: None,
+            cancellation_token: CancellationToken::new(),
+            started_at: std::time::Instant::now(),
+            binary_version: Arc::from("v"),
+            instance_id: Arc::from("id"),
+            supervised: false,
+        };
+
+        let value = dispatch(
+            &context,
+            None,
+            "config.set",
+            Some(json!({ "key": "logging.level", "value": "debug" })),
+        )
+        .await
+        .expect("config.set succeeds");
+        let outcome: wire::ConfigWriteOutcome = serde_json::from_value(value).unwrap();
+        assert_eq!(outcome.effect, wire::WriteEffect::NeedsRestart);
+
+        match subscriber
+            .try_recv()
+            .expect("a config.changed was published")
+        {
+            ControlEvent::ConfigChanged { keys, effect } => {
+                assert_eq!(keys, vec!["logging.level".to_owned()]);
+                assert_eq!(effect, wire::WriteEffect::NeedsRestart);
+            }
+            other => panic!("expected ConfigChanged, got {other:?}"),
+        }
     }
 
     #[test]

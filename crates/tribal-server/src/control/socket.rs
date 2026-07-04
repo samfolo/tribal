@@ -16,14 +16,15 @@ use std::{
 
 use sqlx::PgPool;
 use tokio::{
-    io::BufReader,
-    net::{UnixListener, UnixStream},
+    io::{AsyncWriteExt as _, BufReader},
+    net::{UnixListener, UnixStream, unix::OwnedWriteHalf},
+    sync::{broadcast, mpsc},
 };
 use tribal_auth::{AuthenticatedPrincipal, Authenticator};
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_wire::control::{
-    CONTROL_CONTRACT_VERSION, ClientHello, ControlRequest, ControlResponse, JsonRpcVersion,
-    ResponseResult, ServerHello,
+    CONTROL_CONTRACT_VERSION, ClientHello, ControlEvent, ControlRequest, ControlResponse,
+    JsonRpcVersion, ResponseResult, ServerHello,
 };
 
 use super::{
@@ -31,12 +32,17 @@ use super::{
     descriptor::{self, RuntimeDescriptor},
     dispatch::dispatch,
     error::ControlError,
-    framing::{read_typed_frame, write_frame},
+    event::notification_for,
+    framing::{encode_frame, read_typed_frame, write_frame},
 };
 
 /// The owner-only permission bits the socket is created with — defence in depth
 /// beside the peer-credential check.
 const SOCKET_MODE: u32 = 0o600;
+
+/// How many outgoing frames a connection queues before a slow client applies
+/// back-pressure to the request loop and the event forwarder.
+const OUTGOING_CAPACITY: usize = 64;
 
 // ---------------------------------------------------------------------------
 // The plane
@@ -220,6 +226,15 @@ async fn handle_connection(stream: UnixStream, context: Arc<ControlContext>, own
         return;
     }
 
+    // Responses and server-initiated events share one writer: the request loop
+    // and the event forwarder both queue frames onto a channel a single writer
+    // task drains. This keeps writes serialised and the frame reader off the
+    // cancellation path (it is not cancel-safe), unlike a `select!` over both.
+    let (outgoing, outgoing_rx) = mpsc::channel::<Vec<u8>>(OUTGOING_CAPACITY);
+    let writer = tokio::spawn(drain_to_writer(write_half, outgoing_rx));
+    // Subscribe before the DB round-trip below, so no event is missed in the gap.
+    let forwarder = tokio::spawn(forward_events(context.events.subscribe(), outgoing.clone()));
+
     // Resolve the local principal once for the connection. Config crossings need
     // none, so a failure here is not fatal — only the principal-scoped crossings
     // refuse when it is absent.
@@ -250,9 +265,56 @@ async fn handle_connection(stream: UnixStream, context: Arc<ControlContext>, own
             id: request.id,
             outcome,
         };
-        if let Err(error) = write_frame(&mut write_half, &response).await {
-            tracing::warn!(%error, "control: could not send response; closing");
+        match encode_frame(&response) {
+            Ok(frame) => {
+                if outgoing.send(frame).await.is_err() {
+                    break;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "control: could not encode response; closing");
+                break;
+            }
+        }
+    }
+
+    // The reader ended: dropping our sender and stopping the forwarder closes
+    // the writer's channel, and it drains and exits.
+    drop(outgoing);
+    forwarder.abort();
+    let _ = writer.await;
+}
+
+/// Drains queued frames to the connection's write half until the channel closes
+/// or a write fails.
+async fn drain_to_writer(mut write_half: OwnedWriteHalf, mut outgoing: mpsc::Receiver<Vec<u8>>) {
+    while let Some(frame) = outgoing.recv().await {
+        if write_half.write_all(&frame).await.is_err() || write_half.flush().await.is_err() {
             break;
+        }
+    }
+}
+
+/// Forwards bus events to the connection as notification frames. A lagged
+/// subscriber drops events by design and re-reads state; a closed bus ends it.
+async fn forward_events(
+    mut events: broadcast::Receiver<ControlEvent>,
+    outgoing: mpsc::Sender<Vec<u8>>,
+) {
+    loop {
+        match events.recv().await {
+            Ok(event) => match encode_frame(&notification_for(&event)) {
+                Ok(frame) => {
+                    if outgoing.send(frame).await.is_err() {
+                        break;
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "control: could not encode event; dropping"),
+            },
+            Err(broadcast::error::RecvError::Lagged(missed)) => {
+                tracing::warn!(missed, "control: subscriber lagged; dropped events");
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
         }
     }
 }
@@ -315,12 +377,14 @@ mod tests {
         // A lazy pool never connects unless a principal-scoped method is called,
         // and `resolve_principal` treats its refusal as "no principal", so the
         // transport tests need no live database.
+        let (events, _) = broadcast::channel(super::super::EVENT_BUS_CAPACITY);
         Arc::new(ControlContext {
             config: Arc::new(TribalConfig::minimum_valid(
                 "postgres://user:pass@localhost:5432/tribal",
             )),
             config_path: PathBuf::from("/tmp/tribal.yaml"),
             pool: lazy_pool(),
+            events,
             project: None,
             cancellation_token,
             started_at: Instant::now(),
@@ -424,6 +488,55 @@ mod tests {
             }
             ResponseResult::Failure { error } => panic!("expected success, got {error:?}"),
         }
+        drop(write_half);
+        drop(reader);
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn test_a_published_event_reaches_a_subscribed_connection() {
+        use std::time::Duration;
+
+        use tribal_wire::control::{ControlNotification, WriteEffect};
+
+        let context = test_context();
+        let events = context.events.clone();
+        let (client, server) = UnixStream::pair().expect("socket pair");
+        let uid = client.peer_cred().expect("peer cred").uid();
+        let task = tokio::spawn(handle_connection(server, context, uid));
+
+        let (read_half, mut write_half) = client.into_split();
+        let mut reader = BufReader::new(read_half);
+        write_frame(
+            &mut write_half,
+            &ClientHello {
+                protocol_version: CONTROL_CONTRACT_VERSION,
+            },
+        )
+        .await
+        .unwrap();
+        let _hello: ServerHello = read_typed_frame(&mut reader).await.unwrap().unwrap();
+
+        // Publish only once the connection's forwarder has subscribed, else the
+        // broadcast delivers to no one.
+        while events.receiver_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+        events
+            .send(ControlEvent::ConfigChanged {
+                keys: vec!["logging.level".to_owned()],
+                effect: WriteEffect::NeedsRestart,
+            })
+            .expect("a subscriber is present");
+
+        let frame: Option<ControlNotification> =
+            tokio::time::timeout(Duration::from_secs(2), read_typed_frame(&mut reader))
+                .await
+                .expect("an event frame arrives")
+                .expect("the frame reads");
+        let notification = frame.expect("a notification is present");
+        assert_eq!(notification.method, "config.changed");
+
         drop(write_half);
         drop(reader);
         let _ = task.await;

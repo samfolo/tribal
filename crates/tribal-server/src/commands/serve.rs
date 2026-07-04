@@ -85,10 +85,12 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let transport_error: Option<AppError> = handle.main_runtime().block_on(async {
         // The local control plane serves alongside the MCP transport for the
         // whole run; it binds best-effort and never blocks MCP from serving.
+        let (control_events, _) = tokio::sync::broadcast::channel(control::EVENT_BUS_CAPACITY);
         let control_context = control::ControlContext {
             config: Arc::new(config.clone()),
             config_path: std::path::PathBuf::from(shellexpand::tilde(config_path).into_owned()),
             pool: handle.state().mcp_pool().clone(),
+            events: control_events,
             project: handle.state().resolved_project().map(|project| {
                 tribal_wire::control::ProjectSummary {
                     id: project.id().to_string(),

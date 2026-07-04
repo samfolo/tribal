@@ -15,17 +15,24 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use sqlx::PgPool;
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tribal_config::TribalConfig;
-use tribal_wire::control::ProjectSummary;
+use tribal_wire::control::{ControlEvent, ProjectSummary};
 
 mod descriptor;
 mod dispatch;
 mod error;
+mod event;
 mod framing;
 mod socket;
 
 pub(crate) use socket::spawn_control_plane;
+
+/// The control event bus's channel capacity. A subscriber that falls this many
+/// events behind lags and is told to re-read state rather than blocking a
+/// publisher (concurrency: data-loss by design over back-pressure).
+pub(crate) const EVENT_BUS_CAPACITY: usize = 256;
 
 /// Everything a served connection reads: the running configuration and the file
 /// a write persists to, the MCP pool the `token.*` crossing reads through, and
@@ -40,6 +47,9 @@ pub(crate) struct ControlContext {
     pub config_path: PathBuf,
     /// The MCP read-path pool, for principal resolution and `token.list`.
     pub pool: PgPool,
+    /// The process event bus. Each connection subscribes to fan events out to
+    /// its client; `config.set` and the file watchers publish onto it.
+    pub events: broadcast::Sender<ControlEvent>,
     /// The project this serve resolved, absent when none was.
     pub project: Option<ProjectSummary>,
     /// The serve-lifetime token; its cancellation is the worker-liveness and
