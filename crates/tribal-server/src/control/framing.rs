@@ -4,16 +4,24 @@
 //! exactly `n` bytes of JSON — the same envelope the Language Server Protocol
 //! uses, chosen so a reader never has to scan the payload for a delimiter. The
 //! codec is payload-agnostic: it moves bytes, and the caller deserialises them
-//! into the wire DTO the frame carries.
+//! into the wire DTO the frame carries. Both the header and the declared body
+//! are size-bounded, so a peer that never terminates its header or declares an
+//! enormous body is refused rather than allowed to exhaust memory — the same
+//! caps the client's codec enforces.
 
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// The largest frame the codec will read. The control crossings — a config
 /// document, a bounded log tail — are small; a larger declared length is a
 /// malformed or hostile peer, refused rather than allocated.
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
+/// The largest header the codec buffers before the blank-line terminator. The
+/// control header is one short line; more is a peer holding the frame open,
+/// refused rather than buffered without bound.
+const MAX_HEADER_BYTES: usize = 8 * 1024;
 
 /// A failure reading or writing a control frame.
 #[derive(Debug, Error)]
@@ -39,6 +47,12 @@ pub(crate) enum FramingError {
     TooLarge {
         /// The declared frame length.
         length: usize,
+        /// The limit it broke.
+        max: usize,
+    },
+    /// The header ran past [`MAX_HEADER_BYTES`] without a blank-line terminator.
+    #[error("control frame header exceeds the {max}-byte limit before terminating")]
+    HeaderTooLarge {
         /// The limit it broke.
         max: usize,
     },
@@ -90,42 +104,10 @@ async fn read_frame<R>(reader: &mut R) -> Result<Option<Vec<u8>>, FramingError>
 where
     R: AsyncBufRead + Unpin,
 {
-    let mut content_length: Option<usize> = None;
-    let mut saw_header_byte = false;
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let read = reader.read_line(&mut line).await?;
-        if read == 0 {
-            // End of stream. Between frames it is a clean close; partway through
-            // a header it is a truncated frame.
-            return if saw_header_byte {
-                Err(FramingError::MissingContentLength)
-            } else {
-                Ok(None)
-            };
-        }
-        saw_header_byte = true;
-        let header = line.trim_end_matches(['\r', '\n']);
-        if header.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = header.split_once(':')
-            && name.trim().eq_ignore_ascii_case("content-length")
-        {
-            let value = value.trim();
-            content_length =
-                Some(
-                    value
-                        .parse()
-                        .map_err(|_| FramingError::InvalidContentLength {
-                            value: value.to_owned(),
-                        })?,
-                );
-        }
-    }
-
-    let length = content_length.ok_or(FramingError::MissingContentLength)?;
+    let Some(header) = read_header(reader).await? else {
+        return Ok(None);
+    };
+    let length = parse_content_length(&header)?;
     if length > MAX_FRAME_BYTES {
         return Err(FramingError::TooLarge {
             length,
@@ -141,6 +123,58 @@ where
         }
     })?;
     Ok(Some(body))
+}
+
+/// Reads the header up to and including its blank-line terminator, refusing one
+/// that runs past [`MAX_HEADER_BYTES`] before allocating the body. Returns `None`
+/// on a clean end of stream before any header byte.
+async fn read_header<R>(reader: &mut R) -> Result<Option<Vec<u8>>, FramingError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut header = Vec::new();
+    loop {
+        let byte = match reader.read_u8().await {
+            Ok(byte) => byte,
+            Err(source) if source.kind() == std::io::ErrorKind::UnexpectedEof => {
+                // Between frames a clean close; partway through a header a peer
+                // that closed before terminating it.
+                return if header.is_empty() {
+                    Ok(None)
+                } else {
+                    Err(FramingError::MissingContentLength)
+                };
+            }
+            Err(source) => return Err(FramingError::Io { source }),
+        };
+        header.push(byte);
+        if header.ends_with(b"\r\n\r\n") {
+            return Ok(Some(header));
+        }
+        if header.len() >= MAX_HEADER_BYTES {
+            return Err(FramingError::HeaderTooLarge {
+                max: MAX_HEADER_BYTES,
+            });
+        }
+    }
+}
+
+/// Reads the `Content-Length` from a header block's lines.
+fn parse_content_length(header: &[u8]) -> Result<usize, FramingError> {
+    let text = String::from_utf8_lossy(header);
+    for line in text.split("\r\n") {
+        if let Some((name, value)) = line.split_once(':')
+            && name.trim().eq_ignore_ascii_case("content-length")
+        {
+            let value = value.trim();
+            return value
+                .parse()
+                .map_err(|_| FramingError::InvalidContentLength {
+                    value: value.to_owned(),
+                });
+        }
+    }
+    Err(FramingError::MissingContentLength)
 }
 
 /// Reads one frame and deserialises it into `T`, or `None` on a clean end of
@@ -255,6 +289,19 @@ mod tests {
         assert!(
             matches!(outcome, Err(FramingError::TooLarge { .. })),
             "a frame over the limit must be refused, never allocated",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_an_unterminated_header_is_refused_at_the_cap() {
+        // A peer that streams header bytes without the blank-line terminator is
+        // refused at the cap, never buffered without bound.
+        let flood = vec![b'x'; MAX_HEADER_BYTES + 1];
+        let mut reader = Cursor::new(flood);
+        let outcome: Result<Option<ControlRequest>, _> = read_typed_frame(&mut reader).await;
+        assert!(
+            matches!(outcome, Err(FramingError::HeaderTooLarge { .. })),
+            "an unbounded header must be refused at the cap",
         );
     }
 }
