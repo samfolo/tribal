@@ -1,0 +1,59 @@
+//! Projecting a [`ControlEvent`] onto the JSON-RPC notification frame the socket
+//! writes to a subscriber.
+//!
+//! A [`ControlEvent`] serialises to `{ method, params }` — exactly the body of a
+//! server-initiated [`ControlNotification`] once the frozen `jsonrpc` marker is
+//! added. Keeping the projection in one place means every publisher frames an
+//! event the same way.
+
+use tribal_wire::control::{ControlEvent, ControlNotification, JsonRpcVersion};
+
+/// Projects a control event onto the notification frame the socket sends to a
+/// subscriber.
+pub(crate) fn notification_for(event: &ControlEvent) -> ControlNotification {
+    let projected = serde_json::to_value(event).expect("a control event serialises to JSON");
+    let method = projected
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .expect("a control event projects a method")
+        .to_owned();
+    let params = projected.get("params").cloned();
+    ControlNotification {
+        jsonrpc: JsonRpcVersion,
+        method,
+        params,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tribal_wire::control::WriteEffect;
+
+    use super::*;
+
+    #[test]
+    fn test_a_fielded_event_projects_method_and_params() {
+        let notification = notification_for(&ControlEvent::ConfigChanged {
+            keys: vec!["logging.level".to_owned()],
+            effect: WriteEffect::Live,
+        });
+        assert_eq!(notification.method, "config.changed");
+        assert_eq!(
+            notification.params.expect("params present")["effect"],
+            serde_json::json!("live"),
+        );
+    }
+
+    #[test]
+    fn test_a_prompt_reloaded_event_projects_its_stage_and_role() {
+        let notification = notification_for(&ControlEvent::PromptReloaded {
+            stage: "extraction".to_owned(),
+            role: "system".to_owned(),
+            version_id: "v2".to_owned(),
+        });
+        assert_eq!(notification.method, "prompt.reloaded");
+        let params = notification.params.expect("params present");
+        assert_eq!(params["stage"], serde_json::json!("extraction"));
+        assert_eq!(params["role"], serde_json::json!("system"));
+    }
+}

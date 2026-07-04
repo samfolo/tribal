@@ -29,6 +29,7 @@ fn default_version() -> String {
 ///
 /// All fields default to sensible values for local development.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TribalConfig {
     /// Schema version, set automatically to the crate version.

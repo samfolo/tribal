@@ -30,6 +30,7 @@ pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.3;
 /// Controls result limits, overfetch behaviour, and similarity
 /// thresholds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct DiscoveryConfig {
     /// Default number of results when the caller does not specify a limit.

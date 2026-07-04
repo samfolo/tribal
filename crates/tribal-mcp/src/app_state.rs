@@ -188,4 +188,16 @@ impl AppState {
     pub fn active_prompt_versions(&self) -> &Arc<RwLock<ActivePromptVersions>> {
         &self.active_prompt_versions
     }
+
+    /// Returns the per-serve instance identity (`{hostname}~{pid}~{boot}`).
+    #[must_use]
+    pub fn instance_id(&self) -> &Arc<str> {
+        &self.instance_id
+    }
+
+    /// Returns the binary's build version (git-describe).
+    #[must_use]
+    pub fn build_version(&self) -> &Arc<str> {
+        &self.build_version
+    }
 }

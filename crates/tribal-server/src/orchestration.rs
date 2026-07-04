@@ -11,7 +11,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use dashmap::DashMap;
 use tokio::{
     runtime::{Builder, Runtime},
-    sync::{RwLock, oneshot},
+    sync::{RwLock, broadcast, oneshot},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -22,6 +22,7 @@ use tribal_domain::PipelineParameters;
 use tribal_inference::{InferenceGateway, ProviderIdentity};
 use tribal_mcp::{AppState, SharedActivePrompts};
 use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
+use tribal_wire::control::ControlEvent;
 use tribal_worker::{Worker, WorkerError};
 
 use crate::{
@@ -171,6 +172,10 @@ impl ServerHandle {
 /// [`ServerHandle`] holds the guard so it outlives the runtimes
 /// and flushes OTLP data on shutdown.
 ///
+/// `control_events` is the control-plane bus the prompt hot-reload watcher
+/// publishes `prompt.reloaded` to; `None` runs the watcher detached, for a
+/// programmatic caller with no control socket.
+///
 /// Returns a [`ServerHandle`] providing access to the running server's state
 /// and shutdown mechanism.
 ///
@@ -191,6 +196,7 @@ pub fn start_server(
     cancellation_token: CancellationToken,
     telemetry_guard: Option<TelemetryGuard>,
     metrics: Arc<dyn MetricsRecorder>,
+    control_events: Option<broadcast::Sender<ControlEvent>>,
 ) -> Result<ServerHandle, AppError> {
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
@@ -295,11 +301,15 @@ pub fn start_server(
         hot_reload: true,
     } = &config.prompts.source
     {
+        // A detached bus for a caller with no control socket: publishes land on
+        // a sender with no subscribers and are dropped, the reload proceeds.
+        let events = control_events.unwrap_or_else(|| broadcast::channel(1).0);
         let prompts_dir = expand_prompts_dir(directory);
         let watcher_future = init_prompt_watcher(
             prompts_dir,
             state.mcp_pool().clone(),
             state.active_prompt_versions().clone(),
+            events,
             cancellation_token.clone(),
         )?;
         drop(main_rt.spawn(watcher_future));

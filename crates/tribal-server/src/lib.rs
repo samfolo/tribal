@@ -5,6 +5,7 @@
 mod app;
 mod cli;
 mod commands;
+mod control;
 mod error;
 mod git;
 mod orchestration;

@@ -1,0 +1,1860 @@
+{
+  "schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "AgentsConfig": {
+        "additionalProperties": false,
+        "description": "The `[agents]` section: per-stage executor selection and budgets.",
+        "properties": {
+          "extraction": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/StageAgentConfig"
+              }
+            ],
+            "default": {
+              "execution_deadline_seconds": null,
+              "executor": "one_shot",
+              "max_total_tokens": null,
+              "max_turns": null,
+              "verifier": null
+            },
+            "description": "The extraction stage's agentic configuration."
+          },
+          "relation": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/StageAgentConfig"
+              }
+            ],
+            "default": {
+              "execution_deadline_seconds": null,
+              "executor": "one_shot",
+              "max_total_tokens": null,
+              "max_turns": null,
+              "verifier": null
+            },
+            "description": "The relation stage's agentic configuration."
+          },
+          "triage": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/StageAgentConfig"
+              }
+            ],
+            "default": {
+              "execution_deadline_seconds": null,
+              "executor": "one_shot",
+              "max_total_tokens": null,
+              "max_turns": null,
+              "verifier": null
+            },
+            "description": "The triage stage's agentic configuration."
+          }
+        },
+        "type": "object"
+      },
+      "ApiKey": {
+        "format": "password",
+        "type": "string",
+        "writeOnly": true
+      },
+      "AuthConfig": {
+        "additionalProperties": false,
+        "description": "Authentication settings.\n\nControls token lifetime defaults.",
+        "properties": {
+          "token_ttl_hours": {
+            "default": 8760,
+            "description": "Default token lifetime in hours.\n\nDefaults to 8760 (~1 year).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "CredentialEntry": {
+        "additionalProperties": false,
+        "description": "One named connection: an endpoint plus its credential.",
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ApiKey"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The API key for the endpoint.\n\nOptional so a catalogue entry can name an endpoint whose secret is supplied only through the environment override; an absent or empty key is the fail-closed condition when the entry backs the active profile."
+          },
+          "base_url": {
+            "description": "The endpoint base URL, stored verbatim and normalised at resolution.",
+            "type": "string"
+          },
+          "provider_kind": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProviderKind"
+              }
+            ],
+            "description": "The provider kind this connection serves."
+          }
+        },
+        "required": [
+          "base_url",
+          "provider_kind"
+        ],
+        "type": "object"
+      },
+      "DatabaseConfig": {
+        "additionalProperties": false,
+        "description": "Configuration for the database connection pools.\n\nLoaded from the application YAML configuration file.  The `url` field is required; all other fields have sensible defaults for local development.\n\nTwo pools are created from this configuration: one for MCP read-path queries and one for worker write-path transactions.  Pool-specific settings (max connections, statement timeout) are selected by the startup sequence based on the pool name.",
+        "properties": {
+          "acquire_timeout_ms": {
+            "default": 5000,
+            "description": "Milliseconds to wait when acquiring a connection before returning an error.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_connect_attempts": {
+            "default": 5,
+            "description": "Maximum connection attempts during startup (used by the startup sequence, not by this module directly).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pool_mcp_max_connections": {
+            "default": 8,
+            "description": "Maximum connections in the MCP (read-path) pool.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pool_worker_max_connections": {
+            "default": 16,
+            "description": "Maximum connections in the worker (write-path) pool.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "statement_timeout_mcp_ms": {
+            "default": 10000,
+            "description": "Statement timeout in milliseconds for MCP pool connections.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "statement_timeout_worker_ms": {
+            "default": 60000,
+            "description": "Statement timeout in milliseconds for worker pool connections.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "url": {
+            "description": "`PostgreSQL` connection URL (e.g. `postgres://user:pass@localhost:5432/tribal`).  Required; no default.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "DiscoveryConfig": {
+        "additionalProperties": false,
+        "description": "Configuration for the discovery (semantic search) handler.\n\nControls result limits, overfetch behaviour, and similarity thresholds.",
+        "properties": {
+          "default_limit": {
+            "default": 10,
+            "description": "Default number of results when the caller does not specify a limit.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_limit": {
+            "default": 50,
+            "description": "Maximum number of results a caller may request.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "overfetch_multiplier": {
+            "default": 3,
+            "description": "Multiplier applied to the limit for the initial semantic search.\n\n`K = limit * overfetch_multiplier` rows are fetched, then filtered by similarity threshold.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "similarity_threshold": {
+            "default": 0.3,
+            "description": "Minimum cosine similarity to include a result.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "ExecutorChoice": {
+        "description": "Which executor a stage's binding selects.",
+        "oneOf": [
+          {
+            "description": "The single completion call, with no tools.",
+            "enum": [
+              "one_shot"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The in-process turn loop with stage-scoped tools.",
+            "enum": [
+              "loop"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ExplorationConfig": {
+        "additionalProperties": false,
+        "description": "Configuration for the exploration (graph traversal) handler.\n\nControls depth and result limits.",
+        "properties": {
+          "default_depth": {
+            "default": 1,
+            "description": "Default traversal depth when not specified by the caller.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "default_limit": {
+            "default": 20,
+            "description": "Default number of results when the caller does not specify a limit.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_depth": {
+            "default": 3,
+            "description": "Maximum traversal depth (hard cap).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_limit": {
+            "default": 100,
+            "description": "Maximum number of results a caller may request.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "FileRotation": {
+        "description": "Trace file rotation policy.",
+        "oneOf": [
+          {
+            "description": "Rotate daily (e.g. `traces-2026-03-13.jsonl`).",
+            "enum": [
+              "daily"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Rotate hourly.",
+            "enum": [
+              "hourly"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No rotation — single file.",
+            "enum": [
+              "never"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InferenceConfig": {
+        "additionalProperties": false,
+        "description": "Per-stage inference configuration.\n\nEach stage is independently configurable to allow cost/quality tuning — e.g. a capable model for extraction and a fast/cheap model for classification stages.",
+        "properties": {
+          "extraction": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/StageInferenceConfig"
+              }
+            ],
+            "default": {
+              "api_key": null,
+              "base_url": null,
+              "max_tokens": null,
+              "model": "llama3.1:70b",
+              "provider": "ollama",
+              "temperature": null
+            },
+            "description": "Extraction stage configuration."
+          },
+          "relation": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/StageInferenceConfig"
+              }
+            ],
+            "default": {
+              "api_key": null,
+              "base_url": null,
+              "max_tokens": null,
+              "model": "llama3.1:8b",
+              "provider": "ollama",
+              "temperature": null
+            },
+            "description": "Relation classification stage configuration."
+          },
+          "triage": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/StageInferenceConfig"
+              }
+            ],
+            "default": {
+              "api_key": null,
+              "base_url": null,
+              "max_tokens": null,
+              "model": "llama3.1:8b",
+              "provider": "ollama",
+              "temperature": null
+            },
+            "description": "Triage stage configuration."
+          }
+        },
+        "type": "object"
+      },
+      "InitConfig": {
+        "additionalProperties": false,
+        "description": "Fresh-system seed values, applied only when first creating a corpus.",
+        "properties": {
+          "embedding": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/InitEmbeddingConfig"
+              }
+            ],
+            "default": {
+              "base_url": null,
+              "dimensions": null,
+              "model": "nomic-embed-text:v1.5",
+              "provider": "ollama"
+            },
+            "description": "Genesis embedding identity."
+          }
+        },
+        "type": "object"
+      },
+      "InitEmbeddingConfig": {
+        "additionalProperties": false,
+        "description": "The genesis embedding identity used to seed the first profile.\n\nCarries no credential: the runtime resolves the active provider's credential through the credential catalogue, keyed by `(provider_kind, normalised_base_url)`, because after a migration the active provider can differ from this genesis provider and the runtime must follow the active one. `dimensions` is optional: `None` resolves through the embedding service's native-dimension chain at provisioning.",
+        "properties": {
+          "base_url": {
+            "default": null,
+            "description": "Base URL for the provider API.\n\nWhen `None`, the provider supplies its own default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dimensions": {
+            "default": null,
+            "description": "Target output dimensionality. `None` resolves through the embedding service's native-dimension chain when the genesis profile is created.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "model": {
+            "default": "nomic-embed-text:v1.5",
+            "description": "Genesis embedding model name.",
+            "type": "string"
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProviderKind"
+              }
+            ],
+            "default": "ollama",
+            "description": "Genesis embedding provider."
+          }
+        },
+        "type": "object"
+      },
+      "LimitsConfig": {
+        "additionalProperties": false,
+        "description": "Per-provider concurrency limits.\n\nBounds in-flight requests to any single external service, preventing worker tasks from starving MCP read-path queries that share the same provider.",
+        "properties": {
+          "providers": {
+            "additionalProperties": {
+              "$ref": "#/definitions/ProviderLimitsConfig"
+            },
+            "default": {
+              "anthropic": {
+                "max_in_flight": 8,
+                "request_timeout_ms": 120000
+              },
+              "ollama": {
+                "max_in_flight": 2,
+                "request_timeout_ms": 180000
+              },
+              "openai": {
+                "max_in_flight": 8,
+                "request_timeout_ms": 120000
+              },
+              "platform": {
+                "max_in_flight": 8,
+                "request_timeout_ms": 120000
+              }
+            },
+            "description": "Per-provider limits, keyed by provider kind.\n\nPre-populated with a default for every provider kind.  Typed keys mean a YAML typo fails at parse time rather than silently creating an unreferenced entry.",
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "LogFormat": {
+        "description": "Output format for log lines.",
+        "oneOf": [
+          {
+            "description": "Structured JSON output, one object per line (JSONL).\n\nIncludes level, target, span context, timestamp, and message. Suitable for log aggregation and machine parsing.",
+            "enum": [
+              "json"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Human-readable coloured output for terminal use.\n\nUses `tracing-subscriber`'s pretty formatter with ANSI colours when writing to a TTY.",
+            "enum": [
+              "pretty"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "LogOutput": {
+        "description": "Output destination for log lines.",
+        "oneOf": [
+          {
+            "description": "Write log output to standard error.",
+            "enum": [
+              "stderr"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Write log output to a rolling file in [`LoggingConfig::file_directory`].",
+            "enum": [
+              "file"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "LoggingConfig": {
+        "additionalProperties": false,
+        "description": "Configuration for the tracing subscriber.\n\nLoaded from the application configuration file.  All fields have sensible defaults for local development (info level, JSON format, stderr output).",
+        "properties": {
+          "file_directory": {
+            "description": "Directory for log file output when [`output`](LoggingConfig::output) is [`LogOutput::File`].\n\nResolved at startup via platform-aware defaults: `dirs::state_dir` → `dirs::data_local_dir` → `std::env::temp_dir`, each joined with `tribal/logs`.",
+            "type": "string"
+          },
+          "file_rotation": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/FileRotation"
+              }
+            ],
+            "default": "daily",
+            "description": "Log file rotation policy.\n\nDefaults to [`FileRotation::Daily`]."
+          },
+          "format": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/LogFormat"
+              }
+            ],
+            "default": "json",
+            "description": "Output format for log lines.\n\nDefaults to [`LogFormat::Json`] for structured output suitable for log aggregation."
+          },
+          "include_llm_content": {
+            "default": false,
+            "description": "Whether to include raw LLM request/response content in log output.\n\nDefaults to `false`.  When `true`, inference-related spans and events may include prompt text and model responses, which can be large and contain sensitive information.",
+            "type": "boolean"
+          },
+          "level": {
+            "default": "info",
+            "description": "Tracing filter directive string.\n\nSupports per-module granularity, e.g. `\"info,tribal_db=debug\"`. Defaults to `\"info\"`.  The `TRIBAL_LOG` environment variable, mapped by the configuration loader, takes precedence over a YAML-supplied value for this field.",
+            "type": "string"
+          },
+          "output": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/LogOutput"
+              }
+            ],
+            "default": "stderr",
+            "description": "Output destination for log lines.\n\nDefaults to [`LogOutput::Stderr`]."
+          }
+        },
+        "type": "object"
+      },
+      "OAuthConfig": {
+        "additionalProperties": false,
+        "description": "OAuth 2.1 authorisation-server configuration.\n\n`issuer_url` is the canonical authorisation-server identifier; `resource_url` is the canonical resource identifier the AS issues audience-bound tokens for. When either is `None`, the consumer derives it from the server bind address at startup.",
+        "properties": {
+          "access_token_ttl_hours": {
+            "default": 24,
+            "description": "OAuth-issued access-token TTL in hours.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "authorization_code_ttl_seconds": {
+            "default": 600,
+            "description": "Authorisation-code TTL in seconds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "dcr_enabled": {
+            "default": true,
+            "description": "Whether the DCR `/register` endpoint is enabled.",
+            "type": "boolean"
+          },
+          "issuer_url": {
+            "default": null,
+            "description": "Canonical authorisation-server issuer URL. Derived from the server bind address when omitted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource_url": {
+            "default": null,
+            "description": "Canonical protected-resource URL. Derived from the server bind address plus `/mcp` when omitted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PromptSource": {
+        "description": "Where the active prompts are loaded from.\n\n`Embedded` reads the six prompts compiled into the binary via `include_str!`. `Disk` reads them from `directory`, writing the embedded defaults on first run if files are missing; setting `hot_reload: true` spawns a watcher that reloads on file change.\n\nThe shape makes invalid states unrepresentable — `hot_reload` is only reachable when an on-disk source actually exists.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "Prompts compiled into the binary.\n\nEmpty struct variant rather than a unit variant: serde's `deny_unknown_fields` is only honoured for struct-variant arms of internally-tagged enums, so the empty braces are what make `{kind: embedded, hot_reload: true}` fail to deserialise.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "embedded"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Prompts read from a directory on disk.",
+            "properties": {
+              "directory": {
+                "default": "~/.config/tribal/prompts",
+                "description": "Directory containing prompt template files. Supports tilde (`~`).",
+                "type": "string"
+              },
+              "hot_reload": {
+                "default": false,
+                "description": "Whether to watch for file changes and reload automatically.",
+                "type": "boolean"
+              },
+              "kind": {
+                "enum": [
+                  "disk"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "PromptsConfig": {
+        "additionalProperties": false,
+        "description": "Wrapper around [`PromptSource`].\n\nA struct rather than an inline enum so future prompt-wide knobs (e.g. global cache settings) can land without breaking the YAML schema.",
+        "properties": {
+          "source": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/PromptSource"
+              }
+            ],
+            "default": {
+              "kind": "embedded"
+            },
+            "description": "Where the active prompts are loaded from."
+          }
+        },
+        "type": "object"
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "enum": [
+              "ollama"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "enum": [
+              "anthropic"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "enum": [
+              "openai"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "enum": [
+              "platform"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ProviderLimitsConfig": {
+        "additionalProperties": false,
+        "description": "Concurrency and timeout limits for a single provider.",
+        "properties": {
+          "max_in_flight": {
+            "description": "Maximum concurrent in-flight requests.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "request_timeout_ms": {
+            "description": "Per-request timeout in milliseconds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_in_flight",
+          "request_timeout_ms"
+        ],
+        "type": "object"
+      },
+      "ServerConfig": {
+        "additionalProperties": false,
+        "description": "Top-level server configuration.\n\nControls the transport protocol, bind address, shutdown behaviour, and SSE-specific tuning.",
+        "properties": {
+          "bind_address": {
+            "default": null,
+            "description": "Socket address to bind the HTTP/SSE listener to.\n\n`None` when using stdio transport.  When transport is HTTP or SSE and this is `None`, the startup sequence supplies [`DEFAULT_BIND_ADDRESS`] (`127.0.0.1:8725`) as a fallback.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_state_hard_ttl_seconds": {
+            "default": 3600,
+            "description": "Hard upper bound on watch-channel entry lifetime regardless of terminal state, in seconds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "job_state_ttl_seconds": {
+            "default": 300,
+            "description": "How long to retain a watch-channel entry after the job reaches a terminal state, in seconds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "shutdown_deadline_ms": {
+            "default": 30000,
+            "description": "Graceful shutdown deadline in milliseconds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "sse": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/SseConfig"
+              }
+            ],
+            "default": {
+              "idle_timeout_ms": 300000,
+              "keepalive_interval_ms": 30000,
+              "max_connection_age_ms": 900000
+            },
+            "description": "SSE-specific connection settings."
+          },
+          "transport": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/TransportKind"
+              }
+            ],
+            "default": "stdio",
+            "description": "Transport protocol for the MCP server."
+          }
+        },
+        "type": "object"
+      },
+      "SseConfig": {
+        "additionalProperties": false,
+        "description": "SSE-specific connection settings.\n\nNested under `server.sse` in the configuration file.",
+        "properties": {
+          "idle_timeout_ms": {
+            "default": 300000,
+            "description": "Close SSE connection if no real events for this many milliseconds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "keepalive_interval_ms": {
+            "default": 30000,
+            "description": "SSE comment keepalive interval in milliseconds.\n\nPrevents proxy timeouts on idle connections.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_connection_age_ms": {
+            "default": 900000,
+            "description": "Maximum SSE connection lifetime in milliseconds.\n\nForces re-authentication after this period.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "StageAgentConfig": {
+        "additionalProperties": false,
+        "description": "One stage's agentic configuration.",
+        "properties": {
+          "execution_deadline_seconds": {
+            "default": null,
+            "description": "Override for the execution deadline, in seconds; the named default applies when absent.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "executor": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ExecutorChoice"
+              }
+            ],
+            "default": "one_shot",
+            "description": "The executor the stage runs under."
+          },
+          "max_total_tokens": {
+            "default": null,
+            "description": "Override for the token cap; the named default applies when absent.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_turns": {
+            "default": null,
+            "description": "Override for the turn cap; the named default applies when absent.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "verifier": {
+            "default": null,
+            "description": "Whether an accepted submission is verified by a child execution. Absent leaves the stage's loop default in force: triage and relation verify by default, extraction has no verifier. It is honoured only under the loop executor; setting it under one-shot, where there is no submission loop to verify, is inert and surfaced as a startup advisory.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "StageInferenceConfig": {
+        "additionalProperties": false,
+        "description": "Configuration for a single inference stage.\n\nWhen `base_url` is `None`, the provider implementation supplies its own default URL.",
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ApiKey"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "API key for cloud providers."
+          },
+          "base_url": {
+            "default": null,
+            "description": "Base URL for the provider API.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_tokens": {
+            "default": null,
+            "description": "Maximum output tokens. `None` uses the provider default.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "model": {
+            "description": "Model name.",
+            "type": "string"
+          },
+          "provider": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProviderKind"
+              }
+            ],
+            "default": "ollama",
+            "description": "LLM provider."
+          },
+          "temperature": {
+            "default": null,
+            "description": "Sampling temperature. `None` uses the provider default.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "type": "object"
+      },
+      "TelemetryConfig": {
+        "additionalProperties": false,
+        "description": "OpenTelemetry and trace export configuration.",
+        "properties": {
+          "console_export": {
+            "default": true,
+            "description": "Print spans to stderr (development).",
+            "type": "boolean"
+          },
+          "enabled": {
+            "default": true,
+            "description": "Master switch for telemetry.",
+            "type": "boolean"
+          },
+          "file_directory": {
+            "description": "Directory for trace file output.\n\nResolved at startup via platform-aware defaults: `dirs::data_local_dir` → `std::env::temp_dir`, each joined with `tribal/traces`.",
+            "type": "string"
+          },
+          "file_export": {
+            "default": false,
+            "description": "Write spans to file.",
+            "type": "boolean"
+          },
+          "file_rotation": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/FileRotation"
+              }
+            ],
+            "default": "daily",
+            "description": "Trace file rotation policy."
+          },
+          "otlp_endpoint": {
+            "default": null,
+            "description": "OTLP exporter endpoint (e.g. `http://localhost:4317`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "otlp_protocol": {
+            "default": "grpc",
+            "description": "OTLP protocol (`grpc` or `http`).",
+            "type": "string"
+          },
+          "service_name": {
+            "default": "tribal",
+            "description": "Service name reported in spans.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "TransportKind": {
+        "description": "Transport protocol for the MCP server.\n\nDetermines how the server communicates with clients.  The HTTP/SSE startup path supplies `127.0.0.1:8725` as a fallback when `bind_address` is `None` and transport is not `Stdio`.\n\nImplements [`FromStr`] so that clap can parse the type natively without a mirror enum.",
+        "oneOf": [
+          {
+            "description": "Communicate over stdin/stdout.",
+            "enum": [
+              "stdio"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Streamable HTTP transport.",
+            "enum": [
+              "http"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Server-sent events transport.",
+            "enum": [
+              "sse"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "WorkerConfig": {
+        "additionalProperties": false,
+        "description": "Configuration for the worker loop.\n\nAll duration fields are expressed as integer milliseconds and converted to [`Duration`] via convenience methods.  Defaults are applied via `serde(default)` so that an empty YAML object deserialises to a valid configuration.",
+        "properties": {
+          "heartbeat_interval_ms": {
+            "default": 100000,
+            "description": "Milliseconds between heartbeat updates for claimed tasks.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_candidates_per_job": {
+            "default": 1000,
+            "description": "Maximum candidate count per job (cap applied during extraction).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_concurrent_tasks": {
+            "default": 4,
+            "description": "Maximum number of concurrently executing tasks.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "poll_interval_ms": {
+            "default": 2000,
+            "description": "Milliseconds between poll cycles.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "reclaim_interval_ms": {
+            "default": 10000,
+            "description": "Milliseconds between stale-task reclaim sweeps.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "tag_similarity_threshold": {
+            "default": 0.85,
+            "description": "Minimum cosine similarity for semantic tag matching (0.0, 1.0].",
+            "format": "double",
+            "type": "number"
+          },
+          "task_max_retries": {
+            "default": 3,
+            "description": "Maximum retries before a task is dead-lettered.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "task_timeout_ms": {
+            "default": 300000,
+            "description": "Per-task timeout in milliseconds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "triage_search_limit": {
+            "default": 10,
+            "description": "Number of similar items returned during triage search.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "description": "Top-level configuration for the Tribal server.\n\nAll fields default to sensible values for local development.",
+    "properties": {
+      "agents": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/AgentsConfig"
+          }
+        ],
+        "default": {
+          "extraction": {
+            "execution_deadline_seconds": null,
+            "executor": "one_shot",
+            "max_total_tokens": null,
+            "max_turns": null,
+            "verifier": null
+          },
+          "relation": {
+            "execution_deadline_seconds": null,
+            "executor": "one_shot",
+            "max_total_tokens": null,
+            "max_turns": null,
+            "verifier": null
+          },
+          "triage": {
+            "execution_deadline_seconds": null,
+            "executor": "one_shot",
+            "max_total_tokens": null,
+            "max_turns": null,
+            "verifier": null
+          }
+        },
+        "description": "Agentic execution configuration."
+      },
+      "auth": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/AuthConfig"
+          }
+        ],
+        "default": {
+          "token_ttl_hours": 8760
+        },
+        "description": "Authentication settings."
+      },
+      "credentials": {
+        "additionalProperties": {
+          "$ref": "#/definitions/CredentialEntry"
+        },
+        "default": {},
+        "description": "Named embedding credential connections, resolved by endpoint.",
+        "type": "object"
+      },
+      "database": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/DatabaseConfig"
+          }
+        ],
+        "default": {
+          "acquire_timeout_ms": 5000,
+          "max_connect_attempts": 5,
+          "pool_mcp_max_connections": 8,
+          "pool_worker_max_connections": 16,
+          "statement_timeout_mcp_ms": 10000,
+          "statement_timeout_worker_ms": 60000,
+          "url": ""
+        },
+        "description": "Database connection pool settings."
+      },
+      "discovery": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/DiscoveryConfig"
+          }
+        ],
+        "default": {
+          "default_limit": 10,
+          "max_limit": 50,
+          "overfetch_multiplier": 3,
+          "similarity_threshold": 0.3
+        },
+        "description": "Discovery (semantic search) settings."
+      },
+      "exploration": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ExplorationConfig"
+          }
+        ],
+        "default": {
+          "default_depth": 1,
+          "default_limit": 20,
+          "max_depth": 3,
+          "max_limit": 100
+        },
+        "description": "Exploration (graph traversal) settings."
+      },
+      "inference": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/InferenceConfig"
+          }
+        ],
+        "default": {
+          "extraction": {
+            "api_key": null,
+            "base_url": null,
+            "max_tokens": null,
+            "model": "llama3.1:70b",
+            "provider": "ollama",
+            "temperature": null
+          },
+          "relation": {
+            "api_key": null,
+            "base_url": null,
+            "max_tokens": null,
+            "model": "llama3.1:8b",
+            "provider": "ollama",
+            "temperature": null
+          },
+          "triage": {
+            "api_key": null,
+            "base_url": null,
+            "max_tokens": null,
+            "model": "llama3.1:8b",
+            "provider": "ollama",
+            "temperature": null
+          }
+        },
+        "description": "Per-stage inference settings."
+      },
+      "init": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/InitConfig"
+          }
+        ],
+        "default": {
+          "embedding": {
+            "base_url": null,
+            "dimensions": null,
+            "model": "nomic-embed-text:v1.5",
+            "provider": "ollama"
+          }
+        },
+        "description": "Fresh-system genesis seed values (applied only when first creating a corpus)."
+      },
+      "limits": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/LimitsConfig"
+          }
+        ],
+        "default": {
+          "providers": {
+            "anthropic": {
+              "max_in_flight": 8,
+              "request_timeout_ms": 120000
+            },
+            "ollama": {
+              "max_in_flight": 2,
+              "request_timeout_ms": 180000
+            },
+            "openai": {
+              "max_in_flight": 8,
+              "request_timeout_ms": 120000
+            },
+            "platform": {
+              "max_in_flight": 8,
+              "request_timeout_ms": 120000
+            }
+          }
+        },
+        "description": "Per-provider concurrency limits."
+      },
+      "logging": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/LoggingConfig"
+          }
+        ],
+        "default": {
+          "file_rotation": "daily",
+          "format": "json",
+          "include_llm_content": false,
+          "level": "info",
+          "output": "stderr"
+        },
+        "description": "Logging settings."
+      },
+      "oauth": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/OAuthConfig"
+          }
+        ],
+        "default": {
+          "access_token_ttl_hours": 24,
+          "authorization_code_ttl_seconds": 600,
+          "dcr_enabled": true,
+          "issuer_url": null,
+          "resource_url": null
+        },
+        "description": "OAuth 2.1 authorisation-server settings."
+      },
+      "prompts": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/PromptsConfig"
+          }
+        ],
+        "default": {
+          "source": {
+            "kind": "embedded"
+          }
+        },
+        "description": "Prompt file settings."
+      },
+      "server": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ServerConfig"
+          }
+        ],
+        "default": {
+          "bind_address": null,
+          "job_state_hard_ttl_seconds": 3600,
+          "job_state_ttl_seconds": 300,
+          "shutdown_deadline_ms": 30000,
+          "sse": {
+            "idle_timeout_ms": 300000,
+            "keepalive_interval_ms": 30000,
+            "max_connection_age_ms": 900000
+          },
+          "transport": "stdio"
+        },
+        "description": "Server transport and connection settings."
+      },
+      "telemetry": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/TelemetryConfig"
+          }
+        ],
+        "default": {
+          "console_export": true,
+          "enabled": true,
+          "file_export": false,
+          "file_rotation": "daily",
+          "otlp_endpoint": null,
+          "otlp_protocol": "grpc",
+          "service_name": "tribal"
+        },
+        "description": "OpenTelemetry and trace export settings."
+      },
+      "version": {
+        "default": "0.4.1",
+        "description": "Schema version, set automatically to the crate version.\n\nUsed to detect stale configuration files that may need migration.",
+        "type": "string"
+      },
+      "worker": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/WorkerConfig"
+          }
+        ],
+        "default": {
+          "heartbeat_interval_ms": 100000,
+          "max_candidates_per_job": 1000,
+          "max_concurrent_tasks": 4,
+          "poll_interval_ms": 2000,
+          "reclaim_interval_ms": 10000,
+          "tag_similarity_threshold": 0.85,
+          "task_max_retries": 3,
+          "task_timeout_ms": 300000,
+          "triage_search_limit": 10
+        },
+        "description": "Worker loop settings."
+      }
+    },
+    "title": "TribalConfig",
+    "type": "object"
+  },
+  "fields": [
+    {
+      "path": "agents.extraction.execution_deadline_seconds",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.extraction.executor",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.extraction.max_total_tokens",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.extraction.max_turns",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.extraction.verifier",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.relation.execution_deadline_seconds",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.relation.executor",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.relation.max_total_tokens",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.relation.max_turns",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.relation.verifier",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.triage.execution_deadline_seconds",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.triage.executor",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.triage.max_total_tokens",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.triage.max_turns",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "agents.triage.verifier",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "auth.token_ttl_hours",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 8760
+    },
+    {
+      "path": "database.acquire_timeout_ms",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 5000
+    },
+    {
+      "path": "database.max_connect_attempts",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 5
+    },
+    {
+      "path": "database.pool_mcp_max_connections",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 8
+    },
+    {
+      "path": "database.pool_worker_max_connections",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 16
+    },
+    {
+      "path": "database.statement_timeout_mcp_ms",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 10000
+    },
+    {
+      "path": "database.statement_timeout_worker_ms",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 60000
+    },
+    {
+      "path": "database.url",
+      "secret": true,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "discovery.default_limit",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 10
+    },
+    {
+      "path": "discovery.max_limit",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 50
+    },
+    {
+      "path": "discovery.overfetch_multiplier",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 3
+    },
+    {
+      "path": "discovery.similarity_threshold",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 0.3
+    },
+    {
+      "path": "exploration.default_depth",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 1
+    },
+    {
+      "path": "exploration.default_limit",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 20
+    },
+    {
+      "path": "exploration.max_depth",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 3
+    },
+    {
+      "path": "exploration.max_limit",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 100
+    },
+    {
+      "path": "inference.extraction.api_key",
+      "secret": true,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.extraction.base_url",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.extraction.max_tokens",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.extraction.model",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.extraction.provider",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.extraction.temperature",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.relation.api_key",
+      "secret": true,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.relation.base_url",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.relation.max_tokens",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.relation.model",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.relation.provider",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.relation.temperature",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.triage.api_key",
+      "secret": true,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.triage.base_url",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.triage.max_tokens",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.triage.model",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.triage.provider",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "inference.triage.temperature",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "init.embedding.base_url",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "init.embedding.dimensions",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "init.embedding.model",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": "nomic-embed-text:v1.5"
+    },
+    {
+      "path": "init.embedding.provider",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "logging.file_directory",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "logging.file_rotation",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "logging.format",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "logging.include_llm_content",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": false
+    },
+    {
+      "path": "logging.level",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": "info"
+    },
+    {
+      "path": "logging.output",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "oauth.access_token_ttl_hours",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 24
+    },
+    {
+      "path": "oauth.authorization_code_ttl_seconds",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 600
+    },
+    {
+      "path": "oauth.dcr_enabled",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": true
+    },
+    {
+      "path": "oauth.issuer_url",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "oauth.resource_url",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "prompts.source",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "server.bind_address",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "server.job_state_hard_ttl_seconds",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 3600
+    },
+    {
+      "path": "server.job_state_ttl_seconds",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 300
+    },
+    {
+      "path": "server.shutdown_deadline_ms",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 30000
+    },
+    {
+      "path": "server.sse.idle_timeout_ms",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 300000
+    },
+    {
+      "path": "server.sse.keepalive_interval_ms",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 30000
+    },
+    {
+      "path": "server.sse.max_connection_age_ms",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 900000
+    },
+    {
+      "path": "server.transport",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "telemetry.console_export",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": true
+    },
+    {
+      "path": "telemetry.enabled",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": true
+    },
+    {
+      "path": "telemetry.file_directory",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "telemetry.file_export",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": false
+    },
+    {
+      "path": "telemetry.file_rotation",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "telemetry.otlp_endpoint",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": null
+    },
+    {
+      "path": "telemetry.otlp_protocol",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": "grpc"
+    },
+    {
+      "path": "telemetry.service_name",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": "tribal"
+    },
+    {
+      "path": "version",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": "0.4.1"
+    },
+    {
+      "path": "worker.heartbeat_interval_ms",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 100000
+    },
+    {
+      "path": "worker.max_candidates_per_job",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 1000
+    },
+    {
+      "path": "worker.max_concurrent_tasks",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 4
+    },
+    {
+      "path": "worker.poll_interval_ms",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 2000
+    },
+    {
+      "path": "worker.reclaim_interval_ms",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 10000
+    },
+    {
+      "path": "worker.tag_similarity_threshold",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 0.85
+    },
+    {
+      "path": "worker.task_max_retries",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 3
+    },
+    {
+      "path": "worker.task_timeout_ms",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 300000
+    },
+    {
+      "path": "worker.triage_search_limit",
+      "secret": false,
+      "reload_class": "requires_restart",
+      "default": 10
+    }
+  ]
+}

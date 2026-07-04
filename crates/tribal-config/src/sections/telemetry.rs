@@ -20,6 +20,7 @@ pub const DEFAULT_SERVICE_NAME: &str = "tribal";
 
 /// Trace file rotation policy.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum FileRotation {
     /// Rotate daily (e.g. `traces-2026-03-13.jsonl`).
@@ -39,6 +40,7 @@ pub enum FileRotation {
 
 /// OpenTelemetry and trace export configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TelemetryConfig {
     /// Master switch for telemetry.

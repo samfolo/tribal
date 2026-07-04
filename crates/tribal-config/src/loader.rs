@@ -12,7 +12,10 @@ use tribal_domain::{ApiKey, ProviderKind, normalise_endpoint_url};
 
 use crate::{
     CliOverrides, LoggingConfig, TelemetryConfig, TribalConfig,
-    env::{ENV_NESTED_SEPARATOR, ENV_PREFIX, public_mcp_url_override, standard_env_var_name},
+    env::{
+        ALIAS_ENV_VARS, ENV_NESTED_SEPARATOR, ENV_PREFIX, public_mcp_url_override,
+        standard_env_var_name,
+    },
     error::{ConfigError, RemovedEmbeddingSource},
     sections::PromptSource,
 };
@@ -86,20 +89,13 @@ pub fn load_config(
             KNOWN_SECTIONS.iter().any(|section| k.starts_with(section))
         });
 
-    let alias_env = Env::raw()
-        .only(&[
-            "TRIBAL_DATABASE_URL",
-            "TRIBAL_TRANSPORT",
-            "TRIBAL_BIND_ADDRESS",
-            "TRIBAL_LOG",
-        ])
-        .map(|key| match key.as_str() {
-            "TRIBAL_DATABASE_URL" => "database.url".into(),
-            "TRIBAL_TRANSPORT" => "server.transport".into(),
-            "TRIBAL_BIND_ADDRESS" => "server.bind_address".into(),
-            "TRIBAL_LOG" => "logging.level".into(),
-            _ => key.into(),
-        });
+    let alias_names: Vec<&str> = ALIAS_ENV_VARS.iter().map(|&(_, var)| var).collect();
+    let alias_env = Env::raw().only(&alias_names).map(|key| {
+        ALIAS_ENV_VARS
+            .iter()
+            .find(|&&(_, var)| var.eq_ignore_ascii_case(key.as_str()))
+            .map_or_else(|| key.into(), |&(path, _)| path.into())
+    });
 
     let mut figment = Figment::from(Serialized::defaults(TribalConfig::default()));
 

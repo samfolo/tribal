@@ -7,22 +7,29 @@
 #![deny(warnings)]
 #![warn(clippy::pedantic)]
 
+mod atomic_write;
 mod cli_overrides;
+mod config_schema;
 mod divergence;
 mod env;
 mod error;
 mod loader;
+mod operations;
 mod paths;
 mod redact;
 mod render;
 mod sections;
 mod validation;
 
+pub use atomic_write::write_atomically;
 pub use cli_overrides::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
     InferenceStageCliOverrides, InitCliOverrides, PersistedCredentialEntry, ServerCliOverrides,
     TelemetryCliOverrides,
 };
+pub use config_schema::ReloadClass;
+#[cfg(feature = "schema")]
+pub use config_schema::{ConfigFieldMeta, ConfigSchema, config_schema, structural_schema};
 pub use divergence::{
     WARNING_CONFIG_UNPARSEABLE, WARNING_DATABASE_URL_DIVERGENCE, check_config_divergence,
 };
@@ -33,10 +40,14 @@ pub use env::{
 };
 pub use error::{ConfigError, RemovedEmbeddingSource};
 pub use loader::load_config;
+pub use operations::{
+    CliShadow, ConfigViolation, Persisted, SetError, UnknownConfigKey, WriteEffect, get, get_all,
+    set, shadowed_by, validate_write,
+};
 pub use paths::{
     CREDENTIALS_FILENAME, ConfigDirError, TRIBAL_DIRECTORY_NAME, default_config_file_path,
 };
-pub use redact::redact_secrets;
+pub use redact::{is_secret_key, redact_secrets};
 pub use render::{ConfigPersistence, render_minimal_config, render_persisted_config};
 pub use sections::{
     AgentsConfig, Auth, AuthConfig, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX,

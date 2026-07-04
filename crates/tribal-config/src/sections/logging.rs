@@ -18,6 +18,7 @@ use crate::paths::resolve_directory;
 /// sensible defaults for local development (info level, JSON format,
 /// stderr output).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
     /// Tracing filter directive string.
@@ -103,6 +104,7 @@ impl Default for LoggingConfig {
 
 /// Output format for log lines.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum LogFormat {
     /// Structured JSON output, one object per line (JSONL).
@@ -125,6 +127,7 @@ pub enum LogFormat {
 
 /// Output destination for log lines.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum LogOutput {
     /// Write log output to standard error.

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 /// as the key type for per-provider limits, and as the capability-resolution
 /// key (with the model string) for request-field admissibility.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     /// Local `Ollama` instance.

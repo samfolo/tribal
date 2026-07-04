@@ -4153,6 +4153,7 @@ version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fbf2ae1b8bc8e02df939598064d22402220cd5bbcca1c76f7d6a310974d5615"
 dependencies = [
+ "chrono",
  "dyn-clone",
  "schemars_derive 0.8.22",
  "serde",
@@ -5365,6 +5366,7 @@ dependencies = [
  "chrono",
  "clap",
  "dashmap",
+ "dirs",
  "figment",
  "gethostname",
  "gix",
@@ -5400,6 +5402,7 @@ dependencies = [
  "tribal-telemetry",
  "tribal-test-utils",
  "tribal-ui",
+ "tribal-wire",
  "tribal-worker",
  "url",
  "uuid",
@@ -5478,6 +5481,7 @@ version = "0.4.1"
 dependencies = [
  "dirs",
  "figment",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -5612,6 +5616,7 @@ dependencies = [
 name = "tribal-telemetry"
 version = "0.4.1"
 dependencies = [
+ "chrono",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-proto",
@@ -5628,6 +5633,7 @@ dependencies = [
  "tracing-subscriber",
  "tribal-config",
  "tribal-domain",
+ "tribal-wire",
 ]
 
 [[package]]

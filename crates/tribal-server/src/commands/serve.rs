@@ -13,10 +13,37 @@ use tokio::signal;
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio_util::sync::CancellationToken;
 use tribal_auth::oauth::OAuthRuntimeConfig;
-use tribal_config::{TransportKind, config_warnings, load_config, validate};
+use tribal_config::{CliShadow, TransportKind, config_warnings, load_config, validate};
 use tribal_mcp::HandlerConfig;
 
-use crate::{cli::ServeArgs, error::AppError, orchestration, startup::POOL_NAME_MCP, transport};
+use crate::{
+    cli::ServeArgs,
+    control,
+    error::AppError,
+    orchestration,
+    startup::{POOL_NAME_MCP, SelfWriteSentinel, init_config_watcher},
+    transport,
+};
+
+/// The environment marker a supervisor (the desktop app, launchd) exports when
+/// it spawns the binary, declaring that it owns the process's lifecycle. It
+/// governs `server.restart`: mediated when set, refused otherwise.
+const SUPERVISED_MARKER: &str = "TRIBAL_SUPERVISED";
+
+/// Whether a supervisor owns this process, read from [`SUPERVISED_MARKER`].
+fn is_supervised() -> bool {
+    supervised_from(std::env::var(SUPERVISED_MARKER).ok().as_deref())
+}
+
+/// Interprets the supervision marker's value. Only an explicit truthy value
+/// counts, so a stray empty or `0` export never claims supervision the operator
+/// did not intend.
+fn supervised_from(value: Option<&str>) -> bool {
+    value.is_some_and(|raw| {
+        let value = raw.trim();
+        value == "1" || value.eq_ignore_ascii_case("true")
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -34,9 +61,16 @@ use crate::{cli::ServeArgs, error::AppError, orchestration, startup::POOL_NAME_M
 /// dies unexpectedly during operation.
 pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let (cli_overrides, cli_project) = args.into_cli_overrides();
+    let cli_shadow = CliShadow::from_overrides(&cli_overrides);
 
     let config = load_config(config_path, Some(cli_overrides), None)?;
     validate(&config)?;
+
+    // The control-plane event bus, created before telemetry init so the
+    // log-capture layer can publish onto it: the prompt watcher, the config-file
+    // watcher, the log-capture layer, and the control socket all publish to and
+    // subscribe from this one channel.
+    let (control_events, _) = tokio::sync::broadcast::channel(control::EVENT_BUS_CAPACITY);
 
     // The OTLP gRPC exporter needs a reactor for init and for
     // background batch export.  This runtime lives for the duration
@@ -47,8 +81,12 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    let (telemetry_guard, metrics) = telemetry_rt.block_on(async {
-        tribal_telemetry::init_subscriber(&config.logging, &config.telemetry)
+    let (telemetry_guard, metrics, log_ring) = telemetry_rt.block_on(async {
+        tribal_telemetry::init_subscriber_with_log_bridge(
+            &config.logging,
+            &config.telemetry,
+            control_events.clone(),
+        )
     })?;
 
     // Surfaced now that the subscriber is live: inert or surprising config
@@ -67,6 +105,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         cancellation_token.clone(),
         Some(telemetry_guard),
         metrics,
+        Some(control_events.clone()),
     )?;
 
     let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
@@ -81,6 +120,50 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     // lets axum's graceful shutdown drain active connections before the
     // server exits.
     let transport_error: Option<AppError> = handle.main_runtime().block_on(async {
+        // The local control plane serves alongside the MCP transport for the
+        // whole run; it binds best-effort and never blocks MCP from serving.
+        let expanded_config_path =
+            std::path::PathBuf::from(shellexpand::tilde(config_path).into_owned());
+        let self_write = SelfWriteSentinel::default();
+        let control_context = control::ControlContext {
+            config: Arc::new(config.clone()),
+            config_path: expanded_config_path.clone(),
+            cli_shadow: cli_shadow.clone(),
+            self_write: self_write.clone(),
+            config_write_lock: tokio::sync::Mutex::new(()),
+            pool: handle.state().mcp_pool().clone(),
+            events: control_events.clone(),
+            log_ring,
+            project: handle.state().resolved_project().map(|project| {
+                tribal_wire::control::ProjectSummary {
+                    id: project.id().to_string(),
+                    name: project.name().to_owned(),
+                }
+            }),
+            cancellation_token: cancellation_token.clone(),
+            started_at: std::time::Instant::now(),
+            binary_version: Arc::clone(handle.state().build_version()),
+            instance_id: Arc::clone(handle.state().instance_id()),
+            supervised: is_supervised(),
+        };
+        control::spawn_control_plane(control_context).await;
+
+        // The config-file watcher announces an external edit to the file as
+        // `config.changed`; best-effort like the control plane, a failed init
+        // never blocks MCP from serving.
+        match init_config_watcher(
+            &expanded_config_path,
+            control_events.clone(),
+            self_write,
+            cancellation_token.clone(),
+        ) {
+            Ok(watcher) => drop(tokio::spawn(watcher)),
+            Err(error) => tracing::warn!(
+                %error,
+                "config-file watcher init failed; external edits will not notify",
+            ),
+        }
+
         let mut transport_handle = tokio::spawn(run_transport(
             transport,
             Arc::clone(handle.state()),
@@ -293,6 +376,19 @@ async fn await_shutdown_trigger(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_supervised_marker_counts_only_explicit_truthy_values() {
+        for truthy in ["1", "true", "TRUE", "True", "  true  "] {
+            assert!(supervised_from(Some(truthy)), "{truthy:?} means supervised");
+        }
+        for falsy in [None, Some(""), Some("0"), Some("false"), Some("yes")] {
+            assert!(
+                !supervised_from(falsy),
+                "{falsy:?} does not claim supervision"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn test_await_shutdown_trigger_returns_none_on_pre_cancelled_token() {

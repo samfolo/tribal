@@ -802,6 +802,7 @@ async fn start_and_connect(
             spawn_token,
             None,
             noop_recorder(),
+            None,
         )
         .expect("server startup failed")
     })

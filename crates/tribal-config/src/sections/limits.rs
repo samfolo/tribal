@@ -21,6 +21,7 @@ const CLOUD_REQUEST_TIMEOUT_MS: u64 = 120_000;
 
 /// Concurrency and timeout limits for a single provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ProviderLimitsConfig {
     /// Maximum concurrent in-flight requests.
@@ -40,6 +41,7 @@ pub struct ProviderLimitsConfig {
 /// worker tasks from starving MCP read-path queries that share the same
 /// provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct LimitsConfig {
     /// Per-provider limits, keyed by provider kind.

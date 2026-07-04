@@ -70,6 +70,7 @@ const fn default_job_state_hard_ttl_seconds() -> u64 {
 /// Controls the transport protocol, bind address, shutdown behaviour,
 /// and SSE-specific tuning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     /// Transport protocol for the MCP server.
@@ -135,6 +136,7 @@ impl Default for ServerConfig {
 ///
 /// Nested under `server.sse` in the configuration file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SseConfig {
     /// Maximum SSE connection lifetime in milliseconds.

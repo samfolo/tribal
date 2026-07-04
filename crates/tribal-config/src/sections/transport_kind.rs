@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 /// Implements [`FromStr`] so that clap can parse the type natively
 /// without a mirror enum.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TransportKind {
     /// Communicate over stdin/stdout.
