@@ -319,8 +319,8 @@ fn write_atomically(path: &Path, payload: &[u8]) -> std::io::Result<()> {
 /// The CLI layer is the cascade's highest, so a file write to one of these
 /// paths is persisted but shadowed — the process keeps using the flag's value
 /// until it restarts without the flag. Built once at startup from the resolved
-/// [`CliOverrides`]; the default is empty, the honest answer when no flag was
-/// passed and every read outside a live serve.
+/// [`CliOverrides`]; the default is empty — the honest answer when no flag was
+/// passed.
 #[derive(Debug, Clone, Default)]
 pub struct CliShadow {
     paths: BTreeSet<String>,
