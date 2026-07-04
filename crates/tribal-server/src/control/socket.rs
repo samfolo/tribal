@@ -18,7 +18,7 @@ use sqlx::PgPool;
 use tokio::{
     io::{AsyncWriteExt as _, BufReader},
     net::{UnixListener, UnixStream, unix::OwnedWriteHalf},
-    sync::{broadcast, mpsc},
+    sync::{Semaphore, broadcast, mpsc},
 };
 use tribal_auth::{AuthenticatedPrincipal, Authenticator};
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
@@ -43,6 +43,11 @@ const SOCKET_MODE: u32 = 0o600;
 /// How many outgoing frames a connection queues before a slow client applies
 /// back-pressure to the request loop and the event forwarder.
 const OUTGOING_CAPACITY: usize = 64;
+
+/// The most connections the control plane serves at once. The operator socket
+/// sees a handful; a larger burst is a flood, refused rather than allowed to
+/// spawn handlers without bound.
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
 
 // ---------------------------------------------------------------------------
 // The plane
@@ -132,16 +137,26 @@ impl ControlPlane {
             guard,
         } = self;
         let cancellation_token = context.cancellation_token.clone();
+        // Each connection is served by a best-effort task: it speaks to one
+        // operator client, and its exit or panic concerns only that client,
+        // never the plane. The permits bound how many run at once, so a
+        // connection flood cannot spawn handlers without limit; shutdown abandons
+        // them by construction, their in-flight work discardable.
+        let connections = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
         loop {
             tokio::select! {
                 () = cancellation_token.cancelled() => break,
                 accepted = listener.accept() => match accepted {
                     Ok((stream, _address)) => {
-                        drop(tokio::spawn(handle_connection(
-                            stream,
-                            Arc::clone(&context),
-                            owner_uid,
-                        )));
+                        let Ok(permit) = Arc::clone(&connections).try_acquire_owned() else {
+                            tracing::warn!("control: connection cap reached; refusing peer");
+                            continue;
+                        };
+                        let context = Arc::clone(&context);
+                        drop(tokio::spawn(async move {
+                            let _permit = permit;
+                            handle_connection(stream, context, owner_uid).await;
+                        }));
                     }
                     Err(error) => tracing::warn!(%error, "control: accept failed"),
                 }
