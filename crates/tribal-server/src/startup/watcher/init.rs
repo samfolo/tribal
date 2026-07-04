@@ -234,7 +234,7 @@ mod tests {
         // same file publishes.
         assert!(
             !is_external_config_edit(
-                &[config_path.clone()],
+                std::slice::from_ref(&config_path),
                 name.as_deref(),
                 &config_path,
                 &sentinel
@@ -245,7 +245,7 @@ mod tests {
         std::fs::write(&config_path, "server: {}\n").expect("external edit");
         assert!(
             is_external_config_edit(
-                &[config_path.clone()],
+                std::slice::from_ref(&config_path),
                 name.as_deref(),
                 &config_path,
                 &sentinel
