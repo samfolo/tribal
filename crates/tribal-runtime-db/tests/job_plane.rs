@@ -419,3 +419,46 @@ async fn leaving_running_releases_the_slot_under_the_token_fence() {
         "leaving running frees the slot"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Erase reachability
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_account_purge_removes_every_row_for_that_account_only() {
+    let db = support::provision().await;
+    let pool = db.pool();
+
+    // Two tenants with jobs and slots; a claim on one leaves a running row too.
+    enqueue(pool, "account_a", "a-1").await;
+    enqueue(pool, "account_a", "a-2").await;
+    RUN_JOB
+        .claim(pool, DEFAULT_CAP, lease())
+        .await
+        .expect("claim")
+        .expect("admitted");
+    enqueue(pool, "account_b", "b-1").await;
+
+    let removed = tribal_runtime_db::purge_account(pool, "account_a")
+        .await
+        .expect("purge");
+    assert_eq!(removed, 2, "both of the account's jobs are removed");
+
+    // The purged account leaves no residue: no jobs, no slot.
+    assert!(
+        TENANT_SLOT
+            .get(pool, "account_a")
+            .await
+            .expect("slot")
+            .is_none(),
+        "the purged account's slot is gone",
+    );
+
+    // The other account is untouched.
+    let survivor = RUN_JOB
+        .claim(pool, DEFAULT_CAP, lease())
+        .await
+        .expect("claim survivor")
+        .expect("the other account's job survives");
+    assert_eq!(survivor.account_id, "account_b");
+}

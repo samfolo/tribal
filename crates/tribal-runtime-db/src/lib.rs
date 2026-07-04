@@ -7,10 +7,12 @@
 //! ledger — an account reference here is an opaque cross-database pointer, not a
 //! foreign key.
 
+mod erase;
 mod error;
 mod pool;
 mod repositories;
 
+pub use erase::purge_account;
 pub use error::RuntimeDbError;
 pub use pool::create_pool;
 pub use repositories::{
