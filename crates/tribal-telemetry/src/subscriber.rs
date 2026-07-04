@@ -25,15 +25,18 @@ use std::sync::{
 
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider};
 use opentelemetry_sdk::trace::SdkTracerProvider;
+use tokio::sync::broadcast;
 use tracing::subscriber::set_global_default;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 use tribal_config::{FileRotation, LogFormat, LogOutput, LoggingConfig, TelemetryConfig};
+use tribal_wire::control::ControlEvent;
 
 use crate::{
     error::TelemetryError,
     exporter::WriterSpanExporter,
     guard::TelemetryGuard,
+    log_ring::{LogRing, LogRingLayer},
     metrics::Metrics,
     otlp,
     recorder::{MetricsRecorder, OtelMetricsRecorder, noop_recorder},
@@ -97,6 +100,29 @@ pub fn init_subscriber(
     logging: &LoggingConfig,
     telemetry: &TelemetryConfig,
 ) -> Result<(TelemetryGuard, Arc<dyn MetricsRecorder>), TelemetryError> {
+    // No control plane: capture into a ring nobody reads and publish to a
+    // detached bus. The log-capture layer is cheap and uniform across callers.
+    let (events, _) = broadcast::channel(1);
+    let (guard, recorder, _ring) = init_subscriber_with_log_bridge(logging, telemetry, events)?;
+    Ok((guard, recorder))
+}
+
+/// Initialises the global tracing subscriber, additionally bridging captured
+/// log lines to the control plane: each admitted line lands in the returned
+/// [`LogRing`] (answering `logs.tail`) and publishes as a `logs.line` event on
+/// `control_events` (feeding a subscribed client live).
+///
+/// This is [`init_subscriber`] plus the bridge; see it for the layer stack and
+/// the full error contract.
+///
+/// # Errors
+///
+/// Returns the same [`TelemetryError`] variants as [`init_subscriber`].
+pub fn init_subscriber_with_log_bridge(
+    logging: &LoggingConfig,
+    telemetry: &TelemetryConfig,
+    control_events: broadcast::Sender<ControlEvent>,
+) -> Result<(TelemetryGuard, Arc<dyn MetricsRecorder>, LogRing), TelemetryError> {
     if INITIALISED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -104,7 +130,7 @@ pub fn init_subscriber(
         return Err(TelemetryError::SubscriberAlreadyInitialised);
     }
 
-    match try_init_subscriber(logging, telemetry) {
+    match try_init_subscriber(logging, telemetry, control_events) {
         Ok(result) => Ok(result),
         Err(err) => {
             INITIALISED.store(false, Ordering::SeqCst);
@@ -120,7 +146,8 @@ pub fn init_subscriber(
 fn try_init_subscriber(
     logging: &LoggingConfig,
     telemetry: &TelemetryConfig,
-) -> Result<(TelemetryGuard, Arc<dyn MetricsRecorder>), TelemetryError> {
+    control_events: broadcast::Sender<ControlEvent>,
+) -> Result<(TelemetryGuard, Arc<dyn MetricsRecorder>, LogRing), TelemetryError> {
     let env_filter = EnvFilter::try_new(&logging.level).map_err(|source| {
         TelemetryError::InvalidFilterDirective {
             directive: logging.level.clone(),
@@ -215,20 +242,31 @@ fn try_init_subscriber(
         (None, noop_recorder())
     };
 
+    // -- Log-capture layer -----------------------------------------------
+    //
+    // Captures every event the `env_filter` admits into the ring and mirrors
+    // it live on the control bus. The ring returns to the caller for
+    // `logs.tail`; the layer joins the stack below.
+    let (log_layer, log_ring) = LogRingLayer::new(control_events);
+
     // -- Subscriber assembly ---------------------------------------------
     //
     // JSON and Pretty produce different concrete types, so the
     // `set_global_default` call is duplicated in each branch.
     match logging.format {
         LogFormat::Json => {
-            let subscriber = Registry::default().with(env_filter).with(otel_layer).with(
-                fmt::layer()
-                    .json()
-                    .with_writer(writer)
-                    .with_target(true)
-                    .with_current_span(true)
-                    .with_span_list(true),
-            );
+            let subscriber = Registry::default()
+                .with(env_filter)
+                .with(otel_layer)
+                .with(log_layer)
+                .with(
+                    fmt::layer()
+                        .json()
+                        .with_writer(writer)
+                        .with_target(true)
+                        .with_current_span(true)
+                        .with_span_list(true),
+                );
             set_global_default(subscriber)
                 .map_err(|source| TelemetryError::SetGlobalDefault { source })?;
         }
@@ -236,6 +274,7 @@ fn try_init_subscriber(
             let subscriber = Registry::default()
                 .with(env_filter)
                 .with(otel_layer)
+                .with(log_layer)
                 .with(fmt::layer().pretty().with_writer(writer).with_target(true));
             set_global_default(subscriber)
                 .map_err(|source| TelemetryError::SetGlobalDefault { source })?;
@@ -259,6 +298,7 @@ fn try_init_subscriber(
     Ok((
         TelemetryGuard::new(guard, tracer_provider, meter_provider),
         recorder,
+        log_ring,
     ))
 }
 

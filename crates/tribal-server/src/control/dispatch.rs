@@ -40,6 +40,7 @@ pub(crate) async fn dispatch(
         // publishes a `config.changed` event to the bus.
         "config.set" => config_set_and_publish(context, params),
         "server.status" => Ok(result(status(context))),
+        "logs.tail" => logs_tail(context, params),
         "token.list" => token_list(&context.pool, principal).await,
         _ => match dispatch_config(&context.config, &context.config_path, method, params) {
             Some(outcome) => outcome,
@@ -216,6 +217,23 @@ fn server_status(
 }
 
 // ---------------------------------------------------------------------------
+// logs.tail — a bounded window of recent lines from the capture ring
+// ---------------------------------------------------------------------------
+
+/// Returns the last `lines` captured log lines, oldest first, capped by the
+/// ring's size. The same lines the live `logs.line` event streams.
+fn logs_tail(
+    context: &ControlContext,
+    params: Option<Value>,
+) -> Result<Value, wire::ResponseError> {
+    let request: wire::LogsTailRequest = parse_params(params)?;
+    let lines = context
+        .log_ring
+        .tail(usize::try_from(request.lines).unwrap_or(usize::MAX));
+    Ok(result(wire::LogLines { lines }))
+}
+
+// ---------------------------------------------------------------------------
 // token.list — issued-token metadata for the local principal
 // ---------------------------------------------------------------------------
 
@@ -362,6 +380,7 @@ mod tests {
     use chrono::{Duration, Utc};
     use serde_json::json;
     use tribal_domain::{AuthTokenId, PrincipalId, Scope};
+    use tribal_telemetry::LogRing;
 
     use super::*;
 
@@ -498,6 +517,7 @@ mod tests {
             config_path: dir.path().join("tribal.yaml"),
             pool: tribal_test_utils::lazy_pool(),
             events,
+            log_ring: LogRing::new(16),
             project: None,
             cancellation_token: CancellationToken::new(),
             started_at: std::time::Instant::now(),
@@ -527,6 +547,39 @@ mod tests {
             }
             other => panic!("expected ConfigChanged, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_logs_tail_routes_and_returns_a_log_lines_window() {
+        use std::sync::Arc;
+
+        use tokio::sync::broadcast;
+        use tokio_util::sync::CancellationToken;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (events, _) = broadcast::channel(16);
+        let context = ControlContext {
+            config: Arc::new(base_config()),
+            config_path: dir.path().join("tribal.yaml"),
+            pool: tribal_test_utils::lazy_pool(),
+            events,
+            log_ring: LogRing::new(16),
+            project: None,
+            cancellation_token: CancellationToken::new(),
+            started_at: std::time::Instant::now(),
+            binary_version: Arc::from("v"),
+            instance_id: Arc::from("id"),
+            supervised: false,
+        };
+
+        let value = dispatch(&context, None, "logs.tail", Some(json!({ "lines": 10 })))
+            .await
+            .expect("logs.tail is dispatched");
+        let parsed: wire::LogLines = serde_json::from_value(value).unwrap();
+        assert!(
+            parsed.lines.is_empty(),
+            "an unfilled ring tails to an empty window",
+        );
     }
 
     #[test]

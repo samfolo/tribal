@@ -18,6 +18,7 @@ use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tribal_config::TribalConfig;
+use tribal_telemetry::LogRing;
 use tribal_wire::control::{ControlEvent, ProjectSummary};
 
 mod descriptor;
@@ -50,6 +51,9 @@ pub(crate) struct ControlContext {
     /// The process event bus. Each connection subscribes to fan events out to
     /// its client; `config.set` and the file watchers publish onto it.
     pub events: broadcast::Sender<ControlEvent>,
+    /// The bounded ring of recent log lines the capturing layer fills, read by
+    /// `logs.tail`.
+    pub log_ring: LogRing,
     /// The project this serve resolved, absent when none was.
     pub project: Option<ProjectSummary>,
     /// The serve-lifetime token; its cancellation is the worker-liveness and

@@ -368,6 +368,7 @@ mod tests {
 
     use tokio_util::sync::CancellationToken;
     use tribal_config::TribalConfig;
+    use tribal_telemetry::LogRing;
     use tribal_test_utils::lazy_pool;
     use tribal_wire::control::{ConfigPath, RequestId};
 
@@ -385,6 +386,7 @@ mod tests {
             config_path: PathBuf::from("/tmp/tribal.yaml"),
             pool: lazy_pool(),
             events,
+            log_ring: LogRing::new(16),
             project: None,
             cancellation_token,
             started_at: Instant::now(),

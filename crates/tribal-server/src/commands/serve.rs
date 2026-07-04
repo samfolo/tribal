@@ -59,8 +59,12 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    let (telemetry_guard, metrics) = telemetry_rt.block_on(async {
-        tribal_telemetry::init_subscriber(&config.logging, &config.telemetry)
+    let (telemetry_guard, metrics, log_ring) = telemetry_rt.block_on(async {
+        tribal_telemetry::init_subscriber_with_log_bridge(
+            &config.logging,
+            &config.telemetry,
+            control_events.clone(),
+        )
     })?;
 
     // Surfaced now that the subscriber is live: inert or surprising config
@@ -103,6 +107,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
             config_path: expanded_config_path.clone(),
             pool: handle.state().mcp_pool().clone(),
             events: control_events.clone(),
+            log_ring,
             project: handle.state().resolved_project().map(|project| {
                 tribal_wire::control::ProjectSummary {
                     id: project.id().to_string(),
