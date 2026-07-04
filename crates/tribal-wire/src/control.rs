@@ -39,3 +39,18 @@ pub use token::{TokenInfo, TokenList};
 /// not support is refused before any method is dispatched, and the payload
 /// vocabulary grows only when this does.
 pub const CONTROL_CONTRACT_VERSION: u16 = 1;
+
+/// Control-plane [`ResponseError::code`] values, in the range JSON-RPC reserves
+/// for implementation-defined server errors (`-32000..=-32099`), so a client
+/// branches on a specific refusal rather than reading a generic internal error
+/// off the reserved `-32603`.
+pub mod error_code {
+    /// The local principal is unavailable — `tribal setup` has not run — so a
+    /// principal-scoped crossing such as `token.list` cannot answer.
+    pub const PRINCIPAL_UNAVAILABLE: i32 = -32001;
+
+    /// A `config.set` sent the redaction mask (`********`) as a secret's value.
+    /// The write is refused so the mask never overwrites the real secret a
+    /// redacted read never revealed.
+    pub const SECRET_MASK_REJECTED: i32 = -32002;
+}

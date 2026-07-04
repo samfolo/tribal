@@ -29,9 +29,6 @@ pub enum ControlEvent {
         /// How the change took effect.
         effect: WriteEffect,
     },
-    /// The server's status changed; a subscriber re-reads `server.status`.
-    #[serde(rename = "server.statusChanged")]
-    ServerStatusChanged,
     /// A new log line was emitted.
     #[serde(rename = "logs.line")]
     LogsLine {
@@ -65,16 +62,6 @@ mod tests {
         assert_eq!(json["params"]["effect"], serde_json::json!("needs_restart"));
         let parsed: ControlEvent = serde_json::from_value(json).unwrap();
         assert_eq!(parsed, event);
-    }
-
-    #[test]
-    fn test_a_fieldless_event_carries_only_its_method() {
-        let json = serde_json::to_value(ControlEvent::ServerStatusChanged).unwrap();
-        assert_eq!(json["method"], serde_json::json!("server.statusChanged"));
-        assert!(
-            json.get("params").is_none(),
-            "an event with no fields carries no params",
-        );
     }
 
     #[test]

@@ -13,12 +13,12 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::PgPool;
 use tribal_auth::AuthenticatedPrincipal;
-use tribal_config::{CliShadow, TransportKind, TribalConfig};
+use tribal_config::{CliShadow, TribalConfig, is_secret_key};
 use tribal_db::{AuthTokenRepository, PgAuthTokenRepository};
-use tribal_domain::AuthToken;
-use tribal_wire::control::{self as wire, CONTROL_CONTRACT_VERSION, ControlEvent};
+use tribal_domain::{AuthToken, REDACTED};
+use tribal_wire::control::{self as wire, CONTROL_CONTRACT_VERSION, ControlEvent, error_code};
 
-use super::ControlContext;
+use super::{ControlContext, listening_bind_address};
 
 /// JSON-RPC reserved code: the method name is not one this server dispatches.
 const METHOD_NOT_FOUND: i32 = -32601;
@@ -72,6 +72,18 @@ async fn config_set_and_publish(
     params: Option<Value>,
 ) -> Result<Value, wire::ResponseError> {
     let request: wire::ConfigSetRequest = parse_params(params)?;
+    // A redacted read shows the mask, never the secret; writing the mask back
+    // would overwrite the real value with `********`. Refuse it at the boundary.
+    if is_secret_key(&request.key) && request.value.as_str() == Some(REDACTED) {
+        return Err(error(
+            error_code::SECRET_MASK_REJECTED,
+            format!(
+                "`{}` is a secret; its redacted mask cannot be written back as its value",
+                request.key,
+            ),
+            None,
+        ));
+    }
     let key = request.key.clone();
     let config = Arc::clone(&context.config);
     let config_path = context.config_path.clone();
@@ -226,21 +238,18 @@ fn server_status(
     binary_version: &str,
     instance_id: &str,
 ) -> wire::ServerStatus {
-    let transport = config.server.transport;
     wire::ServerStatus {
-        transport: transport.to_string(),
-        // Only a listening transport binds an address; stdio has none.
-        bind_address: (transport != TransportKind::Stdio)
-            .then(|| config.server.bind_address.clone())
-            .flatten(),
+        transport: config.server.transport.to_string(),
+        bind_address: listening_bind_address(config),
         uptime_seconds,
         worker: if worker_alive {
             wire::WorkerStatus::Running
         } else {
             wire::WorkerStatus::Stopped
         },
-        // The worker exposes no cheap non-DB queue-depth source yet; the field
-        // is honestly absent until one lands.
+        // No in-process queue-depth source exists that avoids a database
+        // round-trip, so status reports the field absent rather than paying that
+        // cost on every read.
         queue_depth: None,
         project,
         binary_version: binary_version.to_owned(),
@@ -302,7 +311,7 @@ async fn token_list(
 ) -> Result<Value, wire::ResponseError> {
     let principal = principal.ok_or_else(|| {
         error(
-            INTERNAL_ERROR,
+            error_code::PRINCIPAL_UNAVAILABLE,
             "the local principal is unavailable; run `tribal setup`".to_owned(),
             None,
         )
@@ -440,6 +449,7 @@ mod tests {
     use serde_json::json;
     use tokio::sync::broadcast;
     use tokio_util::sync::CancellationToken;
+    use tribal_config::TransportKind;
     use tribal_domain::{AuthTokenId, PrincipalId, Scope};
     use tribal_telemetry::LogRing;
 
@@ -681,6 +691,61 @@ mod tests {
         assert!(
             document.contains("poll_interval_ms: 5000"),
             "the second key survived — no lost update: {document}",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_config_set_refuses_the_redaction_mask_for_a_secret() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tribal.yaml");
+        let (context, _) = test_context(base_config(), path.clone());
+
+        let error = dispatch(
+            &context,
+            None,
+            "config.set",
+            Some(json!({ "key": "database.url", "value": REDACTED })),
+        )
+        .await
+        .expect_err("writing the mask to a secret is refused");
+        assert_eq!(error.code, error_code::SECRET_MASK_REJECTED);
+        assert!(
+            !path.exists(),
+            "a refused mask write never touches the file",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_config_set_allows_the_mask_string_for_a_non_secret() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tribal.yaml");
+        let (context, _) = test_context(base_config(), path.clone());
+
+        // `logging.level` is not a secret, so the mask guard does not apply: the
+        // literal is an ordinary (if unusual) free-form string and it persists.
+        dispatch(
+            &context,
+            None,
+            "config.set",
+            Some(json!({ "key": "logging.level", "value": REDACTED })),
+        )
+        .await
+        .expect("a non-secret key is not subject to the mask refusal");
+        assert!(path.exists(), "the non-secret write persisted");
+    }
+
+    #[tokio::test]
+    async fn test_token_list_without_a_principal_refuses_with_a_typed_code() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (context, _) = test_context(base_config(), dir.path().join("tribal.yaml"));
+
+        let error = token_list(&context.pool, None)
+            .await
+            .expect_err("no principal refuses");
+        assert_eq!(error.code, error_code::PRINCIPAL_UNAVAILABLE);
+        assert_ne!(
+            error.code, INTERNAL_ERROR,
+            "the refusal must not ride the reserved internal-error code",
         );
     }
 

@@ -5,8 +5,9 @@
 //! [`tribal_wire::control`]; this module is its transport in the binary. It
 //! binds the socket, admits only the local operator (peer-credential UID match)
 //! speaking a supported [contract version](tribal_wire::control::CONTROL_CONTRACT_VERSION),
-//! frames JSON-RPC over `Content-Length`, dispatches the `config.*`/`server.*`/
-//! `token.*` crossings to the surfaces that answer them, and publishes a runtime
+//! frames JSON-RPC over `Content-Length`, dispatches the
+//! `config.*`/`server.*`/`logs.*`/`token.*` crossings to the surfaces that
+//! answer them, and publishes a runtime
 //! descriptor a client discovers the socket through. It is a control plane,
 //! sibling to `transport/` — not an MCP [`TransportKind`](tribal_config::TransportKind)
 //! — and it never blocks the binary from serving MCP: a plane that cannot bind
@@ -17,7 +18,7 @@ use std::{path::PathBuf, sync::Arc, time::Instant};
 use sqlx::PgPool;
 use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
-use tribal_config::{CliShadow, TribalConfig};
+use tribal_config::{CliShadow, TransportKind, TribalConfig};
 use tribal_telemetry::LogRing;
 use tribal_wire::control::{ControlEvent, ProjectSummary};
 
@@ -31,6 +32,15 @@ mod framing;
 mod socket;
 
 pub(crate) use socket::spawn_control_plane;
+
+/// The address a listening transport is bound to; `None` for stdio, which binds
+/// nothing. Shared by `server.status` and the runtime descriptor so both report
+/// the bound address by one rule.
+fn listening_bind_address(config: &TribalConfig) -> Option<String> {
+    (config.server.transport != TransportKind::Stdio)
+        .then(|| config.server.bind_address.clone())
+        .flatten()
+}
 
 /// The control event bus's channel capacity. A subscriber that falls this many
 /// events behind lags and is told to re-read state rather than blocking a

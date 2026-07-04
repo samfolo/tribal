@@ -45,12 +45,15 @@ mod tests {
     }
 
     #[test]
-    fn test_a_fieldless_event_projects_no_params() {
-        let notification = notification_for(&ControlEvent::ServerStatusChanged);
-        assert_eq!(notification.method, "server.statusChanged");
-        assert!(
-            notification.params.is_none(),
-            "a fieldless event carries no params",
-        );
+    fn test_a_prompt_reloaded_event_projects_its_stage_and_role() {
+        let notification = notification_for(&ControlEvent::PromptReloaded {
+            stage: "extraction".to_owned(),
+            role: "system".to_owned(),
+            version_id: "v2".to_owned(),
+        });
+        assert_eq!(notification.method, "prompt.reloaded");
+        let params = notification.params.expect("params present");
+        assert_eq!(params["stage"], serde_json::json!("extraction"));
+        assert_eq!(params["role"], serde_json::json!("system"));
     }
 }

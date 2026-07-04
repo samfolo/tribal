@@ -52,6 +52,12 @@ pub(crate) struct RuntimeDescriptor {
     pub binary_version: String,
     /// Whether a supervisor owns the process (governs `server.restart`).
     pub supervised: bool,
+    /// The MCP transport the server is serving.
+    pub transport: String,
+    /// The address a listening transport is bound to; absent for stdio.
+    pub bind_address: Option<String>,
+    /// The config file the running server resolved and writes.
+    pub config_path: PathBuf,
 }
 
 impl RuntimeDescriptor {
@@ -163,6 +169,9 @@ mod tests {
             instance_id: "host~4242~boot".to_owned(),
             binary_version: "1.2.3".to_owned(),
             supervised: false,
+            transport: "http".to_owned(),
+            bind_address: Some("127.0.0.1:8725".to_owned()),
+            config_path: PathBuf::from("/home/op/.config/tribal/tribal.yaml"),
         }
     }
 

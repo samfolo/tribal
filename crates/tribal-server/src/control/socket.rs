@@ -28,7 +28,7 @@ use tribal_wire::control::{
 };
 
 use super::{
-    ControlContext,
+    ControlContext, listening_bind_address,
     descriptor::{self, RuntimeDescriptor},
     dispatch::dispatch,
     error::ControlError,
@@ -95,11 +95,8 @@ impl ControlPlane {
                 path: existing.socket_path,
             });
         }
-        prepare_socket_path(&socket_path)?;
-        let listener = UnixListener::bind(&socket_path).map_err(|source| ControlError::Bind {
-            path: socket_path.clone(),
-            source,
-        })?;
+        ensure_socket_parent(&socket_path)?;
+        let listener = bind_socket(&socket_path).await?;
         std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(SOCKET_MODE))
             .map_err(fs_error(&socket_path))?;
         let owner_uid = std::fs::metadata(&socket_path)
@@ -113,6 +110,9 @@ impl ControlPlane {
             instance_id: context.instance_id.to_string(),
             binary_version: context.binary_version.to_string(),
             supervised: context.supervised,
+            transport: context.config.server.transport.to_string(),
+            bind_address: listening_bind_address(&context.config),
+            config_path: context.config_path.clone(),
         };
         descriptor.write_atomically(&descriptor_path)?;
 
@@ -123,6 +123,7 @@ impl ControlPlane {
             guard: DescriptorGuard {
                 socket_path,
                 descriptor_path,
+                instance_id: descriptor.instance_id,
             },
         })
     }
@@ -171,12 +172,23 @@ impl ControlPlane {
 struct DescriptorGuard {
     socket_path: PathBuf,
     descriptor_path: PathBuf,
+    /// The instance this guard wrote; it reclaims the descriptor only while the
+    /// file still names it, so a racing instance that has since rebound and
+    /// rewritten the descriptor keeps its live socket.
+    instance_id: String,
 }
 
 impl Drop for DescriptorGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.descriptor_path);
-        let _ = std::fs::remove_file(&self.socket_path);
+        // Reclaim only what this instance still owns. If another server has
+        // rebound and rewritten the descriptor, its instance id differs, and
+        // removing its socket would strand it — leave both in place.
+        let owns_descriptor = RuntimeDescriptor::read(&self.descriptor_path)
+            .is_some_and(|descriptor| descriptor.instance_id == self.instance_id);
+        if owns_descriptor {
+            let _ = std::fs::remove_file(&self.descriptor_path);
+            let _ = std::fs::remove_file(&self.socket_path);
+        }
     }
 }
 
@@ -358,17 +370,42 @@ async fn resolve_principal(pool: &PgPool) -> Option<AuthenticatedPrincipal> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Ensures the socket's parent directory exists and clears a leftover socket
-/// file. Liveness is already settled by the descriptor check in `bind_at`, so a
-/// file remaining here is a dead server's stale entry, reclaimed.
-fn prepare_socket_path(socket_path: &Path) -> Result<(), ControlError> {
+/// Ensures the socket's parent directory exists.
+fn ensure_socket_parent(socket_path: &Path) -> Result<(), ControlError> {
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent).map_err(fs_error(parent))?;
     }
-    if socket_path.exists() {
-        std::fs::remove_file(socket_path).map_err(fs_error(socket_path))?;
-    }
     Ok(())
+}
+
+/// Binds the control socket, arbitrating against a racing starter through the
+/// bind itself. `bind` fails with `AddrInUse` when a socket file already sits at
+/// the path; a file another server is actively accepting on means that server
+/// won the bind — refused here, never clobbered — while one nothing answers is a
+/// crashed server's stale entry, removed so this bind can take the path. The
+/// direct `connect` probe settles liveness even before the winner writes its
+/// descriptor, closing the check-then-act window an unconditional pre-remove
+/// left open.
+async fn bind_socket(socket_path: &Path) -> Result<UnixListener, ControlError> {
+    match UnixListener::bind(socket_path) {
+        Ok(listener) => Ok(listener),
+        Err(source) if source.kind() == std::io::ErrorKind::AddrInUse => {
+            if UnixStream::connect(socket_path).await.is_ok() {
+                return Err(ControlError::AlreadyServing {
+                    path: socket_path.to_owned(),
+                });
+            }
+            std::fs::remove_file(socket_path).map_err(fs_error(socket_path))?;
+            UnixListener::bind(socket_path).map_err(|source| ControlError::Bind {
+                path: socket_path.to_owned(),
+                source,
+            })
+        }
+        Err(source) => Err(ControlError::Bind {
+            path: socket_path.to_owned(),
+            source,
+        }),
+    }
 }
 
 /// A closure mapping an I/O error to [`ControlError::Filesystem`] for `path`.
@@ -640,6 +677,135 @@ mod tests {
         assert!(
             !socket_path.exists(),
             "the socket is removed on clean shutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_second_bind_is_refused_while_the_first_serves() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("control.sock");
+        let descriptor_path = dir.path().join("control.json");
+        let cancellation_token = CancellationToken::new();
+
+        let first = ControlPlane::bind_at(
+            socket_path.clone(),
+            descriptor_path.clone(),
+            test_context_with(cancellation_token.clone()),
+        )
+        .await
+        .expect("the first plane binds");
+        let serve = tokio::spawn(first.serve());
+
+        match ControlPlane::bind_at(socket_path.clone(), descriptor_path.clone(), test_context()).await
+        {
+            Err(ControlError::AlreadyServing { .. }) => {}
+            other => panic!(
+                "a live server holding the descriptor must refuse the second bind, got {:?}",
+                other.err(),
+            ),
+        }
+
+        cancellation_token.cancel();
+        serve.await.expect("the serve task ends");
+    }
+
+    #[tokio::test]
+    async fn test_a_live_socket_refuses_a_second_bind_even_without_a_descriptor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("control.sock");
+        let descriptor_path = dir.path().join("control.json");
+        let cancellation_token = CancellationToken::new();
+
+        let first = ControlPlane::bind_at(
+            socket_path.clone(),
+            descriptor_path.clone(),
+            test_context_with(cancellation_token.clone()),
+        )
+        .await
+        .expect("the first plane binds");
+        let serve = tokio::spawn(first.serve());
+
+        // With the descriptor gone, only the bind-time connect probe can tell the
+        // socket is live — it must still refuse rather than clobber the winner.
+        std::fs::remove_file(&descriptor_path).expect("remove the descriptor");
+        match ControlPlane::bind_at(socket_path.clone(), descriptor_path.clone(), test_context()).await
+        {
+            Err(ControlError::AlreadyServing { .. }) => {}
+            other => panic!(
+                "the bind arbitration must refuse a live socket, got {:?}",
+                other.err(),
+            ),
+        }
+        assert!(
+            socket_path.exists(),
+            "the refused bind never removed the winner's socket",
+        );
+
+        cancellation_token.cancel();
+        serve.await.expect("the serve task ends");
+    }
+
+    #[tokio::test]
+    async fn test_a_stale_socket_and_descriptor_are_reclaimed_at_bind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("control.sock");
+        let descriptor_path = dir.path().join("control.json");
+
+        // A crashed server's leftovers: a descriptor naming a socket file that
+        // nothing accepts on.
+        std::fs::write(&socket_path, b"stale").expect("write a stale socket file");
+        let stale = RuntimeDescriptor {
+            socket_path: socket_path.clone(),
+            protocol_version: CONTROL_CONTRACT_VERSION,
+            pid: 1,
+            instance_id: "crashed".to_owned(),
+            binary_version: "old".to_owned(),
+            supervised: false,
+            transport: "stdio".to_owned(),
+            bind_address: None,
+            config_path: PathBuf::from("/tmp/tribal.yaml"),
+        };
+        stale.write_atomically(&descriptor_path).expect("write the stale descriptor");
+
+        let plane =
+            ControlPlane::bind_at(socket_path.clone(), descriptor_path.clone(), test_context())
+                .await
+                .expect("a stale socket and descriptor are reclaimed and bound");
+        assert!(
+            UnixStream::connect(&socket_path).await.is_ok(),
+            "the reclaimed path is now a live, accepting socket",
+        );
+        drop(plane);
+    }
+
+    #[tokio::test]
+    async fn test_the_guard_leaves_a_rebound_descriptor_untouched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("control.sock");
+        let descriptor_path = dir.path().join("control.json");
+
+        let plane =
+            ControlPlane::bind_at(socket_path.clone(), descriptor_path.clone(), test_context())
+                .await
+                .expect("the plane binds");
+
+        // A racing instance rebound and rewrote the descriptor with its own
+        // identity: this plane's guard must not reclaim what it no longer owns.
+        let mut rebound = RuntimeDescriptor::read(&descriptor_path).expect("descriptor present");
+        rebound.instance_id = "other-instance".to_owned();
+        rebound
+            .write_atomically(&descriptor_path)
+            .expect("rewrite the descriptor");
+
+        drop(plane);
+
+        assert!(
+            descriptor_path.exists(),
+            "the guard must not remove another instance's descriptor",
+        );
+        assert!(
+            socket_path.exists(),
+            "the guard must not remove another instance's socket",
         );
     }
 }

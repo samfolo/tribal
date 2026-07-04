@@ -66,9 +66,10 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let config = load_config(config_path, Some(cli_overrides), None)?;
     validate(&config)?;
 
-    // The control-plane event bus, created before telemetry init so a future
-    // log layer can share it: the prompt watcher, the config-file watcher, and
-    // the control socket all publish to and subscribe from this one channel.
+    // The control-plane event bus, created before telemetry init so the
+    // log-capture layer can publish onto it: the prompt watcher, the config-file
+    // watcher, the log-capture layer, and the control socket all publish to and
+    // subscribe from this one channel.
     let (control_events, _) = tokio::sync::broadcast::channel(control::EVENT_BUS_CAPACITY);
 
     // The OTLP gRPC exporter needs a reactor for init and for

@@ -335,21 +335,6 @@
         }
       },
       {
-        "description": "The server's status changed; a subscriber re-reads `server.status`.",
-        "type": "object",
-        "required": [
-          "method"
-        ],
-        "properties": {
-          "method": {
-            "type": "string",
-            "enum": [
-              "server.statusChanged"
-            ]
-          }
-        }
-      },
-      {
         "description": "A new log line was emitted.",
         "type": "object",
         "required": [
