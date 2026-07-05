@@ -206,6 +206,13 @@ pub trait RunJobRepository {
         id: RunJobId,
     ) -> Result<bool, RuntimeDbError>;
 
+    /// Wakes a suspended job back to `queued`, so a fresh claim resumes it under
+    /// a new lease. The resolving signal — a period rollover, a top-up, a backoff
+    /// timer — drives this; a job not currently suspended is left untouched (a
+    /// suspended job holds no tenant slot, so waking it takes none). Returns
+    /// whether it woke.
+    async fn wake(&self, conn: &mut PgConnection, id: RunJobId) -> Result<bool, RuntimeDbError>;
+
     /// Reads a job's current state, if it exists.
     async fn state_of(
         &self,
@@ -438,6 +445,22 @@ impl RunJobRepository for PgRunJobRepository {
             source,
         })?;
         Ok(updated.is_some())
+    }
+
+    async fn wake(&self, conn: &mut PgConnection, id: RunJobId) -> Result<bool, RuntimeDbError> {
+        let woken: Option<String> = sqlx::query_scalar(
+            "UPDATE run_job SET state = 'queued', updated_at = now()
+             WHERE id = $1 AND state = 'suspended'
+             RETURNING id",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|source| RuntimeDbError::QueryFailed {
+            context: "waking a suspended job".to_owned(),
+            source,
+        })?;
+        Ok(woken.is_some())
     }
 
     async fn state_of(

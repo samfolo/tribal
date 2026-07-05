@@ -434,6 +434,65 @@ async fn leaving_running_releases_the_slot_under_the_token_fence() {
     );
 }
 
+#[tokio::test]
+async fn waking_a_suspended_job_requeues_it_for_a_fresh_claim() {
+    let db = support::provision().await;
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
+
+    enqueue(&mut conn, "account_a", "job-0").await;
+    let claimed = RUN_JOB
+        .claim(&mut conn, DEFAULT_CAP, lease())
+        .await
+        .expect("claim")
+        .expect("admitted");
+    RUN_JOB
+        .leave_running(
+            &mut conn,
+            claimed.id,
+            claimed.claim_token,
+            PostRunningState::Suspended,
+        )
+        .await
+        .expect("suspend");
+    // A suspended job holds no slot and is not claimable.
+    assert_eq!(running_count(&mut conn, "account_a").await, 0);
+    assert!(
+        RUN_JOB
+            .claim(&mut conn, DEFAULT_CAP, lease())
+            .await
+            .expect("claim")
+            .is_none(),
+        "a suspended job is not claimable until it is woken",
+    );
+
+    let woke = RUN_JOB.wake(&mut conn, claimed.id).await.expect("wake");
+    assert!(woke, "the suspended job woke");
+    assert_eq!(
+        RUN_JOB
+            .state_of(&mut conn, claimed.id)
+            .await
+            .expect("state"),
+        Some(RunJobState::Queued),
+    );
+    // The woken job is claimable again, under a fresh lease and token.
+    let reclaimed = RUN_JOB
+        .claim(&mut conn, DEFAULT_CAP, lease())
+        .await
+        .expect("claim")
+        .expect("the woken job is claimable");
+    assert_eq!(reclaimed.id, claimed.id);
+    assert_ne!(
+        reclaimed.claim_token, claimed.claim_token,
+        "the resume runs under a fresh token",
+    );
+
+    // Waking anything not suspended is a no-op.
+    assert!(
+        !RUN_JOB.wake(&mut conn, claimed.id).await.expect("wake"),
+        "waking a running job changes nothing",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Erase reachability
 // ---------------------------------------------------------------------------

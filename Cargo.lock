@@ -5622,6 +5622,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tribal-domain",
+ "tribal-wire",
  "url",
  "uuid",
 ]

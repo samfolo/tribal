@@ -12,10 +12,12 @@ chrono.workspace = true
 serde_json.workspace = true
 sqlx = { workspace = true, features = ["migrate", "macros"] }
 thiserror.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
 tribal-domain.workspace = true
+tribal-wire.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

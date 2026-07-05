@@ -7,11 +7,14 @@
 //! ledger — an account reference here is an opaque cross-database pointer, not a
 //! foreign key.
 
+mod disposition;
 mod erase;
 mod error;
 mod pool;
 mod repositories;
+mod teardown;
 
+pub use disposition::{CapBehaviour, RunDisposition, cap_disposition, past_give_up};
 pub use erase::purge_account;
 pub use error::RuntimeDbError;
 pub use pool::create_pool;
@@ -19,6 +22,9 @@ pub use repositories::{
     ClaimedJob, EnqueueOutcome, NewRunJob, PgRunJobRepository, PgTenantSlotRepository,
     PostRunningState, RunJobRepository, RunJobState, TenantSlot, TenantSlotRepository,
     WriteOutcome,
+};
+pub use teardown::{
+    MeteringGateway, PollBudget, TeardownError, TeardownOutcome, TeardownTarget, cancel_teardown,
 };
 pub use tribal_domain::RunJobId;
 
