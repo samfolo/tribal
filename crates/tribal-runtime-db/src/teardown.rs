@@ -66,6 +66,7 @@ pub struct TeardownTarget {
 }
 
 /// How far a poll loop reads the holds report before giving up on convergence.
+#[derive(Debug, Clone, Copy)]
 pub struct PollBudget {
     /// The delay between reads.
     pub interval: Duration,
