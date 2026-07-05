@@ -10,8 +10,8 @@ use tribal_db::{
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentDriverTaskId, AgentDriverTaskKind, AgentDriverTaskState,
     AgentThread, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStage, AgentThreadStatus,
-    AgentThreadSuspension, AgentThreadTerminal, GitRemote, JobId, JobStatus, PrincipalId, TaskId,
-    TaskType, TokenUsageStage,
+    AgentThreadSuspension, AgentThreadTerminal, GitRemote, JobId, JobStatus, PrincipalId, RunJobId,
+    TaskId, TaskType, TokenUsageStage,
 };
 use tribal_test_utils::{
     TestDb, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
@@ -460,6 +460,55 @@ async fn test_recovery_attempts_accumulate() {
 
     assert_eq!(first, 1);
     assert_eq!(second, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Managed run fence
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_managed_claim_holds_on_the_token_and_misses_on_a_stale_one() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    // A managed thread carries no binding, principal, or task: the run key
+    // is its anchor and run_claim_token its fence.
+    let run_key = RunJobId::new();
+    let token = uuid::Uuid::new_v4();
+    PgAgentThreadRepository
+        .insert(
+            &mut txn,
+            &NewAgentThread::builder()
+                .stage(AgentThreadStage::Managed)
+                .driving_task(DrivingTaskRef::Managed(run_key))
+                .run_claim_token(Some(token))
+                .format_version(AGENT_THREAD_FORMAT_VERSION)
+                .build(),
+        )
+        .await
+        .expect("insert managed thread");
+
+    assert!(
+        PgAgentThreadRepository
+            .holds_managed_claim(&mut txn, run_key, token)
+            .await
+            .expect("held"),
+        "the current token holds the managed lease",
+    );
+    assert!(
+        !PgAgentThreadRepository
+            .holds_managed_claim(&mut txn, run_key, uuid::Uuid::new_v4())
+            .await
+            .expect("stale"),
+        "a stale token misses the managed lease",
+    );
+    assert!(
+        !PgAgentThreadRepository
+            .holds_managed_claim(&mut txn, RunJobId::new(), token)
+            .await
+            .expect("unknown run"),
+        "an unknown run key misses",
+    );
 }
 
 // ---------------------------------------------------------------------------
