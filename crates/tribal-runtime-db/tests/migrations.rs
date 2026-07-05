@@ -6,7 +6,7 @@ mod support;
 use sqlx::Row;
 
 #[tokio::test]
-async fn migrations_apply_from_empty_to_head_and_are_idempotent() {
+async fn test_migrations_apply_from_empty_to_head_and_are_idempotent() {
     let db = support::provision().await;
 
     // The schema is present: both job-plane tables exist.

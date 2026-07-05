@@ -112,7 +112,7 @@ fn target(claimed: &ClaimedJob, keys: &[&str]) -> TeardownTarget {
 }
 
 #[tokio::test]
-async fn a_run_whose_holds_have_resolved_tears_down_and_acks_every_key() {
+async fn test_a_run_whose_holds_have_resolved_tears_down_and_acks_every_key() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.unwrap();
     let claimed = enqueue_and_claim(&mut conn, "account_a", "torn-down").await;
@@ -144,7 +144,7 @@ async fn a_run_whose_holds_have_resolved_tears_down_and_acks_every_key() {
 }
 
 #[tokio::test]
-async fn a_live_hold_holds_the_run_short_of_terminal_and_acks_nothing() {
+async fn test_a_live_hold_holds_the_run_short_of_terminal_and_acks_nothing() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.unwrap();
     let claimed = enqueue_and_claim(&mut conn, "account_a", "still-live").await;
@@ -173,7 +173,7 @@ async fn a_live_hold_holds_the_run_short_of_terminal_and_acks_nothing() {
 }
 
 #[tokio::test]
-async fn teardown_waits_for_both_a_dispatched_and_an_undispatched_hold_to_resolve() {
+async fn test_teardown_waits_for_both_a_dispatched_and_an_undispatched_hold_to_resolve() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.unwrap();
     let claimed = enqueue_and_claim(&mut conn, "account_a", "split").await;
@@ -212,7 +212,7 @@ async fn teardown_waits_for_both_a_dispatched_and_an_undispatched_hold_to_resolv
 }
 
 #[tokio::test]
-async fn a_stale_claim_token_aborts_teardown_before_any_ack() {
+async fn test_a_stale_claim_token_aborts_teardown_before_any_ack() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.unwrap();
     let claimed = enqueue_and_claim(&mut conn, "account_a", "reclaimed").await;

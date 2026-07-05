@@ -26,7 +26,7 @@ fn job(kind: JobKind, key: &str) -> JobEnqueue {
 }
 
 #[tokio::test]
-async fn an_enqueued_job_crossing_is_claimable_and_mints_an_account_scoped_grant() {
+async fn test_an_enqueued_job_crossing_is_claimable_and_mints_an_account_scoped_grant() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.unwrap();
 
@@ -52,7 +52,7 @@ async fn an_enqueued_job_crossing_is_claimable_and_mints_an_account_scoped_grant
 }
 
 #[tokio::test]
-async fn a_cap_sync_push_governs_the_next_claims_admission() {
+async fn test_a_cap_sync_push_governs_the_next_claims_admission() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.unwrap();
 

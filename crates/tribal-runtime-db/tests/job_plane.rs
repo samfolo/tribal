@@ -56,7 +56,7 @@ async fn running_count(conn: &mut PgConnection, tenant: &str) -> i32 {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn enqueue_dedups_on_idempotency_key() {
+async fn test_enqueue_dedups_on_idempotency_key() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.expect("acquire a connection");
     let first = RUN_JOB
@@ -97,7 +97,7 @@ async fn enqueue_dedups_on_idempotency_key() {
 }
 
 #[tokio::test]
-async fn an_enqueued_job_is_claimable_with_no_schedule() {
+async fn test_an_enqueued_job_is_claimable_with_no_schedule() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.expect("acquire a connection");
     enqueue(&mut conn, "account_a", "job-1").await;
@@ -117,7 +117,7 @@ async fn an_enqueued_job_is_claimable_with_no_schedule() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_concurrent_claimers_at_cap_minus_one_admit_exactly_one() {
+async fn test_two_concurrent_claimers_at_cap_minus_one_admit_exactly_one() {
     let db = support::provision().await;
     let pool = db.pool().clone();
     let tenant = "account_a";
@@ -175,7 +175,7 @@ async fn two_concurrent_claimers_at_cap_minus_one_admit_exactly_one() {
 }
 
 #[tokio::test]
-async fn a_saturated_tenant_is_skipped_for_another_tenants_claimable_job() {
+async fn test_a_saturated_tenant_is_skipped_for_another_tenants_claimable_job() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
@@ -213,7 +213,7 @@ async fn a_saturated_tenant_is_skipped_for_another_tenants_claimable_job() {
 }
 
 #[tokio::test]
-async fn two_tenants_with_headroom_drain_by_age() {
+async fn test_two_tenants_with_headroom_drain_by_age() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
@@ -244,7 +244,7 @@ async fn two_tenants_with_headroom_drain_by_age() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn a_cap_sync_updates_the_cap_and_a_missing_slot_admits_at_default() {
+async fn test_a_cap_sync_updates_the_cap_and_a_missing_slot_admits_at_default() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
@@ -288,7 +288,7 @@ async fn a_cap_sync_updates_the_cap_and_a_missing_slot_admits_at_default() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn a_lost_lease_write_is_refused_by_the_token_fence_while_a_new_runner_holds_it() {
+async fn test_a_lost_lease_write_is_refused_by_the_token_fence_while_a_new_runner_holds_it() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
@@ -368,7 +368,7 @@ async fn a_lost_lease_write_is_refused_by_the_token_fence_while_a_new_runner_hol
 }
 
 #[tokio::test]
-async fn running_never_leaks_when_a_claimed_job_is_reclaimed() {
+async fn test_running_never_leaks_when_a_claimed_job_is_reclaimed() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
@@ -398,7 +398,7 @@ async fn running_never_leaks_when_a_claimed_job_is_reclaimed() {
 }
 
 #[tokio::test]
-async fn leaving_running_releases_the_slot_under_the_token_fence() {
+async fn test_leaving_running_releases_the_slot_under_the_token_fence() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
@@ -435,7 +435,7 @@ async fn leaving_running_releases_the_slot_under_the_token_fence() {
 }
 
 #[tokio::test]
-async fn waking_a_suspended_job_requeues_it_for_a_fresh_claim() {
+async fn test_waking_a_suspended_job_requeues_it_for_a_fresh_claim() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.expect("acquire a connection");
 
@@ -498,7 +498,7 @@ async fn waking_a_suspended_job_requeues_it_for_a_fresh_claim() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn an_account_purge_removes_every_row_for_that_account_only() {
+async fn test_an_account_purge_removes_every_row_for_that_account_only() {
     let db = support::provision().await;
     let mut conn = db.pool().acquire().await.expect("acquire a connection");
 

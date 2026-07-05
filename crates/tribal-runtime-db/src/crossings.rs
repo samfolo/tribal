@@ -87,14 +87,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_job_kind_maps_to_a_schema_kind() {
+    fn test_every_job_kind_maps_to_a_schema_kind() {
         assert_eq!(kind_str(JobKind::Consolidate), "consolidate");
         assert_eq!(kind_str(JobKind::Cron), "cron");
         assert_eq!(kind_str(JobKind::Probe), "probe");
     }
 
     #[test]
-    fn a_cap_beyond_the_column_saturates_rather_than_wrapping() {
+    fn test_a_cap_beyond_the_column_saturates_rather_than_wrapping() {
         assert_eq!(cap_to_i32(0), 0);
         assert_eq!(cap_to_i32(8), 8);
         assert_eq!(cap_to_i32(u32::MAX), i32::MAX);

@@ -83,7 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn over_cap_hard_stops_to_a_suspension_with_a_give_up_deadline() {
+    fn test_over_cap_hard_stops_to_a_suspension_with_a_give_up_deadline() {
         let now = instant();
         let disposition = cap_disposition(
             &GatewayError::OverCap,
@@ -100,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn over_cap_throttle_queues_to_a_requeue() {
+    fn test_over_cap_throttle_queues_to_a_requeue() {
         let disposition = cap_disposition(
             &GatewayError::OverCap,
             CapBehaviour::ThrottleQueue,
@@ -111,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn a_not_entitled_refusal_fails_the_run_whatever_the_cap_setting() {
+    fn test_a_not_entitled_refusal_fails_the_run_whatever_the_cap_setting() {
         for behaviour in [CapBehaviour::HardStop, CapBehaviour::ThrottleQueue] {
             let disposition = cap_disposition(
                 &GatewayError::NotEntitled,
@@ -124,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unpriceable_refusal_fails_the_run() {
+    fn test_an_unpriceable_refusal_fails_the_run() {
         let disposition = cap_disposition(
             &GatewayError::Unpriceable,
             CapBehaviour::HardStop,
@@ -135,7 +135,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bracket_owned_refusal_leaves_the_run_untouched() {
+    fn test_a_bracket_owned_refusal_leaves_the_run_untouched() {
         for error in [
             GatewayError::InFlight {
                 retry_after_ms: 500,
@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_gives_up_only_once_the_deadline_has_passed() {
+    fn test_a_run_gives_up_only_once_the_deadline_has_passed() {
         let give_up_at = instant();
         assert!(!past_give_up(give_up_at, give_up_at - Duration::seconds(1)));
         assert!(past_give_up(give_up_at, give_up_at));
