@@ -10,8 +10,8 @@ use chrono::Duration;
 use sqlx::PgConnection;
 use tokio::sync::Barrier;
 use tribal_runtime_db::{
-    NewRunJob, PgRunJobRepository, PgTenantSlotRepository, PostRunningState, RunJobRepository,
-    RunJobState, TenantSlotRepository, WriteOutcome,
+    NewRunJob, PgRunJobRepository, PgTenantSlotRepository, PostRunningState, RunJobId,
+    RunJobRepository, RunJobState, TenantSlotRepository, WriteOutcome,
 };
 
 const RUN_JOB: PgRunJobRepository = PgRunJobRepository;
@@ -94,6 +94,55 @@ async fn test_enqueue_dedups_on_idempotency_key() {
         tribal_runtime_db::EnqueueOutcome::Deduplicated(_)
     ));
     assert_eq!(first.id(), second.id(), "a re-enqueue returns the same job");
+}
+
+#[tokio::test]
+async fn test_cancel_requested_reads_the_intent_the_writer_sets() {
+    let db = support::provision().await;
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
+    let id = RUN_JOB
+        .enqueue(
+            &mut conn,
+            NewRunJob {
+                account_id: "account_cancel".to_owned(),
+                kind: "probe".to_owned(),
+                payload: serde_json::json!({}),
+                idempotency_key: "cancel-read".to_owned(),
+                priority: 0,
+            },
+        )
+        .await
+        .expect("enqueue")
+        .id();
+
+    assert!(
+        !RUN_JOB
+            .cancel_requested(&mut conn, id)
+            .await
+            .expect("read the fresh flag"),
+        "a fresh job carries no cancel intent",
+    );
+    assert!(
+        !RUN_JOB
+            .cancel_requested(&mut conn, RunJobId::new())
+            .await
+            .expect("read a vanished job"),
+        "a vanished job reads as not cancelled",
+    );
+
+    assert!(
+        RUN_JOB
+            .request_cancel(&mut conn, id)
+            .await
+            .expect("request the cancel"),
+    );
+    assert!(
+        RUN_JOB
+            .cancel_requested(&mut conn, id)
+            .await
+            .expect("read the set flag"),
+        "the reader observes the intent the writer set",
+    );
 }
 
 #[tokio::test]

@@ -221,6 +221,15 @@ pub trait RunJobRepository {
         id: RunJobId,
     ) -> Result<bool, RuntimeDbError>;
 
+    /// Reads a job's durable cancel intent, the flag a running worker polls
+    /// beside its heartbeat and reads again on adopting a swept-awake job.
+    /// A vanished job reads as not cancelled.
+    async fn cancel_requested(
+        &self,
+        conn: &mut PgConnection,
+        id: RunJobId,
+    ) -> Result<bool, RuntimeDbError>;
+
     /// Wakes a suspended job back to `queued`, so a fresh claim resumes it under
     /// a new lease. The resolving signal — a period rollover, a top-up, a backoff
     /// timer — drives this; a job not currently suspended is left untouched (a
@@ -460,6 +469,23 @@ impl RunJobRepository for PgRunJobRepository {
             source,
         })?;
         Ok(updated.is_some())
+    }
+
+    async fn cancel_requested(
+        &self,
+        conn: &mut PgConnection,
+        id: RunJobId,
+    ) -> Result<bool, RuntimeDbError> {
+        let flag: Option<bool> =
+            sqlx::query_scalar("SELECT cancel_requested FROM run_job WHERE id = $1")
+                .bind(id.to_string())
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(|source| RuntimeDbError::QueryFailed {
+                    context: "reading a cancel intent".to_owned(),
+                    source,
+                })?;
+        Ok(flag.unwrap_or(false))
     }
 
     async fn wake(&self, conn: &mut PgConnection, id: RunJobId) -> Result<bool, RuntimeDbError> {
