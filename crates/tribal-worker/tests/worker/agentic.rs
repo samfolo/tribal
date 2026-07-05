@@ -12,8 +12,8 @@ use tribal_db::{
     PgAgentThreadRepository, PgItemObservationRepository, PromptVersionRepository,
 };
 use tribal_domain::{
-    AgentThreadRecord, AgentThreadRecordKind, AgentThreadStatus, AgentThreadSuspension, PromptClass,
-    PromptRole, PromptStage, PromptVersionId, StageExecutorKind, TriageOutcome,
+    AgentThreadRecord, AgentThreadRecordKind, AgentThreadStatus, AgentThreadSuspension,
+    PromptClass, PromptRole, PromptStage, PromptVersionId, StageExecutorKind, TriageOutcome,
 };
 use tribal_test_utils::{
     a_new_knowledge_item, a_new_token_usage, a_tool_call_response, insert_embedding_for_profile,
@@ -207,7 +207,10 @@ async fn seed_relation_loop_prompts(conn: &mut sqlx::PgConnection) -> FixedAgent
 /// worker: the model submits a duplicate decision referencing an id from
 /// its opening context, and the commit lands the observation, the typed
 /// submission record, and the completed thread in one consistent shape.
-#[expect(clippy::too_many_lines, reason = "end-to-end scenario reads as one linear narrative")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario reads as one linear narrative"
+)]
 #[tokio::test]
 async fn test_the_loop_executor_completes_a_triage_job_end_to_end() {
     let ctx = TestDb::new().await;
@@ -394,7 +397,10 @@ async fn test_the_loop_executor_completes_a_triage_job_end_to_end() {
 /// suspends at the bracket before any call, and a wake under restored
 /// headroom resumes it to completion: the shared admission contract on
 /// the default executor.
-#[expect(clippy::too_many_lines, reason = "end-to-end scenario reads as one linear narrative")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario reads as one linear narrative"
+)]
 #[tokio::test]
 async fn test_a_budgeted_one_shot_suspends_pre_call_and_resumes() {
     let ctx = TestDb::new().await;

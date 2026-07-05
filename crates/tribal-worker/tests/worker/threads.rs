@@ -392,7 +392,10 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
 /// Suspend-versus-cancel converges in both orderings: an intent written
 /// before the suspend refuses the suspend at its boundary, and an intent
 /// written after it is honoured by the sweep's cancel fallback.
-#[expect(clippy::too_many_lines, reason = "end-to-end scenario reads as one linear narrative")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario reads as one linear narrative"
+)]
 #[tokio::test]
 async fn test_suspend_versus_cancel_converges_in_both_orderings() {
     let ctx = TestDb::new().await;

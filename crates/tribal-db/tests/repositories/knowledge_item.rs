@@ -5,8 +5,7 @@ use tribal_db::{
 };
 use tribal_domain::{
     Confidence, EpisodeId, GitRemote, JobOutcome, JobStatus, KnowledgeItem, KnowledgeItemId,
-    KnowledgeKind,
-    PrincipalId, ProjectId, RelationBatchId, RelationKind,
+    KnowledgeKind, PrincipalId, ProjectId, RelationBatchId, RelationKind,
 };
 use tribal_test_utils::{
     TestDb, a_new_job, a_new_knowledge_item, a_new_principal, a_new_project, a_new_prompt_version,
