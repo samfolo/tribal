@@ -59,8 +59,8 @@ tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
 
-tribal-auth.workspace = true
 tribal-agent-runtime.workspace = true
+tribal-auth.workspace = true
 tribal-common.workspace = true
 tribal-config = { workspace = true, features = ["schema"] }
 tribal-db.workspace = true
