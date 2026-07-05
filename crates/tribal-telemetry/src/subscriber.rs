@@ -28,7 +28,7 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use tokio::sync::broadcast;
 use tracing::subscriber::set_global_default;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
-use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
+use tracing_subscriber::{Registry, fmt, layer::SubscriberExt};
 use tribal_config::{FileRotation, LogFormat, LogOutput, LoggingConfig, TelemetryConfig};
 use tribal_wire::control::ControlEvent;
 
@@ -40,6 +40,7 @@ use crate::{
     metrics::Metrics,
     otlp,
     recorder::{MetricsRecorder, OtelMetricsRecorder, noop_recorder},
+    reload::{LogFilterHandle, reloadable_env_filter},
 };
 
 fn rotation_from(file_rotation: FileRotation) -> Rotation {
@@ -58,7 +59,8 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 ///
 /// Builds a layered subscriber stack based on the given configuration:
 ///
-/// 1. **Filter layer** — `EnvFilter` parsed from `logging.level`.
+/// 1. **Filter layer** — `EnvFilter` parsed from `logging.level`, mounted
+///    behind a reload layer so the level swaps live without re-initialising.
 /// 2. **Format layer** — JSON or pretty, depending on `logging.format`.
 /// 3. **Output layer** — stderr or rolling file, depending on `logging.output`.
 /// 4. **OpenTelemetry layer** — when `telemetry.enabled` is true, spans
@@ -103,14 +105,17 @@ pub fn init_subscriber(
     // No control plane: capture into a ring nobody reads and publish to a
     // detached bus. The log-capture layer is cheap and uniform across callers.
     let (events, _) = broadcast::channel(1);
-    let (guard, recorder, _ring) = init_subscriber_with_log_bridge(logging, telemetry, events)?;
+    let (guard, recorder, _ring, _log_filter) =
+        init_subscriber_with_log_bridge(logging, telemetry, events)?;
     Ok((guard, recorder))
 }
 
 /// Initialises the global tracing subscriber, additionally bridging captured
 /// log lines to the control plane: each admitted line lands in the returned
 /// [`LogRing`] (answering `logs.tail`) and publishes as a `logs.line` event on
-/// `control_events` (feeding a subscribed client live).
+/// `control_events` (feeding a subscribed client live). The returned
+/// [`LogFilterHandle`] swaps the level filter live — the `logging.level`
+/// hot-reload substrate.
 ///
 /// This is [`init_subscriber`] plus the bridge; see it for the layer stack and
 /// the full error contract.
@@ -122,7 +127,15 @@ pub fn init_subscriber_with_log_bridge(
     logging: &LoggingConfig,
     telemetry: &TelemetryConfig,
     control_events: broadcast::Sender<ControlEvent>,
-) -> Result<(TelemetryGuard, Arc<dyn MetricsRecorder>, LogRing), TelemetryError> {
+) -> Result<
+    (
+        TelemetryGuard,
+        Arc<dyn MetricsRecorder>,
+        LogRing,
+        LogFilterHandle,
+    ),
+    TelemetryError,
+> {
     if INITIALISED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -147,13 +160,16 @@ fn try_init_subscriber(
     logging: &LoggingConfig,
     telemetry: &TelemetryConfig,
     control_events: broadcast::Sender<ControlEvent>,
-) -> Result<(TelemetryGuard, Arc<dyn MetricsRecorder>, LogRing), TelemetryError> {
-    let env_filter = EnvFilter::try_new(&logging.level).map_err(|source| {
-        TelemetryError::InvalidFilterDirective {
-            directive: logging.level.clone(),
-            source,
-        }
-    })?;
+) -> Result<
+    (
+        TelemetryGuard,
+        Arc<dyn MetricsRecorder>,
+        LogRing,
+        LogFilterHandle,
+    ),
+    TelemetryError,
+> {
+    let (filter_layer, log_filter) = reloadable_env_filter(&logging.level)?;
 
     // Build writer and guard based on output destination.
     let (writer, guard) = match logging.output {
@@ -256,7 +272,7 @@ fn try_init_subscriber(
     match logging.format {
         LogFormat::Json => {
             let subscriber = Registry::default()
-                .with(env_filter)
+                .with(filter_layer)
                 .with(otel_layer)
                 .with(log_layer)
                 .with(
@@ -272,7 +288,7 @@ fn try_init_subscriber(
         }
         LogFormat::Pretty => {
             let subscriber = Registry::default()
-                .with(env_filter)
+                .with(filter_layer)
                 .with(otel_layer)
                 .with(log_layer)
                 .with(fmt::layer().pretty().with_writer(writer).with_target(true));
@@ -299,6 +315,7 @@ fn try_init_subscriber(
         TelemetryGuard::new(guard, tracer_provider, meter_provider),
         recorder,
         log_ring,
+        log_filter,
     ))
 }
 
