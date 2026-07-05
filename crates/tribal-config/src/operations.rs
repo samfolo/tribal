@@ -515,7 +515,7 @@ mod tests {
             )
             .unwrap()
             .effect;
-            assert_eq!(effect, WriteEffect::NeedsRestart);
+            assert_eq!(effect, WriteEffect::Live);
 
             // The loader reads the persisted value back.
             let reloaded = crate::load_config(path.to_str().unwrap(), None, None).unwrap();
@@ -631,11 +631,12 @@ mod tests {
                 },
             );
 
-            // A key the flag did not set is unshadowed by the CLI layer.
+            // A key the flag did not set is unshadowed by the CLI layer: the
+            // hot key reports live, not shadowed.
             let unshadowed = set(&base_config(), &path, "logging.level", json!("debug"), &cli)
                 .unwrap()
                 .effect;
-            assert_eq!(unshadowed, WriteEffect::NeedsRestart);
+            assert_eq!(unshadowed, WriteEffect::Live);
             Ok(())
         });
     }

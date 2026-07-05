@@ -64,7 +64,8 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
         | ValidationError::NonLoopbackDcrConflict
         | ValidationError::InvalidCredentialName { .. }
         | ValidationError::DuplicateCredentialEndpoint { .. }
-        | ValidationError::TelemetryFileExportRequiresEnabled => None,
+        | ValidationError::TelemetryFileExportRequiresEnabled
+        | ValidationError::LogFilterMalformed { .. } => None,
     }
 }
 

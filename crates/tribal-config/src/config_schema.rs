@@ -72,8 +72,8 @@ pub struct ConfigSchema {
 /// Total, with [`HOT_KEYS`], over the structural schema's fixed scalar leaves:
 /// a leaf in neither list classifies [`ReloadClass::Unclassified`], which
 /// `test_no_leaf_is_unclassified` forbids — so a newly added field fails the
-/// suite until it is placed here (or promoted to `HOT_KEYS`). v1 places every
-/// key here; a key joins `HOT_KEYS` only once its live-reload substrate exists.
+/// suite until it is placed here (or promoted to `HOT_KEYS`). A key moves to
+/// `HOT_KEYS` only once its live-reload substrate exists.
 const RESTART_KEYS: &[&str] = &[
     "agents.extraction.execution_deadline_seconds",
     "agents.extraction.executor",
@@ -132,7 +132,6 @@ const RESTART_KEYS: &[&str] = &[
     "logging.file_rotation",
     "logging.format",
     "logging.include_llm_content",
-    "logging.level",
     "logging.output",
     "oauth.access_token_ttl_hours",
     "oauth.authorization_code_ttl_seconds",
@@ -170,12 +169,11 @@ const RESTART_KEYS: &[&str] = &[
 
 /// Every fixed configuration leaf that reloads live, without a restart.
 ///
-/// The promotion rule (roadmap A7): a key joins this list only once a substrate
-/// reloads it live in-process, and promoting it obliges a test proving it does —
-/// so a `Hot` classification always names a capability that exists, never an
-/// aspiration. Empty in v1: nothing in `TribalConfig` has a live-reload
-/// substrate, so every key is `RequiresRestart` and no write reports `Live`.
-const HOT_KEYS: &[&str] = &[];
+/// The promotion rule: a key joins this list only once a substrate reloads it
+/// live in-process, and promoting it obliges a test proving it does — so a
+/// `Hot` classification always names a capability that exists, never an
+/// aspiration. The list stays exactly as large as its substrates.
+const HOT_KEYS: &[&str] = &["logging.level"];
 
 /// Classifies how a write to `path` takes effect. A leaf in neither
 /// classification list is [`ReloadClass::Unclassified`]. This is the source
@@ -431,6 +429,14 @@ mod classifier_tests {
         for &key in HOT_KEYS {
             assert_eq!(reload_class(key), ReloadClass::Hot);
         }
+    }
+
+    /// Pins the exact hot membership: a key joins only beside its live-apply
+    /// substrate and the test proving liveness, so an aspirational promotion
+    /// fails here first.
+    #[test]
+    fn test_hot_keys_membership_is_exactly_logging_level() {
+        assert_eq!(HOT_KEYS, &["logging.level"]);
     }
 }
 

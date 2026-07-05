@@ -104,6 +104,7 @@ impl ControlPlane {
             .map_err(fs_error(&socket_path))?
             .uid();
 
+        let config = context.config_snapshot();
         let descriptor = RuntimeDescriptor {
             socket_path: socket_path.clone(),
             protocol_version: CONTROL_CONTRACT_VERSION,
@@ -111,8 +112,8 @@ impl ControlPlane {
             instance_id: context.instance_id.to_string(),
             binary_version: context.binary_version.to_string(),
             supervised: context.supervised,
-            transport: context.config.server.transport.to_string(),
-            bind_address: listening_bind_address(&context.config),
+            transport: config.server.transport.to_string(),
+            bind_address: listening_bind_address(&config),
             config_path: context.config_path.clone(),
         };
         descriptor.write_atomically(&descriptor_path)?;
@@ -433,10 +434,15 @@ mod tests {
         // and `resolve_principal` treats its refusal as "no principal", so the
         // transport tests need no live database.
         let (events, _) = broadcast::channel(super::super::EVENT_BUS_CAPACITY);
+        // The layer is leaked so the handle's subscriber never reads as gone;
+        // these tests reach no hot write, so the filter itself is unobserved.
+        let (filter_layer, log_filter) =
+            tribal_telemetry::reloadable_env_filter("info").expect("the directive parses");
+        std::mem::forget(filter_layer);
         Arc::new(ControlContext {
-            config: Arc::new(TribalConfig::minimum_valid(
+            config: tokio::sync::watch::Sender::new(Arc::new(TribalConfig::minimum_valid(
                 "postgres://user:pass@localhost:5432/tribal",
-            )),
+            ))),
             config_path: PathBuf::from("/tmp/tribal.yaml"),
             cli_shadow: CliShadow::default(),
             self_write: SelfWriteSentinel::default(),
@@ -444,6 +450,7 @@ mod tests {
             pool: lazy_pool(),
             events,
             log_ring: LogRing::new(16),
+            log_filter,
             project: None,
             cancellation_token,
             started_at: Instant::now(),
