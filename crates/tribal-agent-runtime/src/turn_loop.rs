@@ -28,8 +28,8 @@ use sqlx::PgConnection;
 use tokio::sync::watch;
 use tracing::Instrument;
 use tribal_db::{
-    AgentThreadRecordRepository, AgentThreadRepository, DbError, NewAgentThreadRecord,
-    PgAgentThreadRecordRepository, PgAgentThreadRepository, PgTaskRepository,
+    AgentThreadRecordRepository, AgentThreadRepository, DbError, DrivingTaskRef,
+    NewAgentThreadRecord, PgAgentThreadRecordRepository, PgAgentThreadRepository, PgTaskRepository,
     PgTokenUsageRepository, TaskRepository, TokenUsageRepository,
 };
 use tribal_domain::{
@@ -1390,6 +1390,54 @@ async fn wait_for_cancel(cancel: &mut watch::Receiver<bool>) -> Result<(), Agent
 // The per-turn commits
 // ---------------------------------------------------------------------------
 
+/// The transaction-participating core an assistant-message commit shares:
+/// the claim guard, the thread-row lock, the seq derivation, and the
+/// `AssistantMessage` append. Runs inside the caller's transaction (no
+/// begin, no commit), so the product turn keeps its ledger and progress
+/// bundles under one commit and a managed call commits the bare record.
+/// Returns the appended record and the locked thread row, whose spend
+/// projection the product caller accumulates onto.
+async fn commit_assistant_record(
+    txn: &mut PgConnection,
+    thread: &AgentThread,
+    claim: &DrivingClaim,
+    content: serde_json::Value,
+    usage: serde_json::Value,
+) -> Result<(AgentThreadRecord, AgentThread), AgentRuntimeError> {
+    claim.require(txn).await?;
+    let current = PgAgentThreadRepository
+        .lock(txn, thread.id())
+        .await
+        .map_err(|source| AgentRuntimeError::database("locking the thread for the turn", source))?
+        .ok_or_else(|| match claim.driving_task {
+            DrivingTaskRef::Stage(task_id) => AgentRuntimeError::ThreadMissing { task_id },
+            DrivingTaskRef::Driver(_) | DrivingTaskRef::Managed(_) => AgentRuntimeError::database(
+                "locking the thread for the turn",
+                DbError::NotFound {
+                    entity: "agent_thread",
+                    id: thread.id().to_string(),
+                },
+            ),
+        })?;
+    let seq = next_seq(txn, thread).await?;
+    let record = PgAgentThreadRecordRepository
+        .append(
+            txn,
+            &NewAgentThreadRecord::builder()
+                .thread_id(thread.id())
+                .seq(seq)
+                .kind(AgentThreadRecordKind::AssistantMessage)
+                .content(content)
+                .usage(Some(usage))
+                .trace_id(current_trace_id())
+                .span_id(current_span_id())
+                .build(),
+        )
+        .await
+        .map_err(|source| AgentRuntimeError::database("committing the assistant record", source))?;
+    Ok((record, current))
+}
+
 /// Commits one turn's assistant record: the record with its usage, the
 /// per-turn ledger link (constrained to the single most-recent matching
 /// row), the spend projection, and the driving task's progress reset:
@@ -1417,30 +1465,9 @@ async fn commit_assistant_turn(
         .map_err(|source| serialisation(deps.thread, "the turn's usage", source))?;
 
     let mut txn = begin(conn, "beginning the assistant-turn transaction").await?;
-    guard_claim(&mut txn, deps).await?;
-    let current = PgAgentThreadRepository
-        .lock(&mut txn, deps.thread.id())
-        .await
-        .map_err(|source| AgentRuntimeError::database("locking the thread for the turn", source))?
-        .ok_or(AgentRuntimeError::ThreadMissing {
-            task_id: deps.task_id,
-        })?;
-    let seq = next_seq(&mut txn, deps.thread).await?;
-    let record = PgAgentThreadRecordRepository
-        .append(
-            &mut txn,
-            &NewAgentThreadRecord::builder()
-                .thread_id(deps.thread.id())
-                .seq(seq)
-                .kind(AgentThreadRecordKind::AssistantMessage)
-                .content(content)
-                .usage(Some(usage))
-                .trace_id(current_trace_id())
-                .span_id(current_span_id())
-                .build(),
-        )
-        .await
-        .map_err(|source| AgentRuntimeError::database("committing the assistant record", source))?;
+    let claim = DrivingClaim::stage(deps.task_id, deps.claim_token);
+    let (record, current) =
+        commit_assistant_record(&mut txn, deps.thread, &claim, content, usage).await?;
 
     PgTokenUsageRepository
         .link_completion_to_record(
@@ -1474,6 +1501,39 @@ async fn commit_assistant_turn(
     reset_progress(&mut txn, deps).await?;
     commit(txn, "committing the assistant-turn transaction").await?;
     Ok((record, calls))
+}
+
+/// Commits a managed run's metered call: the guarded `AssistantMessage`
+/// append in its own transaction, with none of the product turn's
+/// task-plane bundles (a managed run's money lives in the gateway's
+/// reserve-and-settle, not the execution-spend projection). Toolless in
+/// v1: the committed record carries the response text and its usage, and
+/// the returned record is the committed tail a resume re-derives from.
+///
+/// # Errors
+///
+/// Returns [`AgentRuntimeError::LeaseLost`] when the managed claim guard
+/// misses, [`AgentRuntimeError::ContentSerialisation`] on a format fault,
+/// and [`AgentRuntimeError::Database`] on database errors.
+pub async fn commit_model_call(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+    claim: &DrivingClaim,
+    response: &CompletionResponse,
+) -> Result<AgentThreadRecord, AgentRuntimeError> {
+    let content = serde_json::to_value(AssistantContent {
+        text: response.text.clone(),
+        tool_calls: vec![],
+    })
+    .map_err(|source| serialisation(thread, "the assistant content", source))?;
+    let usage = serde_json::to_value(RecordedUsage::from(response))
+        .map_err(|source| serialisation(thread, "the call's usage", source))?;
+
+    let mut txn = begin(conn, "beginning the managed model-call transaction").await?;
+    let (record, _current) =
+        commit_assistant_record(&mut txn, thread, claim, content, usage).await?;
+    commit(txn, "committing the managed model-call transaction").await?;
+    Ok(record)
 }
 
 /// What a fenced tool-result commit concluded.

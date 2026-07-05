@@ -19,6 +19,7 @@ mod driver;
 mod extraction;
 mod fixtures;
 mod lifecycle;
+mod managed;
 mod relation;
 mod threads;
 mod token_usage;
