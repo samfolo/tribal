@@ -413,7 +413,7 @@ mod tests {
         PgAgentThreadRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
         PgTaskRepository, PrincipalRepository, ProjectRepository, TaskRepository,
     };
-    use tribal_domain::{AGENT_THREAD_FORMAT_VERSION, GitRemote, TaskType};
+    use tribal_domain::{AGENT_THREAD_FORMAT_VERSION, AgentThreadStage, GitRemote, TaskType};
     use tribal_test_utils::{
         TestDb, a_new_job, a_new_knowledge_item, a_new_principal, a_new_project,
         a_new_prompt_version, a_new_system_fingerprint, a_new_task, an_agent_definition,
@@ -756,10 +756,10 @@ mod tests {
             .insert(
                 conn,
                 &NewAgentThread::builder()
-                    .pipeline_stage(TaskType::Relation)
-                    .binding_version_id(binding.id())
+                    .stage(AgentThreadStage::Product(TaskType::Relation))
+                    .binding_version_id(Some(binding.id()))
                     .driving_task(DrivingTaskRef::Stage(task.id()))
-                    .principal_id(principal.id())
+                    .principal_id(Some(principal.id()))
                     .format_version(AGENT_THREAD_FORMAT_VERSION)
                     .build(),
             )

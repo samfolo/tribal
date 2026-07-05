@@ -346,7 +346,12 @@ async fn test_the_loop_executor_completes_a_triage_job_end_to_end() {
         .expect("present");
     assert_eq!(thread.status(), AgentThreadStatus::Completed);
     let binding = PgAgentBindingVersionRepository
-        .find_by_id(&mut conn, thread.binding_version_id())
+        .find_by_id(
+            &mut conn,
+            thread
+                .binding_version_id()
+                .expect("a product thread records its binding"),
+        )
         .await
         .expect("find binding")
         .expect("present");
@@ -656,7 +661,12 @@ async fn test_the_recorded_binding_wins_the_ingest_claim_divergence_window() {
         .expect("find thread")
         .expect("present");
     let recorded = PgAgentBindingVersionRepository
-        .find_by_id(&mut conn, thread.binding_version_id())
+        .find_by_id(
+            &mut conn,
+            thread
+                .binding_version_id()
+                .expect("a product thread records its binding"),
+        )
         .await
         .expect("find binding")
         .expect("present");
@@ -798,7 +808,12 @@ async fn test_the_loop_executor_completes_a_relation_job_end_to_end() {
         .expect("present");
     assert_eq!(thread.status(), AgentThreadStatus::Completed);
     let binding = PgAgentBindingVersionRepository
-        .find_by_id(&mut conn, thread.binding_version_id())
+        .find_by_id(
+            &mut conn,
+            thread
+                .binding_version_id()
+                .expect("a product thread records its binding"),
+        )
         .await
         .expect("find binding")
         .expect("present");
@@ -920,7 +935,12 @@ async fn test_the_loop_executor_completes_an_extraction_job_end_to_end() {
         .expect("present");
     assert_eq!(thread.status(), AgentThreadStatus::Completed);
     let binding = PgAgentBindingVersionRepository
-        .find_by_id(&mut conn, thread.binding_version_id())
+        .find_by_id(
+            &mut conn,
+            thread
+                .binding_version_id()
+                .expect("a product thread records its binding"),
+        )
         .await
         .expect("find binding")
         .expect("present");

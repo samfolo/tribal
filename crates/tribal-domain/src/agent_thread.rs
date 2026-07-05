@@ -371,6 +371,76 @@ impl AgentThreadRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Stage
+// ---------------------------------------------------------------------------
+
+/// The stage a thread executes: a product pipeline stage, or the managed
+/// plane.
+///
+/// The distinction the thread row's `pipeline_stage` once conflated with
+/// [`TaskType`]. `TaskType` stays purely product: the gateway resolves
+/// bindings and endpoints by it, and a managed run never reaches that path.
+/// Serialised as its flat string token, so `managed` joins the product
+/// stages without nesting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AgentThreadStage {
+    /// A product pipeline stage.
+    Product(TaskType),
+    /// The managed plane: a run with no product stage.
+    Managed,
+}
+
+impl AgentThreadStage {
+    /// The database and telemetry token for this stage.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Product(task_type) => task_type.as_str(),
+            Self::Managed => "managed",
+        }
+    }
+
+    /// The product task type, when this is a product stage.
+    #[must_use]
+    pub fn product(self) -> Option<TaskType> {
+        match self {
+            Self::Product(task_type) => Some(task_type),
+            Self::Managed => None,
+        }
+    }
+}
+
+impl std::fmt::Display for AgentThreadStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for AgentThreadStage {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "managed" => Ok(Self::Managed),
+            other => other.parse::<TaskType>().map(Self::Product),
+        }
+    }
+}
+
+impl Serialize for AgentThreadStage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentThreadStage {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let token = String::deserialize(deserializer)?;
+        token.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Thread
 // ---------------------------------------------------------------------------
 
@@ -378,8 +448,11 @@ impl AgentThreadRecord {
 ///
 /// # Invariants
 ///
-/// - Exactly one of `stage_task_id` and `driver_task_id` is set: every
-///   thread has a real driving row for guards to target.
+/// - A product thread has exactly one of `stage_task_id`/`driver_task_id`
+///   set; a managed thread has neither, anchored instead by its `run_key`
+///   column, with the guard targeting the thread row itself.
+/// - `binding_version_id` and `principal_id` are both set for a product
+///   thread and both absent for a managed one, which carries neither.
 /// - `suspension` is set exactly when `status` is `Suspended`.
 /// - `recovery_attempts` accumulates across recovery cycles and never
 ///   resets; it drives the escalating per-cycle backoff.
@@ -393,18 +466,23 @@ pub struct AgentThread {
     /// The parent thread, for delegation lineage.
     #[builder(default)]
     parent_thread_id: Option<AgentThreadId>,
-    /// The pipeline stage this thread executes.
-    pipeline_stage: TaskType,
-    /// The content-addressed binding this thread was admitted under.
-    binding_version_id: AgentBindingVersionId,
+    /// The stage this thread executes: a product pipeline stage, or the
+    /// managed plane.
+    stage: AgentThreadStage,
+    /// The content-addressed binding this thread was admitted under; absent
+    /// for a managed thread, which has none.
+    #[builder(default)]
+    binding_version_id: Option<AgentBindingVersionId>,
     /// The launched stage task driving this thread, when stage-bound.
     #[builder(default)]
     stage_task_id: Option<TaskId>,
     /// The driver-family task driving this thread, when not stage-bound.
     #[builder(default)]
     driver_task_id: Option<AgentDriverTaskId>,
-    /// The principal this run is attributed and metered to.
-    principal_id: PrincipalId,
+    /// The principal this run is attributed and metered to; absent for a
+    /// managed thread's account-level automation.
+    #[builder(default)]
+    principal_id: Option<PrincipalId>,
     /// The job this run is metered to, captured at launch so a reclaimed
     /// driver attributes spend without walking the lineage. Absent for a
     /// thread launched outside a pipeline job.
@@ -456,13 +534,14 @@ impl AgentThread {
         self.parent_thread_id
     }
 
-    /// Returns the pipeline stage this thread executes.
-    pub fn pipeline_stage(&self) -> TaskType {
-        self.pipeline_stage
+    /// Returns the stage this thread executes.
+    pub fn stage(&self) -> AgentThreadStage {
+        self.stage
     }
 
-    /// Returns the binding version this thread was admitted under.
-    pub fn binding_version_id(&self) -> AgentBindingVersionId {
+    /// Returns the binding version this thread was admitted under, when a
+    /// product thread.
+    pub fn binding_version_id(&self) -> Option<AgentBindingVersionId> {
         self.binding_version_id
     }
 
@@ -476,8 +555,8 @@ impl AgentThread {
         self.driver_task_id
     }
 
-    /// Returns the principal this run is attributed to.
-    pub fn principal_id(&self) -> PrincipalId {
+    /// Returns the principal this run is attributed to, when a product thread.
+    pub fn principal_id(&self) -> Option<PrincipalId> {
         self.principal_id
     }
 

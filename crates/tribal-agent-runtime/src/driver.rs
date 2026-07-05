@@ -39,8 +39,9 @@ use tribal_db::{
 };
 use tribal_domain::{
     AgentBindingVersionId, AgentDriverTaskId, AgentDriverTaskKind, AgentThread, AgentThreadId,
-    AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus, AgentThreadSuspension,
-    AgentThreadTerminal, CompletionResponse, JobId, PrincipalId, TaskId, TaskType, span_attrs,
+    AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStage, AgentThreadStatus,
+    AgentThreadSuspension, AgentThreadTerminal, CompletionResponse, JobId, PrincipalId, TaskId,
+    TaskType, span_attrs,
 };
 use tribal_telemetry::{MetricsRecorder, current_span_id, current_trace_id};
 
@@ -188,10 +189,10 @@ pub async fn suspend_with_child(
             &mut txn,
             &NewAgentThread::builder()
                 .parent_thread_id(Some(parent.id()))
-                .pipeline_stage(launch.pipeline_stage)
-                .binding_version_id(launch.binding_version_id)
+                .stage(AgentThreadStage::Product(launch.pipeline_stage))
+                .binding_version_id(Some(launch.binding_version_id))
                 .driving_task(DrivingTaskRef::Driver(driver_task_id))
-                .principal_id(launch.principal_id)
+                .principal_id(Some(launch.principal_id))
                 .job_id(launch.job_id)
                 .format_version(launch.format_version)
                 .build(),

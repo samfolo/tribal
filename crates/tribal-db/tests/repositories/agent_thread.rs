@@ -9,7 +9,7 @@ use tribal_db::{
 };
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentDriverTaskId, AgentDriverTaskKind, AgentDriverTaskState,
-    AgentThread, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus,
+    AgentThread, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStage, AgentThreadStatus,
     AgentThreadSuspension, AgentThreadTerminal, GitRemote, JobId, JobStatus, PrincipalId, TaskId,
     TaskType, TokenUsageStage,
 };
@@ -103,10 +103,10 @@ async fn setup_thread_prerequisites(
         .expect("record binding version");
 
     let new_thread = NewAgentThread::builder()
-        .pipeline_stage(TaskType::Extraction)
-        .binding_version_id(binding.id())
+        .stage(AgentThreadStage::Product(TaskType::Extraction))
+        .binding_version_id(Some(binding.id()))
         .driving_task(DrivingTaskRef::Stage(task.id()))
-        .principal_id(principal.id())
+        .principal_id(Some(principal.id()))
         .format_version(AGENT_THREAD_FORMAT_VERSION)
         .build();
 
@@ -183,7 +183,7 @@ async fn test_thread_inserts_queued_with_stage_driver() {
     assert_eq!(thread.status(), AgentThreadStatus::Queued);
     assert_eq!(thread.stage_task_id(), Some(prerequisites.stage_task_id));
     assert!(thread.driver_task_id().is_none());
-    assert_eq!(thread.principal_id(), prerequisites.principal_id);
+    assert_eq!(thread.principal_id(), Some(prerequisites.principal_id));
     assert_eq!(thread.format_version(), AGENT_THREAD_FORMAT_VERSION);
     assert_eq!(thread.recovery_attempts(), 0);
     assert!(thread.completed_at().is_none());
@@ -249,8 +249,8 @@ async fn test_find_by_job_lists_only_the_jobs_stage_threads() {
         .await
         .expect("record triage binding");
     let mut second_new = prerequisites.new_thread.clone();
-    second_new.pipeline_stage = TaskType::Triage;
-    second_new.binding_version_id = triage_binding.id();
+    second_new.stage = AgentThreadStage::Product(TaskType::Triage);
+    second_new.binding_version_id = Some(triage_binding.id());
     second_new.driving_task = DrivingTaskRef::Stage(second_task.id());
     let thread_a2 = PgAgentThreadRepository
         .insert(&mut txn, &second_new)
@@ -1569,10 +1569,10 @@ async fn test_stuck_relating_scan_keys_on_resolver_liveness() {
         .insert(
             &mut txn,
             &NewAgentThread::builder()
-                .pipeline_stage(TaskType::Relation)
-                .binding_version_id(binding.id())
+                .stage(AgentThreadStage::Product(TaskType::Relation))
+                .binding_version_id(Some(binding.id()))
                 .driving_task(DrivingTaskRef::Stage(prereq.stage_task_id))
-                .principal_id(prereq.principal_id)
+                .principal_id(Some(prereq.principal_id))
                 .format_version(AGENT_THREAD_FORMAT_VERSION)
                 .build(),
         )
@@ -1615,10 +1615,10 @@ async fn test_stuck_relating_scan_keys_on_resolver_liveness() {
             &mut txn,
             &NewAgentThread::builder()
                 .parent_thread_id(Some(thread.id()))
-                .pipeline_stage(TaskType::Relation)
-                .binding_version_id(binding.id())
+                .stage(AgentThreadStage::Product(TaskType::Relation))
+                .binding_version_id(Some(binding.id()))
                 .driving_task(DrivingTaskRef::Driver(driver_task_id))
-                .principal_id(prereq.principal_id)
+                .principal_id(Some(prereq.principal_id))
                 .format_version(AGENT_THREAD_FORMAT_VERSION)
                 .build(),
         )
@@ -1689,10 +1689,10 @@ async fn test_stuck_relating_scan_spares_a_budget_suspended_thread() {
         .insert(
             &mut txn,
             &NewAgentThread::builder()
-                .pipeline_stage(TaskType::Relation)
-                .binding_version_id(binding.id())
+                .stage(AgentThreadStage::Product(TaskType::Relation))
+                .binding_version_id(Some(binding.id()))
                 .driving_task(DrivingTaskRef::Stage(prereq.stage_task_id))
-                .principal_id(prereq.principal_id)
+                .principal_id(Some(prereq.principal_id))
                 .format_version(AGENT_THREAD_FORMAT_VERSION)
                 .build(),
         )

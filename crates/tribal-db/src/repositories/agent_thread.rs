@@ -9,9 +9,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
-    AgentBindingVersionId, AgentDriverTaskId, AgentThread, AgentThreadId, AgentThreadStatus,
-    AgentThreadSuspension, AgentThreadTerminal, ExecutionSpend, JobId, PrincipalId, TaskId,
-    TaskType,
+    AgentBindingVersionId, AgentDriverTaskId, AgentThread, AgentThreadId, AgentThreadStage,
+    AgentThreadStatus, AgentThreadSuspension, AgentThreadTerminal, ExecutionSpend, JobId,
+    PrincipalId, TaskId, TaskType,
 };
 use typed_builder::TypedBuilder;
 
@@ -84,10 +84,14 @@ impl std::fmt::Display for DrivingTaskRef {
 pub struct NewAgentThread {
     #[builder(default)]
     pub parent_thread_id: Option<AgentThreadId>,
-    pub pipeline_stage: TaskType,
-    pub binding_version_id: AgentBindingVersionId,
+    pub stage: AgentThreadStage,
+    /// Absent for a managed thread, which carries no binding.
+    #[builder(default)]
+    pub binding_version_id: Option<AgentBindingVersionId>,
     pub driving_task: DrivingTaskRef,
-    pub principal_id: PrincipalId,
+    /// Absent for a managed thread's account-level automation.
+    #[builder(default)]
+    pub principal_id: Option<PrincipalId>,
     #[builder(default)]
     pub job_id: Option<JobId>,
     /// The serialisation shape of the thread's owned structures.
@@ -399,18 +403,18 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         );
         let row = sqlx::query(&sql)
             .bind(new.parent_thread_id.map(|id| id.inner().to_owned()))
-            .bind(new.pipeline_stage.as_str())
-            .bind(new.binding_version_id.inner())
+            .bind(new.stage.as_str())
+            .bind(new.binding_version_id.map(|id| id.inner().to_owned()))
             .bind(stage_task_id)
             .bind(driver_task_id)
-            .bind(new.principal_id.inner())
+            .bind(new.principal_id.map(|id| id.inner().to_owned()))
             .bind(new.job_id.map(|id| id.inner().to_owned()))
             .bind(i32::try_from(new.format_version).expect(FORMAT_VERSION_OVERFLOW))
             .fetch_one(&mut *conn)
             .await
             .map_err(|e| {
                 try_into_unique_violation(&e).unwrap_or_else(|| DbError::QueryFailed {
-                    context: format!("creating {} thread", new.pipeline_stage),
+                    context: format!("creating {} thread", new.stage),
                     source: e,
                 })
             })?;
@@ -967,14 +971,15 @@ fn map_agent_thread_row(r: &sqlx::postgres::PgRow) -> AgentThread {
             r.get::<Option<uuid::Uuid>, _>("parent_thread_id")
                 .map(AgentThreadId::from),
         )
-        .pipeline_stage(
+        .stage(
             r.get::<String, _>("pipeline_stage")
-                .parse::<TaskType>()
+                .parse::<AgentThreadStage>()
                 .expect(UNKNOWN_STAGE_IN_DB),
         )
-        .binding_version_id(AgentBindingVersionId::from(
-            r.get::<uuid::Uuid, _>("binding_version_id"),
-        ))
+        .binding_version_id(
+            r.get::<Option<uuid::Uuid>, _>("binding_version_id")
+                .map(AgentBindingVersionId::from),
+        )
         .stage_task_id(
             r.get::<Option<uuid::Uuid>, _>("stage_task_id")
                 .map(TaskId::from),
@@ -983,7 +988,10 @@ fn map_agent_thread_row(r: &sqlx::postgres::PgRow) -> AgentThread {
             r.get::<Option<uuid::Uuid>, _>("driver_task_id")
                 .map(AgentDriverTaskId::from),
         )
-        .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
+        .principal_id(
+            r.get::<Option<uuid::Uuid>, _>("principal_id")
+                .map(PrincipalId::from),
+        )
         .job_id(r.get::<Option<uuid::Uuid>, _>("job_id").map(JobId::from))
         .status(
             r.get::<String, _>("status")

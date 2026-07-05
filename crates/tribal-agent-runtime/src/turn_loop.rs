@@ -1882,7 +1882,10 @@ async fn launch_verifier(
     let child = ChildLaunch {
         pipeline_stage: launch.pipeline_stage,
         binding_version_id: launch.binding_version_id,
-        principal_id: deps.thread.principal_id(),
+        principal_id: deps
+            .thread
+            .principal_id()
+            .expect("a product thread carries a principal"),
         // The parent's job, so the child's spend meters to it without a
         // lineage walk.
         job_id: deps.attribution.owner.job_id(),

@@ -2,8 +2,8 @@ use chrono::Utc;
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentBindingVersionId, AgentDriverTaskId, AgentThread,
     AgentThreadId, AgentThreadRecord, AgentThreadRecordId, AgentThreadRecordKind,
-    AgentThreadRecordSeq, AgentThreadStatus, AgentThreadSuspension, JobId, PrincipalId, TaskId,
-    TaskType,
+    AgentThreadRecordSeq, AgentThreadStage, AgentThreadStatus, AgentThreadSuspension, JobId,
+    PrincipalId, TaskId, TaskType,
 };
 
 define_factory! {
@@ -15,11 +15,11 @@ define_factory! {
     pub struct AgentThreadFactory for AgentThread {
         id: AgentThreadId = AgentThreadId::new(),
         parent_thread_id: Option<AgentThreadId> = None,
-        pipeline_stage: TaskType = TaskType::Extraction,
-        binding_version_id: AgentBindingVersionId = AgentBindingVersionId::new(),
+        stage: AgentThreadStage = AgentThreadStage::Product(TaskType::Extraction),
+        binding_version_id: Option<AgentBindingVersionId> = Some(AgentBindingVersionId::new()),
         stage_task_id: Option<TaskId> = Some(TaskId::new()),
         driver_task_id: Option<AgentDriverTaskId> = None,
-        principal_id: PrincipalId = PrincipalId::new(),
+        principal_id: Option<PrincipalId> = Some(PrincipalId::new()),
         job_id: Option<JobId> = None,
         status: AgentThreadStatus = AgentThreadStatus::Queued,
         suspension: Option<AgentThreadSuspension> = None,

@@ -184,14 +184,21 @@ async fn wake_budgets_basis(
     conn: &mut sqlx::PgConnection,
     thread: &AgentThread,
 ) -> serde_json::Value {
+    let binding_version_id = thread
+        .binding_version_id()
+        .expect("a product thread records its binding");
     let executor = match PgAgentBindingVersionRepository
-        .find_by_id(conn, thread.binding_version_id())
+        .find_by_id(conn, binding_version_id)
         .await
     {
         Ok(Some(binding)) => binding.definition().executor,
         Ok(None) | Err(_) => StageExecutorKind::OneShot,
     };
-    let budgets = current_stage_budgets(thread.pipeline_stage(), executor, agents);
+    let stage = thread
+        .stage()
+        .product()
+        .expect("a product thread runs a product stage");
+    let budgets = current_stage_budgets(stage, executor, agents);
     serde_json::to_value(budgets).unwrap_or(serde_json::Value::Null)
 }
 
@@ -320,7 +327,9 @@ mod tests {
         PgAgentThreadRecordRepository, PgTaskRepository, PrincipalRepository, ProjectRepository,
         TaskRepository,
     };
-    use tribal_domain::{AGENT_THREAD_FORMAT_VERSION, AgentThreadRecordKind, GitRemote, TaskType};
+    use tribal_domain::{
+        AGENT_THREAD_FORMAT_VERSION, AgentThreadRecordKind, AgentThreadStage, GitRemote, TaskType,
+    };
     use tribal_test_utils::{
         TestDb, TracingCapture, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
         a_new_system_fingerprint, a_new_task, an_agent_definition, insert_prompt_version,
@@ -400,10 +409,10 @@ mod tests {
             .insert(
                 conn,
                 &NewAgentThread::builder()
-                    .pipeline_stage(TaskType::Extraction)
-                    .binding_version_id(binding.id())
+                    .stage(AgentThreadStage::Product(TaskType::Extraction))
+                    .binding_version_id(Some(binding.id()))
                     .driving_task(DrivingTaskRef::Stage(task.id()))
-                    .principal_id(principal.id())
+                    .principal_id(Some(principal.id()))
                     .format_version(AGENT_THREAD_FORMAT_VERSION)
                     .build(),
             )

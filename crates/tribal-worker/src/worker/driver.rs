@@ -164,7 +164,7 @@ impl Worker {
             "invoke_agent",
             { gen_ai::OPERATION_NAME } = gen_ai::OPERATION_INVOKE_AGENT,
             { gen_ai::CONVERSATION_ID } = %child.id(),
-            { span_attrs::STAGE } = child.pipeline_stage().as_str(),
+            { span_attrs::STAGE } = child.stage().as_str(),
             { span_attrs::EXECUTOR } = StageExecutorKind::OneShot.as_str(),
             { span_attrs::PARENT_THREAD_ID } = child.parent_thread_id().map(|id| id.to_string()),
             { span_attrs::DRIVER_ATTEMPT } = task.attempt(),
@@ -227,8 +227,11 @@ impl Worker {
         // The child runs under the sampling parameters its binding records,
         // the same parameters-follow-binding rule the stage loop obeys, so a
         // resumed child sends what it was admitted under, never a default.
+        let binding_version_id = child
+            .binding_version_id()
+            .expect("a driver child records its binding");
         let binding = PgAgentBindingVersionRepository
-            .find_by_id(&mut conn, child.binding_version_id())
+            .find_by_id(&mut conn, binding_version_id)
             .await
             .map_err(|e| driver_db("loading the child's binding", e))?
             .ok_or_else(|| {
@@ -236,7 +239,7 @@ impl Worker {
                     "loading the child's binding",
                     DbError::NotFound {
                         entity: "agent_binding_version",
-                        id: child.binding_version_id().to_string(),
+                        id: binding_version_id.to_string(),
                     },
                 )
             })?;
@@ -244,10 +247,14 @@ impl Worker {
         // edit that moved the stage's route after the child was admitted
         // would run it under an endpoint its recorded binding does not
         // name; fail terminal before the call, as the stage path does.
+        let child_stage = child
+            .stage()
+            .product()
+            .expect("a driver child runs a product stage");
         guard_binding(
-            child.pipeline_stage().as_str(),
+            child_stage.as_str(),
             binding.definition(),
-            stage_spec(self.stage_specs(), child.pipeline_stage()),
+            stage_spec(self.stage_specs(), child_stage),
         )?;
 
         let request = request_from(&conversation, &binding.definition().parameters);
@@ -256,7 +263,7 @@ impl Worker {
         let response = self
             .gateway()
             .complete(
-                child.pipeline_stage(),
+                child_stage,
                 request,
                 PermitWait::Bounded { limit: remaining },
                 &attribution,
@@ -620,7 +627,7 @@ fn child_attribution(child: &AgentThread, attempt: u32) -> UsageAttribution {
             record_id: None,
             attempt: clamp_to_i32(attempt),
         },
-        principal_id: Some(child.principal_id()),
+        principal_id: child.principal_id(),
         system_prompt_version_id: None,
         user_prompt_version_id: None,
         trace_id: tribal_telemetry::current_trace_id(),
