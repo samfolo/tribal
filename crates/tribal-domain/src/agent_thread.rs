@@ -153,6 +153,14 @@ pub enum AgentThreadSuspension {
         /// exhausted.
         unchanged_rechecks: u32,
     },
+    /// A durable wait on an opaque signal another actor resolves
+    /// (agent-runtime §4's `WaitSignal`), realised on the existing suspend
+    /// machinery. The managed run's durable wait and its money-driven cap
+    /// requeue both park here.
+    Signal {
+        /// The opaque signal key the resolving actor names.
+        key: String,
+    },
 }
 
 impl AgentThreadSuspension {
@@ -166,6 +174,7 @@ impl AgentThreadSuspension {
             Self::DeferredToolResults { .. } => span_attrs::SUSPENSION_REASON_DEFERRED,
             Self::Timer => span_attrs::SUSPENSION_REASON_TIMER,
             Self::BudgetExhaustion { .. } => span_attrs::SUSPENSION_REASON_BUDGET,
+            Self::Signal { .. } => span_attrs::SUSPENSION_REASON_SIGNAL,
         }
     }
 }
@@ -756,6 +765,22 @@ mod tests {
         let back: AgentThreadSuspension =
             serde_json::from_value(json).expect("suspension round-trips");
         assert_eq!(back, suspension);
+    }
+
+    #[test]
+    fn test_signal_suspension_round_trips_under_its_cause_tag() {
+        let suspension = AgentThreadSuspension::Signal {
+            key: "run-42:wait".to_owned(),
+        };
+
+        let json = serde_json::to_value(&suspension).expect("suspension serialises");
+        assert_eq!(json["cause"], "signal");
+        assert_eq!(json["key"], "run-42:wait");
+
+        let back: AgentThreadSuspension =
+            serde_json::from_value(json).expect("suspension round-trips");
+        assert_eq!(back, suspension);
+        assert_eq!(back.reason_label(), span_attrs::SUSPENSION_REASON_SIGNAL);
     }
 
     #[test]

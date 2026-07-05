@@ -222,6 +222,9 @@ pub const SUSPENSION_REASON_BUDGET: &str = "budget_exhausted";
 /// [`SUSPENSION_REASON`] value: awaiting human input.
 pub const SUSPENSION_REASON_HUMAN: &str = "human_input";
 
+/// [`SUSPENSION_REASON`] value: a durable wait on an opaque signal.
+pub const SUSPENSION_REASON_SIGNAL: &str = "signal";
+
 /// Span field name for a suspension's scheduled wake instant.
 pub const WAKE_AT: &str = "tribal.wake_at";
 
