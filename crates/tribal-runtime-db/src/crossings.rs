@@ -3,9 +3,9 @@
 //! grant minted at claim.
 //!
 //! The account never rides these DTOs; the gateway derives it from the
-//! presenting credential (agent-runtime §6). So the enqueue takes the derived
-//! account alongside the wire job, the cap sync names its own tenant, and the
-//! grant is minted from the claimed job's account.
+//! presenting credential. So the enqueue takes the derived account alongside the
+//! wire job, the cap sync names its own tenant, and the grant is minted from the
+//! claimed job's account.
 
 use sqlx::PgConnection;
 use tribal_wire::gateway::{AccountReference, CapSync, GrantSet, JobEnqueue, JobKind};
