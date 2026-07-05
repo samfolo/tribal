@@ -7,10 +7,25 @@
 //!
 //! [`run_job`]: super::run_job
 
+use std::fmt;
+
 use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
 
 use crate::RuntimeDbError;
+
+/// The `tenant_slot` column list, interpolated into the read query so the query
+/// and its row mapping never drift.
+const COLUMNS: Columns = Columns;
+
+/// Displays the `tenant_slot` column list — the single source [`COLUMNS`].
+struct Columns;
+
+impl fmt::Display for Columns {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("running, cap")
+    }
+}
 
 /// One tenant's admission slot: the live run count and the plan's ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,14 +87,16 @@ impl TenantSlotRepository for PgTenantSlotRepository {
         conn: &mut PgConnection,
         account_id: &str,
     ) -> Result<Option<TenantSlot>, RuntimeDbError> {
-        let row = sqlx::query("SELECT running, cap FROM tenant_slot WHERE account_id = $1")
-            .bind(account_id)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(|source| RuntimeDbError::QueryFailed {
-                context: "reading a tenant slot".to_owned(),
-                source,
-            })?;
+        let row = sqlx::query(&format!(
+            "SELECT {COLUMNS} FROM tenant_slot WHERE account_id = $1"
+        ))
+        .bind(account_id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|source| RuntimeDbError::QueryFailed {
+            context: "reading a tenant slot".to_owned(),
+            source,
+        })?;
         Ok(row.map(|row| TenantSlot {
             running: row.get("running"),
             cap: row.get("cap"),

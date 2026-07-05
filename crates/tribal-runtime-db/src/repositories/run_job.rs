@@ -1,10 +1,12 @@
 //! The run-job repository: enqueue, the two-step admission claim, the
 //! claim-token-fenced lifecycle, and orphan reclaim.
 //!
-//! Uses raw `sqlx::query` because admission (a tenant-walk-by-age loop over the
-//! single-row slot compare-and-swap), the claim's `FOR UPDATE SKIP LOCKED`, and
-//! reclaim's atomic CTE are unsupported by the compile-time macro; the whole
-//! file stays on one query mechanism.
+//! Uses runtime `sqlx::query` rather than the compile-time macros: the workspace
+//! sqlx check types every macro query against the control-plane `DATABASE_URL`,
+//! and `run_job`/`tenant_slot` live only in this crate's own database — a macro
+//! here would fail that check against a schema that does not hold the tables.
+
+use std::fmt;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -13,6 +15,19 @@ use tribal_domain::RunJobId;
 use uuid::Uuid;
 
 use crate::RuntimeDbError;
+
+/// The claimed-job column list, interpolated into the claim's select so the
+/// query and its row mapping never drift.
+const CLAIM_COLUMNS: ClaimColumns = ClaimColumns;
+
+/// Displays the claimed-job column list — the single source [`CLAIM_COLUMNS`].
+struct ClaimColumns;
+
+impl fmt::Display for ClaimColumns {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("id, kind, payload, priority")
+    }
+}
 
 // ---------------------------------------------------------------------------
 // State and row shapes
@@ -276,7 +291,7 @@ impl RunJobRepository for PgRunJobRepository {
         default_cap: i32,
         lease: Duration,
     ) -> Result<Option<ClaimedJob>, RuntimeDbError> {
-        let mut tx = conn
+        let mut txn = conn
             .begin()
             .await
             .map_err(|source| RuntimeDbError::QueryFailed {
@@ -284,8 +299,8 @@ impl RunJobRepository for PgRunJobRepository {
                 source,
             })?;
 
-        if let Some(job) = claim_in_txn(&mut tx, default_cap, lease).await? {
-            tx.commit()
+        if let Some(job) = claim_in_txn(&mut txn, default_cap, lease).await? {
+            txn.commit()
                 .await
                 .map_err(|source| RuntimeDbError::QueryFailed {
                     context: "committing a claim".to_owned(),
@@ -294,7 +309,7 @@ impl RunJobRepository for PgRunJobRepository {
             Ok(Some(job))
         } else {
             // Nothing was claimed; discard the walk's idempotent slot upserts.
-            tx.rollback()
+            txn.rollback()
                 .await
                 .map_err(|source| RuntimeDbError::QueryFailed {
                     context: "rolling back an empty claim".to_owned(),
@@ -336,7 +351,7 @@ impl RunJobRepository for PgRunJobRepository {
         claim_token: Uuid,
         to: PostRunningState,
     ) -> Result<WriteOutcome, RuntimeDbError> {
-        let mut tx = conn
+        let mut txn = conn
             .begin()
             .await
             .map_err(|source| RuntimeDbError::QueryFailed {
@@ -355,7 +370,7 @@ impl RunJobRepository for PgRunJobRepository {
         .bind(id.to_string())
         .bind(claim_token)
         .bind(to.as_str())
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *txn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "leaving the running state".to_owned(),
@@ -363,7 +378,7 @@ impl RunJobRepository for PgRunJobRepository {
         })?;
 
         let Some(account_id) = account_id else {
-            tx.rollback()
+            txn.rollback()
                 .await
                 .map_err(|source| RuntimeDbError::QueryFailed {
                     context: "rolling back a lost transition".to_owned(),
@@ -374,9 +389,9 @@ impl RunJobRepository for PgRunJobRepository {
 
         // Release the slot in the same transaction that moved the job out of
         // running, so a running count can never leak.
-        release_slot(&mut tx, &account_id).await?;
+        release_slot(&mut txn, &account_id).await?;
 
-        tx.commit()
+        txn.commit()
             .await
             .map_err(|source| RuntimeDbError::QueryFailed {
                 context: "committing a state transition".to_owned(),
@@ -488,7 +503,7 @@ impl RunJobRepository for PgRunJobRepository {
 /// tenants are visited in globally-oldest-queued-job order; the first tenant
 /// with slot headroom whose job can be locked yields the claim.
 async fn claim_in_txn(
-    tx: &mut Transaction<'_, Postgres>,
+    txn: &mut Transaction<'_, Postgres>,
     default_cap: i32,
     lease: Duration,
 ) -> Result<Option<ClaimedJob>, RuntimeDbError> {
@@ -503,7 +518,7 @@ async fn claim_in_txn(
              LIMIT 1",
         )
         .bind(&exhausted)
-        .fetch_optional(&mut **tx)
+        .fetch_optional(&mut **txn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "selecting a candidate tenant".to_owned(),
@@ -521,7 +536,7 @@ async fn claim_in_txn(
         )
         .bind(&tenant)
         .bind(default_cap)
-        .execute(&mut **tx)
+        .execute(&mut **txn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "ensuring a tenant slot".to_owned(),
@@ -535,7 +550,7 @@ async fn claim_in_txn(
              RETURNING running",
         )
         .bind(&tenant)
-        .fetch_optional(&mut **tx)
+        .fetch_optional(&mut **txn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "taking a tenant slot".to_owned(),
@@ -548,15 +563,15 @@ async fn claim_in_txn(
         }
 
         // The tenant's highest-priority oldest queued job, skip-locked.
-        let job = sqlx::query(
-            "SELECT id, kind, payload, priority FROM run_job
+        let job = sqlx::query(&format!(
+            "SELECT {CLAIM_COLUMNS} FROM run_job
              WHERE state = 'queued' AND account_id = $1
              ORDER BY priority DESC, created_at
              FOR UPDATE SKIP LOCKED
-             LIMIT 1",
-        )
+             LIMIT 1"
+        ))
         .bind(&tenant)
-        .fetch_optional(&mut **tx)
+        .fetch_optional(&mut **txn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "locking the tenant's oldest job".to_owned(),
@@ -566,7 +581,7 @@ async fn claim_in_txn(
         let Some(job) = job else {
             // A rival claimer took this tenant's last queued job between the
             // candidate read and the lock: release the slot and move on.
-            release_slot(tx, &tenant).await?;
+            release_slot(txn, &tenant).await?;
             exhausted.push(tenant);
             continue;
         };
@@ -583,7 +598,7 @@ async fn claim_in_txn(
         .bind(&job_id)
         .bind(claim_token)
         .bind(lease_seconds(lease))
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut **txn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "marking a job running".to_owned(),
@@ -604,14 +619,14 @@ async fn claim_in_txn(
 
 /// Decrements a tenant's running count, never below zero.
 async fn release_slot(
-    tx: &mut Transaction<'_, Postgres>,
+    txn: &mut Transaction<'_, Postgres>,
     account_id: &str,
 ) -> Result<(), RuntimeDbError> {
     sqlx::query(
         "UPDATE tenant_slot SET running = running - 1 WHERE account_id = $1 AND running > 0",
     )
     .bind(account_id)
-    .execute(&mut **tx)
+    .execute(&mut **txn)
     .await
     .map_err(|source| RuntimeDbError::QueryFailed {
         context: "releasing a tenant slot".to_owned(),

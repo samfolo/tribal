@@ -1538,8 +1538,7 @@ async fn commit_result_record(
 
 /// Commits an [`AppendArtifact`] record — a job's typed product — to the thread's
 /// log, guarding the driving claim so a stale runner never writes one: lock,
-/// next seq, append, commit. The artifact is durable the moment this returns,
-/// before any read surface exists to serve it.
+/// next seq, append, commit. The artifact is durable the moment this returns.
 ///
 /// [`AppendArtifact`]: AgentThreadRecordKind::AppendArtifact
 ///

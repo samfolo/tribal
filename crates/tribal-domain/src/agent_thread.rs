@@ -239,9 +239,8 @@ pub enum AgentThreadRecordKind {
     Submission,
     /// An external agent's observed (not executed) tool activity.
     ObservedToolEvent,
-    /// A job's typed product, committed to the log as a durable output. Never
-    /// model-facing — the artifact is recorded for a later read surface, not
-    /// replayed into the conversation.
+    /// A job's typed product, committed to the log as a durable output and
+    /// model-facing to no one — never replayed into the conversation.
     AppendArtifact,
 }
 

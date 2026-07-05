@@ -16,7 +16,7 @@ pub async fn purge_account(
     conn: &mut PgConnection,
     account_id: &str,
 ) -> Result<u64, RuntimeDbError> {
-    let mut tx = conn
+    let mut txn = conn
         .begin()
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
@@ -26,7 +26,7 @@ pub async fn purge_account(
 
     let jobs = sqlx::query("DELETE FROM run_job WHERE account_id = $1")
         .bind(account_id)
-        .execute(&mut *tx)
+        .execute(&mut *txn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "purging an account's jobs".to_owned(),
@@ -36,14 +36,14 @@ pub async fn purge_account(
 
     sqlx::query("DELETE FROM tenant_slot WHERE account_id = $1")
         .bind(account_id)
-        .execute(&mut *tx)
+        .execute(&mut *txn)
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "purging an account's slot".to_owned(),
             source,
         })?;
 
-    tx.commit()
+    txn.commit()
         .await
         .map_err(|source| RuntimeDbError::QueryFailed {
             context: "committing an account purge".to_owned(),
