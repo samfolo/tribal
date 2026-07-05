@@ -333,8 +333,13 @@ impl InferenceGateway {
         let permit = self.acquire(&binding.key, wait).await?;
         let response = binding.provider.complete(request).await?;
         drop(permit);
-        self.record_completion(&response, TokenUsageStage::from(stage), attribution)
-            .await;
+        self.record_completion(
+            &response,
+            binding.records_usage(),
+            TokenUsageStage::from(stage),
+            attribution,
+        )
+        .await;
         Ok(response)
     }
 
@@ -411,8 +416,13 @@ impl InferenceGateway {
             let permit = self.acquire(&binding.key, PermitWait::Unbounded).await?;
             let response = binding.provider.complete(request).await?;
             drop(permit);
-            self.record_completion(&response, TokenUsageStage::Probe, attribution)
-                .await;
+            self.record_completion(
+                &response,
+                binding.records_usage(),
+                TokenUsageStage::Probe,
+                attribution,
+            )
+            .await;
 
             tracing::info!(
                 "model {} probe succeeded",
@@ -745,9 +755,13 @@ impl InferenceGateway {
     async fn record_completion(
         &self,
         response: &CompletionResponse,
+        record_usage: bool,
         stage: TokenUsageStage,
         attribution: &UsageAttribution,
     ) {
+        if !record_usage {
+            return;
+        }
         let usage = Usage::Completion {
             usage: response.usage.clone(),
         };
@@ -1273,10 +1287,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_a_platform_binding_records_no_local_usage() {
-        // A Platform binding meters server-side, so the gateway writes no local
-        // usage row for it — unlike every other binding, which does.
+    /// A gateway whose stages bind to a Platform-keyed provider, recording into
+    /// `sink` — the fixture for the binding-level usage-suppression tests.
+    fn a_platform_gateway(sink: Arc<RecordingSink>) -> InferenceGateway {
         let key = ProviderKey::new(
             ProviderKind::Platform.as_str(),
             STAGE_URL,
@@ -1291,15 +1304,21 @@ mod tests {
             },
         )])
         .unwrap();
-        let inference = Arc::new(ScriptedInference::new());
-        let sink = Arc::new(RecordingSink::default());
-        let gateway = InferenceGateway::with_providers(InjectedProviders::uniform(
+        InferenceGateway::with_providers(InjectedProviders::uniform(
             registry,
-            Arc::clone(&inference) as Arc<dyn InferenceProvider>,
+            Arc::new(ScriptedInference::new()) as Arc<dyn InferenceProvider>,
             key,
             vec![],
-            Arc::clone(&sink) as Arc<dyn LedgerSink>,
-        ));
+            sink as Arc<dyn LedgerSink>,
+        ))
+    }
+
+    #[tokio::test]
+    async fn test_a_platform_binding_records_no_local_usage() {
+        // A Platform binding meters server-side, so the gateway writes no local
+        // usage row for it — unlike every other binding, which does.
+        let sink = Arc::new(RecordingSink::default());
+        let gateway = a_platform_gateway(Arc::clone(&sink));
 
         let stream = gateway
             .complete_stream(
@@ -1316,6 +1335,29 @@ mod tests {
         assert!(
             sink.usages.lock().unwrap().is_empty(),
             "a platform-routed call records nothing in the local ledger",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_platform_binding_records_no_local_usage_on_the_buffered_path() {
+        // The suppression lives on the binding, not on one dispatch method: the
+        // buffered `complete` path records nothing for a Platform binding either.
+        let sink = Arc::new(RecordingSink::default());
+        let gateway = a_platform_gateway(Arc::clone(&sink));
+
+        gateway
+            .complete(
+                TaskType::Triage,
+                a_request(),
+                PermitWait::Unbounded,
+                &an_attribution(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            sink.usages.lock().unwrap().is_empty(),
+            "a platform-routed buffered call records nothing in the local ledger",
         );
     }
 
