@@ -63,6 +63,9 @@ pub struct Persisted {
     pub effect: WriteEffect,
     /// The exact bytes written to the config file.
     pub document: Vec<u8>,
+    /// The resolved configuration with the write applied — the snapshot the
+    /// running process serves once a live write is adopted.
+    pub config: TribalConfig,
 }
 
 /// One reason a proposed configuration write is unacceptable.
@@ -172,28 +175,38 @@ fn lookup<'a>(root: &'a Value, key: &str) -> Option<&'a Value> {
 /// without persisting it. An empty result means the write is acceptable.
 #[must_use]
 pub fn validate_write(config: &TribalConfig, key: &str, value: Value) -> Vec<ConfigViolation> {
-    let candidate = match apply_to_config(config, key, value) {
-        Ok(candidate) => candidate,
-        Err(message) => {
-            return vec![ConfigViolation {
-                key: key.to_owned(),
-                message,
-            }];
-        }
-    };
+    match validated_candidate(config, key, value) {
+        Ok(_) => Vec::new(),
+        Err(violations) => violations,
+    }
+}
+
+/// The resolved configuration with `value` applied at `key`, checked against
+/// the whole invariant set — or every reason the write is unacceptable.
+fn validated_candidate(
+    config: &TribalConfig,
+    key: &str,
+    value: Value,
+) -> Result<TribalConfig, Vec<ConfigViolation>> {
+    let candidate = apply_to_config(config, key, value).map_err(|message| {
+        vec![ConfigViolation {
+            key: key.to_owned(),
+            message,
+        }]
+    })?;
     match validate(&candidate) {
-        Ok(()) => Vec::new(),
-        Err(ConfigError::ValidationFailed { diagnostics }) => diagnostics
+        Ok(()) => Ok(candidate),
+        Err(ConfigError::ValidationFailed { diagnostics }) => Err(diagnostics
             .iter()
             .map(|diagnostic| ConfigViolation {
                 key: key.to_owned(),
                 message: diagnostic.to_string(),
             })
-            .collect(),
-        Err(other) => vec![ConfigViolation {
+            .collect()),
+        Err(other) => Err(vec![ConfigViolation {
             key: key.to_owned(),
             message: other.to_string(),
-        }],
+        }]),
     }
 }
 
@@ -229,14 +242,13 @@ pub fn set(
     value: Value,
     cli: &CliShadow,
 ) -> Result<Persisted, SetError> {
-    let violations = validate_write(config, key, value.clone());
-    if !violations.is_empty() {
-        return Err(SetError::Rejected { violations });
-    }
+    let candidate = validated_candidate(config, key, value.clone())
+        .map_err(|violations| SetError::Rejected { violations })?;
     let document = persist(config_file, key, value)?;
     Ok(Persisted {
         effect: write_effect(key, cli),
         document,
+        config: candidate,
     })
 }
 
@@ -643,6 +655,46 @@ mod tests {
             effect_for_class(ReloadClass::Unclassified),
             WriteEffect::NeedsRestart,
         );
+    }
+
+    #[test]
+    fn test_set_refuses_an_unparseable_log_filter_directive_whole() {
+        figment::Jail::expect_with(|jail| {
+            let path = jail.directory().join("tribal.yaml");
+            let error = set(
+                &base_config(),
+                &path,
+                "logging.level",
+                json!("not valid [["),
+                &CliShadow::default(),
+            )
+            .unwrap_err();
+            assert!(matches!(error, SetError::Rejected { .. }));
+            assert!(!path.exists(), "a refused directive never touches the file");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_set_returns_the_resolved_config_with_the_write_applied() {
+        figment::Jail::expect_with(|jail| {
+            let path = jail.directory().join("tribal.yaml");
+            let persisted = set(
+                &base_config(),
+                &path,
+                "logging.level",
+                json!("debug"),
+                &CliShadow::default(),
+            )
+            .unwrap();
+            assert_eq!(persisted.config.logging.level, "debug");
+            assert_eq!(
+                persisted.config.database.url,
+                base_config().database.url,
+                "every other key keeps its resolved value",
+            );
+            Ok(())
+        });
     }
 
     #[test]

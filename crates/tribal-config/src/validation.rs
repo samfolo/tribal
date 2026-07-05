@@ -9,6 +9,7 @@ use std::{
     net::SocketAddr,
 };
 
+use tracing_subscriber::EnvFilter;
 use tribal_domain::{MAX_EMBEDDING_DIMENSIONS, ProviderKind, normalise_endpoint_url};
 use url::Url;
 
@@ -86,6 +87,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_credentials(config, &mut diags);
     validate_discovery(config, &mut diags);
     validate_exploration(config, &mut diags);
+    validate_logging(config, &mut diags);
     validate_telemetry(config, &mut diags);
 
     if diags.is_empty() {
@@ -700,6 +702,16 @@ fn validate_exploration(config: &TribalConfig, diags: &mut Diagnostics) {
                 value: u64::from(config.exploration.max_limit),
             },
             relation: OrderRelation::AtMost,
+        });
+    }
+}
+
+fn validate_logging(config: &TribalConfig, diags: &mut Diagnostics) {
+    // The subscriber adopts `logging.level` as an `EnvFilter` directive; one
+    // that cannot parse is refused here, before it can persist or reload.
+    if EnvFilter::try_new(&config.logging.level).is_err() {
+        diags.push(ValidationError::LogFilterMalformed {
+            value: config.logging.level.clone(),
         });
     }
 }
@@ -1776,6 +1788,26 @@ mod tests {
             d,
             ValidationError::Empty { field } if field.as_str() == "init.embedding.model",
         )));
+    }
+
+    // -- logging -----------------------------------------------------------
+
+    #[test]
+    fn test_validate_rejects_an_unparseable_log_filter_directive() {
+        let mut config = valid_config();
+        config.logging.level = "not valid [[".to_owned();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::LogFilterMalformed { value } if value == "not valid [[",
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_a_per_target_filter_directive() {
+        let mut config = valid_config();
+        config.logging.level = "info,tribal_db=debug".to_owned();
+        assert!(validate(&config).is_ok());
     }
 
     // -- telemetry ---------------------------------------------------------
