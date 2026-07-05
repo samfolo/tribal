@@ -312,7 +312,7 @@ pub enum CancelOutcome {
 // Shared parts
 // ---------------------------------------------------------------------------
 
-async fn next_seq(
+pub(crate) async fn next_seq(
     txn: &mut PgConnection,
     thread_id: AgentThreadId,
 ) -> Result<tribal_domain::AgentThreadRecordSeq, AgentRuntimeError> {
@@ -322,7 +322,7 @@ async fn next_seq(
         .map_err(|source| AgentRuntimeError::database("deriving the next seq", source))
 }
 
-fn serialise_control(
+pub(crate) fn serialise_control(
     thread: &AgentThread,
     suspension: &impl Serialize,
 ) -> Result<serde_json::Value, AgentRuntimeError> {

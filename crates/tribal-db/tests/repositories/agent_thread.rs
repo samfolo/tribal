@@ -511,6 +511,147 @@ async fn test_managed_claim_holds_on_the_token_and_misses_on_a_stale_one() {
     );
 }
 
+/// The constraint a rejected write violated, when the failure is a check
+/// or foreign-key error rather than a unique violation.
+fn violated_constraint(err: &DbError) -> Option<String> {
+    match err {
+        DbError::QueryFailed { source, .. } => source
+            .as_database_error()
+            .and_then(|db| db.constraint())
+            .map(ToOwned::to_owned),
+        _ => None,
+    }
+}
+
+/// A fresh managed thread built for a constraint test: the run key is its
+/// anchor, no binding, principal, or job.
+fn a_managed_thread(run_key: RunJobId) -> NewAgentThread {
+    NewAgentThread::builder()
+        .stage(AgentThreadStage::Managed)
+        .driving_task(DrivingTaskRef::Managed(run_key))
+        .run_claim_token(Some(uuid::Uuid::new_v4()))
+        .format_version(AGENT_THREAD_FORMAT_VERSION)
+        .build()
+}
+
+#[tokio::test]
+async fn test_managed_thread_rejects_a_binding() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    let binding = PgAgentBindingVersionRepository
+        .record(
+            &mut txn,
+            &NewAgentBindingVersion::builder()
+                .hash(HASH_A.to_owned())
+                .pipeline_stage(TaskType::Extraction)
+                .definition(an_agent_definition().build())
+                .build(),
+        )
+        .await
+        .expect("record binding");
+
+    let mut new = a_managed_thread(RunJobId::new());
+    new.binding_version_id = Some(binding.id());
+    let err = PgAgentThreadRepository
+        .insert(&mut txn, &new)
+        .await
+        .expect_err("a managed thread carries no binding");
+    assert_eq!(
+        violated_constraint(&err).as_deref(),
+        Some("chk_managed_has_no_binding"),
+    );
+}
+
+#[tokio::test]
+async fn test_managed_thread_carrying_a_principal_is_accepted() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    // A principal existing on the row is not forbidden: the pairing CHECK
+    // is one-way — a managed run carries no principal by construction, but
+    // the schema does not reject one that appears.
+    let principal = PgPrincipalRepository
+        .insert(
+            &mut txn,
+            &a_new_principal()
+                .principal_key("user:managed-with-principal".to_owned())
+                .build(),
+        )
+        .await
+        .expect("insert principal");
+
+    let mut new = a_managed_thread(RunJobId::new());
+    new.principal_id = Some(principal.id());
+    PgAgentThreadRepository
+        .insert(&mut txn, &new)
+        .await
+        .expect("a managed thread may carry a principal");
+}
+
+#[tokio::test]
+async fn test_product_thread_requires_a_principal() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let prerequisites = setup_thread_prerequisites(&mut txn, "needs-principal").await;
+
+    let mut new = prerequisites.new_thread;
+    new.principal_id = None;
+    let err = PgAgentThreadRepository
+        .insert(&mut txn, &new)
+        .await
+        .expect_err("a product thread names its principal");
+    assert_eq!(
+        violated_constraint(&err).as_deref(),
+        Some("chk_product_has_principal"),
+    );
+}
+
+#[tokio::test]
+async fn test_one_managed_thread_per_run_key() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    let run_key = RunJobId::new();
+    PgAgentThreadRepository
+        .insert(&mut txn, &a_managed_thread(run_key))
+        .await
+        .expect("first managed thread");
+    let err = PgAgentThreadRepository
+        .insert(&mut txn, &a_managed_thread(run_key))
+        .await
+        .expect_err("a run key anchors exactly one thread");
+    assert!(matches!(err, DbError::UniqueViolation { .. }));
+}
+
+#[tokio::test]
+async fn test_a_thread_holds_exactly_one_anchor() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    // A real stage task for the anchor's foreign key, so the row reaches
+    // the anchor CHECK rather than tripping the reference first.
+    let prerequisites = setup_thread_prerequisites(&mut txn, "two-anchors").await;
+
+    // Two anchors at once — a stage task and a run key — is the shape the
+    // DrivingTaskRef enum makes unreachable from Rust; the CHECK is its
+    // backstop. Managed stage, no binding, so only the anchor CHECK bites.
+    let err = sqlx::query(
+        "INSERT INTO agent_threads (pipeline_stage, stage_task_id, run_key, format_version) \
+         VALUES ('managed', $1, $2, $3)",
+    )
+    .bind(prerequisites.stage_task_id.inner())
+    .bind(RunJobId::new().to_string())
+    .bind(i32::try_from(AGENT_THREAD_FORMAT_VERSION).expect("format version fits"))
+    .execute(&mut *txn)
+    .await
+    .expect_err("a thread anchors on exactly one of task or run");
+    assert_eq!(
+        err.as_database_error().and_then(|db| db.constraint()),
+        Some("chk_one_driving_anchor"),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Records: the log and its fences
 // ---------------------------------------------------------------------------

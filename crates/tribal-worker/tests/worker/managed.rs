@@ -1,15 +1,20 @@
-//! The managed-run commit surface: the metered-call commit over the seam's
-//! guarded primitives, exercised against a real managed thread and its
-//! run-claim fence.
+//! The managed-run thread primitives — ensure, metered call, terminal, and
+//! suspend — exercised against a real managed thread and the run-claim fence
+//! that serialises a reclaiming worker's adoption ahead of a stale worker's
+//! commit.
 
 use sqlx::Connection;
-use tribal_agent_runtime::{AgentRuntimeError, DrivingClaim, commit_model_call};
+use tribal_agent_runtime::{
+    AgentRuntimeError, DrivingClaim, ManagedRunDisposition, commit_managed_terminal,
+    commit_model_call, ensure_managed_thread, suspend_managed_thread,
+};
 use tribal_db::{
     AgentThreadRecordRepository, AgentThreadRepository, DrivingTaskRef, NewAgentThread,
     PgAgentThreadRecordRepository, PgAgentThreadRepository,
 };
 use tribal_domain::{
-    AGENT_THREAD_FORMAT_VERSION, AgentThread, AgentThreadRecordKind, AgentThreadStage, RunJobId,
+    AGENT_THREAD_FORMAT_VERSION, AgentThread, AgentThreadRecordKind, AgentThreadStage,
+    AgentThreadStatus, AgentThreadSuspension, RunJobId,
 };
 
 use super::common::*;
@@ -129,5 +134,234 @@ async fn test_commit_model_call_participates_in_the_callers_transaction() {
     assert!(
         records.is_empty(),
         "the rolled-back transaction discarded the metered record",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The ensure/terminal/suspend primitives over the fence
+// ---------------------------------------------------------------------------
+
+/// A managed run's opening input, seeded once so a resume re-derives from a
+/// non-empty log.
+fn an_opening_input() -> serde_json::Value {
+    serde_json::json!({"probe": "opening"})
+}
+
+/// A fresh managed run creates its thread and commits the opening input; a
+/// reclaiming worker adopts the same thread under a rotated token, and the
+/// opening input is committed once, not per adoption.
+#[tokio::test]
+async fn test_ensure_managed_thread_creates_then_resumes_under_a_rotated_token() {
+    let ctx = TestDb::new().await;
+    let mut conn = raw_conn(&ctx).await;
+    let run_key = RunJobId::new();
+    let token_a = uuid::Uuid::new_v4();
+
+    let created = ensure_managed_thread(&mut conn, run_key, token_a, an_opening_input())
+        .await
+        .expect("create the managed thread");
+    assert_eq!(created.stage(), AgentThreadStage::Managed);
+
+    let token_b = uuid::Uuid::new_v4();
+    let resumed = ensure_managed_thread(&mut conn, run_key, token_b, an_opening_input())
+        .await
+        .expect("resume the managed thread");
+    assert_eq!(resumed.id(), created.id(), "one thread per run key");
+
+    assert!(
+        PgAgentThreadRepository
+            .holds_managed_claim(&mut conn, run_key, token_b)
+            .await
+            .expect("held"),
+        "the rotated token holds the lease",
+    );
+    assert!(
+        !PgAgentThreadRepository
+            .holds_managed_claim(&mut conn, run_key, token_a)
+            .await
+            .expect("stale"),
+        "the prior token lost the lease",
+    );
+
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread_id(&mut conn, created.id())
+        .await
+        .expect("records");
+    assert_eq!(
+        records.len(),
+        1,
+        "the opening input is committed once, not per adoption",
+    );
+    assert_eq!(records[0].kind(), AgentThreadRecordKind::Input);
+}
+
+/// A rotated token loses the lease for both a metered append and a terminal:
+/// the displaced worker's writes are refused and nothing commits.
+#[tokio::test]
+async fn test_a_stale_token_loses_the_lease_for_append_and_terminal() {
+    let ctx = TestDb::new().await;
+    let mut conn = raw_conn(&ctx).await;
+    let run_key = RunJobId::new();
+    let token_a = uuid::Uuid::new_v4();
+    let thread = ensure_managed_thread(&mut conn, run_key, token_a, an_opening_input())
+        .await
+        .expect("create");
+
+    let token_b = uuid::Uuid::new_v4();
+    ensure_managed_thread(&mut conn, run_key, token_b, an_opening_input())
+        .await
+        .expect("adopt under a rotated token");
+
+    let stale = DrivingClaim::managed(run_key, token_a);
+    let append_err = commit_model_call(
+        &mut conn,
+        &thread,
+        &stale,
+        &a_completion_response("stale append"),
+    )
+    .await
+    .expect_err("a stale append loses the lease");
+    assert!(matches!(append_err, AgentRuntimeError::LeaseLost { .. }));
+    let terminal_err =
+        commit_managed_terminal(&mut conn, &thread, &stale, ManagedRunDisposition::Completed)
+            .await
+            .expect_err("a stale terminal loses the lease");
+    assert!(matches!(terminal_err, AgentRuntimeError::LeaseLost { .. }));
+
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread_id(&mut conn, thread.id())
+        .await
+        .expect("records");
+    assert_eq!(records.len(), 1, "no refused write committed a record");
+    let read = PgAgentThreadRepository
+        .find_by_id(&mut conn, thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert!(
+        !read.status().is_terminal(),
+        "the refused terminal did not land",
+    );
+}
+
+/// A stale terminal converges: the run reaches its terminal under token A, a
+/// reclaiming worker re-adopts and re-derives the already-terminal thread,
+/// and its own terminal attempt finds the status CAS settled.
+#[tokio::test]
+async fn test_a_stale_terminal_converges_by_re_adopting_the_settled_run() {
+    let ctx = TestDb::new().await;
+    let mut conn = raw_conn(&ctx).await;
+    let run_key = RunJobId::new();
+    let token_a = uuid::Uuid::new_v4();
+    let thread = ensure_managed_thread(&mut conn, run_key, token_a, an_opening_input())
+        .await
+        .expect("create");
+    // The drive marks the thread running before committing its terminal.
+    PgAgentThreadRepository
+        .mark_running(&mut conn, thread.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("run");
+
+    commit_managed_terminal(
+        &mut conn,
+        &thread,
+        &DrivingClaim::managed(run_key, token_a),
+        ManagedRunDisposition::Completed,
+    )
+    .await
+    .expect("terminal under token A");
+
+    let token_b = uuid::Uuid::new_v4();
+    let readopted = ensure_managed_thread(&mut conn, run_key, token_b, an_opening_input())
+        .await
+        .expect("re-adopt the settled run");
+    assert_eq!(readopted.id(), thread.id());
+    assert_eq!(
+        readopted.status(),
+        AgentThreadStatus::Completed,
+        "the re-adopted run is already terminal",
+    );
+
+    let again = commit_managed_terminal(
+        &mut conn,
+        &thread,
+        &DrivingClaim::managed(run_key, token_b),
+        ManagedRunDisposition::Completed,
+    )
+    .await
+    .expect_err("the settled run is not re-completed");
+    assert!(matches!(again, AgentRuntimeError::StatusCasMissed { .. }));
+}
+
+/// The lease-holder parks the run under its signal cause; a displaced worker's
+/// suspend is fenced and leaves the run running.
+#[tokio::test]
+async fn test_suspend_managed_thread_parks_under_its_signal_cause_and_fences_a_stale_token() {
+    let ctx = TestDb::new().await;
+    let mut conn = raw_conn(&ctx).await;
+    let run_key = RunJobId::new();
+    let token_a = uuid::Uuid::new_v4();
+    let thread = ensure_managed_thread(&mut conn, run_key, token_a, an_opening_input())
+        .await
+        .expect("create");
+    PgAgentThreadRepository
+        .mark_running(&mut conn, thread.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("run");
+
+    let token_b = uuid::Uuid::new_v4();
+    ensure_managed_thread(&mut conn, run_key, token_b, an_opening_input())
+        .await
+        .expect("adopt under a rotated token");
+
+    let cause = AgentThreadSuspension::Signal {
+        key: "run-signal:abc".to_owned(),
+    };
+    let wake_at = chrono::Utc::now() + chrono::Duration::minutes(5);
+
+    let stale = suspend_managed_thread(
+        &mut conn,
+        &thread,
+        &DrivingClaim::managed(run_key, token_a),
+        &cause,
+        Some(wake_at),
+    )
+    .await
+    .expect_err("a stale suspend loses the lease");
+    assert!(matches!(stale, AgentRuntimeError::LeaseLost { .. }));
+    let running = PgAgentThreadRepository
+        .find_by_id(&mut conn, thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(
+        running.status(),
+        AgentThreadStatus::Running,
+        "the refused suspend left the run running",
+    );
+
+    suspend_managed_thread(
+        &mut conn,
+        &thread,
+        &DrivingClaim::managed(run_key, token_b),
+        &cause,
+        Some(wake_at),
+    )
+    .await
+    .expect("park the run under its lease");
+    let read = PgAgentThreadRepository
+        .find_by_id(&mut conn, thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(read.status(), AgentThreadStatus::Suspended);
+    assert_eq!(
+        read.suspension(),
+        Some(&cause),
+        "the signal cause round-trips",
+    );
+    assert!(
+        read.wake_at().is_some(),
+        "the durable wait carries its wake instant",
     );
 }

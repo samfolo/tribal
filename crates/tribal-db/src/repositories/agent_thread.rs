@@ -210,6 +210,23 @@ pub trait AgentThreadRepository {
         claim_token: uuid::Uuid,
     ) -> Result<bool, DbError>;
 
+    /// Adopts the managed thread anchored to `run_key`: writes the
+    /// presenting worker's claim token onto the row under its exclusive
+    /// lock, the pivot the fence turns on, and returns the adopted thread.
+    /// The write is unconditional (a reclaiming worker legitimately
+    /// overwrites a dead worker's token); the job plane's own claim gates
+    /// who reaches it. Returns `None` when no thread bears the run key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn adopt_managed(
+        &self,
+        conn: &mut PgConnection,
+        run_key: RunJobId,
+        claim_token: uuid::Uuid,
+    ) -> Result<Option<AgentThread>, DbError>;
+
     /// CAS to `running` from `from`, clearing any suspension payload and wake
     /// instant in the same statement. Returns the affected row count (zero is
     /// the CAS miss).
@@ -547,6 +564,30 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         })?;
 
         Ok(held.is_some())
+    }
+
+    async fn adopt_managed(
+        &self,
+        conn: &mut PgConnection,
+        run_key: RunJobId,
+        claim_token: uuid::Uuid,
+    ) -> Result<Option<AgentThread>, DbError> {
+        let sql = format!(
+            "UPDATE agent_threads \
+             SET run_claim_token = $2, updated_at = now() \
+             WHERE run_key = $1 RETURNING {COLUMNS}"
+        );
+        let row = sqlx::query(&sql)
+            .bind(run_key.to_string())
+            .bind(claim_token)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("adopting the managed thread for run {run_key}"),
+                source: e,
+            })?;
+
+        Ok(row.as_ref().map(map_agent_thread_row))
     }
 
     async fn mark_running(

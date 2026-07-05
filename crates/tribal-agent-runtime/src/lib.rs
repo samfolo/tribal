@@ -17,6 +17,7 @@ mod binding;
 mod driver;
 mod error;
 mod ledger_sink;
+mod managed;
 mod store;
 mod tools;
 mod transitions;
@@ -31,6 +32,9 @@ pub use driver::{
 };
 pub use error::AgentRuntimeError;
 pub use ledger_sink::PgLedgerSink;
+pub use managed::{
+    ManagedRunDisposition, commit_managed_terminal, ensure_managed_thread, suspend_managed_thread,
+};
 pub use store::{StageThread, ensure_stage_thread};
 pub use tools::{StageTool, ToolOutcome, ToolRegistry, ToolRegistryError};
 pub use transitions::{
