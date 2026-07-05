@@ -28,12 +28,16 @@ tribal-config.workspace = true
 tribal-db.workspace = true
 tribal-domain = { workspace = true, features = ["schema"] }
 tribal-inference.workspace = true
+tribal-runtime-db.workspace = true
 tribal-telemetry.workspace = true
+tribal-wire.workspace = true
 
 [dev-dependencies]
 futures-util.workspace = true
 jsonschema.workspace = true
+reqwest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true
 
 tribal-inference = { workspace = true, features = ["test-helpers"] }
 tribal-test-utils.workspace = true

@@ -51,6 +51,9 @@ pub use ollama::{
 };
 #[cfg(feature = "test-helpers")]
 pub use openai::{CHAT_PATH as OPENAI_CHAT_PATH, EMBED_PATH as OPENAI_EMBED_PATH};
+pub use platform::GatewayMeteringClient;
+#[cfg(feature = "test-helpers")]
+pub use platform::{ACK_PATH as METERING_ACK_PATH, HOLDS_PATH as METERING_HOLDS_PATH};
 pub use provider::{
     BatchEmbeddingResult, CallContext, EmbeddingProvider, InferenceProvider, ProviderIdentity,
 };

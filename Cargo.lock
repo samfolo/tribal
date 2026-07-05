@@ -5716,6 +5716,7 @@ dependencies = [
  "dashmap",
  "futures-util",
  "jsonschema",
+ "reqwest 0.13.2",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -5732,9 +5733,12 @@ dependencies = [
  "tribal-db",
  "tribal-domain",
  "tribal-inference",
+ "tribal-runtime-db",
  "tribal-telemetry",
  "tribal-test-utils",
+ "tribal-wire",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
