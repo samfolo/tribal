@@ -230,7 +230,7 @@ async fn test_bootstrap_with_explicit_principal_provisions_both() {
 // Genesis seed: OpenAI embedding provider without an API key
 // ---------------------------------------------------------------------------
 
-/// Builds genesis-seed overrides pinning the OpenAI embedding provider.
+/// Builds genesis-seed overrides pinning the `OpenAI` embedding provider.
 fn openai_embedding_overrides(model: Option<&str>) -> CliOverrides {
     CliOverrides {
         init: Some(InitCliOverrides {
@@ -243,7 +243,7 @@ fn openai_embedding_overrides(model: Option<&str>) -> CliOverrides {
     }
 }
 
-/// Seeding the OpenAI embedding provider with no API key now bootstraps
+/// Seeding the `OpenAI` embedding provider with no API key now bootstraps
 /// successfully: the genesis identity is persisted alongside a keyless
 /// `openai_default` catalogue skeleton, and the credential is resolved
 /// fail-closed at boot, not at bootstrap.
@@ -284,7 +284,7 @@ async fn test_bootstrap_openai_without_key_persists_a_keyless_skeleton() {
 }
 
 /// The same through standalone `tribal setup`: with no embedding api-key
-/// validation gate left, a keyless OpenAI seed no longer fails the setup
+/// validation gate left, a keyless `OpenAI` seed no longer fails the setup
 /// path.
 #[tokio::test]
 async fn test_setup_openai_without_key_succeeds() {

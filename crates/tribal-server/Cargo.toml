@@ -83,3 +83,6 @@ wiremock.workspace = true
 
 tribal-inference = { workspace = true, features = ["test-helpers"] }
 tribal-test-utils.workspace = true
+
+[lints]
+workspace = true

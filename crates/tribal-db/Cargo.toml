@@ -29,3 +29,6 @@ tribal-domain.workspace = true
 tokio.workspace = true
 
 tribal-test-utils.workspace = true
+
+[lints]
+workspace = true

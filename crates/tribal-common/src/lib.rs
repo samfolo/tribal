@@ -1,5 +1,3 @@
-#![warn(clippy::pedantic)]
-#![deny(warnings)]
 //! Shared utilities for the Tribal workspace.
 //!
 //! Small, dependency-light helpers that are used across multiple crates.

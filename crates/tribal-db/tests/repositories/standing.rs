@@ -267,14 +267,14 @@ async fn test_compute_diversity_metrics() {
     let target_id = setup_item(&mut txn, project_id_1, principal_id).await;
 
     // Supporting item from project 1, episode A.
-    let ep_a_id = EpisodeId::new();
+    let episode_alpha_id = EpisodeId::new();
     let supporter_1_id = PgKnowledgeItemRepository
         .insert(
             &mut txn,
             &a_new_knowledge_item()
                 .project_id(project_id_1)
                 .principal_id(principal_id)
-                .episode_id(Some(ep_a_id))
+                .episode_id(Some(episode_alpha_id))
                 .build(),
         )
         .await
@@ -282,14 +282,14 @@ async fn test_compute_diversity_metrics() {
         .id();
 
     // Supporting item from project 2, episode B.
-    let ep_b_id = EpisodeId::new();
+    let episode_beta_id = EpisodeId::new();
     let supporter_2_id = PgKnowledgeItemRepository
         .insert(
             &mut txn,
             &a_new_knowledge_item()
                 .project_id(project_id_2)
                 .principal_id(principal_id)
-                .episode_id(Some(ep_b_id))
+                .episode_id(Some(episode_beta_id))
                 .build(),
         )
         .await
@@ -297,14 +297,14 @@ async fn test_compute_diversity_metrics() {
         .id();
 
     // Supporting item from project 1, episode C.
-    let ep_c_id = EpisodeId::new();
+    let episode_gamma_id = EpisodeId::new();
     let supporter_3_id = PgKnowledgeItemRepository
         .insert(
             &mut txn,
             &a_new_knowledge_item()
                 .project_id(project_id_1)
                 .principal_id(principal_id)
-                .episode_id(Some(ep_c_id))
+                .episode_id(Some(episode_gamma_id))
                 .build(),
         )
         .await

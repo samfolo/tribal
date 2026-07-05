@@ -108,7 +108,7 @@ impl HarnessSetup {
 
     /// Sets the principal key for this test.
     pub fn principal_key(&mut self, key: &str) {
-        self.principal_key = key.to_owned();
+        key.clone_into(&mut self.principal_key);
     }
 
     /// Overrides the default project.
@@ -235,7 +235,7 @@ impl SeedContext {
     }
 
     /// Stores a labelled ID for retrieval after init via `harness.label()`.
-    pub fn label(&mut self, name: &str, id: impl ToString) {
+    pub fn label(&mut self, name: &str, id: &impl ToString) {
         self.labels.insert(name.to_owned(), id.to_string());
     }
 }

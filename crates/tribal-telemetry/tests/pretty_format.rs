@@ -46,7 +46,9 @@ fn test_pretty_format_produces_non_json_output() {
         .collect();
     for name in &filenames {
         assert!(
-            name.ends_with(".log"),
+            std::path::Path::new(name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("log")),
             "Pretty format should produce .log files, got: {name}",
         );
     }

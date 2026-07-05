@@ -35,7 +35,7 @@ pub struct ModelId(String);
 pub struct AccountReference(String);
 
 /// The opaque platform user a contribution is attributed to — the linkage key
-/// bridged to a local principal by `PrincipalMap`, never the IdP subject.
+/// bridged to a local principal by `PrincipalMap`, never the `IdP` subject.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "schema",

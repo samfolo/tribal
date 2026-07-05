@@ -14,9 +14,10 @@ use tribal_db::{
 };
 use tribal_domain::{
     KnowledgeKind::{Fact, Heuristic},
+    Reference,
     ReferenceKind::{FilePath, Url},
     RelationKind::{Supersedes, Supports},
-    SourceType,
+    SourceType, TagRegistryEntry,
 };
 use tribal_test_utils::{
     Seed, TestDb, active_embedding_profile, find_active_embedding, item, scenarios,
@@ -130,7 +131,7 @@ async fn test_seed_with_tags_auto_registers_in_registry() {
         .await
         .expect("find_all tags");
 
-    let tag_names: Vec<&str> = all_tags.iter().map(|t| t.tag()).collect();
+    let tag_names: Vec<&str> = all_tags.iter().map(TagRegistryEntry::tag).collect();
     assert!(tag_names.contains(&"alpha"), "alpha should be registered");
     assert!(tag_names.contains(&"beta"), "beta should be registered");
 }
@@ -294,7 +295,7 @@ async fn test_seed_references_attached_to_items() {
         .expect("find references");
     assert_eq!(refs.len(), 2);
 
-    let db_ref_ids: Vec<_> = refs.iter().map(|r| r.id()).collect();
+    let db_ref_ids: Vec<_> = refs.iter().map(Reference::id).collect();
     for id in ref_ids {
         assert!(
             db_ref_ids.contains(id),
@@ -336,11 +337,11 @@ async fn test_seed_embedding_groups_produce_similar_vectors() {
         .expect("embedding c");
 
     let sim_ab = cosine_similarity(emb_a.embedding(), emb_b.embedding());
-    let sim_ac = cosine_similarity(emb_a.embedding(), emb_c.embedding());
+    let cross_group_similarity = cosine_similarity(emb_a.embedding(), emb_c.embedding());
 
     assert!(
-        sim_ab > sim_ac,
-        "same-group similarity ({sim_ab}) should exceed cross-group ({sim_ac})"
+        sim_ab > cross_group_similarity,
+        "same-group similarity ({sim_ab}) should exceed cross-group ({cross_group_similarity})"
     );
 }
 

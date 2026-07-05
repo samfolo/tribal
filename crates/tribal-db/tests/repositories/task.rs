@@ -3,7 +3,7 @@ use tribal_db::{
     DbError, JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
     PgTaskRepository, PrincipalRepository, ProjectRepository, TaskRepository,
 };
-use tribal_domain::{GitRemote, JobId, TaskErrorKind, TaskId, TaskStatus, TaskType};
+use tribal_domain::{GitRemote, JobId, Task, TaskErrorKind, TaskId, TaskStatus, TaskType};
 use tribal_test_utils::{
     TestDb, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
     a_new_system_fingerprint, a_new_task, backdate_task_heartbeat, count_tasks_by_status,
@@ -14,7 +14,7 @@ use tribal_test_utils::{
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Inserts a principal, project, prompt_version, and a job, returning
+/// Inserts a principal, project, `prompt_version`, and a job, returning
 /// the job ID for creating tasks.
 async fn setup_task_prerequisites(txn: &mut sqlx::PgConnection, suffix: &str) -> JobId {
     let principal = PgPrincipalRepository
@@ -269,7 +269,7 @@ async fn test_find_by_job_id() {
     assert!(tasks[0].id() < tasks[1].id());
     assert!(tasks[1].id() < tasks[2].id());
     // All expected task types are present.
-    let types: Vec<_> = tasks.iter().map(|t| t.task_type()).collect();
+    let types: Vec<_> = tasks.iter().map(Task::task_type).collect();
     assert!(types.contains(&TaskType::Extraction));
     assert!(types.contains(&TaskType::Triage));
 }
@@ -735,7 +735,7 @@ async fn test_reclaim_stale_heartbeat_expired() {
     let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
     let task = &claimed[0];
 
-    backdate_task_heartbeat(&mut txn, task.id(), std::time::Duration::from_secs(120)).await;
+    backdate_task_heartbeat(&mut txn, task.id(), std::time::Duration::from_mins(2)).await;
 
     let result = repo
         .reclaim_stale(
@@ -788,7 +788,7 @@ async fn test_reclaim_stale_startup_reclaim() {
     let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
     let task = &claimed[0];
 
-    backdate_task_heartbeat(&mut txn, task.id(), std::time::Duration::from_secs(120)).await;
+    backdate_task_heartbeat(&mut txn, task.id(), std::time::Duration::from_mins(2)).await;
 
     let result = repo
         .reclaim_stale(
@@ -846,7 +846,7 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
     let task = &claimed[0];
 
     // Push heartbeat_at into the past.
-    backdate_task_heartbeat(&mut txn, task.id(), std::time::Duration::from_secs(120)).await;
+    backdate_task_heartbeat(&mut txn, task.id(), std::time::Duration::from_mins(2)).await;
 
     let pre_reclaim_available_at = repo
         .find_by_id(&mut txn, task.id())
@@ -910,7 +910,7 @@ async fn test_reclaim_stale_respects_limit() {
     assert_eq!(claimed.len(), 5);
 
     for id in &task_ids {
-        backdate_task_heartbeat(&mut txn, *id, std::time::Duration::from_secs(120)).await;
+        backdate_task_heartbeat(&mut txn, *id, std::time::Duration::from_mins(2)).await;
     }
 
     // Reclaim with limit = 3 — only 3 of 5 should be reclaimed.

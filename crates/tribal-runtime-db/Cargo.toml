@@ -23,3 +23,6 @@ tribal-wire.workspace = true
 tokio.workspace = true
 testcontainers.workspace = true
 url.workspace = true
+
+[lints]
+workspace = true

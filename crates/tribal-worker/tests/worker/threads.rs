@@ -13,7 +13,7 @@ use tribal_db::{
     AgentThreadRecordRepository, AgentThreadRepository, PgAgentThreadRecordRepository,
     PgAgentThreadRepository,
 };
-use tribal_domain::{AgentThreadRecordKind, AgentThreadStatus, JobState};
+use tribal_domain::{AgentThreadRecord, AgentThreadRecordKind, AgentThreadStatus, JobState};
 
 use super::{common::*, fixtures::extraction_response_json};
 
@@ -359,7 +359,7 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
         .find_by_thread_id(&mut conn, thread.id())
         .await
         .expect("log");
-    let kinds: Vec<_> = records.iter().map(|r| r.kind()).collect();
+    let kinds: Vec<_> = records.iter().map(AgentThreadRecord::kind).collect();
     assert_eq!(
         kinds,
         [
@@ -392,6 +392,7 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
 /// Suspend-versus-cancel converges in both orderings: an intent written
 /// before the suspend refuses the suspend at its boundary, and an intent
 /// written after it is honoured by the sweep's cancel fallback.
+#[expect(clippy::too_many_lines, reason = "end-to-end scenario reads as one linear narrative")]
 #[tokio::test]
 async fn test_suspend_versus_cancel_converges_in_both_orderings() {
     let ctx = TestDb::new().await;

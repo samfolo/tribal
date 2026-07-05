@@ -257,7 +257,7 @@ async fn test_extraction_capping() {
 }
 
 /// Verifies that an unparseable LLM response causes the extraction
-/// task to be requeued with a ParseError error kind.
+/// task to be requeued with a `ParseError` error kind.
 #[tokio::test]
 async fn test_extraction_parse_failure() {
     let ctx = TestDb::new().await;

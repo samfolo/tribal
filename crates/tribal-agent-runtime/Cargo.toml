@@ -30,3 +30,6 @@ tribal-telemetry.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 tribal-test-utils.workspace = true
+
+[lints]
+workspace = true

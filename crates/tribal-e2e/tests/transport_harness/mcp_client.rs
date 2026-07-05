@@ -265,9 +265,10 @@ async fn read_sse_jsonrpc_result(response: &mut reqwest::Response) -> serde_json
 
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            panic!("timeout waiting for JSON-RPC result, body so far:\n{buf}");
-        }
+        assert!(
+            !remaining.is_zero(),
+            "timeout waiting for JSON-RPC result, body so far:\n{buf}"
+        );
 
         let chunk = tokio::time::timeout(remaining, response.chunk()).await;
 
@@ -286,13 +287,11 @@ async fn read_sse_jsonrpc_result(response: &mut reqwest::Response) -> serde_json
                     if value.get("result").is_some() {
                         return value;
                     }
-                    if value.get("error").is_some() {
-                        panic!(
-                            "server returned JSON-RPC error: {}",
-                            serde_json::to_string_pretty(&value)
-                                .unwrap_or_else(|_| value.to_string()),
-                        );
-                    }
+                    assert!(
+                        value.get("error").is_none(),
+                        "server returned JSON-RPC error: {}",
+                        serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                    );
                 }
             }
             Ok(Ok(None)) => {
@@ -301,8 +300,8 @@ async fn read_sse_jsonrpc_result(response: &mut reqwest::Response) -> serde_json
             Ok(Err(err)) => {
                 panic!("SSE stream read error: {err}");
             }
-            Err(_) => {
-                panic!("timeout waiting for JSON-RPC result, body so far:\n{buf}");
+            Err(elapsed) => {
+                panic!("timeout waiting for JSON-RPC result ({elapsed}), body so far:\n{buf}");
             }
         }
     }
