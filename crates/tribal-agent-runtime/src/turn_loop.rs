@@ -25,6 +25,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::StreamExt;
 use sqlx::PgConnection;
+use tokio::sync::watch;
 use tracing::Instrument;
 use tribal_db::{
     AgentThreadRecordRepository, AgentThreadRepository, DbError, NewAgentThreadRecord,
@@ -591,6 +592,10 @@ pub struct TurnLoopDependencies<'a> {
     pub permit_deadline: tokio::time::Instant,
     /// The sink for the loop's lifecycle metrics.
     pub recorder: &'a dyn MetricsRecorder,
+    /// The run's cancellation, watched so an in-flight streamed call is dropped
+    /// rather than only checked between turns; a watch that never fires falls
+    /// back to that turn-boundary check.
+    pub cancel: watch::Receiver<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -782,9 +787,13 @@ async fn run_turn_loop_inner(
             }
         }
 
-        // 5. The streamed inference call, no transaction held.
+        // 5. The streamed inference call, no transaction held, raced against
+        //    the run's cancellation so an in-flight call is dropped, not drained.
         let request = projection.build_request(&deps);
-        let response = stream_to_terminal(&deps, request).await?;
+        let response = match stream_to_terminal(&deps, request).await? {
+            StreamOutcome::Completed(response) => response,
+            StreamOutcome::Cancelled => break LoopOutcome::CancelIntent,
+        };
 
         // 6. The assistant record commit, with its per-turn attribution,
         //    spend projection, and progress reset.
@@ -1156,11 +1165,13 @@ fn project(
                     projection.child_launches += 1;
                 }
             }
-            // Control and terminal records are never model-facing; the
-            // observed kind belongs to the external executor.
+            // Control, terminal, and product records are never model-facing:
+            // the observed kind belongs to the external executor, and an
+            // appended artifact is a durable output, not a conversation turn.
             AgentThreadRecordKind::Cancellation
             | AgentThreadRecordKind::Submission
-            | AgentThreadRecordKind::ObservedToolEvent => {}
+            | AgentThreadRecordKind::ObservedToolEvent
+            | AgentThreadRecordKind::AppendArtifact => {}
         }
     }
 
@@ -1282,15 +1293,28 @@ fn wire_definition(descriptor: &ToolDescriptor) -> ToolWireDefinition {
 // Inference
 // ---------------------------------------------------------------------------
 
+/// The outcome of racing a streamed call against the run's cancellation.
+enum StreamOutcome {
+    /// The stream reached its terminal response.
+    Completed(CompletionResponse),
+    /// Cancellation won the race; the stream future was dropped mid-flight.
+    Cancelled,
+}
+
 async fn stream_to_terminal(
     deps: &TurnLoopDependencies<'_>,
     request: CompletionRequest,
-) -> Result<CompletionResponse, AgentRuntimeError> {
+) -> Result<StreamOutcome, AgentRuntimeError> {
     let remaining = deps
         .permit_deadline
         .saturating_duration_since(tokio::time::Instant::now());
     deps.pump.inference_started();
+    let mut cancel = deps.cancel.clone();
     let outcome = async {
+        // Cancelled before the call opens: never pay the provider for it.
+        if *cancel.borrow() {
+            return Ok(StreamOutcome::Cancelled);
+        }
         let mut stream = deps
             .gateway
             .complete_stream(
@@ -1304,28 +1328,62 @@ async fn stream_to_terminal(
                 context: "opening the loop's streamed call".to_owned(),
                 source: Box::new(source),
             })?;
+        let cancelled = wait_for_cancel(&mut cancel);
+        tokio::pin!(cancelled);
         let mut terminal = None;
-        while let Some(event) = stream.next().await {
-            let event = event.map_err(|source| AgentRuntimeError::Inference {
-                context: "consuming the loop's streamed call".to_owned(),
-                source: Box::new(source),
-            })?;
-            deps.pump.stream_delta();
-            if let InferenceEvent::Completed { response } = event {
-                terminal = Some(response);
+        loop {
+            tokio::select! {
+                // Cancellation is checked first, so a pending cancel is honoured
+                // over draining another ready event. Returning drops `stream`,
+                // closing the upstream connection rather than draining it; a
+                // closed watch surfaces here rather than silently never firing.
+                biased;
+                watched = &mut cancelled => {
+                    watched?;
+                    return Ok(StreamOutcome::Cancelled);
+                }
+                event = stream.next() => {
+                    let Some(event) = event else { break };
+                    let event = event.map_err(|source| AgentRuntimeError::Inference {
+                        context: "consuming the loop's streamed call".to_owned(),
+                        source: Box::new(source),
+                    })?;
+                    deps.pump.stream_delta();
+                    if let InferenceEvent::Completed { response } = event {
+                        terminal = Some(response);
+                    }
+                }
             }
         }
-        terminal.ok_or_else(|| AgentRuntimeError::Inference {
-            context: "consuming the loop's streamed call".to_owned(),
-            source: Box::new(tribal_inference::InferenceError::ResponseParseFailed {
-                expected_shape: "a terminal Completed event".to_owned(),
-                actual: "stream ended without one".to_owned(),
-            }),
-        })
+        terminal
+            .map(StreamOutcome::Completed)
+            .ok_or_else(|| AgentRuntimeError::Inference {
+                context: "consuming the loop's streamed call".to_owned(),
+                source: Box::new(tribal_inference::InferenceError::ResponseParseFailed {
+                    expected_shape: "a terminal Completed event".to_owned(),
+                    actual: "stream ended without one".to_owned(),
+                }),
+            })
     }
     .await;
     deps.pump.inference_finished();
     outcome
+}
+
+/// Resolves once the run is cancelled. A closed watch — every sender dropped,
+/// so cancellation can never be signalled again — is a wiring fault, returned as
+/// [`AgentRuntimeError::CancelWatchClosed`] rather than silently disabling
+/// cancellation for the rest of the call.
+async fn wait_for_cancel(cancel: &mut watch::Receiver<bool>) -> Result<(), AgentRuntimeError> {
+    loop {
+        if *cancel.borrow_and_update() {
+            return Ok(());
+        }
+        cancel
+            .changed()
+            .await
+            .map_err(|_| AgentRuntimeError::CancelWatchClosed)?;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1476,6 +1534,50 @@ async fn commit_result_record(
     reset_progress(&mut txn, deps).await?;
     commit(txn, "committing the tool-result transaction").await?;
     Ok(ResultCommit::Committed)
+}
+
+/// Commits an [`AppendArtifact`] record — a job's typed product — to the thread's
+/// log, guarding the driving claim so a stale runner never writes one: lock,
+/// next seq, append, commit. The artifact is durable the moment this returns.
+///
+/// [`AppendArtifact`]: AgentThreadRecordKind::AppendArtifact
+///
+/// # Errors
+///
+/// Returns [`AgentRuntimeError::LeaseLost`] when the claim guard misses (this is
+/// the whole transaction, rolled back on the error), plus the serialisation and
+/// database errors of the parts.
+pub async fn commit_artifact_record(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+    claim: DrivingClaim,
+    artifact: &serde_json::Value,
+) -> Result<AgentThreadRecordSeq, AgentRuntimeError> {
+    let mut txn = begin(conn, "beginning the artifact transaction").await?;
+    claim.require(&mut txn).await?;
+    PgAgentThreadRepository
+        .lock(&mut txn, thread.id())
+        .await
+        .map_err(|source| {
+            AgentRuntimeError::database("locking the thread for an artifact", source)
+        })?;
+    let seq = next_seq(&mut txn, thread).await?;
+    PgAgentThreadRecordRepository
+        .append(
+            &mut txn,
+            &NewAgentThreadRecord::builder()
+                .thread_id(thread.id())
+                .seq(seq)
+                .kind(AgentThreadRecordKind::AppendArtifact)
+                .content(artifact.clone())
+                .trace_id(current_trace_id())
+                .span_id(current_span_id())
+                .build(),
+        )
+        .await
+        .map_err(|source| AgentRuntimeError::database("committing an artifact", source))?;
+    commit(txn, "committing the artifact transaction").await?;
+    Ok(seq)
 }
 
 /// Commits the loop's terminal contribution inside the caller's

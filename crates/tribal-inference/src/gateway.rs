@@ -31,15 +31,16 @@ use tribal_domain::{
 };
 
 use crate::{
-    BatchEmbeddingResult, CompletionRequest, EmbeddingProvider, EmbeddingRequest, InferenceError,
-    InferenceProvider, Message, ProviderIdentity, ProviderKey, ProviderLimits, ProviderRegistry,
-    ProviderRegistryError, RequestClass,
+    BatchEmbeddingResult, CallContext, CompletionRequest, EmbeddingProvider, EmbeddingRequest,
+    InferenceError, InferenceProvider, Message, ProviderIdentity, ProviderKey, ProviderLimits,
+    ProviderRegistry, ProviderRegistryError, RequestClass,
     anthropic::AnthropicInferenceProvider,
     embedding_factory::{ensure_embedding_support, make_embedding_provider},
     http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, latency_ms},
     ledger::{LedgerSink, UsageAttribution},
     ollama::{OllamaInferenceProvider, tags::check_tags},
     openai::OpenAiInferenceProvider,
+    platform::PlatformInferenceProvider,
     response::EmbeddingResponse,
     stream::InferenceEventStream,
 };
@@ -230,13 +231,6 @@ pub enum GatewayBuildError {
         /// The unresolvable key.
         key: ProviderKey,
     },
-
-    /// The platform provider is served by the managed gateway, which this build
-    /// does not construct as a local completion provider.
-    #[error(
-        "the platform provider is served by the managed gateway, not a local completion provider"
-    )]
-    ManagedGatewayTransport,
 }
 
 // ----------------------------------------------------------------------------
@@ -247,6 +241,15 @@ pub enum GatewayBuildError {
 struct CompletionBinding {
     provider: Arc<dyn InferenceProvider>,
     key: ProviderKey,
+}
+
+impl CompletionBinding {
+    /// Whether the gateway writes the local usage ledger for this binding. A
+    /// Platform binding meters server-side and its wire terminal carries no
+    /// counts, so the gateway records nothing for it.
+    fn records_usage(&self) -> bool {
+        self.key.provider_kind() != ProviderKind::Platform.as_str()
+    }
 }
 
 /// A built embedding provider and the registry key its permits live under.
@@ -330,8 +333,13 @@ impl InferenceGateway {
         let permit = self.acquire(&binding.key, wait).await?;
         let response = binding.provider.complete(request).await?;
         drop(permit);
-        self.record_completion(&response, TokenUsageStage::from(stage), attribution)
-            .await;
+        self.record_completion(
+            &response,
+            binding.records_usage(),
+            TokenUsageStage::from(stage),
+            attribution,
+        )
+        .await;
         Ok(response)
     }
 
@@ -357,8 +365,19 @@ impl InferenceGateway {
     ) -> Result<InferenceEventStream, InferenceError> {
         let binding = self.binding(stage);
         let permit = self.acquire(&binding.key, wait).await?;
-        let stream = binding.provider.complete_stream(request).await?;
-        Ok(self.recorded_stream(stream, permit, TokenUsageStage::from(stage), attribution))
+        // Stages route through local providers, which present no run context; a
+        // metered run supplies its own when it drives the Platform provider.
+        let stream = binding
+            .provider
+            .complete_stream(request, &CallContext::default())
+            .await?;
+        Ok(self.recorded_stream(
+            stream,
+            permit,
+            binding.records_usage(),
+            TokenUsageStage::from(stage),
+            attribution,
+        ))
     }
 
     /// Probes a stage's completion endpoint with the canonical probe
@@ -397,8 +416,13 @@ impl InferenceGateway {
             let permit = self.acquire(&binding.key, PermitWait::Unbounded).await?;
             let response = binding.provider.complete(request).await?;
             drop(permit);
-            self.record_completion(&response, TokenUsageStage::Probe, attribution)
-                .await;
+            self.record_completion(
+                &response,
+                binding.records_usage(),
+                TokenUsageStage::Probe,
+                attribution,
+            )
+            .await;
 
             tracing::info!(
                 "model {} probe succeeded",
@@ -731,9 +755,13 @@ impl InferenceGateway {
     async fn record_completion(
         &self,
         response: &CompletionResponse,
+        record_usage: bool,
         stage: TokenUsageStage,
         attribution: &UsageAttribution,
     ) {
+        if !record_usage {
+            return;
+        }
         let usage = Usage::Completion {
             usage: response.usage.clone(),
         };
@@ -764,6 +792,7 @@ impl InferenceGateway {
         &self,
         stream: InferenceEventStream,
         permit: OwnedSemaphorePermit,
+        record_usage: bool,
         stage: TokenUsageStage,
         attribution: &UsageAttribution,
     ) -> InferenceEventStream {
@@ -778,7 +807,7 @@ impl InferenceGateway {
             let sink = Arc::clone(&sink);
             let attribution = Arc::clone(&attribution);
             async move {
-                if let Ok(InferenceEvent::Completed { response }) = &item {
+                if record_usage && let Ok(InferenceEvent::Completed { response }) = &item {
                     let usage = Usage::Completion {
                         usage: response.usage.clone(),
                     };
@@ -796,13 +825,6 @@ fn build_binding(
     stage: TaskType,
     spec: &CompletionStageSpec,
 ) -> Result<CompletionBinding, GatewayBuildError> {
-    // Platform is served by the managed gateway, not addressed by URL; refuse it
-    // before constructing a key so an absent base URL yields this honest error
-    // rather than an opaque endpoint-parse failure.
-    if spec.provider == ProviderKind::Platform {
-        return Err(GatewayBuildError::ManagedGatewayTransport);
-    }
-
     let key = ProviderKey::new(
         spec.provider.to_string(),
         &spec.base_url,
@@ -831,7 +853,14 @@ fn build_binding(
             &spec.model,
             &spec.api_key,
         )),
-        ProviderKind::Platform => return Err(GatewayBuildError::ManagedGatewayTransport),
+        // The Platform binding meters through the managed gateway; its bearer is
+        // the deployment credential and its base URL is the gateway's.
+        ProviderKind::Platform => Arc::new(PlatformInferenceProvider::new(
+            client,
+            &spec.base_url,
+            &spec.model,
+            &spec.api_key,
+        )),
     };
 
     Ok(CompletionBinding { provider, key })
@@ -1033,27 +1062,6 @@ mod tests {
     const STAGE_URL: &str = "http://localhost:11434";
     const EMBED_URL: &str = "http://localhost:11500";
 
-    #[test]
-    fn test_build_binding_refuses_platform_with_the_managed_gateway_error() {
-        // A Platform spec carries no local base URL; the binding must refuse it
-        // with the managed-gateway error before it tries to parse an endpoint.
-        let registry = ProviderRegistry::new(vec![]).expect("an empty registry");
-        let spec = CompletionStageSpec {
-            provider: ProviderKind::Platform,
-            model: "any".to_owned(),
-            base_url: String::new(),
-            api_key: String::new(),
-            parameters: StageParameters::default(),
-        };
-        let Err(err) = build_binding(&registry, TaskType::Triage, &spec) else {
-            panic!("platform must be refused, not bound to a local endpoint");
-        };
-        assert!(
-            matches!(err, GatewayBuildError::ManagedGatewayTransport),
-            "expected ManagedGatewayTransport, got {err:?}",
-        );
-    }
-
     // -- Scripted providers and a recording sink -----------------------------
 
     /// Counts buffered and streaming calls, returning canned responses.
@@ -1110,6 +1118,7 @@ mod tests {
         async fn complete_stream(
             &self,
             _request: CompletionRequest,
+            _context: &CallContext,
         ) -> Result<InferenceEventStream, InferenceError> {
             self.streamed_calls.fetch_add(1, Ordering::SeqCst);
             let response = self.canned_response();
@@ -1276,6 +1285,80 @@ mod tests {
             trace_id: Some("trace-1".to_owned()),
             ..UsageAttribution::default()
         }
+    }
+
+    /// A gateway whose stages bind to a Platform-keyed provider, recording into
+    /// `sink` — the fixture for the binding-level usage-suppression tests.
+    fn a_platform_gateway(sink: Arc<RecordingSink>) -> InferenceGateway {
+        let key = ProviderKey::new(
+            ProviderKind::Platform.as_str(),
+            STAGE_URL,
+            RequestClass::Inference,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(vec![(
+            key.clone(),
+            ProviderLimits {
+                max_in_flight: 1,
+                request_timeout: Duration::from_secs(5),
+            },
+        )])
+        .unwrap();
+        InferenceGateway::with_providers(InjectedProviders::uniform(
+            registry,
+            Arc::new(ScriptedInference::new()) as Arc<dyn InferenceProvider>,
+            key,
+            vec![],
+            sink as Arc<dyn LedgerSink>,
+        ))
+    }
+
+    #[tokio::test]
+    async fn test_a_platform_binding_records_no_local_usage() {
+        // A Platform binding meters server-side, so the gateway writes no local
+        // usage row for it — unlike every other binding, which does.
+        let sink = Arc::new(RecordingSink::default());
+        let gateway = a_platform_gateway(Arc::clone(&sink));
+
+        let stream = gateway
+            .complete_stream(
+                TaskType::Triage,
+                a_request(),
+                PermitWait::Unbounded,
+                &an_attribution(),
+            )
+            .await
+            .unwrap();
+        // Drain past the terminal, where any local usage would be recorded.
+        let _terminal: Vec<_> = stream.collect().await;
+
+        assert!(
+            sink.usages.lock().unwrap().is_empty(),
+            "a platform-routed call records nothing in the local ledger",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_platform_binding_records_no_local_usage_on_the_buffered_path() {
+        // The suppression lives on the binding, not on one dispatch method: the
+        // buffered `complete` path records nothing for a Platform binding either.
+        let sink = Arc::new(RecordingSink::default());
+        let gateway = a_platform_gateway(Arc::clone(&sink));
+
+        gateway
+            .complete(
+                TaskType::Triage,
+                a_request(),
+                PermitWait::Unbounded,
+                &an_attribution(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            sink.usages.lock().unwrap().is_empty(),
+            "a platform-routed buffered call records nothing in the local ledger",
+        );
     }
 
     fn an_embedding_target(fixture: &Fixture) -> EmbeddingTarget {

@@ -130,6 +130,85 @@ async fn test_stage_execution_commits_a_completed_thread_with_its_log() {
     );
 }
 
+/// An `AppendArtifact` record commits like any committed record and is present
+/// after a crash-resume: a job's product is durable in the thread's tail before
+/// any read surface exists to serve it.
+#[tokio::test]
+async fn test_an_append_artifact_record_survives_a_crash_resume() {
+    let ctx = TestDb::new().await;
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(&ctx, "artifact-durable").await;
+    let (job_id, _task_id) = {
+        let mut conn = raw_conn(&ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    // Claim the task and establish its thread as a worker would, then commit a
+    // job product under the claim.
+    let mut conn = raw_conn(&ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "artifact-test")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("find job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &a_routed_definition(tribal_domain::TaskType::Extraction),
+    )
+    .await
+    .expect("binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
+
+    let artifact = serde_json::json!({ "kind": "probe", "note": "runtime proof" });
+    let seq = tribal_agent_runtime::commit_artifact_record(
+        &mut conn,
+        &stage_thread.thread,
+        tribal_agent_runtime::DrivingClaim::stage(task.id(), task.claim_token().expect("token")),
+        &artifact,
+    )
+    .await
+    .expect("commit the artifact");
+    // The crash: drop the connection the commit ran on before any read surface.
+    drop(conn);
+
+    // A resumed reader re-derives the committed tail from a fresh connection.
+    let mut resumed = raw_conn(&ctx).await;
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread_id(&mut resumed, stage_thread.thread.id())
+        .await
+        .expect("read the committed tail");
+    let artifact_record = records
+        .iter()
+        .find(|record| record.kind() == AgentThreadRecordKind::AppendArtifact)
+        .expect("the artifact survived the crash-resume");
+    assert_eq!(artifact_record.seq(), seq);
+    assert_eq!(
+        artifact_record.content(),
+        &artifact,
+        "the artifact's payload is durable verbatim",
+    );
+}
+
 /// Drives suspend and resolve directly through the runtime against a live
 /// job: the same task row blocks and re-queues, no extra task rows
 /// appear, and the worker resumes the thread to completion — re-sending

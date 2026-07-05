@@ -8,7 +8,9 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
+use futures_util::stream;
 use sqlx::PgConnection;
+use tokio::sync::watch;
 use tracing::Instrument;
 use tribal_agent_runtime::{
     AcceptedSubmission, Admission, BUDGET_RECHECK_CAUSE, BudgetFailure, ChildTerminalOutcome,
@@ -24,10 +26,14 @@ use tribal_db::{
 };
 use tribal_domain::{
     AgentBindingVersionId, AgentThread, AgentThreadId, AgentThreadRecordKind, AgentThreadStatus,
-    AgentThreadSuspension, ExecutionBudgets, ExecutionSpend, RecoverableToolFailure,
-    ToolDescriptor, ToolExecutionMode, ToolFailure, ToolSafetyTier, UsageOwner, gen_ai, span_attrs,
+    AgentThreadSuspension, CompletionResponse, ExecutionBudgets, ExecutionSpend,
+    RecoverableToolFailure, ToolDescriptor, ToolExecutionMode, ToolFailure, ToolSafetyTier,
+    UsageOwner, gen_ai, span_attrs,
 };
-use tribal_inference::UsageAttribution;
+use tribal_inference::{
+    CallContext, CompletionRequest, InferenceError, InferenceEventStream, ProviderIdentity,
+    UsageAttribution,
+};
 use tribal_telemetry::{InferenceOperationRecord, MetricsRecorder};
 use tribal_test_utils::{TracingCapture, a_tool_call_response};
 
@@ -44,6 +50,11 @@ const RECHECK: RecheckPolicy = RecheckPolicy {
     delay_seconds: 300,
     bound: 3,
 };
+
+/// Ceiling for the cancel test to observe the loop reaching its streamed call —
+/// generous over the database setup that precedes it, never reached in a
+/// healthy run.
+const CANCEL_ENTRY_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -74,6 +85,47 @@ impl HeartbeatPump for TestPump {
     fn abort(&self) {
         self.aborts
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A provider whose streamed call opens but never yields its terminal event, so
+/// only a cancel can end the drain — the deterministic stand-in for a call in
+/// flight when cancellation arrives.
+struct HangingStreamProvider {
+    identity: ProviderIdentity,
+}
+
+impl HangingStreamProvider {
+    fn new() -> Self {
+        Self {
+            identity: ProviderIdentity {
+                name: "mock".to_owned(),
+                model: "mock-model".to_owned(),
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl InferenceProvider for HangingStreamProvider {
+    fn identity(&self) -> &ProviderIdentity {
+        &self.identity
+    }
+
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+    ) -> Result<CompletionResponse, InferenceError> {
+        unreachable!("the loop drives this provider only through its streaming path")
+    }
+
+    async fn complete_stream(
+        &self,
+        _request: CompletionRequest,
+        _context: &CallContext,
+    ) -> Result<InferenceEventStream, InferenceError> {
+        let never: InferenceEventStream = Box::pin(stream::pending());
+        Ok(never)
     }
 }
 
@@ -334,6 +386,9 @@ struct LoopHarness {
     pump: TestPump,
     job_id: tribal_domain::JobId,
     recorder: Arc<dyn tribal_telemetry::MetricsRecorder>,
+    /// The run's cancellation sender, held so the receiver `deps` hands the loop
+    /// stays open; a cancel test sends `true` on it mid-stream.
+    cancel: watch::Sender<bool>,
 }
 
 impl LoopHarness {
@@ -364,7 +419,17 @@ impl LoopHarness {
             max_tokens: None,
             permit_deadline: tokio::time::Instant::now() + Duration::from_secs(30),
             recorder: self.recorder.as_ref(),
+            // The harness holds the sender, so this receiver stays open; it only
+            // fires when a cancel test sends on it.
+            cancel: self.cancel.subscribe(),
         }
+    }
+
+    /// Swaps in a gateway built over a different provider, so a cancel test can
+    /// drive the loop against a streamed call that hangs until cancelled.
+    fn with_gateway(mut self, gateway: Arc<InferenceGateway>) -> Self {
+        self.gateway = gateway;
+        self
     }
 
     fn attribution(&self) -> UsageAttribution {
@@ -399,12 +464,41 @@ fn an_opening() -> tribal_agent_runtime::RenderedConversation {
     }
 }
 
+/// Builds the loop's gateway over a single injected inference provider.
+fn injected_gateway(
+    pool: &sqlx::PgPool,
+    provider: Arc<dyn InferenceProvider>,
+) -> Arc<InferenceGateway> {
+    let key = |class| {
+        ProviderKey::new("mock", "http://localhost:9999", class).expect("valid provider key")
+    };
+    let limits = || ProviderLimits {
+        max_in_flight: 10,
+        request_timeout: Duration::from_secs(30),
+    };
+    let registry = ProviderRegistry::new(vec![
+        (key(RequestClass::Inference), limits()),
+        (key(RequestClass::Embedding), limits()),
+    ])
+    .expect("valid registry");
+    let sink = Arc::new(PgLedgerSink::new(pool.clone(), noop_recorder()));
+    Arc::new(InferenceGateway::with_providers(
+        InjectedProviders::uniform(
+            registry,
+            provider,
+            key(RequestClass::Inference),
+            vec![],
+            sink,
+        ),
+    ))
+}
+
 /// Seeds a job, claims its extraction task, establishes its thread, and
 /// builds a loop-ready harness over the queued mock responses.
 async fn loop_harness(
     ctx: &TestDb,
     suffix: &str,
-    responses: Vec<tribal_domain::CompletionResponse>,
+    responses: Vec<CompletionResponse>,
 ) -> LoopHarness {
     let pool = ctx.create_pool().await.expect("create pool");
     let (principal_id, project_id, system_pv_id, user_pv_id) =
@@ -450,29 +544,7 @@ async fn loop_harness(
         builder = builder.on_complete(response, None);
     }
     let provider = Arc::new(builder.build());
-
-    let key = |class| {
-        ProviderKey::new("mock", "http://localhost:9999", class).expect("valid provider key")
-    };
-    let limits = || ProviderLimits {
-        max_in_flight: 10,
-        request_timeout: Duration::from_secs(30),
-    };
-    let registry = ProviderRegistry::new(vec![
-        (key(RequestClass::Inference), limits()),
-        (key(RequestClass::Embedding), limits()),
-    ])
-    .expect("valid registry");
-    let sink = Arc::new(PgLedgerSink::new(pool.clone(), noop_recorder()));
-    let gateway = Arc::new(InferenceGateway::with_providers(
-        InjectedProviders::uniform(
-            registry,
-            Arc::clone(&provider) as Arc<dyn InferenceProvider>,
-            key(RequestClass::Inference),
-            vec![],
-            sink,
-        ),
-    ));
+    let gateway = injected_gateway(&pool, Arc::clone(&provider) as Arc<dyn InferenceProvider>);
 
     let mut tools = ToolRegistry::new();
     tools
@@ -497,11 +569,12 @@ async fn loop_harness(
         pump: TestPump::default(),
         job_id,
         recorder: noop_recorder(),
+        cancel: watch::channel(false).0,
     }
 }
 
 /// A submit call's response, referencing the given claim id.
-fn submit_response(call_id: &str, claim_id: &str) -> tribal_domain::CompletionResponse {
+fn submit_response(call_id: &str, claim_id: &str) -> CompletionResponse {
     a_tool_call_response(&[(
         call_id,
         SUBMIT_RESULT_TOOL,
@@ -642,6 +715,69 @@ async fn test_loop_completes_through_submit_with_per_turn_attribution() {
     assert_eq!(harness.pump.finished.load(Ordering::SeqCst), 2);
     assert!(harness.pump.deltas.load(Ordering::SeqCst) >= 2);
     assert_eq!(harness.pump.aborts.load(Ordering::SeqCst), 0);
+}
+
+/// A cancellation that arrives mid-stream drops the in-flight call and the loop
+/// reaches `CancelIntent` — the run's cancel watch, raced against the stream,
+/// governs a call the turn-boundary check would not reach until the next turn.
+/// The provider's drain never yields, so only the cancel can end the call.
+#[tokio::test]
+async fn test_a_mid_stream_cancel_reaches_cancel_intent() {
+    let ctx = TestDb::new().await;
+    let harness = loop_harness(
+        &ctx,
+        "loop-cancel",
+        vec![a_tool_call_response(&[(
+            "call_0",
+            "lookup_note",
+            serde_json::json!({}),
+        )])],
+    )
+    .await;
+    let gateway = injected_gateway(&harness.pool, Arc::new(HangingStreamProvider::new()));
+    let harness = harness.with_gateway(gateway);
+
+    let attribution = harness.attribution();
+    let cancel = harness.cancel.clone();
+    let flip = async {
+        // Cancel once the loop is provably inside the streamed call, so the
+        // select drops an in-flight drain rather than short-circuiting before
+        // the call opens.
+        poll_until(
+            "the loop enters its streamed call",
+            POLL_INTERVAL,
+            CANCEL_ENTRY_TIMEOUT,
+            || async { (harness.pump.started.load(Ordering::SeqCst) == 1).then_some(()) },
+        )
+        .await;
+        cancel
+            .send(true)
+            .expect("the loop holds the watch receiver");
+    };
+    let (outcome, ()) = tokio::join!(
+        run_turn_loop(harness.deps(
+            an_opening(),
+            &attribution,
+            &MembershipPipeline,
+            ExecutionBudgets::default(),
+        )),
+        flip,
+    );
+
+    assert!(
+        matches!(outcome.expect("the loop runs"), LoopOutcome::CancelIntent),
+        "a mid-stream cancel drops the call and reaches CancelIntent",
+    );
+    assert_eq!(
+        harness.pump.finished.load(Ordering::SeqCst),
+        1,
+        "the streamed call was entered and torn down, not left hanging",
+    );
+    assert_eq!(
+        harness.pump.deltas.load(Ordering::SeqCst),
+        0,
+        "the drain was dropped before any event, not consumed",
+    );
 }
 
 /// A submission referencing an id the model was never shown bounces as

@@ -15,7 +15,7 @@ use tribal_domain::{
 
 use super::streaming::OpenAiStreamTranslator;
 use crate::{
-    CompletionRequest, InferenceError, InferenceProvider, Message, ProviderIdentity,
+    CallContext, CompletionRequest, InferenceError, InferenceProvider, Message, ProviderIdentity,
     ResponseFormat, apply_dialect,
     capabilities::{MaxOutputTokensParam, StructuredOutputMode, reconcile_temperature, resolve},
     error::{map_body_read_error, map_json_parse_error, map_send_error},
@@ -339,6 +339,7 @@ impl InferenceProvider for OpenAiInferenceProvider {
     async fn complete_stream(
         &self,
         request: CompletionRequest,
+        _context: &CallContext,
     ) -> Result<InferenceEventStream, InferenceError> {
         if request.messages.is_empty() {
             return Err(InferenceError::LlmCallFailed {

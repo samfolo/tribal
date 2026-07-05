@@ -483,7 +483,8 @@ pub(crate) fn map_runtime_error(
         source @ (AgentRuntimeError::ThreadMissing { .. }
         | AgentRuntimeError::ContentSerialisation { .. }
         | AgentRuntimeError::ToolExecution { .. }
-        | AgentRuntimeError::LogProjection { .. }) => StageError::Runtime {
+        | AgentRuntimeError::LogProjection { .. }
+        | AgentRuntimeError::CancelWatchClosed) => StageError::Runtime {
             context: context.to_owned(),
             source,
         },

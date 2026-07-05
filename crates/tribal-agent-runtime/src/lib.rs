@@ -46,6 +46,6 @@ pub use turn_loop::{
     AcceptedSubmission, Admission, AdmissionDecision, BUDGET_RECHECK_CAUSE, BudgetFailure,
     HeartbeatPump, LoopOutcome, RecheckPolicy, SUBMIT_RESULT_TOOL, SeenCorpus, SubmissionContent,
     SubmissionOutcome, SubmissionPipeline, ToolResultContent, TurnLoopDependencies, VerdictContent,
-    VerifierLaunch, admit_inference, carried_rechecks, commit_loop_terminal, decide_admission,
-    run_turn_loop, verdict_schema,
+    VerifierLaunch, admit_inference, carried_rechecks, commit_artifact_record,
+    commit_loop_terminal, decide_admission, run_turn_loop, verdict_schema,
 };

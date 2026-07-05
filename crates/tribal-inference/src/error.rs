@@ -13,6 +13,7 @@ use std::time::Duration;
 use reqwest::StatusCode;
 use thiserror::Error;
 use tribal_domain::EmbeddingErrorClass;
+use tribal_wire::gateway::GatewayError;
 
 use crate::http::{OVERLOADED_STATUS, body_preview, is_retryable_status};
 
@@ -85,6 +86,24 @@ pub enum InferenceError {
         /// How long the call waited before giving up, in milliseconds.
         waited_ms: u64,
     },
+
+    /// A metered call omitted `max_tokens`, which the platform gateway needs to
+    /// size the worst-case hold. Refused before any envelope is built, so the
+    /// spend cap can never be made opt-in by a missing bound.
+    #[error("the metered path requires max_tokens; model {model} request omitted it")]
+    MaxTokensRequired {
+        /// The model the refused call targeted.
+        model: String,
+    },
+
+    /// The platform gateway refused the metered call with a typed outcome. The
+    /// run's disposition (hard-stop, throttle, fail) is driven by the inner
+    /// [`GatewayError`], so it is carried whole rather than flattened.
+    #[error("the platform gateway refused the metered call: {error:?}")]
+    GatewayRefused {
+        /// The gateway's typed refusal.
+        error: GatewayError,
+    },
 }
 
 impl InferenceError {
@@ -128,7 +147,9 @@ pub fn classify_embedding_error(error: &InferenceError) -> EmbeddingErrorClass {
         InferenceError::PermitTimeout { .. } => EmbeddingErrorClass::Transient,
         InferenceError::EmbeddingFailed { .. }
         | InferenceError::LlmCallFailed { .. }
-        | InferenceError::ResponseParseFailed { .. } => EmbeddingErrorClass::Permanent,
+        | InferenceError::ResponseParseFailed { .. }
+        | InferenceError::MaxTokensRequired { .. }
+        | InferenceError::GatewayRefused { .. } => EmbeddingErrorClass::Permanent,
     }
 }
 

@@ -5571,6 +5571,7 @@ dependencies = [
  "tracing",
  "tribal-common",
  "tribal-domain",
+ "tribal-wire",
  "url",
  "wiremock",
 ]
@@ -5609,6 +5610,24 @@ dependencies = [
  "tribal-wire",
  "tribal-worker",
  "typed-builder",
+ "uuid",
+]
+
+[[package]]
+name = "tribal-runtime-db"
+version = "0.4.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde_json",
+ "sqlx",
+ "testcontainers",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tribal-domain",
+ "tribal-wire",
+ "url",
  "uuid",
 ]
 
@@ -5695,6 +5714,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
+ "futures-util",
  "jsonschema",
  "schemars 0.8.22",
  "serde",

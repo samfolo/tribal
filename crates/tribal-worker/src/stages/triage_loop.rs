@@ -13,6 +13,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use tokio::sync::watch;
 use tracing::Instrument;
 use tribal_agent_runtime::{
     LoopOutcome, RecheckPolicy, RecordedMessage, RenderedConversation, StageThread, ToolRegistry,
@@ -134,6 +135,10 @@ impl Worker {
             let submit_descriptor = submit_result_descriptor();
             let parameters = &stage_thread.binding.definition().parameters;
 
+            // The sender is held so the loop's cancel watch stays open; a
+            // pipeline stage never fires it and cancels only at the turn
+            // boundary.
+            let (_cancel, cancel) = watch::channel(false);
             let outcome = run_turn_loop(TurnLoopDependencies {
                 pool: self.pool(),
                 gateway: self.gateway(),
@@ -164,6 +169,7 @@ impl Worker {
                 max_tokens: parameters.max_tokens,
                 permit_deadline: deadline,
                 recorder: self.metrics(),
+                cancel,
             })
             .await
             .map_err(|source| map_runtime_error(STAGE_TRIAGE, "running the triage loop", source))?;
