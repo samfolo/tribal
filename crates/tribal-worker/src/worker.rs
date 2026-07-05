@@ -11,6 +11,7 @@ pub(crate) mod backoff;
 pub mod coupling;
 mod driver;
 mod metering;
+mod probe;
 mod thread;
 mod thread_sweep;
 
@@ -23,3 +24,4 @@ pub(crate) mod reindex_ops;
 pub use dispatch::Worker;
 pub use heartbeat::ThreadReclaimStats;
 pub use metering::MeteringTransport;
+pub use probe::ProbeSpec;
