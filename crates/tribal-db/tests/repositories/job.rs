@@ -17,10 +17,10 @@ use tribal_test_utils::{
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Inserts a principal, project, prompt_version, and system fingerprint
+/// Inserts a principal, project, `prompt_version`, and system fingerprint
 /// row, returning the IDs needed to create a job.
 ///
-/// A single prompt_version ID is reused for all six job FK columns.
+/// A single `prompt_version` ID is reused for all six job FK columns.
 async fn setup_job_prerequisites(
     txn: &mut sqlx::PgConnection,
     suffix: &str,

@@ -2,7 +2,7 @@ use tribal_db::{
     KnowledgeItemRepository, PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository,
     PgReferenceRepository, PrincipalRepository, ProjectRepository, ReferenceRepository,
 };
-use tribal_domain::{GitRemote, KnowledgeItemId, PrincipalId, ProjectId, ReferenceKind};
+use tribal_domain::{GitRemote, KnowledgeItemId, PrincipalId, ProjectId, Reference, ReferenceKind};
 use tribal_test_utils::{
     TestDb, a_new_knowledge_item, a_new_principal, a_new_project, a_new_reference,
 };
@@ -236,7 +236,7 @@ async fn test_find_by_knowledge_item_ids_returns_references_for_multiple_items()
         .expect("find");
 
     assert_eq!(found.len(), 2);
-    let values: Vec<&str> = found.iter().map(|r| r.value()).collect();
+    let values: Vec<&str> = found.iter().map(Reference::value).collect();
     assert!(values.contains(&"//src/a.rs"));
     assert!(values.contains(&"//src/b.rs"));
 }

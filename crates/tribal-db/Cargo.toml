@@ -13,10 +13,10 @@ test-helpers = []
 async-trait.workspace = true
 chrono.workspace = true
 half.workspace = true
-strum.workspace = true
 pgvector.workspace = true
 serde_json.workspace = true
 sqlx = { workspace = true, features = ["migrate", "macros"] }
+strum.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 typed-builder.workspace = true
@@ -29,3 +29,6 @@ tribal-domain.workspace = true
 tokio.workspace = true
 
 tribal-test-utils.workspace = true
+
+[lints]
+workspace = true

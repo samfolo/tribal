@@ -19,3 +19,6 @@ termbg.workspace = true
 textwrap.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
+
+[lints]
+workspace = true

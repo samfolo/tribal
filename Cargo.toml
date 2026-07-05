@@ -184,6 +184,14 @@ tribal-ui = { path = "crates/tribal-ui" }
 tribal-wire = { path = "crates/tribal-wire" }
 tribal-worker = { path = "crates/tribal-worker" }
 
+# The lint floor, inherited by every crate via `lints.workspace = true`:
+# clippy::pedantic at warn with warnings denied.
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"

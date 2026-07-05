@@ -14,9 +14,13 @@ chrono.workspace = true
 schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
+
 tribal-domain = { path = "../tribal-domain" }
 
 [dev-dependencies]
 # The golden-schema test generates schemas under the `schema` feature; it is
 # gated on that feature, so schemars is unused when the feature is off.
 schemars.workspace = true
+
+[lints]
+workspace = true

@@ -205,5 +205,14 @@ pub fn tags_path(provider: ProviderKind) -> Option<&'static str> {
 /// Returns a deterministic embedding vector of the given dimensionality.
 #[must_use]
 pub fn fixed_embedding_vector(dimensions: u32) -> Vec<f32> {
-    (0..dimensions).map(|i| (i as f32 * 0.001).sin()).collect()
+    (0..dimensions)
+        .map(|i| {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "synthetic test vector; the index never approaches f32's exact-integer limit"
+            )]
+            let index = i as f32;
+            (index * 0.001).sin()
+        })
+        .collect()
 }

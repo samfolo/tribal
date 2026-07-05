@@ -44,7 +44,7 @@ pub fn candidate(kind: &str, content: &str) -> CandidateSpec {
 /// Creates a relation hint between two batch indices.
 ///
 /// Argument order reads as a sentence: `hint(1, "derived_from", 0)`
-/// → "batch item 1 derived_from batch item 0".
+/// → "batch item 1 `derived_from` batch item 0".
 #[must_use]
 pub fn hint(source: usize, hint_type: &str, target: usize) -> RelationHintSpec {
     RelationHintSpec {
@@ -64,7 +64,7 @@ impl CandidateSpec {
 
     /// Adds a suggested reference to this candidate.
     #[must_use]
-    pub fn reference(mut self, r: ReferenceSpec<'_>) -> Self {
+    pub fn reference(mut self, r: &ReferenceSpec<'_>) -> Self {
         let mut obj = json!({
             "reference_type": r.kind,
             "value": r.value,

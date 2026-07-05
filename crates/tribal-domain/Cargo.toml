@@ -19,3 +19,6 @@ thiserror.workspace = true
 typed-builder.workspace = true
 url.workspace = true
 uuid.workspace = true
+
+[lints]
+workspace = true

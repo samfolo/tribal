@@ -169,7 +169,7 @@ async fn test_database_unreachable_cascades_skip_to_db_dependent_checks() {
     );
     let binary = row_status(&output, "binary_uniqueness");
     assert!(
-        matches!(binary, Some("pass") | Some("warn")),
+        matches!(binary, Some("pass" | "warn")),
         "binary_uniqueness should run (pass or warn), got {binary:?}",
     );
 }

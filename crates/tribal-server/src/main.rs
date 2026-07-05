@@ -1,5 +1,3 @@
-#![warn(clippy::pedantic)]
-#![deny(warnings)]
 //! Tribal server binary — CLI entry point.
 
 use std::process::ExitCode;

@@ -1,6 +1,6 @@
-#![warn(clippy::pedantic)]
+// Most pub methods return owned data whose result is benign to ignore;
+// #[must_use] is applied by hand where discarding the value is a logic error.
 #![allow(clippy::must_use_candidate)]
-#![deny(warnings)]
 //! The agent runtime: durable threads and the turn machinery.
 //!
 //! An agent run is a thread: an append-only sequence of records

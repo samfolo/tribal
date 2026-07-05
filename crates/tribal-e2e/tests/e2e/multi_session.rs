@@ -30,6 +30,10 @@ use crate::harness::{
 ///
 /// Theme: three Meridian teams — backend, frontend, platform — using
 /// the same Tribal instance without cross-contamination.
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario reads as one linear narrative"
+)]
 #[tokio::test]
 async fn test_multi_session_isolation() {
     let mut harness = TestHarness::init(|setup| {
@@ -120,8 +124,8 @@ async fn test_multi_session_isolation() {
                 .await
                 .expect("insert platform item embedding");
 
-            seed.label("backend", backend.id());
-            seed.label("frontend", frontend.id());
+            seed.label("backend", &backend.id());
+            seed.label("frontend", &frontend.id());
         });
     })
     .await;

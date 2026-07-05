@@ -1,3 +1,5 @@
+use tribal_domain::TagRegistryEntry;
+
 use super::{
     common::*,
     fixtures::{triage_duplicate_response_json, triage_novel_response_json},
@@ -133,7 +135,7 @@ async fn test_triage_novel_path() {
         .find_all(&mut conn)
         .await
         .expect("find tags");
-    let tag_names: Vec<&str> = tags.iter().map(|t| t.tag()).collect();
+    let tag_names: Vec<&str> = tags.iter().map(TagRegistryEntry::tag).collect();
     assert!(
         tag_names.contains(&"rust"),
         "tag registry should contain 'rust': {tag_names:?}",
@@ -523,7 +525,7 @@ async fn test_triage_duplicate_out_of_range_downgrades_to_novel() {
 }
 
 /// Verifies that an unparseable LLM response causes the triage task
-/// to be requeued with a ParseError error kind.
+/// to be requeued with a `ParseError` error kind.
 #[tokio::test]
 async fn test_triage_parse_failure() {
     let ctx = TestDb::new().await;
@@ -613,7 +615,7 @@ async fn test_triage_parse_failure() {
 }
 
 /// Verifies the idempotency guard: when a triage result already exists
-/// for the `(job_id, batch_index)` pair, the stage returns NoOp without
+/// for the `(job_id, batch_index)` pair, the stage returns `NoOp` without
 /// calling any providers, and the task is completed.
 #[tokio::test]
 async fn test_triage_idempotency_skip() {

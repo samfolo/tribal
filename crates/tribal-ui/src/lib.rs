@@ -5,9 +5,6 @@
 //! and catalogue, the width helpers, and per-stream colour and theme
 //! probing.
 
-#![deny(warnings)]
-#![warn(clippy::pedantic)]
-
 mod component;
 mod components;
 mod format;

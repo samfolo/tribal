@@ -1,6 +1,6 @@
-#![warn(clippy::pedantic)]
+// Factories and helpers return owned fixtures whose result is benign to
+// ignore; #[must_use] is applied by hand where discarding it is a logic error.
 #![allow(clippy::must_use_candidate)]
-#![deny(warnings)]
 //! Shared test infrastructure for Tribal: domain type factories,
 //! test database setup and teardown, mock inference providers,
 //! and assertion helpers.

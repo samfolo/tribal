@@ -1,5 +1,3 @@
-#![warn(clippy::pedantic)]
-#![deny(warnings)]
 //! The runtime database: the managed job plane a managed worker claims off.
 //!
 //! Holds `run_job` (the per-tenant work queue) and `tenant_slot` (the single-row

@@ -16,3 +16,6 @@ sha2.workspace = true
 tokio.workspace = true
 
 tribal-domain.workspace = true
+
+[lints]
+workspace = true

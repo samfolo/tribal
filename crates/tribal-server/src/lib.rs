@@ -1,5 +1,3 @@
-#![warn(clippy::pedantic)]
-#![deny(warnings)]
 //! Tribal server library — programmatic API for the server lifecycle.
 
 mod app;

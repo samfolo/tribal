@@ -73,7 +73,7 @@ impl TriageFixtureBuilder {
     /// Adds a similar item classification referenced by its zero-based index
     /// in the prompt's numbered list.
     #[must_use]
-    pub fn similar_item(mut self, item: SimilarItemSpec<'_>) -> Self {
+    pub fn similar_item(mut self, item: &SimilarItemSpec<'_>) -> Self {
         self.similar_items.push(SimilarItemEntry {
             item: SimilarItemRef::Index(item.context_index),
             suggested_relation: item.suggested_relation.to_owned(),
@@ -112,7 +112,7 @@ impl TriageFixtureBuilder {
     /// through [`build_resolved`](Self::build_resolved).
     #[must_use]
     pub fn build(self) -> Value {
-        let similar_items = self
+        let similar_items: Vec<Value> = self
             .similar_items
             .iter()
             .map(|entry| {
@@ -125,7 +125,7 @@ impl TriageFixtureBuilder {
                 similar_item_json(index, &entry.suggested_relation, &entry.justification)
             })
             .collect();
-        triage_response(&self.decision, self.matched_index, similar_items)
+        triage_response(&self.decision, self.matched_index, &similar_items)
     }
 
     /// Produces a [`MockResponse`] whose content-referenced similar items are
@@ -135,7 +135,7 @@ impl TriageFixtureBuilder {
     pub fn build_resolved(self) -> MockResponse {
         MockResponse::DynamicFixture(Arc::new(move |request: &Request| {
             let body = String::from_utf8_lossy(&request.body);
-            let similar_items = self
+            let similar_items: Vec<Value> = self
                 .similar_items
                 .iter()
                 .map(|entry| {
@@ -148,7 +148,7 @@ impl TriageFixtureBuilder {
                     similar_item_json(index, &entry.suggested_relation, &entry.justification)
                 })
                 .collect();
-            triage_response(&self.decision, self.matched_index, similar_items)
+            triage_response(&self.decision, self.matched_index, &similar_items)
         }))
     }
 }
@@ -165,7 +165,7 @@ fn similar_item_json(context_index: u32, suggested_relation: &str, justification
     })
 }
 
-fn triage_response(decision: &str, matched_index: Option<u32>, similar_items: Vec<Value>) -> Value {
+fn triage_response(decision: &str, matched_index: Option<u32>, similar_items: &[Value]) -> Value {
     let mut outcome = json!({ "decision": decision });
     if let Some(index) = matched_index {
         outcome["matched_item"] = json!({ "kind": "context_index", "context_index": index });
@@ -196,7 +196,7 @@ fn resolve_context_index(body: &str, substring: &str) -> u32 {
     });
     let digits: String = body[header_pos + HEADER.len()..]
         .chars()
-        .take_while(|c| c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
         .collect();
     digits
         .parse()

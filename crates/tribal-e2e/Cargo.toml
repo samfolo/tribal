@@ -21,7 +21,6 @@ url.workspace = true
 wiremock.workspace = true
 
 tribal = { workspace = true, features = ["test-helpers"] }
-
 tribal-auth = { workspace = true, features = ["test-helpers"] }
 tribal-common.workspace = true
 tribal-config.workspace = true
@@ -31,3 +30,6 @@ tribal-inference = { workspace = true, features = ["test-helpers"] }
 tribal-mcp = { workspace = true, features = ["test-helpers"] }
 tribal-telemetry.workspace = true
 tribal-test-utils.workspace = true
+
+[lints]
+workspace = true

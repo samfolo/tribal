@@ -51,8 +51,8 @@ async fn test_session_context_lifecycle() {
                 .await
                 .expect("insert canopy-dashboard project");
 
-            seed.label("project_1", project_1.id());
-            seed.label("project_2", project_2.id());
+            seed.label("project_1", &project_1.id());
+            seed.label("project_2", &project_2.id());
         });
     })
     .await;

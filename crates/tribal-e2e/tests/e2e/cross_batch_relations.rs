@@ -60,7 +60,7 @@ async fn test_cross_batch_relations() {
                              costs by 40% through snapshot compaction",
                         )
                         .tags(&["event-sourcing", "storage", "performance"])
-                        .reference(ReferenceSpec {
+                        .reference(&ReferenceSpec {
                             kind: "file_path",
                             value: "services/doc-history/src/compaction.rs",
                             description: Some("Snapshot compaction implementation"),
