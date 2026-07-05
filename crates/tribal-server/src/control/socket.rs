@@ -688,6 +688,106 @@ mod tests {
         );
     }
 
+    /// Opens a connection and completes the handshake, returning the framed
+    /// halves — an established channel holding one connection permit.
+    async fn establish(
+        socket_path: &Path,
+    ) -> (BufReader<tokio::net::unix::OwnedReadHalf>, OwnedWriteHalf) {
+        let client = UnixStream::connect(socket_path).await.expect("connect");
+        let (read_half, mut write_half) = client.into_split();
+        let mut reader = BufReader::new(read_half);
+        write_frame(
+            &mut write_half,
+            &ClientHello {
+                protocol_version: CONTROL_CONTRACT_VERSION,
+            },
+        )
+        .await
+        .expect("send hello");
+        let _hello: ServerHello = read_typed_frame(&mut reader)
+            .await
+            .expect("read server hello")
+            .expect("a hello frame is present");
+        (reader, write_half)
+    }
+
+    #[tokio::test]
+    async fn test_connections_beyond_the_cap_are_refused_without_wedging_established_ones() {
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("control.sock");
+        let descriptor_path = dir.path().join("control.json");
+        let cancellation_token = CancellationToken::new();
+        let context = test_context_with(cancellation_token.clone());
+
+        let plane = ControlPlane::bind_at(socket_path.clone(), descriptor_path, context)
+            .await
+            .expect("the plane binds");
+        let serve = tokio::spawn(plane.serve());
+
+        // Dial sequentially to the cap, each handshake completing before the
+        // next dial — every held ServerHello proves a permit is taken and its
+        // open channel keeps it.
+        let mut channels = Vec::with_capacity(MAX_CONCURRENT_CONNECTIONS);
+        for _ in 0..MAX_CONCURRENT_CONNECTIONS {
+            channels.push(establish(&socket_path).await);
+        }
+
+        // One past the cap: the connection is accepted at the listener and
+        // dropped without a ServerHello — the refusal, observed as an ended
+        // stream rather than a handshake.
+        let flooding = UnixStream::connect(&socket_path)
+            .await
+            .expect("the OS-level connect still succeeds");
+        let (read_half, mut write_half) = flooding.into_split();
+        let mut reader = BufReader::new(read_half);
+        // The server may already have closed its end; the write's outcome is
+        // not the refusal signal, the missing hello below is.
+        let _ = write_frame(
+            &mut write_half,
+            &ClientHello {
+                protocol_version: CONTROL_CONTRACT_VERSION,
+            },
+        )
+        .await;
+        let refused: Result<Option<ServerHello>, _> =
+            tokio::time::timeout(Duration::from_secs(5), read_typed_frame(&mut reader))
+                .await
+                .expect("the refusal settles before the timeout");
+        assert!(
+            matches!(refused, Ok(None) | Err(_)),
+            "a connection beyond the cap receives no ServerHello",
+        );
+
+        // An established channel still answers a request.
+        let (reader, write_half) = channels.first_mut().expect("a full set of channels");
+        write_frame(
+            write_half,
+            &ControlRequest {
+                jsonrpc: JsonRpcVersion,
+                id: RequestId(7),
+                method: "config.path".to_owned(),
+                params: None,
+            },
+        )
+        .await
+        .expect("the established channel accepts a request");
+        let response: ControlResponse = read_typed_frame(reader)
+            .await
+            .expect("the established channel answers")
+            .expect("a response frame is present");
+        assert_eq!(response.id, RequestId(7));
+        assert!(
+            matches!(response.outcome, ResponseResult::Success { .. }),
+            "the flood never wedges an already-open channel",
+        );
+
+        drop(channels);
+        cancellation_token.cancel();
+        serve.await.expect("the serve task ends");
+    }
+
     #[tokio::test]
     async fn test_a_second_bind_is_refused_while_the_first_serves() {
         let dir = tempfile::tempdir().expect("tempdir");
