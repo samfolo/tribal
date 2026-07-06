@@ -137,6 +137,15 @@ pub enum ManagedRunError {
     /// The settle-or-release teardown crossing failed.
     #[error("the teardown crossing failed: {0}")]
     Teardown(#[from] TeardownError),
+    /// An adopted thread held a lifecycle status a managed run never reaches:
+    /// a managed thread only ever terminalizes to `Completed` or `Failed`, so
+    /// a `Cancelled` or `DeadLetter` status is a consistency fault, surfaced
+    /// rather than converged on a guessed disposition.
+    #[error("a managed run's thread held an unexpected status: {status}")]
+    UnexpectedThreadStatus {
+        /// The status the adopted thread unexpectedly held.
+        status: AgentThreadStatus,
+    },
     /// Acquiring a database connection failed.
     #[error("acquiring a {plane} connection failed: {source}")]
     Pool {
@@ -162,6 +171,24 @@ struct Progress {
     /// by the last cap resolution the log holds, cleared by the call it commits.
     /// A crash between the resolve and the call re-derives it here.
     pending_cap_cause: Option<WakeCause>,
+}
+
+/// What the adoption of a claimed run's thread resolved to.
+enum Adoption {
+    /// The thread is running; drive it. `resumed_cap` carries the cause of a
+    /// cap wait this adoption resolved, so the re-attempted call fails or
+    /// re-suspends on a renewed refusal rather than parking afresh.
+    Running {
+        /// The cap wake cause under which the re-attempt runs, if this run
+        /// resumed a money-driven cap wait.
+        resumed_cap: Option<WakeCause>,
+    },
+    /// The thread was already terminal; settle the job on its disposition —
+    /// `Completed` to `done`, `Failed` to `cancelled` — so the converging
+    /// worker reads the thread's own truth rather than a guessed one.
+    Terminal(ManagedRunDisposition),
+    /// The thread is suspended and its wait is unsatisfied; re-park and yield.
+    NotReady,
 }
 
 /// Drives one claimed managed run to a settled outcome, adopting its thread
@@ -202,14 +229,12 @@ pub async fn drive_managed_run(
         .cancel_requested(&mut runtime, run_key)
         .await?
     {
-        return teardown(
+        return teardown_cancelled(
             &mut runtime,
             gateway,
             run_key,
             claim_token,
-            &position_keys(run_key, progress.calls_done),
-            PostRunningState::Cancelled,
-            ManagedRunOutcome::Cancelled,
+            progress.calls_done,
             config,
         )
         .await;
@@ -226,15 +251,16 @@ pub async fn drive_managed_run(
     )
     .await?
     {
-        Adoption::Terminal => {
+        Adoption::Terminal(disposition) => {
+            let (terminal, outcome) = settled_terminal(disposition);
             return teardown(
                 &mut runtime,
                 gateway,
                 run_key,
                 claim_token,
                 &position_keys(run_key, progress.calls_done),
-                PostRunningState::Done,
-                ManagedRunOutcome::Done,
+                terminal,
+                outcome,
                 config,
             )
             .await;
@@ -276,22 +302,6 @@ pub async fn drive_managed_run(
     heartbeat.abort();
     let _ = heartbeat.await;
     outcome
-}
-
-/// What the adoption of a claimed run's thread resolved to.
-enum Adoption {
-    /// The thread is running; drive it. `resumed_cap` carries the cause of a
-    /// cap wait this adoption resolved, so the re-attempted call fails or
-    /// re-suspends on a renewed refusal rather than parking afresh.
-    Running {
-        /// The cap wake cause under which the re-attempt runs, if this run
-        /// resumed a money-driven cap wait.
-        resumed_cap: Option<WakeCause>,
-    },
-    /// The thread was already terminal; settle the job to converge.
-    Terminal,
-    /// The thread is suspended and its wait is unsatisfied; re-park and yield.
-    NotReady,
 }
 
 /// Brings an adopted thread to a drivable state, or reports why it cannot be.
@@ -341,8 +351,13 @@ async fn adopt(
         AgentThreadStatus::Running => Ok(Adoption::Running {
             resumed_cap: progress.pending_cap_cause,
         }),
-        // Completed, Failed, Cancelled, DeadLetter: the run already terminated.
-        _ => Ok(Adoption::Terminal),
+        // The run already terminated; carry its disposition so the settle reads
+        // the thread's own truth. A managed thread reaches only these two.
+        AgentThreadStatus::Completed => Ok(Adoption::Terminal(ManagedRunDisposition::Completed)),
+        AgentThreadStatus::Failed => Ok(Adoption::Terminal(ManagedRunDisposition::Failed)),
+        status @ (AgentThreadStatus::Cancelled | AgentThreadStatus::DeadLetter) => {
+            Err(ManagedRunError::UnexpectedThreadStatus { status })
+        }
     }
 }
 
@@ -369,25 +384,21 @@ async fn walk(
     let mut resumed_cap = resumed_cap;
     // The metered calls, resuming from the committed count.
     for index in progress.calls_done..spec.calls {
+        // A cancel observed before this call dispatches: nothing new is in
+        // flight, so only the calls already committed need acking.
         if cancel_watch.is_cancelled() {
-            return teardown(
-                runtime,
-                gateway,
-                run_key,
-                claim_token,
-                &position_keys(run_key, index),
-                PostRunningState::Cancelled,
-                ManagedRunOutcome::Cancelled,
-                config,
-            )
-            .await;
+            return teardown_cancelled(runtime, gateway, run_key, claim_token, index, config).await;
         }
         let context = CallContext {
             position_key: Some(position_key(run_key, index)),
             grant: Some(grant.clone()),
         };
         let call = tokio::select! {
-            () = cancel_watch.cancelled() => continue,
+            // A cancel racing the in-flight call: its dispatch may have filed a
+            // hold, so ack through this call's key too as the teardown reconciles.
+            () = cancel_watch.cancelled() => {
+                return teardown_cancelled(runtime, gateway, run_key, claim_token, index + 1, config).await;
+            }
             result = drive_call(provider, probe_request(spec.system.clone(), config.call_max_tokens), &context) => result,
         };
         let response = match call {
@@ -420,6 +431,13 @@ async fn walk(
             }
             Err(source) => return Err(source.into()),
         }
+    }
+
+    // A cancel observed after the last call, before the run finalizes, tears
+    // down rather than letting the wait, artifact, and terminal complete it.
+    if cancel_watch.is_cancelled() {
+        return teardown_cancelled(runtime, gateway, run_key, claim_token, spec.calls, config)
+            .await;
     }
 
     // The durable wait, once, parking the run until its signal.
@@ -463,14 +481,15 @@ async fn walk(
         Err(AgentRuntimeError::LeaseLost { .. }) => return Ok(ManagedRunOutcome::OwnershipLost),
         Err(source) => return Err(source.into()),
     }
+    let (terminal, outcome) = settled_terminal(ManagedRunDisposition::Completed);
     teardown(
         runtime,
         gateway,
         run_key,
         claim_token,
         &position_keys(run_key, spec.calls),
-        PostRunningState::Done,
-        ManagedRunOutcome::Done,
+        terminal,
+        outcome,
         config,
     )
     .await
@@ -585,14 +604,15 @@ async fn fail_run(
         Err(AgentRuntimeError::LeaseLost { .. }) => return Ok(ManagedRunOutcome::OwnershipLost),
         Err(source) => return Err(source.into()),
     }
+    let (terminal, outcome) = settled_terminal(ManagedRunDisposition::Failed);
     teardown(
         runtime,
         gateway,
         run_key,
         claim_token,
         &position_keys(run_key, index),
-        PostRunningState::Cancelled,
-        ManagedRunOutcome::Failed,
+        terminal,
+        outcome,
         config,
     )
     .await
@@ -665,6 +685,16 @@ fn is_durable_wait(record: &AgentThreadRecord, spec: &ProbeSpec) -> bool {
     )
 }
 
+/// The job settle a thread terminal maps to: a completed run settles the job
+/// `done`; a failed run settles it `cancelled` on the thread's own truth. The
+/// one place the disposition-to-job-state split lives.
+fn settled_terminal(disposition: ManagedRunDisposition) -> (PostRunningState, ManagedRunOutcome) {
+    match disposition {
+        ManagedRunDisposition::Completed => (PostRunningState::Done, ManagedRunOutcome::Done),
+        ManagedRunDisposition::Failed => (PostRunningState::Cancelled, ManagedRunOutcome::Failed),
+    }
+}
+
 /// Settles the job to its terminal through the poll-and-ack teardown, reporting
 /// `settled` once its holds resolve. `terminal` is the job state (a failed run
 /// settles the job to `cancelled`); `settled` is the outcome the drive reports.
@@ -692,6 +722,30 @@ async fn teardown(
         TeardownOutcome::HoldsStillLive => ManagedRunOutcome::HoldsStillLive,
         TeardownOutcome::OwnershipLost => ManagedRunOutcome::OwnershipLost,
     })
+}
+
+/// Tears the run down to `cancelled`, acking the `opened` position keys — the
+/// shared exit every observed cancel funnels through, whether seen up front, in
+/// the call loop, or after it.
+async fn teardown_cancelled(
+    runtime: &mut PgConnection,
+    gateway: &impl MeteringGateway,
+    run_key: RunJobId,
+    claim_token: uuid::Uuid,
+    opened: u32,
+    config: &ManagedConfig,
+) -> Result<ManagedRunOutcome, ManagedRunError> {
+    teardown(
+        runtime,
+        gateway,
+        run_key,
+        claim_token,
+        &position_keys(run_key, opened),
+        PostRunningState::Cancelled,
+        ManagedRunOutcome::Cancelled,
+        config,
+    )
+    .await
 }
 
 /// The position keys a run's calls carry — `{run_key}:{index}` for each, keyed
