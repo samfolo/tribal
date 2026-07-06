@@ -109,9 +109,9 @@ async fn debit_total(ledger: &PgPool, account_id: &str) -> i64 {
 
 /// The happy path against the real gateway: a probe drives from claim to `done`,
 /// its one metered call bracketed through the gateway to a settled charge. Every
-/// edge is asserted on state — the ledger's debit equals the balance it moved,
-/// the gateway's hold settled and is findable under the run's anchor, the
-/// response store released its custody, and the run's own durable copy remains.
+/// edge is asserted on state — the ledger booked a debit for the call, the
+/// gateway's hold settled and is findable under the run's anchor, the response
+/// store released its custody, and the run's own durable copy remains.
 #[tokio::test]
 async fn managed_run_drives_the_metered_bracket_to_a_charge() {
     let Some(stack) = stack() else { return };

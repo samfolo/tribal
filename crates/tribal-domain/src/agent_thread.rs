@@ -153,10 +153,7 @@ pub enum AgentThreadSuspension {
         /// exhausted.
         unchanged_rechecks: u32,
     },
-    /// A durable wait on an opaque signal another actor resolves
-    /// (agent-runtime §4's `WaitSignal`), realised on the existing suspend
-    /// machinery. The managed run's durable wait and its money-driven cap
-    /// requeue both park here.
+    /// A durable wait parked until another actor resolves an opaque signal.
     Signal {
         /// The opaque signal key the resolving actor names.
         key: String,
