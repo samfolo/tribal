@@ -207,7 +207,10 @@ pub async fn drive_managed_run(
     )
     .await;
 
+    // Await the abort so the heartbeat's lease connection is released before the
+    // drive returns, rather than on a task that outlives it.
     heartbeat.abort();
+    let _ = heartbeat.await;
     outcome
 }
 

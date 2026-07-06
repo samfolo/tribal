@@ -441,6 +441,7 @@ async fn bootstrap(
         instance_id.to_string(),
         Arc::clone(&job_state_txs),
         metrics.clone(),
+        None,
     ));
 
     // -- AppState assembly ---------------------------------------------------

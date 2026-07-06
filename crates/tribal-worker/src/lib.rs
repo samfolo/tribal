@@ -24,8 +24,8 @@ pub use error::WorkerError;
 pub use gauge_task::run_queue_health_gauges;
 pub use prompt::{reserved_keys, synthetic_validation_context};
 pub use worker::{
-    ManagedConfig, ManagedRunError, ManagedRunOutcome, MeteringTransport, ProbeSpec,
-    ThreadReclaimStats, Worker, coupling, drive_managed_run,
+    ManagedConfig, ManagedRunError, ManagedRunOutcome, ManagedRuntime, MeteringTransport,
+    ProbeSpec, ThreadReclaimStats, Worker, coupling, drive_managed_run,
     reindex::{ReindexCreationOutcome, ReindexTarget, create_reindex_run, resolve_reindex_target},
     reindex_ops::{
         ReindexCancelOutcome, ReindexOpError, ReindexPruneOutcome, ReindexResolution,

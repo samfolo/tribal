@@ -26,6 +26,7 @@ use crate::{
     error::{SEMAPHORE_CLOSED, STAGE_PRE_DISPATCH, StageError, WorkerError},
     stages::StageRun,
     worker::{
+        ManagedRuntime,
         backfill::BackfillProcessor,
         backoff::BACKOFF_CAP_SECS,
         heartbeat::{
@@ -67,6 +68,9 @@ pub struct Worker {
     instance_id: String,
     job_state_txs: JobStateTxs,
     metrics: Arc<dyn MetricsRecorder>,
+    /// The job-plane dependencies the managed loop drives with, absent on a
+    /// worker that runs no job plane.
+    managed: Option<ManagedRuntime>,
     /// Current number of in-flight tasks.
     active_tasks: Arc<AtomicUsize>,
     /// High-water mark of simultaneously in-flight tasks.
@@ -91,6 +95,7 @@ impl Worker {
         instance_id: String,
         job_state_txs: JobStateTxs,
         metrics: Arc<dyn MetricsRecorder>,
+        managed: Option<ManagedRuntime>,
     ) -> Self {
         Self {
             pool,
@@ -104,6 +109,7 @@ impl Worker {
             instance_id,
             job_state_txs,
             metrics,
+            managed,
             active_tasks: Arc::new(AtomicUsize::new(0)),
             peak_concurrent: Arc::new(AtomicUsize::new(0)),
         }
@@ -128,6 +134,12 @@ impl Worker {
     /// Returns a reference to the inference gateway.
     pub(crate) fn gateway(&self) -> &Arc<InferenceGateway> {
         &self.gateway
+    }
+
+    /// Returns the job-plane dependencies, absent on a worker that runs no job
+    /// plane.
+    pub(crate) fn managed(&self) -> Option<&ManagedRuntime> {
+        self.managed.as_ref()
     }
 
     /// Returns the boot-time stage endpoint specs.
@@ -285,12 +297,18 @@ impl Worker {
             driver_worker.run_driver_loop().await;
         });
 
+        let managed_worker = Arc::clone(self);
+        let managed_handle = tokio::spawn(async move {
+            managed_worker.run_managed_loop().await;
+        });
+
         loop {
             tokio::select! {
                 () = self.cancellation_token.cancelled() => {
                     reclaim_handle.abort();
                     reindex_handle.abort();
                     driver_handle.abort();
+                    managed_handle.abort();
                     tracing::info!(instance_id = %self.instance_id, "worker cancelled, draining in-flight tasks");
                     while in_flight.join_next().await.is_some() {}
                     return Err(WorkerError::Cancelled);

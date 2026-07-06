@@ -20,6 +20,7 @@ mod extraction;
 mod fixtures;
 mod lifecycle;
 mod managed;
+mod managed_run;
 mod relation;
 mod threads;
 mod token_usage;

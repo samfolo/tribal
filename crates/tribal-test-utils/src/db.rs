@@ -183,6 +183,61 @@ async fn base_url() -> Result<String, TestDbError> {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime database (the run_job plane, a separate schema on the same server)
+// ---------------------------------------------------------------------------
+
+/// A provisioned, migrated runtime database for one test — the `run_job` plane,
+/// a distinct database from the core [`TestDb`] on the same server.
+pub struct RuntimeTestDb {
+    pool: PgPool,
+}
+
+impl RuntimeTestDb {
+    /// The pool connected to this test's isolated runtime database.
+    #[must_use]
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+}
+
+/// Provisions a fresh runtime database migrated to head, on the same server the
+/// core [`TestDb`] uses. The two planes are separate databases by design.
+///
+/// # Panics
+///
+/// Panics if the server cannot be reached or the database cannot be created or
+/// migrated — a test-infrastructure failure that should abort loudly.
+pub async fn provision_runtime_db() -> RuntimeTestDb {
+    let base = base_url().await.expect("resolve the base server");
+    let name = format!("runtime_test_{}", Uuid::new_v4().simple());
+
+    let admin_url = replace_database(&base, MAINTENANCE_DB_NAME);
+    let mut admin = PgConnection::connect(&admin_url)
+        .await
+        .expect("connect to the maintenance database");
+    admin
+        .execute(format!("CREATE DATABASE \"{name}\"").as_str())
+        .await
+        .expect("create the runtime test database");
+    admin
+        .close()
+        .await
+        .expect("close the maintenance connection");
+
+    let pool = PgPoolOptions::new()
+        .max_connections(16)
+        .connect(&replace_database(&base, &name))
+        .await
+        .expect("connect to the runtime test database");
+    tribal_runtime_db::MIGRATOR
+        .run(&pool)
+        .await
+        .expect("migrate the runtime database to head");
+
+    RuntimeTestDb { pool }
+}
+
+// ---------------------------------------------------------------------------
 // Template construction
 // ---------------------------------------------------------------------------
 

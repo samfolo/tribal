@@ -23,7 +23,10 @@ pub mod snapshot;
 pub mod text;
 mod tracing_capture;
 
-pub use db::{TestDb, TestTransaction, build_test_template, env_lock, lazy_pool};
+pub use db::{
+    RuntimeTestDb, TestDb, TestTransaction, build_test_template, env_lock, lazy_pool,
+    provision_runtime_db,
+};
 pub use error::TestDbError;
 pub use factories::*;
 pub use fixtures::*;

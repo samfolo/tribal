@@ -10,6 +10,7 @@ pub(crate) mod backfill;
 pub(crate) mod backoff;
 pub mod coupling;
 mod driver;
+mod managed_loop;
 mod managed_run;
 mod metering;
 mod probe;
@@ -24,6 +25,7 @@ pub(crate) mod reindex_ops;
 
 pub use dispatch::Worker;
 pub use heartbeat::ThreadReclaimStats;
+pub use managed_loop::ManagedRuntime;
 pub use managed_run::{ManagedConfig, ManagedRunError, ManagedRunOutcome, drive_managed_run};
 pub use metering::MeteringTransport;
 pub use probe::ProbeSpec;

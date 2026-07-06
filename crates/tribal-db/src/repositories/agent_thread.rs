@@ -167,6 +167,18 @@ pub trait AgentThreadRepository {
         stage_task_id: TaskId,
     ) -> Result<Option<AgentThread>, DbError>;
 
+    /// Finds the managed thread a run anchors, by run key — a read that leaves
+    /// the claim token untouched, unlike [`adopt_managed`](Self::adopt_managed).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_by_run_key(
+        &self,
+        conn: &mut PgConnection,
+        run_key: RunJobId,
+    ) -> Result<Option<AgentThread>, DbError>;
+
     /// Lists the threads a job's stage tasks drive, ordered by creation time
     /// with ties broken by id.
     ///
@@ -496,6 +508,24 @@ impl AgentThreadRepository for PgAgentThreadRepository {
             .await
             .map_err(|e| DbError::QueryFailed {
                 context: format!("finding the thread driven by task {stage_task_id}"),
+                source: e,
+            })?;
+
+        Ok(row.as_ref().map(map_agent_thread_row))
+    }
+
+    async fn find_by_run_key(
+        &self,
+        conn: &mut PgConnection,
+        run_key: RunJobId,
+    ) -> Result<Option<AgentThread>, DbError> {
+        let sql = format!("SELECT {COLUMNS} FROM agent_threads WHERE run_key = $1");
+        let row = sqlx::query(&sql)
+            .bind(run_key.to_string())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding the managed thread for run {run_key}"),
                 source: e,
             })?;
 
