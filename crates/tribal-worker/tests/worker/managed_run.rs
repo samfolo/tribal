@@ -14,14 +14,15 @@ use tribal_db::{
     PgAgentThreadRepository,
 };
 use tribal_domain::AgentThreadRecordKind;
+use tribal_inference::InferenceError;
 use tribal_runtime_db::{
-    ClaimedJob, NewRunJob, PgRunJobRepository, PollBudget, RunJobRepository, RunJobState,
-    TeardownError,
+    CapBehaviour, ClaimedJob, NewRunJob, PgRunJobRepository, PollBudget, RunJobRepository,
+    RunJobState, TeardownError,
 };
 use tribal_test_utils::{
     ExhaustBehaviour, MockInferenceProvider, TestDb, a_completion_response, provision_runtime_db,
 };
-use tribal_wire::gateway::{HoldsReport, PositionKey};
+use tribal_wire::gateway::{GatewayError, HoldsReport, PositionKey};
 use tribal_worker::{ManagedConfig, ManagedRunOutcome, ProbeSpec, drive_managed_run};
 
 // ---------------------------------------------------------------------------
@@ -65,16 +66,79 @@ fn a_config() -> ManagedConfig {
             interval: std::time::Duration::from_millis(1),
             max_reads: 3,
         },
+        cap_give_up_after: Duration::hours(6),
+        cap_backoff: Duration::seconds(30),
     }
 }
 
 fn a_probe_payload(calls: u32, wait_signal: Option<&str>) -> serde_json::Value {
+    a_cap_probe_payload(calls, wait_signal, CapBehaviour::HardStop)
+}
+
+fn a_cap_probe_payload(
+    calls: u32,
+    wait_signal: Option<&str>,
+    cap_behaviour: CapBehaviour,
+) -> serde_json::Value {
     ProbeSpec {
         calls,
         wait_signal: wait_signal.map(ToOwned::to_owned),
         artifact_note: "the probe's mark".to_owned(),
+        cap_behaviour,
     }
     .to_payload()
+}
+
+/// A provider that refuses its first `refusals` calls with the gateway error
+/// `refusal`, then serves a success — the money seam a cap scenario drives on.
+fn a_capped_provider(refusals: usize, refusal: GatewayError) -> Arc<MockInferenceProvider> {
+    let mut builder = MockInferenceProvider::builder();
+    for _ in 0..refusals {
+        builder = builder.on_complete_error(
+            move || InferenceError::GatewayRefused { error: refusal },
+            None,
+        );
+    }
+    Arc::new(
+        builder
+            .on_complete(a_completion_response("probe answer"), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    )
+}
+
+/// Fires a suspended managed run's wake: the resolver sets the thread's wake
+/// instant due and the finder wakes the job back to queued.
+async fn fire_wake(core_pool: &PgPool, runtime_pool: &PgPool, claimed: &ClaimedJob) {
+    let mut core_conn = core_pool.acquire().await.expect("core connection");
+    sqlx::query("UPDATE agent_threads SET wake_at = now() WHERE run_key = $1")
+        .bind(claimed.id.to_string())
+        .execute(&mut *core_conn)
+        .await
+        .expect("set the wake instant due");
+    let mut runtime_conn = runtime_pool.acquire().await.expect("runtime connection");
+    assert!(
+        PgRunJobRepository
+            .wake(&mut runtime_conn, claimed.id)
+            .await
+            .expect("wake the job"),
+        "the suspended job woke",
+    );
+}
+
+/// Reads the last cap wake cause the run's log recorded at a resolve.
+async fn last_wake_cause(core_pool: &PgPool, claimed: &ClaimedJob) -> Option<String> {
+    run_records(core_pool, claimed)
+        .await
+        .iter()
+        .filter_map(|record| {
+            record
+                .content()
+                .get("managed_wake")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .next_back()
 }
 
 fn a_mock_provider() -> Arc<MockInferenceProvider> {
@@ -529,5 +593,216 @@ async fn test_the_fence_refuses_a_commit_under_a_rotated_token() {
     assert!(
         matches!(refused, Err(AgentRuntimeError::LeaseLost { .. })),
         "the append under the rotated-away token is refused, got {refused:?}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Money dispositions
+// ---------------------------------------------------------------------------
+
+/// A hard-stopped run parks to its give-up deadline; the deadline's wake, credit
+/// still short, fails it cleanly — the thread `Failed`, the job `cancelled`.
+#[tokio::test]
+async fn test_a_hard_stop_fails_when_credit_is_short_at_the_deadline() {
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    // The first call parks; the deadline wake's re-attempt refuses again.
+    let provider = a_capped_provider(2, GatewayError::OverCap);
+    let gateway = StubGateway::default();
+
+    let claimed = enqueue_and_claim(
+        runtime.pool(),
+        a_cap_probe_payload(1, None, CapBehaviour::HardStop),
+    )
+    .await;
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        provider.as_ref(),
+        &gateway,
+        &claimed,
+        &a_config(),
+    )
+    .await
+    .expect("park on the cap");
+    assert_eq!(
+        outcome,
+        ManagedRunOutcome::Suspended,
+        "the hard stop parks to its deadline",
+    );
+    assert_eq!(
+        job_state(runtime.pool(), &claimed).await,
+        RunJobState::Suspended,
+    );
+
+    fire_wake(core.pool(), runtime.pool(), &claimed).await;
+    let resumed = enqueue_and_claim_existing(runtime.pool()).await;
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        provider.as_ref(),
+        &gateway,
+        &resumed,
+        &a_config(),
+    )
+    .await
+    .expect("fail at the deadline");
+    assert_eq!(
+        outcome,
+        ManagedRunOutcome::Failed,
+        "credit short at the deadline fails the run",
+    );
+    assert_eq!(
+        job_state(runtime.pool(), &resumed).await,
+        RunJobState::Cancelled,
+        "the failed run's job settles cancelled",
+    );
+    assert_eq!(
+        last_wake_cause(core.pool(), &resumed).await.as_deref(),
+        Some("give_up"),
+        "the give-up cause survives the resolve",
+    );
+}
+
+/// A hard-stopped run whose credit is restored by its deadline wake completes.
+#[tokio::test]
+async fn test_a_hard_stop_completes_when_credit_returns_by_the_deadline() {
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    // One refusal parks it; the wake's re-attempt is served.
+    let provider = a_capped_provider(1, GatewayError::OverCap);
+    let gateway = StubGateway::default();
+
+    let claimed = enqueue_and_claim(
+        runtime.pool(),
+        a_cap_probe_payload(1, None, CapBehaviour::HardStop),
+    )
+    .await;
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        provider.as_ref(),
+        &gateway,
+        &claimed,
+        &a_config(),
+    )
+    .await
+    .expect("park on the cap");
+    assert_eq!(outcome, ManagedRunOutcome::Suspended);
+
+    fire_wake(core.pool(), runtime.pool(), &claimed).await;
+    let resumed = enqueue_and_claim_existing(runtime.pool()).await;
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        provider.as_ref(),
+        &gateway,
+        &resumed,
+        &a_config(),
+    )
+    .await
+    .expect("complete on the restored credit");
+    assert_eq!(outcome, ManagedRunOutcome::Done);
+    assert_eq!(job_state(runtime.pool(), &resumed).await, RunJobState::Done);
+    assert_eq!(
+        last_wake_cause(core.pool(), &resumed).await.as_deref(),
+        Some("give_up"),
+        "the hard-stop wake records the give-up cause even when it clears",
+    );
+}
+
+/// A throttled run backs off and completes once credit returns by the backoff
+/// wake.
+#[tokio::test]
+async fn test_a_throttle_queue_completes_through_a_backoff_wake() {
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    let provider = a_capped_provider(1, GatewayError::OverCap);
+    let gateway = StubGateway::default();
+
+    let claimed = enqueue_and_claim(
+        runtime.pool(),
+        a_cap_probe_payload(1, None, CapBehaviour::ThrottleQueue),
+    )
+    .await;
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        provider.as_ref(),
+        &gateway,
+        &claimed,
+        &a_config(),
+    )
+    .await
+    .expect("back off on the cap");
+    assert_eq!(
+        outcome,
+        ManagedRunOutcome::Suspended,
+        "the throttle backs off",
+    );
+
+    fire_wake(core.pool(), runtime.pool(), &claimed).await;
+    let resumed = enqueue_and_claim_existing(runtime.pool()).await;
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        provider.as_ref(),
+        &gateway,
+        &resumed,
+        &a_config(),
+    )
+    .await
+    .expect("complete after the backoff");
+    assert_eq!(outcome, ManagedRunOutcome::Done);
+    assert_eq!(job_state(runtime.pool(), &resumed).await, RunJobState::Done);
+    assert_eq!(
+        last_wake_cause(core.pool(), &resumed).await.as_deref(),
+        Some("backoff"),
+        "the backoff cause survives the resolve",
+    );
+}
+
+/// A not-entitled refusal fails the run on first sight, whatever the cap
+/// setting — no wait can clear it.
+#[tokio::test]
+async fn test_a_not_entitled_refusal_fails_on_first_sight() {
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    let provider = a_capped_provider(1, GatewayError::NotEntitled);
+    let gateway = StubGateway::default();
+
+    let claimed = enqueue_and_claim(
+        runtime.pool(),
+        a_cap_probe_payload(1, None, CapBehaviour::HardStop),
+    )
+    .await;
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        provider.as_ref(),
+        &gateway,
+        &claimed,
+        &a_config(),
+    )
+    .await
+    .expect("fail on the entitlement refusal");
+    assert_eq!(
+        outcome,
+        ManagedRunOutcome::Failed,
+        "a not-entitled refusal fails the run",
+    );
+    assert_eq!(
+        job_state(runtime.pool(), &claimed).await,
+        RunJobState::Cancelled,
+    );
+    assert_eq!(
+        record_count(
+            core.pool(),
+            &claimed,
+            AgentThreadRecordKind::AssistantMessage
+        )
+        .await,
+        0,
+        "the failed call committed no assistant record",
     );
 }

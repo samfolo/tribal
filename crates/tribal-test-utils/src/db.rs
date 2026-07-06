@@ -224,8 +224,11 @@ pub async fn provision_runtime_db() -> RuntimeTestDb {
         .await
         .expect("close the maintenance connection");
 
+    // Matches the core `TestDb` pool: a drive uses only a handful of runtime
+    // connections at once, so a wide pool only starves the shared server when
+    // many tests provision in parallel.
     let pool = PgPoolOptions::new()
-        .max_connections(16)
+        .max_connections(5)
         .connect(&replace_database(&base, &name))
         .await
         .expect("connect to the runtime test database");

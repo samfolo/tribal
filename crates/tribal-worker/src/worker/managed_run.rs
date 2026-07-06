@@ -14,7 +14,8 @@
 
 use std::time::Duration as StdDuration;
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool, Postgres, pool::PoolConnection};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -28,20 +29,24 @@ use tribal_db::{
     PgAgentThreadRepository,
 };
 use tribal_domain::{
-    AgentThread, AgentThreadRecordKind, AgentThreadStatus, AgentThreadSuspension,
-    CompletionResponse, RunJobId,
+    AgentThread, AgentThreadRecord, AgentThreadRecordKind, AgentThreadStatus,
+    AgentThreadSuspension, CompletionResponse, RunJobId,
 };
 use tribal_inference::{
     CallContext, CompletionRequest, InferenceError, InferenceProvider, Message, collect_completion,
 };
 use tribal_runtime_db::{
-    ClaimedJob, MeteringGateway, PgRunJobRepository, PollBudget, PostRunningState,
-    RunJobRepository, RuntimeDbError, TeardownError, TeardownOutcome, TeardownTarget, WriteOutcome,
-    cancel_teardown, mint_grant,
+    CapBehaviour, ClaimedJob, MeteringGateway, PgRunJobRepository, PollBudget, PostRunningState,
+    RunDisposition, RunJobRepository, RuntimeDbError, TeardownError, TeardownOutcome,
+    TeardownTarget, WriteOutcome, cancel_teardown, cap_disposition, mint_grant,
 };
-use tribal_wire::gateway::{GrantSet, PositionKey};
+use tribal_wire::gateway::{GatewayError, GrantSet, PositionKey};
 
 use super::probe::ProbeSpec;
+
+/// The reserved signal key a money-driven cap requeue parks on, distinct from a
+/// probe's own durable-wait signal so the re-derive tells the two apart.
+const CAP_WAIT_SIGNAL: &str = "cortex.managed.cap-wait";
 
 /// The timing a managed drive runs under.
 #[derive(Debug, Clone)]
@@ -54,6 +59,11 @@ pub struct ManagedConfig {
     pub call_max_tokens: u32,
     /// The teardown's holds-report poll budget.
     pub teardown_budget: PollBudget,
+    /// How long a hard-stopped run waits for credit before it gives up.
+    pub cap_give_up_after: Duration,
+    /// How long a throttled run backs off before it retries — recomputed fresh
+    /// on each re-suspend, never carried.
+    pub cap_backoff: Duration,
 }
 
 /// What a single drive attempt concluded.
@@ -61,16 +71,52 @@ pub struct ManagedConfig {
 pub enum ManagedRunOutcome {
     /// The run reached its terminal and the job settled to `done`.
     Done,
-    /// The run parked on its durable wait; the job left `running` as
-    /// `suspended` with its slot released.
+    /// The run parked on a wait — its durable signal or a money-driven cap
+    /// requeue; the job left `running` as `suspended` with its slot released.
     Suspended,
     /// An observed cancel tore the run down; the job settled to `cancelled`.
     Cancelled,
+    /// A money refusal no wait could clear failed the run: its thread is
+    /// `Failed` and the job settled to `cancelled` with its holds resolved.
+    Failed,
     /// The teardown could not resolve the run's holds within its budget;
     /// nothing settled, and a later attempt retries.
     HoldsStillLive,
     /// The lease was lost to a reclaim mid-drive; the rival owns the run now.
     OwnershipLost,
+}
+
+/// Why a managed run's cap wait woke: a hard-stop's give-up deadline fired, or a
+/// throttle's backoff elapsed. Reconstructed from the account's [`CapBehaviour`]
+/// at resolve and recorded in the resolution, so a crash after the resolve
+/// re-derives it and never re-suspends a spent give-up bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WakeCause {
+    /// The hard-stop deadline fired: a renewed refusal fails the run.
+    GiveUp,
+    /// The throttle backoff elapsed: a renewed refusal re-suspends afresh.
+    Backoff,
+}
+
+impl WakeCause {
+    /// The cause a cap wait resolves under, per the account's cap setting.
+    fn of(behaviour: CapBehaviour) -> Self {
+        match behaviour {
+            CapBehaviour::HardStop => WakeCause::GiveUp,
+            CapBehaviour::ThrottleQueue => WakeCause::Backoff,
+        }
+    }
+
+    /// Reads the cause a resolution record carries, if it is a cap wake.
+    fn from_resolution(content: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(content.get("managed_wake")?.clone()).ok()
+    }
+
+    /// Renders the resolution record a cap wake commits.
+    fn resolution(self) -> serde_json::Value {
+        serde_json::json!({ "managed_wake": self })
+    }
 }
 
 /// A fault that ends a drive attempt without settling the run.
@@ -107,10 +153,15 @@ pub enum ManagedRunError {
 struct Progress {
     /// How many metered calls have committed their assistant record.
     calls_done: u32,
-    /// Whether the durable wait's suspension record is committed.
+    /// Whether the probe's durable wait — its own signal, not a cap requeue —
+    /// is committed.
     waited: bool,
     /// Whether the artifact record is committed.
     artifact_committed: bool,
+    /// The cap wake cause a resolved-but-uncommitted re-attempt runs under: set
+    /// by the last cap resolution the log holds, cleared by the call it commits.
+    /// A crash between the resolve and the call re-derives it here.
+    pending_cap_cause: Option<WakeCause>,
 }
 
 /// Drives one claimed managed run to a settled outcome, adopting its thread
@@ -143,7 +194,7 @@ pub async fn drive_managed_run(
     // the thread's lease.
     let thread =
         ensure_managed_thread(&mut core, run_key, claim_token, claimed.payload.clone()).await?;
-    let progress = re_derive(&mut core, &thread).await?;
+    let progress = re_derive(&mut core, &thread, &spec).await?;
 
     // A run cancelled while suspended tears down on adoption rather than
     // resuming — the same flag the heartbeat polls, read once up front.
@@ -158,12 +209,23 @@ pub async fn drive_managed_run(
             claim_token,
             &position_keys(&thread, progress.calls_done),
             PostRunningState::Cancelled,
+            ManagedRunOutcome::Cancelled,
             config,
         )
         .await;
     }
 
-    match adopt(&mut core, &mut runtime, &thread, run_key, claim_token).await? {
+    let resumed_cap = match adopt(
+        &mut core,
+        &mut runtime,
+        &thread,
+        &spec,
+        run_key,
+        claim_token,
+        progress,
+    )
+    .await?
+    {
         Adoption::Terminal => {
             return teardown(
                 &mut runtime,
@@ -172,13 +234,14 @@ pub async fn drive_managed_run(
                 claim_token,
                 &position_keys(&thread, progress.calls_done),
                 PostRunningState::Done,
+                ManagedRunOutcome::Done,
                 config,
             )
             .await;
         }
         Adoption::NotReady => return Ok(ManagedRunOutcome::Suspended),
-        Adoption::Running => {}
-    }
+        Adoption::Running { resumed_cap } => resumed_cap,
+    };
 
     let cancel_watch = CancellationToken::new();
     let heartbeat = spawn_heartbeat(
@@ -203,6 +266,7 @@ pub async fn drive_managed_run(
         run_key,
         claim_token,
         progress,
+        resumed_cap,
         config,
     )
     .await;
@@ -216,8 +280,14 @@ pub async fn drive_managed_run(
 
 /// What the adoption of a claimed run's thread resolved to.
 enum Adoption {
-    /// The thread is running; drive it.
-    Running,
+    /// The thread is running; drive it. `resumed_cap` carries the cause of a
+    /// cap wait this adoption resolved, so the re-attempted call fails or
+    /// re-suspends on a renewed refusal rather than parking afresh.
+    Running {
+        /// The cap wake cause under which the re-attempt runs, if this run
+        /// resumed a money-driven cap wait.
+        resumed_cap: Option<WakeCause>,
+    },
     /// The thread was already terminal; settle the job to converge.
     Terminal,
     /// The thread is suspended and its wait is unsatisfied; re-park and yield.
@@ -229,8 +299,10 @@ async fn adopt(
     core: &mut PgConnection,
     runtime: &mut PgConnection,
     thread: &AgentThread,
+    spec: &ProbeSpec,
     run_key: RunJobId,
     claim_token: uuid::Uuid,
+    progress: Progress,
 ) -> Result<Adoption, ManagedRunError> {
     match thread.status() {
         AgentThreadStatus::Suspended => {
@@ -243,17 +315,32 @@ async fn adopt(
                     .await?;
                 return Ok(Adoption::NotReady);
             }
-            let resolution = serde_json::json!({ "resolved": "signal" });
+            // A cap wait resolves under a wake cause reconstructed from the
+            // account's cap setting, recorded before `mark_running` nulls the
+            // deadline so a crash after the resolve re-derives it; the probe's
+            // own durable wait resolves plainly.
+            let resumed_cap = matches!(
+                thread.suspension(),
+                Some(AgentThreadSuspension::Signal { key }) if key == CAP_WAIT_SIGNAL
+            )
+            .then(|| WakeCause::of(spec.cap_behaviour));
+            let resolution = match resumed_cap {
+                Some(cause) => cause.resolution(),
+                None => serde_json::json!({ "resolved": "signal" }),
+            };
             resolve_stage_thread(core, thread.id(), &resolution).await?;
-            Ok(Adoption::Running)
+            Ok(Adoption::Running { resumed_cap })
         }
         AgentThreadStatus::Queued => PgAgentThreadRepository
             .mark_running(core, thread.id(), AgentThreadStatus::Queued)
             .await
             .map_err(|source| AgentRuntimeError::database("marking the run running", source).into())
-            .map(|_| Adoption::Running),
-        // Already running (a crash mid-drive left it so); drive on.
-        AgentThreadStatus::Running => Ok(Adoption::Running),
+            .map(|_| Adoption::Running { resumed_cap: None }),
+        // Already running (a crash mid-drive left it so); the re-attempt runs
+        // under whatever cap cause the log's last resolution recorded.
+        AgentThreadStatus::Running => Ok(Adoption::Running {
+            resumed_cap: progress.pending_cap_cause,
+        }),
         // Completed, Failed, Cancelled, DeadLetter: the run already terminated.
         _ => Ok(Adoption::Terminal),
     }
@@ -274,8 +361,12 @@ async fn walk(
     run_key: RunJobId,
     claim_token: uuid::Uuid,
     progress: Progress,
+    resumed_cap: Option<WakeCause>,
     config: &ManagedConfig,
 ) -> Result<ManagedRunOutcome, ManagedRunError> {
+    // A cap resume's cause governs the re-attempted call alone; a committed
+    // call spends it, and later calls refuse fresh.
+    let mut resumed_cap = resumed_cap;
     // The metered calls, resuming from the committed count.
     for index in progress.calls_done..spec.calls {
         if cancel_watch.is_cancelled() {
@@ -286,6 +377,7 @@ async fn walk(
                 claim_token,
                 &position_keys(thread, index),
                 PostRunningState::Cancelled,
+                ManagedRunOutcome::Cancelled,
                 config,
             )
             .await;
@@ -294,12 +386,35 @@ async fn walk(
             position_key: Some(position_key(thread, index)),
             grant: Some(grant.clone()),
         };
-        let response = tokio::select! {
+        let call = tokio::select! {
             () = cancel_watch.cancelled() => continue,
-            result = drive_call(provider, probe_request(config.call_max_tokens), &context) => result?,
+            result = drive_call(provider, probe_request(config.call_max_tokens), &context) => result,
+        };
+        let response = match call {
+            Ok(response) => response,
+            // A gateway refusal is money, not a fault: dispose it under the
+            // account's cap setting rather than ending the drive in error.
+            Err(InferenceError::GatewayRefused { error }) => {
+                return dispose_cap_refusal(
+                    core,
+                    runtime,
+                    gateway,
+                    thread,
+                    spec,
+                    claim,
+                    &error,
+                    resumed_cap,
+                    index,
+                    run_key,
+                    claim_token,
+                    config,
+                )
+                .await;
+            }
+            Err(source) => return Err(ManagedRunError::Inference(source)),
         };
         match commit_model_call(core, thread, claim, &response).await {
-            Ok(_) => {}
+            Ok(_) => resumed_cap = None,
             Err(AgentRuntimeError::LeaseLost { .. }) => {
                 return Ok(ManagedRunOutcome::OwnershipLost);
             }
@@ -355,6 +470,129 @@ async fn walk(
         claim_token,
         &position_keys(thread, spec.calls),
         PostRunningState::Done,
+        ManagedRunOutcome::Done,
+        config,
+    )
+    .await
+}
+
+/// Disposes a metered call's gateway refusal under the account's cap setting:
+/// a hard-stop suspends to its give-up deadline and fails once that deadline's
+/// wake still finds it short; a throttle re-suspends at a fresh backoff; an
+/// unpriceable or not-entitled refusal fails on first sight.
+#[allow(clippy::too_many_arguments)]
+async fn dispose_cap_refusal(
+    core: &mut PgConnection,
+    runtime: &mut PgConnection,
+    gateway: &impl MeteringGateway,
+    thread: &AgentThread,
+    spec: &ProbeSpec,
+    claim: &DrivingClaim,
+    error: &GatewayError,
+    resumed_cap: Option<WakeCause>,
+    index: u32,
+    run_key: RunJobId,
+    claim_token: uuid::Uuid,
+    config: &ManagedConfig,
+) -> Result<ManagedRunOutcome, ManagedRunError> {
+    let now = Utc::now();
+    match cap_disposition(error, spec.cap_behaviour, now, config.cap_give_up_after) {
+        // A fresh hard-stop parks to its give-up deadline; a resumed one whose
+        // deadline already fired fails rather than stretching the bound afresh.
+        RunDisposition::Suspend { give_up_at } if resumed_cap.is_none() => {
+            suspend_cap(
+                core,
+                runtime,
+                thread,
+                claim,
+                give_up_at,
+                run_key,
+                claim_token,
+            )
+            .await
+        }
+        RunDisposition::Requeue => {
+            let wake_at = now + config.cap_backoff;
+            suspend_cap(core, runtime, thread, claim, wake_at, run_key, claim_token).await
+        }
+        // A resumed hard-stop whose deadline fired, or a refusal no wait can
+        // clear, fails the run cleanly.
+        RunDisposition::Suspend { .. } | RunDisposition::Fail => {
+            fail_run(
+                core,
+                runtime,
+                gateway,
+                thread,
+                claim,
+                index,
+                run_key,
+                claim_token,
+                config,
+            )
+            .await
+        }
+        // The bracket owns `InFlight`/`Failed`; reaching the run's mapping is an
+        // unmodelled refusal, surfaced rather than silently parked.
+        RunDisposition::Bracket => {
+            Err(ManagedRunError::Inference(InferenceError::GatewayRefused {
+                error: *error,
+            }))
+        }
+    }
+}
+
+/// Parks the run on the reserved cap-wait signal until `wake_at`, thread first,
+/// then leaves the job `suspended`.
+async fn suspend_cap(
+    core: &mut PgConnection,
+    runtime: &mut PgConnection,
+    thread: &AgentThread,
+    claim: &DrivingClaim,
+    wake_at: DateTime<Utc>,
+    run_key: RunJobId,
+    claim_token: uuid::Uuid,
+) -> Result<ManagedRunOutcome, ManagedRunError> {
+    let cause = AgentThreadSuspension::Signal {
+        key: CAP_WAIT_SIGNAL.to_owned(),
+    };
+    match suspend_managed_thread(core, thread, claim, &cause, Some(wake_at)).await {
+        Ok(()) => {}
+        Err(AgentRuntimeError::LeaseLost { .. }) => return Ok(ManagedRunOutcome::OwnershipLost),
+        Err(source) => return Err(source.into()),
+    }
+    PgRunJobRepository
+        .leave_running(runtime, run_key, claim_token, PostRunningState::Suspended)
+        .await?;
+    Ok(ManagedRunOutcome::Suspended)
+}
+
+/// Fails the run cleanly: the thread's `Failed` terminal, then the job settled
+/// to `cancelled` with its holds resolved.
+#[allow(clippy::too_many_arguments)]
+async fn fail_run(
+    core: &mut PgConnection,
+    runtime: &mut PgConnection,
+    gateway: &impl MeteringGateway,
+    thread: &AgentThread,
+    claim: &DrivingClaim,
+    index: u32,
+    run_key: RunJobId,
+    claim_token: uuid::Uuid,
+    config: &ManagedConfig,
+) -> Result<ManagedRunOutcome, ManagedRunError> {
+    match commit_managed_terminal(core, thread, claim, ManagedRunDisposition::Failed).await {
+        Ok(()) | Err(AgentRuntimeError::StatusCasMissed { .. }) => {}
+        Err(AgentRuntimeError::LeaseLost { .. }) => return Ok(ManagedRunOutcome::OwnershipLost),
+        Err(source) => return Err(source.into()),
+    }
+    teardown(
+        runtime,
+        gateway,
+        run_key,
+        claim_token,
+        &position_keys(thread, index),
+        PostRunningState::Cancelled,
+        ManagedRunOutcome::Failed,
         config,
     )
     .await
@@ -365,41 +603,72 @@ async fn drive_call(
     provider: &dyn InferenceProvider,
     request: CompletionRequest,
     context: &CallContext,
-) -> Result<CompletionResponse, ManagedRunError> {
-    let stream = provider
-        .complete_stream(request, context)
-        .await
-        .map_err(ManagedRunError::Inference)?;
-    collect_completion(stream)
-        .await
-        .map_err(ManagedRunError::Inference)
+) -> Result<CompletionResponse, InferenceError> {
+    let stream = provider.complete_stream(request, context).await?;
+    collect_completion(stream).await
 }
 
 /// Re-derives the run's committed progress from its thread log.
 async fn re_derive(
     core: &mut PgConnection,
     thread: &AgentThread,
+    spec: &ProbeSpec,
 ) -> Result<Progress, ManagedRunError> {
     let records = PgAgentThreadRecordRepository
         .find_by_thread_id(core, thread.id())
         .await
         .map_err(|source| AgentRuntimeError::database("reading the thread log", source))?;
-    let calls_done = records
-        .iter()
-        .filter(|record| record.kind() == AgentThreadRecordKind::AssistantMessage)
-        .count();
+
+    let mut calls_done: u32 = 0;
+    let mut waited = false;
+    let mut artifact_committed = false;
+    // The cap cause of the last resolution not yet spent by a committed call;
+    // an assistant record after it means the re-attempt succeeded.
+    let mut pending_cap_cause = None;
+    for record in &records {
+        match record.kind() {
+            AgentThreadRecordKind::AssistantMessage => {
+                calls_done = calls_done.saturating_add(1);
+                pending_cap_cause = None;
+            }
+            AgentThreadRecordKind::AppendArtifact => artifact_committed = true,
+            AgentThreadRecordKind::Suspension => {
+                if is_durable_wait(record, spec) {
+                    waited = true;
+                }
+            }
+            AgentThreadRecordKind::Input => {
+                if let Some(cause) = WakeCause::from_resolution(record.content()) {
+                    pending_cap_cause = Some(cause);
+                }
+            }
+            _ => {}
+        }
+    }
     Ok(Progress {
-        calls_done: u32::try_from(calls_done).unwrap_or(u32::MAX),
-        waited: records
-            .iter()
-            .any(|record| record.kind() == AgentThreadRecordKind::Suspension),
-        artifact_committed: records
-            .iter()
-            .any(|record| record.kind() == AgentThreadRecordKind::AppendArtifact),
+        calls_done,
+        waited,
+        artifact_committed,
+        pending_cap_cause,
     })
 }
 
-/// Settles the job to its terminal through the poll-and-ack teardown.
+/// Whether a suspension record is the probe's own durable wait, told from a
+/// money-driven cap requeue by its signal key.
+fn is_durable_wait(record: &AgentThreadRecord, spec: &ProbeSpec) -> bool {
+    let Some(signal) = spec.wait_signal.as_deref() else {
+        return false;
+    };
+    matches!(
+        serde_json::from_value::<AgentThreadSuspension>(record.content().clone()),
+        Ok(AgentThreadSuspension::Signal { key }) if key == signal
+    )
+}
+
+/// Settles the job to its terminal through the poll-and-ack teardown, reporting
+/// `settled` once its holds resolve. `terminal` is the job state (a failed run
+/// settles the job to `cancelled`); `settled` is the outcome the drive reports.
+#[allow(clippy::too_many_arguments)]
 async fn teardown(
     runtime: &mut PgConnection,
     gateway: &impl MeteringGateway,
@@ -407,6 +676,7 @@ async fn teardown(
     claim_token: uuid::Uuid,
     position_keys: &[PositionKey],
     terminal: PostRunningState,
+    settled: ManagedRunOutcome,
     config: &ManagedConfig,
 ) -> Result<ManagedRunOutcome, ManagedRunError> {
     let target = TeardownTarget {
@@ -418,10 +688,7 @@ async fn teardown(
     };
     let outcome = cancel_teardown(runtime, gateway, &target, &config.teardown_budget).await?;
     Ok(match outcome {
-        TeardownOutcome::ToreDown if terminal == PostRunningState::Cancelled => {
-            ManagedRunOutcome::Cancelled
-        }
-        TeardownOutcome::ToreDown => ManagedRunOutcome::Done,
+        TeardownOutcome::ToreDown => settled,
         TeardownOutcome::HoldsStillLive => ManagedRunOutcome::HoldsStillLive,
         TeardownOutcome::OwnershipLost => ManagedRunOutcome::OwnershipLost,
     })

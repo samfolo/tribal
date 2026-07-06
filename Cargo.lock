@@ -5619,6 +5619,7 @@ version = "0.4.1"
 dependencies = [
  "async-trait",
  "chrono",
+ "serde",
  "serde_json",
  "sqlx",
  "testcontainers",

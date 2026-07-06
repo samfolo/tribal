@@ -6,6 +6,7 @@
 //! reads it back from a claimed job and the enqueuer writes it in.
 
 use serde::{Deserialize, Serialize};
+use tribal_runtime_db::CapBehaviour;
 
 /// A managed probe run's program.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,6 +18,16 @@ pub struct ProbeSpec {
     pub wait_signal: Option<String>,
     /// The note the probe's artifact record carries.
     pub artifact_note: String,
+    /// The account's cap-breach response, driving how an over-cap metered call
+    /// disposes the run. Defaults to [`CapBehaviour::HardStop`] for a payload
+    /// that predates the field.
+    #[serde(default = "hard_stop")]
+    pub cap_behaviour: CapBehaviour,
+}
+
+/// The default cap behaviour a probe carries when its payload names none.
+fn hard_stop() -> CapBehaviour {
+    CapBehaviour::HardStop
 }
 
 impl ProbeSpec {
@@ -50,6 +61,7 @@ mod tests {
             calls: 3,
             wait_signal: Some("run-signal:abc".to_owned()),
             artifact_note: "the probe's mark".to_owned(),
+            cap_behaviour: CapBehaviour::ThrottleQueue,
         };
         let read = ProbeSpec::from_payload(spec.to_payload()).expect("the payload is a probe spec");
         assert_eq!(read, spec, "the spec survives the payload round trip");
@@ -61,9 +73,21 @@ mod tests {
             calls: 1,
             wait_signal: None,
             artifact_note: "no wait".to_owned(),
+            cap_behaviour: CapBehaviour::HardStop,
         };
         let read = ProbeSpec::from_payload(spec.to_payload()).expect("round trip");
         assert_eq!(read, spec);
+    }
+
+    #[test]
+    fn test_a_payload_predating_the_cap_field_defaults_to_hard_stop() {
+        let payload = serde_json::json!({
+            "calls": 1,
+            "wait_signal": null,
+            "artifact_note": "legacy",
+        });
+        let read = ProbeSpec::from_payload(payload).expect("round trip");
+        assert_eq!(read.cap_behaviour, CapBehaviour::HardStop);
     }
 
     #[test]

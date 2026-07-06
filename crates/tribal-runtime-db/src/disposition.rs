@@ -7,12 +7,14 @@
 //! wait can clear fails the run cleanly.
 
 use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
 use tribal_wire::gateway::GatewayError;
 
 /// The account's configured response to a cap breach — the setting the control
 /// plane holds, carried to the run so an over-cap refusal resolves to a defined
 /// behaviour.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CapBehaviour {
     /// Suspend until credit returns — a period rollover or a top-up — giving up
     /// once the deadline passes.
