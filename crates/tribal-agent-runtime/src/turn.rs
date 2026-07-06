@@ -63,9 +63,20 @@ impl DrivingClaim {
         }
     }
 
-    /// Verifies the lease with a shared row lock, holding it for the rest
-    /// of the enclosing transaction. The `Err` arm is a database fault;
-    /// the `Ok(false)` arm is the deterministic lost-ownership signal.
+    /// A managed run's claim.
+    #[must_use]
+    pub fn managed(run_key: tribal_domain::RunJobId, claim_token: uuid::Uuid) -> Self {
+        Self {
+            driving_task: DrivingTaskRef::Managed(run_key),
+            claim_token,
+        }
+    }
+
+    /// Verifies the lease, holding a row lock for the rest of the enclosing
+    /// transaction: a shared lock on a task row for the product families, an
+    /// exclusive lock on the thread row for a managed run. The `Err` arm is a
+    /// database fault; the `Ok(false)` arm is the deterministic lost-ownership
+    /// signal.
     async fn holds(&self, conn: &mut PgConnection) -> Result<bool, AgentRuntimeError> {
         match self.driving_task {
             DrivingTaskRef::Stage(task_id) => PgTaskRepository
@@ -77,6 +88,12 @@ impl DrivingClaim {
                 .await
                 .map_err(|source| {
                     AgentRuntimeError::database("verifying the driver lease", source)
+                }),
+            DrivingTaskRef::Managed(run_key) => PgAgentThreadRepository
+                .holds_managed_claim(conn, run_key, self.claim_token)
+                .await
+                .map_err(|source| {
+                    AgentRuntimeError::database("verifying the managed lease", source)
                 }),
         }
     }

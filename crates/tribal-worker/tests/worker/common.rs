@@ -239,6 +239,7 @@ pub(super) async fn build_agentic_test_worker(
         WORKER_INSTANCE.to_owned(),
         Arc::clone(&job_state_txs),
         noop_recorder(),
+        None,
     ));
     (worker, job_state_txs)
 }

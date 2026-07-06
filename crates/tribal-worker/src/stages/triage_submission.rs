@@ -474,7 +474,8 @@ mod tests {
         TaskRepository,
     };
     use tribal_domain::{
-        AGENT_THREAD_FORMAT_VERSION, GitRemote, JobOutcome, JobStatus, PrincipalId, RelationBatchId,
+        AGENT_THREAD_FORMAT_VERSION, AgentThreadStage, GitRemote, JobOutcome, JobStatus,
+        PrincipalId, RelationBatchId,
     };
     use tribal_test_utils::{
         TestDb, a_new_job, a_new_knowledge_item, a_new_principal, a_new_project,
@@ -553,10 +554,10 @@ mod tests {
             .insert(
                 conn,
                 &NewAgentThread::builder()
-                    .pipeline_stage(TaskType::Triage)
-                    .binding_version_id(binding.id())
+                    .stage(AgentThreadStage::Product(TaskType::Triage))
+                    .binding_version_id(Some(binding.id()))
                     .driving_task(DrivingTaskRef::Stage(task.id()))
-                    .principal_id(principal_id)
+                    .principal_id(Some(principal_id))
                     .format_version(AGENT_THREAD_FORMAT_VERSION)
                     .build(),
             )

@@ -10,8 +10,8 @@ use chrono::Duration;
 use sqlx::PgConnection;
 use tokio::sync::Barrier;
 use tribal_runtime_db::{
-    NewRunJob, PgRunJobRepository, PgTenantSlotRepository, PostRunningState, RunJobRepository,
-    RunJobState, TenantSlotRepository, WriteOutcome,
+    NewRunJob, PgRunJobRepository, PgTenantSlotRepository, PostRunningState, RunJobId,
+    RunJobRepository, RunJobState, TenantSlotRepository, WriteOutcome,
 };
 
 const RUN_JOB: PgRunJobRepository = PgRunJobRepository;
@@ -94,6 +94,138 @@ async fn test_enqueue_dedups_on_idempotency_key() {
         tribal_runtime_db::EnqueueOutcome::Deduplicated(_)
     ));
     assert_eq!(first.id(), second.id(), "a re-enqueue returns the same job");
+}
+
+#[tokio::test]
+async fn test_cancel_requested_reads_the_intent_the_writer_sets() {
+    let db = support::provision().await;
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
+    let id = RUN_JOB
+        .enqueue(
+            &mut conn,
+            NewRunJob {
+                account_id: "account_cancel".to_owned(),
+                kind: "probe".to_owned(),
+                payload: serde_json::json!({}),
+                idempotency_key: "cancel-read".to_owned(),
+                priority: 0,
+            },
+        )
+        .await
+        .expect("enqueue")
+        .id();
+
+    assert!(
+        !RUN_JOB
+            .cancel_requested(&mut conn, id)
+            .await
+            .expect("read the fresh flag"),
+        "a fresh job carries no cancel intent",
+    );
+    assert!(
+        !RUN_JOB
+            .cancel_requested(&mut conn, RunJobId::new())
+            .await
+            .expect("read a vanished job"),
+        "a vanished job reads as not cancelled",
+    );
+
+    assert!(
+        RUN_JOB
+            .request_cancel(&mut conn, id)
+            .await
+            .expect("request the cancel"),
+    );
+    assert!(
+        RUN_JOB
+            .cancel_requested(&mut conn, id)
+            .await
+            .expect("read the set flag"),
+        "the reader observes the intent the writer set",
+    );
+}
+
+/// Enqueues, claims, and leaves a job `suspended` — optionally with a cancel
+/// intent — returning its id.
+async fn suspend_job(conn: &mut PgConnection, key: &str, cancel: bool) -> RunJobId {
+    let id = RUN_JOB
+        .enqueue(
+            &mut *conn,
+            NewRunJob {
+                account_id: key.to_owned(),
+                kind: "probe".to_owned(),
+                payload: serde_json::json!({}),
+                idempotency_key: key.to_owned(),
+                priority: 0,
+            },
+        )
+        .await
+        .expect("enqueue")
+        .id();
+    let claimed = RUN_JOB
+        .claim(&mut *conn, DEFAULT_CAP, lease())
+        .await
+        .expect("claim")
+        .expect("a job to claim");
+    if cancel {
+        RUN_JOB
+            .request_cancel(&mut *conn, id)
+            .await
+            .expect("request cancel");
+    }
+    RUN_JOB
+        .leave_running(
+            &mut *conn,
+            id,
+            claimed.claim_token,
+            PostRunningState::Suspended,
+        )
+        .await
+        .expect("suspend the job");
+    id
+}
+
+#[tokio::test]
+async fn test_find_suspended_cancel_requested_selects_only_suspended_intents() {
+    let db = support::provision().await;
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
+
+    // Suspended and cancelled: the run the sweep must wake to be torn down.
+    let cancelled = suspend_job(&mut conn, "susp-cancel", true).await;
+    // Suspended without an intent: left parked.
+    suspend_job(&mut conn, "susp-plain", false).await;
+    // Cancelled but still queued: not suspended, so the running-worker path owns
+    // it and the sweep's `state = 'suspended'` filter excludes it.
+    let queued = RUN_JOB
+        .enqueue(
+            &mut conn,
+            NewRunJob {
+                account_id: "queued-cancel".to_owned(),
+                kind: "probe".to_owned(),
+                payload: serde_json::json!({}),
+                idempotency_key: "queued-cancel".to_owned(),
+                priority: 0,
+            },
+        )
+        .await
+        .expect("enqueue")
+        .id();
+    assert!(
+        RUN_JOB
+            .request_cancel(&mut conn, queued)
+            .await
+            .expect("cancel the queued job"),
+    );
+
+    let found = RUN_JOB
+        .find_suspended_cancel_requested(&mut conn, 10)
+        .await
+        .expect("scan");
+    assert_eq!(
+        found,
+        vec![cancelled],
+        "only the suspended cancelled run is returned",
+    );
 }
 
 #[tokio::test]

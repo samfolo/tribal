@@ -28,8 +28,11 @@ tribal-db.workspace = true
 tribal-domain.workspace = true
 tribal-inference = { workspace = true, features = ["test-helpers"] }
 tribal-mcp = { workspace = true, features = ["test-helpers"] }
+tribal-runtime-db.workspace = true
 tribal-telemetry.workspace = true
 tribal-test-utils.workspace = true
+tribal-wire.workspace = true
+tribal-worker.workspace = true
 
 [lints]
 workspace = true

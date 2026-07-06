@@ -96,6 +96,16 @@ pub enum AgentRuntimeError {
         context: String,
     },
 
+    /// A product thread lacked a field its stage guarantees — a binding, a
+    /// principal, a product stage. The managed widening made these nullable at
+    /// the row, so a product path finding one absent is a consistency fault,
+    /// never a panic on an "impossible" branch.
+    #[error("product-thread invariant broken: {context}")]
+    ProductInvariant {
+        /// Which product-thread field was unexpectedly absent.
+        context: String,
+    },
+
     /// The run's cancellation watch closed while the loop was streaming. The
     /// worker holds the sender for the loop's life, so a closed channel is a
     /// wiring fault — surfaced rather than silently left uncancellable.

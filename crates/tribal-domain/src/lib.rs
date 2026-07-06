@@ -112,8 +112,8 @@ pub use agent_driver_task::{
 };
 pub use agent_thread::{
     AGENT_THREAD_FORMAT_VERSION, AgentThread, AgentThreadBuilder, AgentThreadRecord,
-    AgentThreadRecordBuilder, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus,
-    AgentThreadSuspension, AgentThreadTerminal,
+    AgentThreadRecordBuilder, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStage,
+    AgentThreadStatus, AgentThreadSuspension, AgentThreadTerminal,
 };
 pub use api_key::{ApiKey, ApiKeyParseError};
 pub use auth_token::{AuthToken, AuthTokenBuilder};

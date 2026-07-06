@@ -7,12 +7,14 @@
 //! wait can clear fails the run cleanly.
 
 use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
 use tribal_wire::gateway::GatewayError;
 
 /// The account's configured response to a cap breach — the setting the control
 /// plane holds, carried to the run so an over-cap refusal resolves to a defined
 /// behaviour.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CapBehaviour {
     /// Suspend until credit returns — a period rollover or a top-up — giving up
     /// once the deadline passes.
@@ -62,14 +64,6 @@ pub fn cap_disposition(
         GatewayError::NotEntitled | GatewayError::Unpriceable => RunDisposition::Fail,
         GatewayError::InFlight { .. } | GatewayError::Failed => RunDisposition::Bracket,
     }
-}
-
-/// Whether a hard-stopped run has waited past its give-up deadline. A woken run
-/// whose credit is still short and whose `give_up_at` has passed fails cleanly
-/// rather than suspending again.
-#[must_use]
-pub fn past_give_up(give_up_at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
-    now >= give_up_at
 }
 
 #[cfg(test)]
@@ -150,13 +144,5 @@ mod tests {
             );
             assert_eq!(disposition, RunDisposition::Bracket);
         }
-    }
-
-    #[test]
-    fn test_a_run_gives_up_only_once_the_deadline_has_passed() {
-        let give_up_at = instant();
-        assert!(!past_give_up(give_up_at, give_up_at - Duration::seconds(1)));
-        assert!(past_give_up(give_up_at, give_up_at));
-        assert!(past_give_up(give_up_at, give_up_at + Duration::seconds(1)));
     }
 }

@@ -254,7 +254,7 @@ impl ReadSiblingThreadsTool {
                 .filter(|thread| thread.id() != self.thread_id)
                 .map(|thread| ThreadRosterEntry {
                     thread_id: thread.id().to_string(),
-                    stage: thread.pipeline_stage().as_str(),
+                    stage: thread.stage().as_str(),
                     status: thread.status().as_str(),
                     created_at: thread.created_at(),
                     completed_at: thread.completed_at(),
@@ -377,7 +377,8 @@ mod tests {
         TaskRepository,
     };
     use tribal_domain::{
-        AGENT_THREAD_FORMAT_VERSION, AgentThreadRecordKind, GitRemote, PrincipalId, TaskType,
+        AGENT_THREAD_FORMAT_VERSION, AgentThreadRecordKind, AgentThreadStage, GitRemote,
+        PrincipalId, TaskType,
     };
     use tribal_test_utils::{
         TestDb, a_candidate, a_new_extraction_result, a_new_job, a_new_principal, a_new_project,
@@ -474,10 +475,10 @@ mod tests {
             .insert(
                 conn,
                 &NewAgentThread::builder()
-                    .pipeline_stage(stage)
-                    .binding_version_id(binding.id())
+                    .stage(AgentThreadStage::Product(stage))
+                    .binding_version_id(Some(binding.id()))
                     .driving_task(DrivingTaskRef::Stage(task.id()))
-                    .principal_id(job.principal)
+                    .principal_id(Some(job.principal))
                     .format_version(AGENT_THREAD_FORMAT_VERSION)
                     .build(),
             )

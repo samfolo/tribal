@@ -13,7 +13,9 @@ use tribal_db::{
     AgentThreadRecordRepository, AgentThreadRepository, PgAgentThreadRecordRepository,
     PgAgentThreadRepository,
 };
-use tribal_domain::{AgentThreadRecord, AgentThreadRecordKind, AgentThreadStatus, JobState};
+use tribal_domain::{
+    AgentThreadRecord, AgentThreadRecordKind, AgentThreadStage, AgentThreadStatus, JobState,
+};
 
 use super::{common::*, fixtures::extraction_response_json};
 
@@ -1880,7 +1882,7 @@ async fn test_resume_pairs_an_existing_thread_with_its_recorded_binding() {
     );
     assert_eq!(
         resumed.thread.binding_version_id(),
-        first.id(),
+        Some(first.id()),
         "the row's pin is unchanged",
     );
 }
@@ -1929,10 +1931,10 @@ async fn test_reclaim_exhaustion_dead_letters_a_thread_that_never_started() {
         .insert(
             &mut conn,
             &tribal_db::NewAgentThread::builder()
-                .pipeline_stage(task.task_type())
-                .binding_version_id(binding.id())
+                .stage(AgentThreadStage::Product(task.task_type()))
+                .binding_version_id(Some(binding.id()))
                 .driving_task(tribal_db::DrivingTaskRef::Stage(task.id()))
-                .principal_id(job.principal_id())
+                .principal_id(Some(job.principal_id()))
                 .format_version(tribal_domain::AGENT_THREAD_FORMAT_VERSION)
                 .build(),
         )

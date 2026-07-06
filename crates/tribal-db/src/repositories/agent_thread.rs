@@ -9,9 +9,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
-    AgentBindingVersionId, AgentDriverTaskId, AgentThread, AgentThreadId, AgentThreadStatus,
-    AgentThreadSuspension, AgentThreadTerminal, ExecutionSpend, JobId, PrincipalId, TaskId,
-    TaskType,
+    AgentBindingVersionId, AgentDriverTaskId, AgentThread, AgentThreadId, AgentThreadStage,
+    AgentThreadStatus, AgentThreadSuspension, AgentThreadTerminal, ExecutionSpend, JobId,
+    PrincipalId, RunJobId, TaskId, TaskType,
 };
 use typed_builder::TypedBuilder;
 
@@ -58,14 +58,17 @@ const FORMAT_VERSION_OVERFLOW: &str = "negative format_version in database: data
 // Input types
 // ---------------------------------------------------------------------------
 
-/// The one driving task a thread is created with.
+/// The one driving anchor a thread is created with: a stage task, a
+/// driver-family task, or a managed run's opaque run key.
 ///
-/// The schema XORs the two columns; this enum makes the invalid shapes
-/// (both, neither) unrepresentable at the input layer.
+/// The schema admits exactly one (`num_nonnulls = 1`); this enum makes the
+/// invalid shapes (more than one, or none) unrepresentable at the input
+/// layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrivingTaskRef {
     Stage(TaskId),
     Driver(AgentDriverTaskId),
+    Managed(RunJobId),
 }
 
 impl std::fmt::Display for DrivingTaskRef {
@@ -73,6 +76,7 @@ impl std::fmt::Display for DrivingTaskRef {
         match self {
             Self::Stage(id) => write!(f, "stage task {id}"),
             Self::Driver(id) => write!(f, "driver task {id}"),
+            Self::Managed(run_key) => write!(f, "managed run {run_key}"),
         }
     }
 }
@@ -84,12 +88,20 @@ impl std::fmt::Display for DrivingTaskRef {
 pub struct NewAgentThread {
     #[builder(default)]
     pub parent_thread_id: Option<AgentThreadId>,
-    pub pipeline_stage: TaskType,
-    pub binding_version_id: AgentBindingVersionId,
+    pub stage: AgentThreadStage,
+    /// Absent for a managed thread, which carries no binding.
+    #[builder(default)]
+    pub binding_version_id: Option<AgentBindingVersionId>,
     pub driving_task: DrivingTaskRef,
-    pub principal_id: PrincipalId,
+    /// Absent for a managed thread's account-level automation.
+    #[builder(default)]
+    pub principal_id: Option<PrincipalId>,
     #[builder(default)]
     pub job_id: Option<JobId>,
+    /// The job plane's claim token, written at adoption; set only for a
+    /// managed thread (a `Managed` driving anchor), absent otherwise.
+    #[builder(default)]
+    pub run_claim_token: Option<uuid::Uuid>,
     /// The serialisation shape of the thread's owned structures.
     pub format_version: u32,
 }
@@ -155,6 +167,18 @@ pub trait AgentThreadRepository {
         stage_task_id: TaskId,
     ) -> Result<Option<AgentThread>, DbError>;
 
+    /// Finds the managed thread a run anchors, by run key — a read that leaves
+    /// the claim token untouched, unlike [`adopt_managed`](Self::adopt_managed).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_by_run_key(
+        &self,
+        conn: &mut PgConnection,
+        run_key: RunJobId,
+    ) -> Result<Option<AgentThread>, DbError>;
+
     /// Lists the threads a job's stage tasks drive, ordered by creation time
     /// with ties broken by id.
     ///
@@ -180,6 +204,39 @@ pub trait AgentThreadRepository {
         &self,
         conn: &mut PgConnection,
         id: AgentThreadId,
+    ) -> Result<Option<AgentThread>, DbError>;
+
+    /// Verifies a managed run's fence: the presented token equals the
+    /// thread's `run_claim_token`, taking the thread row's exclusive lock
+    /// (`FOR UPDATE`) for the rest of the transaction so every guarded write
+    /// serialises against a rival worker's adoption. Returns `false` when no
+    /// thread bears the run key or the token differs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn holds_managed_claim(
+        &self,
+        conn: &mut PgConnection,
+        run_key: RunJobId,
+        claim_token: uuid::Uuid,
+    ) -> Result<bool, DbError>;
+
+    /// Adopts the managed thread anchored to `run_key`: writes the
+    /// presenting worker's claim token onto the row under its exclusive
+    /// lock, the pivot the fence turns on, and returns the adopted thread.
+    /// The write is unconditional (a reclaiming worker legitimately
+    /// overwrites a dead worker's token); the job plane's own claim gates
+    /// who reaches it. Returns `None` when no thread bears the run key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn adopt_managed(
+        &self,
+        conn: &mut PgConnection,
+        run_key: RunJobId,
+        claim_token: uuid::Uuid,
     ) -> Result<Option<AgentThread>, DbError>;
 
     /// CAS to `running` from `from`, clearing any suspension payload and wake
@@ -211,6 +268,17 @@ pub trait AgentThreadRepository {
         suspension: &AgentThreadSuspension,
         wake_at: Option<DateTime<Utc>>,
     ) -> Result<u64, DbError>;
+
+    /// Nulls a suspended thread's wake instant, leaving its `suspended` status
+    /// and cause untouched, so the timer-wake sweep stops re-finding a thread
+    /// whose run has settled off the other plane. Returns the affected row count
+    /// (zero when the thread is no longer suspended).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn disarm_wake(&self, conn: &mut PgConnection, id: AgentThreadId)
+    -> Result<u64, DbError>;
 
     /// CAS to a terminal status from `from`, stamping `completed_at` and
     /// clearing any suspension payload and wake instant. Returns the affected
@@ -267,6 +335,23 @@ pub trait AgentThreadRepository {
         conn: &mut PgConnection,
         limit: u32,
     ) -> Result<Vec<AgentThread>, DbError>;
+
+    /// Finds the run keys of suspended managed threads whose wake instant has
+    /// elapsed and that carry no cancellation intent, the sweep's managed-timer
+    /// predicate. A managed thread anchors a `run_key` and drives no stage task,
+    /// so [`find_due_timer_wakes`](Self::find_due_timer_wakes)'s stage-only scan
+    /// excludes it; the sweep wakes each run's job on the other plane and never
+    /// touches the thread, so the run key is all it needs. `SKIP LOCKED` sheds
+    /// rows a rival scan holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_due_managed_wakes(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+    ) -> Result<Vec<RunJobId>, DbError>;
 
     /// Finds live threads carrying a durable cancellation intent, the sweep's
     /// cancel-fallback predicate. Rows are locked with `SKIP LOCKED`.
@@ -385,32 +470,35 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         conn: &mut PgConnection,
         new: &NewAgentThread,
     ) -> Result<AgentThread, DbError> {
-        let (stage_task_id, driver_task_id) = match new.driving_task {
-            DrivingTaskRef::Stage(id) => (Some(id.inner().to_owned()), None),
-            DrivingTaskRef::Driver(id) => (None, Some(id.inner().to_owned())),
+        let (stage_task_id, driver_task_id, run_key) = match new.driving_task {
+            DrivingTaskRef::Stage(id) => (Some(id.inner().to_owned()), None, None),
+            DrivingTaskRef::Driver(id) => (None, Some(id.inner().to_owned()), None),
+            DrivingTaskRef::Managed(run_key) => (None, None, Some(run_key.to_string())),
         };
 
         let sql = format!(
             "INSERT INTO agent_threads \
              (parent_thread_id, pipeline_stage, binding_version_id, stage_task_id, \
-              driver_task_id, principal_id, job_id, format_version) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+              driver_task_id, principal_id, job_id, format_version, run_key, run_claim_token) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              RETURNING {COLUMNS}"
         );
         let row = sqlx::query(&sql)
             .bind(new.parent_thread_id.map(|id| id.inner().to_owned()))
-            .bind(new.pipeline_stage.as_str())
-            .bind(new.binding_version_id.inner())
+            .bind(new.stage.as_str())
+            .bind(new.binding_version_id.map(|id| id.inner().to_owned()))
             .bind(stage_task_id)
             .bind(driver_task_id)
-            .bind(new.principal_id.inner())
+            .bind(new.principal_id.map(|id| id.inner().to_owned()))
             .bind(new.job_id.map(|id| id.inner().to_owned()))
             .bind(i32::try_from(new.format_version).expect(FORMAT_VERSION_OVERFLOW))
+            .bind(run_key)
+            .bind(new.run_claim_token)
             .fetch_one(&mut *conn)
             .await
             .map_err(|e| {
                 try_into_unique_violation(&e).unwrap_or_else(|| DbError::QueryFailed {
-                    context: format!("creating {} thread", new.pipeline_stage),
+                    context: format!("creating {} thread", new.stage),
                     source: e,
                 })
             })?;
@@ -454,6 +542,24 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         Ok(row.as_ref().map(map_agent_thread_row))
     }
 
+    async fn find_by_run_key(
+        &self,
+        conn: &mut PgConnection,
+        run_key: RunJobId,
+    ) -> Result<Option<AgentThread>, DbError> {
+        let sql = format!("SELECT {COLUMNS} FROM agent_threads WHERE run_key = $1");
+        let row = sqlx::query(&sql)
+            .bind(run_key.to_string())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding the managed thread for run {run_key}"),
+                source: e,
+            })?;
+
+        Ok(row.as_ref().map(map_agent_thread_row))
+    }
+
     async fn find_by_job_id(
         &self,
         conn: &mut PgConnection,
@@ -490,6 +596,52 @@ impl AgentThreadRepository for PgAgentThreadRepository {
             .await
             .map_err(|e| DbError::QueryFailed {
                 context: format!("locking thread {id}"),
+                source: e,
+            })?;
+
+        Ok(row.as_ref().map(map_agent_thread_row))
+    }
+
+    async fn holds_managed_claim(
+        &self,
+        conn: &mut PgConnection,
+        run_key: RunJobId,
+        claim_token: uuid::Uuid,
+    ) -> Result<bool, DbError> {
+        let held: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM agent_threads \
+             WHERE run_key = $1 AND run_claim_token = $2 FOR UPDATE",
+        )
+        .bind(run_key.to_string())
+        .bind(claim_token)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("verifying the managed lease on run {run_key}"),
+            source: e,
+        })?;
+
+        Ok(held.is_some())
+    }
+
+    async fn adopt_managed(
+        &self,
+        conn: &mut PgConnection,
+        run_key: RunJobId,
+        claim_token: uuid::Uuid,
+    ) -> Result<Option<AgentThread>, DbError> {
+        let sql = format!(
+            "UPDATE agent_threads \
+             SET run_claim_token = $2, updated_at = now() \
+             WHERE run_key = $1 RETURNING {COLUMNS}"
+        );
+        let row = sqlx::query(&sql)
+            .bind(run_key.to_string())
+            .bind(claim_token)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("adopting the managed thread for run {run_key}"),
                 source: e,
             })?;
 
@@ -543,6 +695,27 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         .await
         .map_err(|e| DbError::QueryFailed {
             context: format!("suspending thread {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn disarm_wake(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentThreadId,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE agent_threads \
+             SET wake_at = NULL, updated_at = now() \
+             WHERE id = $1 AND status = 'suspended'",
+        )
+        .bind(id.inner())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("disarming the wake instant on thread {id}"),
             source: e,
         })?;
 
@@ -659,6 +832,34 @@ impl AgentThreadRepository for PgAgentThreadRepository {
             })?;
 
         Ok(rows.iter().map(map_agent_thread_row).collect())
+    }
+
+    async fn find_due_managed_wakes(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+    ) -> Result<Vec<RunJobId>, DbError> {
+        // The managed sibling of the stage timer scan: a managed thread anchors
+        // a run_key and drives no stage task, so the sweep wakes its job rather
+        // than re-queueing a task. An intent-carrying thread belongs to the
+        // cancel path, whose wake the cancellation would immediately discard.
+        let sql = "SELECT run_key FROM agent_threads \
+             WHERE status = 'suspended' AND wake_at IS NOT NULL AND wake_at <= now() \
+               AND cancel_requested_at IS NULL \
+               AND run_key IS NOT NULL \
+             ORDER BY wake_at \
+             LIMIT $1 \
+             FOR UPDATE SKIP LOCKED";
+        let rows = sqlx::query(sql)
+            .bind(i64::from(limit))
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "scanning for due managed wakes".to_owned(),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(managed_wake_run_key).collect())
     }
 
     async fn find_cancel_intents(
@@ -926,6 +1127,41 @@ impl AgentThreadRepository for PgAgentThreadRepository {
 }
 
 // ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+/// Writes production must never make, gated behind `test-helpers`.
+#[cfg(feature = "test-helpers")]
+impl PgAgentThreadRepository {
+    /// Fast-forwards a suspended managed run's wake instant to now, so the wake
+    /// sweep finds it due — the deadline the drive itself computes, which a test
+    /// cannot pre-choose. Guarded on the `suspended` status a real resume
+    /// requires, and keyed by the run's job-plane anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn fast_forward_wake_for_test(
+        &self,
+        conn: &mut PgConnection,
+        run_key: RunJobId,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE agent_threads SET wake_at = now(), updated_at = now() \
+             WHERE run_key = $1 AND status = 'suspended'",
+        )
+        .bind(run_key.to_string())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("fast-forwarding the wake for run {run_key} (test helper)"),
+            source: e,
+        })?;
+        Ok(result.rows_affected())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Row mapping
 // ---------------------------------------------------------------------------
 
@@ -960,6 +1196,15 @@ fn driver_task_is_live(alias: &str) -> String {
     )
 }
 
+/// Reads the `run_key` of a due-managed-wake row. A managed thread's run key is
+/// a schema invariant, so a malformed one is corruption, not a recoverable
+/// error — the row mapping's convention for schema-guaranteed shapes.
+fn managed_wake_run_key(r: &sqlx::postgres::PgRow) -> RunJobId {
+    r.get::<String, _>("run_key")
+        .parse()
+        .expect("a managed thread's run_key is a valid job id")
+}
+
 fn map_agent_thread_row(r: &sqlx::postgres::PgRow) -> AgentThread {
     AgentThread::builder()
         .id(AgentThreadId::from(r.get::<uuid::Uuid, _>("id")))
@@ -967,14 +1212,15 @@ fn map_agent_thread_row(r: &sqlx::postgres::PgRow) -> AgentThread {
             r.get::<Option<uuid::Uuid>, _>("parent_thread_id")
                 .map(AgentThreadId::from),
         )
-        .pipeline_stage(
+        .stage(
             r.get::<String, _>("pipeline_stage")
-                .parse::<TaskType>()
+                .parse::<AgentThreadStage>()
                 .expect(UNKNOWN_STAGE_IN_DB),
         )
-        .binding_version_id(AgentBindingVersionId::from(
-            r.get::<uuid::Uuid, _>("binding_version_id"),
-        ))
+        .binding_version_id(
+            r.get::<Option<uuid::Uuid>, _>("binding_version_id")
+                .map(AgentBindingVersionId::from),
+        )
         .stage_task_id(
             r.get::<Option<uuid::Uuid>, _>("stage_task_id")
                 .map(TaskId::from),
@@ -983,7 +1229,10 @@ fn map_agent_thread_row(r: &sqlx::postgres::PgRow) -> AgentThread {
             r.get::<Option<uuid::Uuid>, _>("driver_task_id")
                 .map(AgentDriverTaskId::from),
         )
-        .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
+        .principal_id(
+            r.get::<Option<uuid::Uuid>, _>("principal_id")
+                .map(PrincipalId::from),
+        )
         .job_id(r.get::<Option<uuid::Uuid>, _>("job_id").map(JobId::from))
         .status(
             r.get::<String, _>("status")

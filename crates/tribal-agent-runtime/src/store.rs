@@ -15,7 +15,7 @@ use tribal_db::{
 };
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentBinding, AgentThread, AgentThreadRecord,
-    AgentThreadRecordKind, AgentThreadStatus, Job, Task,
+    AgentThreadRecordKind, AgentThreadStage, AgentThreadStatus, Job, Task,
 };
 
 use crate::{
@@ -87,7 +87,7 @@ pub async fn ensure_stage_thread(
         None => create_stage_thread(conn, job, task, claim_token, binding).await?,
     };
 
-    let binding = if thread.binding_version_id() == binding.id() {
+    let binding = if thread.binding_version_id() == Some(binding.id()) {
         binding.clone()
     } else {
         load_recorded_binding(conn, &thread).await?
@@ -140,10 +140,10 @@ async fn create_stage_thread(
     binding: &AgentBinding,
 ) -> Result<AgentThread, AgentRuntimeError> {
     let new = NewAgentThread::builder()
-        .pipeline_stage(task.task_type())
-        .binding_version_id(binding.id())
+        .stage(AgentThreadStage::Product(task.task_type()))
+        .binding_version_id(Some(binding.id()))
         .driving_task(DrivingTaskRef::Stage(task.id()))
-        .principal_id(job.principal_id())
+        .principal_id(Some(job.principal_id()))
         .format_version(AGENT_THREAD_FORMAT_VERSION)
         .build();
 
@@ -217,8 +217,14 @@ async fn load_recorded_binding(
     conn: &mut PgConnection,
     thread: &AgentThread,
 ) -> Result<AgentBinding, AgentRuntimeError> {
+    let binding_version_id =
+        thread
+            .binding_version_id()
+            .ok_or_else(|| AgentRuntimeError::ProductInvariant {
+                context: "a product thread has no recorded binding".to_owned(),
+            })?;
     PgAgentBindingVersionRepository
-        .find_by_id(conn, thread.binding_version_id())
+        .find_by_id(conn, binding_version_id)
         .await
         .map_err(|source| {
             AgentRuntimeError::database("loading the thread's recorded binding", source)
@@ -230,7 +236,7 @@ async fn load_recorded_binding(
                 "loading the thread's recorded binding",
                 DbError::NotFound {
                     entity: "agent_binding_version",
-                    id: thread.binding_version_id().to_string(),
+                    id: binding_version_id.to_string(),
                 },
             )
         })

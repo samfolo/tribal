@@ -17,6 +17,7 @@ mod binding;
 mod driver;
 mod error;
 mod ledger_sink;
+mod managed;
 mod store;
 mod tools;
 mod transitions;
@@ -31,6 +32,10 @@ pub use driver::{
 };
 pub use error::AgentRuntimeError;
 pub use ledger_sink::PgLedgerSink;
+pub use managed::{
+    ManagedRunDisposition, clear_managed_wake, commit_managed_terminal, ensure_managed_thread,
+    suspend_managed_thread,
+};
 pub use store::{StageThread, ensure_stage_thread};
 pub use tools::{StageTool, ToolOutcome, ToolRegistry, ToolRegistryError};
 pub use transitions::{
@@ -47,5 +52,5 @@ pub use turn_loop::{
     HeartbeatPump, LoopOutcome, RecheckPolicy, SUBMIT_RESULT_TOOL, SeenCorpus, SubmissionContent,
     SubmissionOutcome, SubmissionPipeline, ToolResultContent, TurnLoopDependencies, VerdictContent,
     VerifierLaunch, admit_inference, carried_rechecks, commit_artifact_record,
-    commit_loop_terminal, decide_admission, run_turn_loop, verdict_schema,
+    commit_loop_terminal, commit_model_call, decide_admission, run_turn_loop, verdict_schema,
 };

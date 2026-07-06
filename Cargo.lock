@@ -5552,8 +5552,11 @@ dependencies = [
  "tribal-domain",
  "tribal-inference",
  "tribal-mcp",
+ "tribal-runtime-db",
  "tribal-telemetry",
  "tribal-test-utils",
+ "tribal-wire",
+ "tribal-worker",
  "url",
  "wiremock",
 ]
@@ -5621,6 +5624,7 @@ version = "0.4.1"
 dependencies = [
  "async-trait",
  "chrono",
+ "serde",
  "serde_json",
  "sqlx",
  "testcontainers",
@@ -5679,6 +5683,7 @@ dependencies = [
  "tribal-db",
  "tribal-domain",
  "tribal-inference",
+ "tribal-runtime-db",
  "url",
  "uuid",
 ]
@@ -5718,6 +5723,7 @@ dependencies = [
  "dashmap",
  "futures-util",
  "jsonschema",
+ "reqwest 0.13.2",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -5734,9 +5740,12 @@ dependencies = [
  "tribal-db",
  "tribal-domain",
  "tribal-inference",
+ "tribal-runtime-db",
  "tribal-telemetry",
  "tribal-test-utils",
+ "tribal-wire",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]

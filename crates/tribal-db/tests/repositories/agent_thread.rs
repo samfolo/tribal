@@ -9,9 +9,9 @@ use tribal_db::{
 };
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentDriverTaskId, AgentDriverTaskKind, AgentDriverTaskState,
-    AgentThread, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus,
-    AgentThreadSuspension, AgentThreadTerminal, GitRemote, JobId, JobStatus, PrincipalId, TaskId,
-    TaskType, TokenUsageStage,
+    AgentThread, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStage, AgentThreadStatus,
+    AgentThreadSuspension, AgentThreadTerminal, GitRemote, JobId, JobStatus, PrincipalId, RunJobId,
+    TaskId, TaskType, TokenUsageStage,
 };
 use tribal_test_utils::{
     TestDb, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
@@ -103,10 +103,10 @@ async fn setup_thread_prerequisites(
         .expect("record binding version");
 
     let new_thread = NewAgentThread::builder()
-        .pipeline_stage(TaskType::Extraction)
-        .binding_version_id(binding.id())
+        .stage(AgentThreadStage::Product(TaskType::Extraction))
+        .binding_version_id(Some(binding.id()))
         .driving_task(DrivingTaskRef::Stage(task.id()))
-        .principal_id(principal.id())
+        .principal_id(Some(principal.id()))
         .format_version(AGENT_THREAD_FORMAT_VERSION)
         .build();
 
@@ -183,7 +183,7 @@ async fn test_thread_inserts_queued_with_stage_driver() {
     assert_eq!(thread.status(), AgentThreadStatus::Queued);
     assert_eq!(thread.stage_task_id(), Some(prerequisites.stage_task_id));
     assert!(thread.driver_task_id().is_none());
-    assert_eq!(thread.principal_id(), prerequisites.principal_id);
+    assert_eq!(thread.principal_id(), Some(prerequisites.principal_id));
     assert_eq!(thread.format_version(), AGENT_THREAD_FORMAT_VERSION);
     assert_eq!(thread.recovery_attempts(), 0);
     assert!(thread.completed_at().is_none());
@@ -249,8 +249,8 @@ async fn test_find_by_job_lists_only_the_jobs_stage_threads() {
         .await
         .expect("record triage binding");
     let mut second_new = prerequisites.new_thread.clone();
-    second_new.pipeline_stage = TaskType::Triage;
-    second_new.binding_version_id = triage_binding.id();
+    second_new.stage = AgentThreadStage::Product(TaskType::Triage);
+    second_new.binding_version_id = Some(triage_binding.id());
     second_new.driving_task = DrivingTaskRef::Stage(second_task.id());
     let thread_a2 = PgAgentThreadRepository
         .insert(&mut txn, &second_new)
@@ -460,6 +460,196 @@ async fn test_recovery_attempts_accumulate() {
 
     assert_eq!(first, 1);
     assert_eq!(second, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Managed run fence
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_managed_claim_holds_on_the_token_and_misses_on_a_stale_one() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    // A managed thread carries no binding, principal, or task: the run key
+    // is its anchor and run_claim_token its fence.
+    let run_key = RunJobId::new();
+    let token = uuid::Uuid::new_v4();
+    PgAgentThreadRepository
+        .insert(
+            &mut txn,
+            &NewAgentThread::builder()
+                .stage(AgentThreadStage::Managed)
+                .driving_task(DrivingTaskRef::Managed(run_key))
+                .run_claim_token(Some(token))
+                .format_version(AGENT_THREAD_FORMAT_VERSION)
+                .build(),
+        )
+        .await
+        .expect("insert managed thread");
+
+    assert!(
+        PgAgentThreadRepository
+            .holds_managed_claim(&mut txn, run_key, token)
+            .await
+            .expect("held"),
+        "the current token holds the managed lease",
+    );
+    assert!(
+        !PgAgentThreadRepository
+            .holds_managed_claim(&mut txn, run_key, uuid::Uuid::new_v4())
+            .await
+            .expect("stale"),
+        "a stale token misses the managed lease",
+    );
+    assert!(
+        !PgAgentThreadRepository
+            .holds_managed_claim(&mut txn, RunJobId::new(), token)
+            .await
+            .expect("unknown run"),
+        "an unknown run key misses",
+    );
+}
+
+/// The constraint a rejected write violated, when the failure is a check
+/// or foreign-key error rather than a unique violation.
+fn violated_constraint(err: &DbError) -> Option<String> {
+    match err {
+        DbError::QueryFailed { source, .. } => source
+            .as_database_error()
+            .and_then(|db| db.constraint())
+            .map(ToOwned::to_owned),
+        _ => None,
+    }
+}
+
+/// A fresh managed thread built for a constraint test: the run key is its
+/// anchor, no binding, principal, or job.
+fn a_managed_thread(run_key: RunJobId) -> NewAgentThread {
+    NewAgentThread::builder()
+        .stage(AgentThreadStage::Managed)
+        .driving_task(DrivingTaskRef::Managed(run_key))
+        .run_claim_token(Some(uuid::Uuid::new_v4()))
+        .format_version(AGENT_THREAD_FORMAT_VERSION)
+        .build()
+}
+
+#[tokio::test]
+async fn test_managed_thread_rejects_a_binding() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    let binding = PgAgentBindingVersionRepository
+        .record(
+            &mut txn,
+            &NewAgentBindingVersion::builder()
+                .hash(HASH_A.to_owned())
+                .pipeline_stage(TaskType::Extraction)
+                .definition(an_agent_definition().build())
+                .build(),
+        )
+        .await
+        .expect("record binding");
+
+    let mut new = a_managed_thread(RunJobId::new());
+    new.binding_version_id = Some(binding.id());
+    let err = PgAgentThreadRepository
+        .insert(&mut txn, &new)
+        .await
+        .expect_err("a managed thread carries no binding");
+    assert_eq!(
+        violated_constraint(&err).as_deref(),
+        Some("chk_managed_has_no_binding"),
+    );
+}
+
+#[tokio::test]
+async fn test_managed_thread_carrying_a_principal_is_accepted() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    // A principal existing on the row is not forbidden: the pairing CHECK
+    // is one-way — a managed run carries no principal by construction, but
+    // the schema does not reject one that appears.
+    let principal = PgPrincipalRepository
+        .insert(
+            &mut txn,
+            &a_new_principal()
+                .principal_key("user:managed-with-principal".to_owned())
+                .build(),
+        )
+        .await
+        .expect("insert principal");
+
+    let mut new = a_managed_thread(RunJobId::new());
+    new.principal_id = Some(principal.id());
+    PgAgentThreadRepository
+        .insert(&mut txn, &new)
+        .await
+        .expect("a managed thread may carry a principal");
+}
+
+#[tokio::test]
+async fn test_product_thread_requires_a_principal() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let prerequisites = setup_thread_prerequisites(&mut txn, "needs-principal").await;
+
+    let mut new = prerequisites.new_thread;
+    new.principal_id = None;
+    let err = PgAgentThreadRepository
+        .insert(&mut txn, &new)
+        .await
+        .expect_err("a product thread names its principal");
+    assert_eq!(
+        violated_constraint(&err).as_deref(),
+        Some("chk_product_has_principal"),
+    );
+}
+
+#[tokio::test]
+async fn test_one_managed_thread_per_run_key() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    let run_key = RunJobId::new();
+    PgAgentThreadRepository
+        .insert(&mut txn, &a_managed_thread(run_key))
+        .await
+        .expect("first managed thread");
+    let err = PgAgentThreadRepository
+        .insert(&mut txn, &a_managed_thread(run_key))
+        .await
+        .expect_err("a run key anchors exactly one thread");
+    assert!(matches!(err, DbError::UniqueViolation { .. }));
+}
+
+#[tokio::test]
+async fn test_a_thread_holds_exactly_one_anchor() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    // A real stage task for the anchor's foreign key, so the row reaches
+    // the anchor CHECK rather than tripping the reference first.
+    let prerequisites = setup_thread_prerequisites(&mut txn, "two-anchors").await;
+
+    // Two anchors at once — a stage task and a run key — is the shape the
+    // DrivingTaskRef enum makes unreachable from Rust; the CHECK is its
+    // backstop. Managed stage, no binding, so only the anchor CHECK bites.
+    let err = sqlx::query(
+        "INSERT INTO agent_threads (pipeline_stage, stage_task_id, run_key, format_version) \
+         VALUES ('managed', $1, $2, $3)",
+    )
+    .bind(prerequisites.stage_task_id.inner())
+    .bind(RunJobId::new().to_string())
+    .bind(i32::try_from(AGENT_THREAD_FORMAT_VERSION).expect("format version fits"))
+    .execute(&mut *txn)
+    .await
+    .expect_err("a thread anchors on exactly one of task or run");
+    assert_eq!(
+        err.as_database_error().and_then(|db| db.constraint()),
+        Some("chk_one_driving_anchor"),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,6 +1234,94 @@ async fn test_timer_wake_scan_selects_only_due_intentless_stage_threads() {
 }
 
 #[tokio::test]
+async fn test_managed_wake_scan_selects_only_due_intentless_managed_threads() {
+    // Suspends a managed thread anchored to `run_key` at `wake_at`.
+    async fn suspend_managed(
+        txn: &mut sqlx::PgConnection,
+        run_key: RunJobId,
+        wake_at: chrono::DateTime<chrono::Utc>,
+    ) -> AgentThread {
+        let thread = PgAgentThreadRepository
+            .insert(txn, &a_managed_thread(run_key))
+            .await
+            .expect("insert managed thread");
+        PgAgentThreadRepository
+            .mark_running(txn, thread.id(), AgentThreadStatus::Queued)
+            .await
+            .expect("running");
+        PgAgentThreadRepository
+            .suspend(
+                txn,
+                thread.id(),
+                &AgentThreadSuspension::Signal {
+                    key: "cortex.managed.cap-wait".to_owned(),
+                },
+                Some(wake_at),
+            )
+            .await
+            .expect("suspend managed");
+        thread
+    }
+
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    let past = chrono::Utc::now() - chrono::Duration::seconds(5);
+    let future = chrono::Utc::now() + chrono::Duration::minutes(10);
+
+    // Due, intentless, managed: the one run key the predicate returns.
+    let due_key = RunJobId::new();
+    suspend_managed(&mut txn, due_key, past).await;
+    // Suspended with a future wake: not yet due.
+    suspend_managed(&mut txn, RunJobId::new(), future).await;
+    // Due but carrying a cancel intent: the cancel predicate's row.
+    let cancelled = suspend_managed(&mut txn, RunJobId::new(), past).await;
+    PgAgentThreadRepository
+        .record_cancel_intent(&mut txn, cancelled.id(), "operator:test")
+        .await
+        .expect("intent");
+
+    // Due, intentless, but stage-driven: the stage predicate's row, which the
+    // managed scan's run_key filter excludes.
+    let stage = insert_thread(&mut txn, "managed-scan-stage").await;
+    PgAgentThreadRepository
+        .mark_running(&mut txn, stage.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .suspend(
+            &mut txn,
+            stage.id(),
+            &AgentThreadSuspension::Timer,
+            Some(past),
+        )
+        .await
+        .expect("suspend stage");
+
+    let woken = PgAgentThreadRepository
+        .find_due_managed_wakes(&mut txn, 10)
+        .await
+        .expect("managed scan");
+    assert_eq!(
+        woken,
+        vec![due_key],
+        "only the due intentless managed run's key is returned",
+    );
+
+    // The stage-driven thread is the stage scan's, never the managed scan's.
+    let stage_woken = PgAgentThreadRepository
+        .find_due_timer_wakes(&mut txn, 10)
+        .await
+        .expect("stage scan");
+    assert_eq!(
+        stage_woken.len(),
+        1,
+        "the stage thread belongs to the stage predicate",
+    );
+    assert_eq!(stage_woken[0].id(), stage.id());
+}
+
+#[tokio::test]
 async fn test_complete_from_suspended_clears_the_suspension_payload() {
     let ctx = TestDb::new().await;
     let mut txn = ctx.begin().await.expect("begin");
@@ -1569,10 +1847,10 @@ async fn test_stuck_relating_scan_keys_on_resolver_liveness() {
         .insert(
             &mut txn,
             &NewAgentThread::builder()
-                .pipeline_stage(TaskType::Relation)
-                .binding_version_id(binding.id())
+                .stage(AgentThreadStage::Product(TaskType::Relation))
+                .binding_version_id(Some(binding.id()))
                 .driving_task(DrivingTaskRef::Stage(prereq.stage_task_id))
-                .principal_id(prereq.principal_id)
+                .principal_id(Some(prereq.principal_id))
                 .format_version(AGENT_THREAD_FORMAT_VERSION)
                 .build(),
         )
@@ -1615,10 +1893,10 @@ async fn test_stuck_relating_scan_keys_on_resolver_liveness() {
             &mut txn,
             &NewAgentThread::builder()
                 .parent_thread_id(Some(thread.id()))
-                .pipeline_stage(TaskType::Relation)
-                .binding_version_id(binding.id())
+                .stage(AgentThreadStage::Product(TaskType::Relation))
+                .binding_version_id(Some(binding.id()))
                 .driving_task(DrivingTaskRef::Driver(driver_task_id))
-                .principal_id(prereq.principal_id)
+                .principal_id(Some(prereq.principal_id))
                 .format_version(AGENT_THREAD_FORMAT_VERSION)
                 .build(),
         )
@@ -1689,10 +1967,10 @@ async fn test_stuck_relating_scan_spares_a_budget_suspended_thread() {
         .insert(
             &mut txn,
             &NewAgentThread::builder()
-                .pipeline_stage(TaskType::Relation)
-                .binding_version_id(binding.id())
+                .stage(AgentThreadStage::Product(TaskType::Relation))
+                .binding_version_id(Some(binding.id()))
                 .driving_task(DrivingTaskRef::Stage(prereq.stage_task_id))
-                .principal_id(prereq.principal_id)
+                .principal_id(Some(prereq.principal_id))
                 .format_version(AGENT_THREAD_FORMAT_VERSION)
                 .build(),
         )
