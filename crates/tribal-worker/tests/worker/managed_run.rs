@@ -85,6 +85,7 @@ fn a_cap_probe_payload(
         wait_signal: wait_signal.map(ToOwned::to_owned),
         artifact_note: "the probe's mark".to_owned(),
         cap_behaviour,
+        system: None,
     }
     .to_payload()
 }

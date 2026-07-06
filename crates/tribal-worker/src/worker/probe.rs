@@ -23,6 +23,11 @@ pub struct ProbeSpec {
     /// that predates the field.
     #[serde(default = "hard_stop")]
     pub cap_behaviour: CapBehaviour,
+    /// The system prompt the probe's metered calls carry — an opaque steering
+    /// string, a real run's instructions or a proof run's provider directive.
+    /// `None` sends a system-less call.
+    #[serde(default)]
+    pub system: Option<String>,
 }
 
 /// The default cap behaviour a probe carries when its payload names none.
@@ -62,6 +67,7 @@ mod tests {
             wait_signal: Some("run-signal:abc".to_owned()),
             artifact_note: "the probe's mark".to_owned(),
             cap_behaviour: CapBehaviour::ThrottleQueue,
+            system: Some("steer the call".to_owned()),
         };
         let read = ProbeSpec::from_payload(spec.to_payload()).expect("the payload is a probe spec");
         assert_eq!(read, spec, "the spec survives the payload round trip");
@@ -74,6 +80,7 @@ mod tests {
             wait_signal: None,
             artifact_note: "no wait".to_owned(),
             cap_behaviour: CapBehaviour::HardStop,
+            system: None,
         };
         let read = ProbeSpec::from_payload(spec.to_payload()).expect("round trip");
         assert_eq!(read, spec);
