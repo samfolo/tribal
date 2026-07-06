@@ -1,47 +1,294 @@
 //! The managed-runtime acceptance walk against a live metering-gateway stack.
 //!
 //! The stack is launched out of process by `just e2e`, which hands its
-//! coordinates in through `CORTEX_E2E_*`. Absent those — the ordinary `just test`
-//! run has no stack — every test here skips, so the walk runs only under the
-//! harness that stands its dependencies up.
+//! coordinates in through `CORTEX_E2E_*`: a gateway URL, a fleet bearer, the
+//! seeded tenant account, and the ledger and response-store database URLs. The
+//! walk enqueues a probe under that account, drives it through the worker's
+//! managed loop against the real gateway (metered calls bracketed through the
+//! Platform provider, a mock upstream behind the gateway), and asserts every
+//! edge against state — the ledger's debit, the gateway's holds, the response
+//! store's custody, the job and thread terminals — never logs.
+//!
+//! Absent the coordinates — the ordinary `just test` run has no stack — the walk
+//! skips, so it runs only under the harness that stands its dependencies up.
 
 use std::env;
 
-/// Whether to skip for want of a running stack — the ordinary test run, which
-/// exports no coordinates. Reported so a skipped walk is visible, not silent.
-fn skip_without_stack() -> bool {
-    if env::var("CORTEX_E2E_READY").is_err() {
-        eprintln!("skipping the managed-runtime walk: no e2e stack (run `just e2e`)");
-        return true;
-    }
-    false
+use chrono::Duration;
+use sqlx::PgPool;
+use tribal_db::{
+    AgentThreadRecordRepository, AgentThreadRepository, PgAgentThreadRecordRepository,
+    PgAgentThreadRepository,
+};
+use tribal_domain::{AgentThreadRecordKind, AgentThreadStatus};
+use tribal_inference::{GatewayMeteringClient, PlatformInferenceProvider};
+use tribal_runtime_db::{
+    ClaimedJob, PgRunJobRepository, PollBudget, RunJobRepository, RunJobState, enqueue_job,
+    mint_grant,
+};
+use tribal_test_utils::{TestDb, provision_runtime_db};
+use tribal_wire::gateway::{GRANT_SET_HEADER, JobEnqueue, JobKind};
+use tribal_worker::{
+    ManagedConfig, ManagedRunOutcome, MeteringTransport, ProbeSpec, drive_managed_run,
+};
+
+/// A model the seeded rate card prices, so the metered call reserves and settles
+/// rather than being refused as unpriceable.
+const MODEL: &str = "claude-sonnet-4-5";
+
+/// The stack coordinates the launcher exports.
+struct Stack {
+    gateway_url: String,
+    bearer: String,
+    account_id: String,
+    ledger_database_url: String,
+    response_store_database_url: String,
 }
 
-/// Smoke the wiring: the launcher's gateway is reachable, the bearer it minted
-/// authenticates, and the account it seeded and funded reads back its balance.
-#[tokio::test]
-async fn managed_stack_answers_a_funded_balance_read() {
-    if skip_without_stack() {
-        return;
+/// Reads the coordinates, or `None` when no stack is running — the signal to
+/// skip, reported so a skipped walk is visible rather than silent.
+fn stack() -> Option<Stack> {
+    if env::var("CORTEX_E2E_READY").is_err() {
+        eprintln!("skipping the managed-runtime walk: no e2e stack (run `just e2e`)");
+        return None;
     }
-    let gateway = env::var("CORTEX_E2E_GATEWAY_URL").expect("the launcher exports the gateway url");
-    let bearer = env::var("CORTEX_E2E_GATEWAY_BEARER").expect("the launcher exports the bearer");
+    Some(Stack {
+        gateway_url: var("CORTEX_E2E_GATEWAY_URL"),
+        bearer: var("CORTEX_E2E_GATEWAY_BEARER"),
+        account_id: var("CORTEX_E2E_ACCOUNT_ID"),
+        ledger_database_url: var("CORTEX_E2E_LEDGER_DATABASE_URL"),
+        response_store_database_url: var("CORTEX_E2E_RESPONSE_STORE_DATABASE_URL"),
+    })
+}
 
-    let response = reqwest::Client::new()
-        .get(format!("{gateway}/v1/balance"))
-        .bearer_auth(&bearer)
+fn var(key: &str) -> String {
+    env::var(key).unwrap_or_else(|_| panic!("the launcher exports {key}"))
+}
+
+fn a_config() -> ManagedConfig {
+    ManagedConfig {
+        lease: Duration::seconds(60),
+        heartbeat_interval: std::time::Duration::from_millis(200),
+        call_max_tokens: 256,
+        teardown_budget: PollBudget {
+            interval: std::time::Duration::from_millis(10),
+            max_reads: 20,
+        },
+        cap_give_up_after: Duration::hours(6),
+        cap_backoff: Duration::seconds(30),
+    }
+}
+
+/// A mock-upstream directive reporting `output_tokens` of usage, so the gateway
+/// meters a real charge. Crafted as JSON — the walk cannot link the platform
+/// mock crate — and carried as the probe's system prompt, which the gateway
+/// forwards to the mock verbatim.
+fn steering_directive(output_tokens: u64) -> String {
+    serde_json::json!({
+        "chunks": ["ok"],
+        "usage": [{ "dimension": "output_token", "tier": "none", "quantity": output_tokens }],
+        "outcome": "complete",
+        "delay_ms": 0,
+    })
+    .to_string()
+}
+
+/// The sum of the account's debit ledger entries — the money the metering path
+/// has charged it, read directly from the ledger rows.
+async fn debit_total(ledger: &PgPool, account_id: &str) -> i64 {
+    let debits: Vec<i64> = sqlx::query_scalar(
+        "SELECT amount_nanodollars FROM ledger_entries \
+         WHERE account_id = $1 AND entry_type = 'debit'",
+    )
+    .bind(account_id)
+    .fetch_all(ledger)
+    .await
+    .expect("the ledger debit read succeeds");
+    debits.iter().sum()
+}
+
+/// The happy path against the real gateway: a probe drives from claim to `done`,
+/// its one metered call bracketed through the gateway to a settled charge. Every
+/// edge is asserted on state — the ledger's debit equals the balance it moved,
+/// the gateway's hold settled and is findable under the run's anchor, the
+/// response store released its custody, and the run's own durable copy remains.
+#[tokio::test]
+async fn managed_run_drives_the_metered_bracket_to_a_charge() {
+    let Some(stack) = stack() else { return };
+
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    let client = reqwest::Client::new();
+    let ledger = PgPool::connect(&stack.ledger_database_url)
+        .await
+        .expect("connect to the ledger database");
+    let store = PgPool::connect(&stack.response_store_database_url)
+        .await
+        .expect("connect to the response-store database");
+
+    // The debited-total before the run, so the charge is asserted as the debit
+    // delta this run books — isolated from the plan's lazy period-ration grant
+    // and order-independent under a shared seeded account.
+    let debit_before = debit_total(&ledger, &stack.account_id).await;
+
+    // Enqueue a one-call probe under the seeded account, steering the mock to
+    // report usage the gateway meters, then claim it as the drive would.
+    let spec = ProbeSpec {
+        calls: 1,
+        wait_signal: None,
+        artifact_note: "acceptance walk".to_owned(),
+        cap_behaviour: tribal_runtime_db::CapBehaviour::HardStop,
+        system: Some(steering_directive(40)),
+    };
+    let claimed = enqueue_and_claim(runtime.pool(), &stack.account_id, &spec).await;
+
+    // Drive it through the managed loop against the real gateway: the metered
+    // call brackets through the Platform provider, the teardown reconciles the
+    // holds and acks the custody.
+    let provider =
+        PlatformInferenceProvider::new(client.clone(), &stack.gateway_url, MODEL, &stack.bearer);
+    let transport = MeteringTransport::new(
+        GatewayMeteringClient::new(client.clone(), &stack.gateway_url, &stack.bearer),
+        mint_grant(&claimed),
+    );
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        &provider,
+        &transport,
+        &claimed,
+        &a_config(),
+    )
+    .await
+    .expect("the run drives to a terminal");
+
+    // The run reached its terminal on both planes.
+    assert_eq!(outcome, ManagedRunOutcome::Done, "the run drove to done");
+    assert_eq!(
+        job_state(runtime.pool(), &claimed).await,
+        RunJobState::Done,
+        "the job settled to done",
+    );
+
+    // The run took its own durable custody of the completion.
+    let mut core_conn = core.pool().acquire().await.expect("core connection");
+    let thread = PgAgentThreadRepository
+        .find_by_run_key(&mut core_conn, claimed.id)
+        .await
+        .expect("find the run thread")
+        .expect("the run thread exists");
+    assert_eq!(
+        thread.status(),
+        AgentThreadStatus::Completed,
+        "the thread reached its terminal",
+    );
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread_id(&mut core_conn, thread.id())
+        .await
+        .expect("the thread's records");
+    let assistant_records = records
+        .iter()
+        .filter(|record| record.kind() == AgentThreadRecordKind::AssistantMessage)
+        .count();
+    assert_eq!(
+        assistant_records, 1,
+        "the run committed its own durable copy of the metered call",
+    );
+
+    // The metered call moved money: the ledger booked a debit for it.
+    let debit_after = debit_total(&ledger, &stack.account_id).await;
+    let charged = (debit_after - debit_before).abs();
+    assert!(
+        charged > 0,
+        "the metered call booked a debit charge of {charged} nanodollars",
+    );
+
+    // The gateway's hold for the run settled and is findable under the run's
+    // anchor — the run key the teardown reconciles by, the prefix of the call's
+    // position key.
+    let holds = holds_report(&client, &stack, &claimed).await;
+    let holds = holds["holds"].as_array().expect("a holds array");
+    assert_eq!(
+        holds.len(),
+        1,
+        "the run's one call left one hold, findable under its run anchor",
+    );
+    assert_eq!(
+        holds[0]["status"], "settled",
+        "the hold settled — no live hold remains at the terminal",
+    );
+
+    // The gateway released its response custody once the run acked it, having
+    // taken its own copy above.
+    let position_key = format!("{}:0", claimed.id);
+    let custody_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM response_row WHERE account_id = $1 AND position_key = $2",
+    )
+    .bind(&stack.account_id)
+    .bind(&position_key)
+    .fetch_one(&store)
+    .await
+    .expect("the response-store read succeeds");
+    assert_eq!(
+        custody_rows, 0,
+        "the response store released the position's custody at the ack",
+    );
+}
+
+/// Enqueues a probe under `account_id` and claims it, as the managed loop would.
+async fn enqueue_and_claim(
+    runtime_pool: &PgPool,
+    account_id: &str,
+    spec: &ProbeSpec,
+) -> ClaimedJob {
+    let mut conn = runtime_pool.acquire().await.expect("runtime connection");
+    enqueue_job(
+        &mut conn,
+        account_id,
+        JobEnqueue {
+            kind: JobKind::Probe,
+            payload: spec.to_payload(),
+            idempotency_key: "acceptance-walk-metered".to_owned(),
+            priority: 0,
+        },
+    )
+    .await
+    .expect("enqueue the probe");
+    PgRunJobRepository
+        .claim(&mut conn, 4, Duration::seconds(60))
+        .await
+        .expect("claim")
+        .expect("a probe to claim")
+}
+
+async fn job_state(runtime_pool: &PgPool, claimed: &ClaimedJob) -> RunJobState {
+    let mut conn = runtime_pool.acquire().await.expect("runtime connection");
+    PgRunJobRepository
+        .state_of(&mut conn, claimed.id)
+        .await
+        .expect("state read")
+        .expect("the job exists")
+}
+
+/// Reads the run's holds through the gateway, scoped to its grant.
+async fn holds_report(
+    client: &reqwest::Client,
+    stack: &Stack,
+    claimed: &ClaimedJob,
+) -> serde_json::Value {
+    let grant = serde_json::to_string(&mint_grant(claimed)).expect("the grant serialises");
+    // The run key is a `job_<uuid>` — url-safe, so it needs no escaping.
+    client
+        .get(format!(
+            "{}/v1/holds?run_key={}",
+            stack.gateway_url, claimed.id
+        ))
+        .bearer_auth(&stack.bearer)
+        .header(GRANT_SET_HEADER, grant)
         .send()
         .await
-        .expect("the balance read reaches the gateway");
-    assert!(
-        response.status().is_success(),
-        "the gateway answers the balance read (status {})",
-        response.status(),
-    );
-
-    let body: serde_json::Value = response.json().await.expect("the balance decodes");
-    assert_eq!(
-        body["settled_nanodollars"], 1_000_000_000_i64,
-        "the funded balance is visible through the gateway",
-    );
+        .expect("the holds read reaches the gateway")
+        .json()
+        .await
+        .expect("the holds report decodes")
 }

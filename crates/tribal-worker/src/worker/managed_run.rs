@@ -388,7 +388,7 @@ async fn walk(
         };
         let call = tokio::select! {
             () = cancel_watch.cancelled() => continue,
-            result = drive_call(provider, probe_request(config.call_max_tokens), &context) => result,
+            result = drive_call(provider, probe_request(spec.system.clone(), config.call_max_tokens), &context) => result,
         };
         let response = match call {
             Ok(response) => response,
@@ -708,11 +708,11 @@ fn position_key(run_key: RunJobId, index: u32) -> PositionKey {
     PositionKey::new(format!("{run_key}:{index}"))
 }
 
-/// A probe's metered call: one user turn, a bounded generation so the gateway
-/// can size its hold.
-fn probe_request(max_tokens: u32) -> CompletionRequest {
+/// A probe's metered call: one user turn under the probe's steering system
+/// prompt, a bounded generation so the gateway can size its hold.
+fn probe_request(system: Option<String>, max_tokens: u32) -> CompletionRequest {
     CompletionRequest {
-        system: None,
+        system,
         messages: vec![Message::User {
             content: "probe".to_owned(),
         }],

@@ -5550,8 +5550,11 @@ dependencies = [
  "tribal-domain",
  "tribal-inference",
  "tribal-mcp",
+ "tribal-runtime-db",
  "tribal-telemetry",
  "tribal-test-utils",
+ "tribal-wire",
+ "tribal-worker",
  "url",
  "wiremock",
 ]
