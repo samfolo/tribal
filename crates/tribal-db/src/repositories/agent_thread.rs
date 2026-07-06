@@ -269,6 +269,17 @@ pub trait AgentThreadRepository {
         wake_at: Option<DateTime<Utc>>,
     ) -> Result<u64, DbError>;
 
+    /// Nulls a suspended thread's wake instant, leaving its `suspended` status
+    /// and cause untouched, so the timer-wake sweep stops re-finding a thread
+    /// whose run has settled off the other plane. Returns the affected row count
+    /// (zero when the thread is no longer suspended).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn disarm_wake(&self, conn: &mut PgConnection, id: AgentThreadId)
+    -> Result<u64, DbError>;
+
     /// CAS to a terminal status from `from`, stamping `completed_at` and
     /// clearing any suspension payload and wake instant. Returns the affected
     /// row count (zero is the CAS miss).
@@ -684,6 +695,27 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         .await
         .map_err(|e| DbError::QueryFailed {
             context: format!("suspending thread {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn disarm_wake(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentThreadId,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE agent_threads \
+             SET wake_at = NULL, updated_at = now() \
+             WHERE id = $1 AND status = 'suspended'",
+        )
+        .bind(id.inner())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("disarming the wake instant on thread {id}"),
             source: e,
         })?;
 

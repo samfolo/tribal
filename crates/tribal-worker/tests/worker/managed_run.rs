@@ -15,7 +15,7 @@ use tribal_db::{
     AgentThreadRecordRepository, AgentThreadRepository, PgAgentThreadRecordRepository,
     PgAgentThreadRepository,
 };
-use tribal_domain::{AgentThreadRecordKind, AgentThreadStatus, CompletionResponse};
+use tribal_domain::{AgentThreadRecordKind, AgentThreadStatus, CompletionResponse, RunJobId};
 use tribal_inference::{
     CallContext, CompletionRequest, InferenceError, InferenceEventStream, InferenceProvider,
     Message, ProviderIdentity,
@@ -210,6 +210,15 @@ async fn fire_wake(core_pool: &PgPool, runtime_pool: &PgPool, claimed: &ClaimedJ
             .expect("wake the job"),
         "the suspended job woke",
     );
+}
+
+/// The run keys the managed timer-wake sweep would re-find as due.
+async fn due_managed_wakes(core_pool: &PgPool) -> Vec<RunJobId> {
+    let mut conn = core_pool.acquire().await.expect("core connection");
+    PgAgentThreadRepository
+        .find_due_managed_wakes(&mut conn, 32)
+        .await
+        .expect("scan due managed wakes")
 }
 
 /// Reads the last cap wake cause the run's log recorded at a resolve.
@@ -999,6 +1008,73 @@ async fn test_a_hard_stop_fails_when_credit_is_short_at_the_deadline() {
         last_wake_cause(core.pool(), &resumed).await.as_deref(),
         Some("give_up"),
         "the give-up cause survives the resolve",
+    );
+}
+
+/// A run cancelled while cap-suspended does not strand the wake sweep: the cancel
+/// teardown disarms the thread's give-up deadline, so once that instant elapses
+/// the timer sweep no longer re-finds a thread whose job has already settled.
+#[tokio::test]
+async fn test_a_cancelled_cap_suspended_run_leaves_the_wake_sweep() {
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    let provider = a_capped_provider(1, GatewayError::OverCap);
+    let gateway = StubGateway::default();
+
+    // Park the run on its cap give-up deadline.
+    let claimed = enqueue_and_claim(
+        runtime.pool(),
+        a_cap_probe_payload(1, None, CapBehaviour::HardStop),
+    )
+    .await;
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        provider.as_ref(),
+        &gateway,
+        &claimed,
+        &a_config(),
+    )
+    .await
+    .expect("park on the cap");
+    assert_eq!(outcome, ManagedRunOutcome::Suspended);
+
+    // Advance the deadline: the sweep would now re-find the suspended thread —
+    // the strand the cancel must clear.
+    fire_wake(core.pool(), runtime.pool(), &claimed).await;
+    assert!(
+        due_managed_wakes(core.pool()).await.contains(&claimed.id),
+        "the due cap-suspended run is swept before the cancel",
+    );
+
+    // Cancel it and re-drive: the up-front cancel path tears the run down.
+    {
+        let mut conn = runtime.pool().acquire().await.expect("runtime connection");
+        PgRunJobRepository
+            .request_cancel(&mut conn, claimed.id)
+            .await
+            .expect("request the cancel");
+    }
+    let resumed = enqueue_and_claim_existing(runtime.pool()).await;
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        provider.as_ref(),
+        &gateway,
+        &resumed,
+        &a_config(),
+    )
+    .await
+    .expect("tear down on cancel");
+    assert_eq!(outcome, ManagedRunOutcome::Cancelled);
+    assert_eq!(
+        job_state(runtime.pool(), &resumed).await,
+        RunJobState::Cancelled,
+    );
+
+    assert!(
+        !due_managed_wakes(core.pool()).await.contains(&claimed.id),
+        "the cancelled run's thread no longer strands the wake sweep",
     );
 }
 

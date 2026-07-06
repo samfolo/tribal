@@ -33,7 +33,8 @@ pub use driver::{
 pub use error::AgentRuntimeError;
 pub use ledger_sink::PgLedgerSink;
 pub use managed::{
-    ManagedRunDisposition, commit_managed_terminal, ensure_managed_thread, suspend_managed_thread,
+    ManagedRunDisposition, clear_managed_wake, commit_managed_terminal, ensure_managed_thread,
+    suspend_managed_thread,
 };
 pub use store::{StageThread, ensure_stage_thread};
 pub use tools::{StageTool, ToolOutcome, ToolRegistry, ToolRegistryError};

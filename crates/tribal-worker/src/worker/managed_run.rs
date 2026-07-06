@@ -20,12 +20,12 @@ use sqlx::{PgConnection, PgPool, Postgres, pool::PoolConnection};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tribal_agent_runtime::{
-    AgentRuntimeError, DrivingClaim, ManagedRunDisposition, commit_artifact_record,
-    commit_managed_terminal, commit_model_call, ensure_managed_thread, resolve_stage_thread,
-    suspend_managed_thread,
+    AgentRuntimeError, DrivingClaim, ManagedRunDisposition, ResolveOutcome, clear_managed_wake,
+    commit_artifact_record, commit_managed_terminal, commit_model_call, ensure_managed_thread,
+    resolve_stage_thread, suspend_managed_thread,
 };
 use tribal_db::{
-    AgentThreadRecordRepository, AgentThreadRepository, PgAgentThreadRecordRepository,
+    AgentThreadRecordRepository, AgentThreadRepository, DbError, PgAgentThreadRecordRepository,
     PgAgentThreadRepository,
 };
 use tribal_domain::{
@@ -229,6 +229,17 @@ pub async fn drive_managed_run(
         .cancel_requested(&mut runtime, run_key)
         .await?
     {
+        // A cap-suspended run carries a live give-up deadline; disarm it so the
+        // timer sweep stops re-finding a thread whose job now settles cancelled.
+        if thread.wake_at().is_some() {
+            match clear_managed_wake(&mut core, &thread, &claim).await {
+                Ok(()) => {}
+                Err(AgentRuntimeError::LeaseLost { .. }) => {
+                    return Ok(ManagedRunOutcome::OwnershipLost);
+                }
+                Err(source) => return Err(source.into()),
+            }
+        }
         return teardown_cancelled(
             &mut runtime,
             gateway,
@@ -298,13 +309,21 @@ pub async fn drive_managed_run(
     .await;
 
     // Await the abort so the heartbeat's lease connection is released before the
-    // drive returns, rather than on a task that outlives it.
+    // drive returns, rather than on a task that outlives it; the join result is
+    // dropped — a panicked beat only stops lease renewal, which the guarded
+    // writes already treat as a lost lease.
     heartbeat.abort();
     let _ = heartbeat.await;
     outcome
 }
 
 /// Brings an adopted thread to a drivable state, or reports why it cannot be.
+///
+/// Each wake write checks its own outcome: a resolve or a mark-running a rival's
+/// reclaim beat re-reads the converged row and re-dispatches on its truth,
+/// rather than driving under a lease already rotated away. The re-read advances
+/// monotonically — a raced thread is running or terminal, never suspended
+/// afresh — so the loop settles in one further pass.
 async fn adopt(
     core: &mut PgConnection,
     runtime: &mut PgConnection,
@@ -314,54 +333,103 @@ async fn adopt(
     claim_token: uuid::Uuid,
     progress: Progress,
 ) -> Result<Adoption, ManagedRunError> {
-    match thread.status() {
-        AgentThreadStatus::Suspended => {
-            // The worker owns the resume, never the sweep: resolve only a
-            // satisfied wait, and re-park a still-waiting one.
-            let ready = thread.wake_at().is_some_and(|at| at <= Utc::now());
-            if !ready {
-                PgRunJobRepository
-                    .leave_running(runtime, run_key, claim_token, PostRunningState::Suspended)
-                    .await?;
-                return Ok(Adoption::NotReady);
+    let mut thread = thread.clone();
+    loop {
+        match thread.status() {
+            AgentThreadStatus::Suspended => {
+                // The worker owns the resume, never the sweep: resolve only a
+                // satisfied wait, and re-park a still-waiting one.
+                let ready = thread.wake_at().is_some_and(|at| at <= Utc::now());
+                if !ready {
+                    PgRunJobRepository
+                        .leave_running(runtime, run_key, claim_token, PostRunningState::Suspended)
+                        .await?;
+                    return Ok(Adoption::NotReady);
+                }
+                // A cap wait resolves under a wake cause reconstructed from the
+                // account's cap setting, recorded before `mark_running` nulls the
+                // deadline so a crash after the resolve re-derives it; the probe's
+                // own durable wait resolves plainly.
+                let resumed_cap = matches!(
+                    thread.suspension(),
+                    Some(AgentThreadSuspension::Signal { key }) if key == CAP_WAIT_SIGNAL
+                )
+                .then(|| WakeCause::of(spec.cap_behaviour));
+                let resolution = match resumed_cap {
+                    Some(cause) => cause.resolution(),
+                    None => serde_json::json!({ "resolved": "signal" }),
+                };
+                match resolve_stage_thread(core, thread.id(), &resolution).await? {
+                    ResolveOutcome::Woken => return Ok(Adoption::Running { resumed_cap }),
+                    // A rival's reclaim resolved or terminated the thread first;
+                    // re-read and re-dispatch on the converged truth.
+                    ResolveOutcome::NotSuspended
+                    | ResolveOutcome::RecordedAtTerminal
+                    | ResolveOutcome::Vanished => thread = reload_thread(core, &thread).await?,
+                }
             }
-            // A cap wait resolves under a wake cause reconstructed from the
-            // account's cap setting, recorded before `mark_running` nulls the
-            // deadline so a crash after the resolve re-derives it; the probe's
-            // own durable wait resolves plainly.
-            let resumed_cap = matches!(
-                thread.suspension(),
-                Some(AgentThreadSuspension::Signal { key }) if key == CAP_WAIT_SIGNAL
-            )
-            .then(|| WakeCause::of(spec.cap_behaviour));
-            let resolution = match resumed_cap {
-                Some(cause) => cause.resolution(),
-                None => serde_json::json!({ "resolved": "signal" }),
-            };
-            resolve_stage_thread(core, thread.id(), &resolution).await?;
-            Ok(Adoption::Running { resumed_cap })
-        }
-        AgentThreadStatus::Queued => PgAgentThreadRepository
-            .mark_running(core, thread.id(), AgentThreadStatus::Queued)
-            .await
-            .map_err(|source| AgentRuntimeError::database("marking the run running", source).into())
-            .map(|_| Adoption::Running { resumed_cap: None }),
-        // Already running (a crash mid-drive left it so); the re-attempt runs
-        // under whatever cap cause the log's last resolution recorded.
-        AgentThreadStatus::Running => Ok(Adoption::Running {
-            resumed_cap: progress.pending_cap_cause,
-        }),
-        // The run already terminated; carry its disposition so the settle reads
-        // the thread's own truth. A managed thread reaches only these two.
-        AgentThreadStatus::Completed => Ok(Adoption::Terminal(ManagedRunDisposition::Completed)),
-        AgentThreadStatus::Failed => Ok(Adoption::Terminal(ManagedRunDisposition::Failed)),
-        status @ (AgentThreadStatus::Cancelled | AgentThreadStatus::DeadLetter) => {
-            Err(ManagedRunError::UnexpectedThreadStatus { status })
+            AgentThreadStatus::Queued => {
+                let moved = PgAgentThreadRepository
+                    .mark_running(core, thread.id(), AgentThreadStatus::Queued)
+                    .await
+                    .map_err(|source| {
+                        AgentRuntimeError::database("marking the run running", source)
+                    })?;
+                if moved == 0 {
+                    // A rival marked it running first; re-read the converged row.
+                    thread = reload_thread(core, &thread).await?;
+                } else {
+                    return Ok(Adoption::Running { resumed_cap: None });
+                }
+            }
+            // Already running (a crash mid-drive left it so); the re-attempt runs
+            // under whatever cap cause the log's last resolution recorded.
+            AgentThreadStatus::Running => {
+                return Ok(Adoption::Running {
+                    resumed_cap: progress.pending_cap_cause,
+                });
+            }
+            // The run already terminated; carry its disposition so the settle
+            // reads the thread's own truth. A managed thread reaches only these.
+            AgentThreadStatus::Completed => {
+                return Ok(Adoption::Terminal(ManagedRunDisposition::Completed));
+            }
+            AgentThreadStatus::Failed => {
+                return Ok(Adoption::Terminal(ManagedRunDisposition::Failed));
+            }
+            status @ (AgentThreadStatus::Cancelled | AgentThreadStatus::DeadLetter) => {
+                return Err(ManagedRunError::UnexpectedThreadStatus { status });
+            }
         }
     }
 }
 
+/// Re-reads a thread after a rival's write raced this worker's, returning the
+/// converged row so [`adopt`] re-dispatches on its true status.
+async fn reload_thread(
+    core: &mut PgConnection,
+    thread: &AgentThread,
+) -> Result<AgentThread, AgentRuntimeError> {
+    PgAgentThreadRepository
+        .find_by_id(core, thread.id())
+        .await
+        .map_err(|source| AgentRuntimeError::database("re-reading the raced thread", source))?
+        .ok_or_else(|| {
+            // A managed thread is never deleted while its run drives, so an
+            // absent row here is a consistency fault, not a race.
+            AgentRuntimeError::database(
+                "re-reading the raced thread",
+                DbError::NotFound {
+                    entity: "agent_thread",
+                    id: thread.id().to_string(),
+                },
+            )
+        })
+}
+
 /// Walks the probe over the seam primitives from the re-derived position.
+// Threads both plane connections, the provider and gateway, and the run's full
+// guard context; a params struct would only move the same arguments behind a name.
 #[allow(clippy::too_many_arguments)]
 async fn walk(
     core: &mut PgConnection,
@@ -499,6 +567,8 @@ async fn walk(
 /// a hard-stop suspends to its give-up deadline and fails once that deadline's
 /// wake still finds it short; a throttle re-suspends at a fresh backoff; an
 /// unpriceable or not-entitled refusal fails on first sight.
+// Threads both plane connections, the gateway, and the refusal's full
+// disposition context; a params struct would only move them behind a name.
 #[allow(clippy::too_many_arguments)]
 async fn dispose_cap_refusal(
     core: &mut PgConnection,
@@ -587,6 +657,8 @@ async fn suspend_cap(
 
 /// Fails the run cleanly: the thread's `Failed` terminal, then the job settled
 /// to `cancelled` with its holds resolved.
+// Threads both plane connections, the gateway, and the run's guard context;
+// a params struct would only move them behind a name.
 #[allow(clippy::too_many_arguments)]
 async fn fail_run(
     core: &mut PgConnection,
@@ -698,6 +770,8 @@ fn settled_terminal(disposition: ManagedRunDisposition) -> (PostRunningState, Ma
 /// Settles the job to its terminal through the poll-and-ack teardown, reporting
 /// `settled` once its holds resolve. `terminal` is the job state (a failed run
 /// settles the job to `cancelled`); `settled` is the outcome the drive reports.
+// Threads the job-plane connection, the gateway, the run anchor, its acked
+// position keys, and the terminal split; a params struct would only rename them.
 #[allow(clippy::too_many_arguments)]
 async fn teardown(
     runtime: &mut PgConnection,

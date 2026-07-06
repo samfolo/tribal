@@ -280,3 +280,34 @@ pub async fn suspend_managed_thread(
     commit(txn, "committing the managed suspend transaction").await?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Cancel
+// ---------------------------------------------------------------------------
+
+/// Disarms a cancelled managed run's wake deadline under the claim guard, so the
+/// timer-wake sweep stops re-finding a thread whose job has settled off the
+/// other plane. The thread stays suspended — a cancelled managed run is never
+/// terminalized, carrying no cancellation intent — but no longer sweepable,
+/// matching a durable wait's own null deadline.
+///
+/// # Errors
+///
+/// Returns [`AgentRuntimeError::LeaseLost`] when the claim guard misses (nothing
+/// committed), and [`AgentRuntimeError::Database`] on database errors.
+pub async fn clear_managed_wake(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+    claim: &DrivingClaim,
+) -> Result<(), AgentRuntimeError> {
+    let mut txn = begin(conn, "beginning the clear-managed-wake transaction").await?;
+    claim.require(&mut txn).await?;
+
+    PgAgentThreadRepository
+        .disarm_wake(&mut txn, thread.id())
+        .await
+        .map_err(|source| AgentRuntimeError::database("disarming the managed wake", source))?;
+
+    commit(txn, "committing the clear-managed-wake transaction").await?;
+    Ok(())
+}
