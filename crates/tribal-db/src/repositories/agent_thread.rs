@@ -1095,6 +1095,41 @@ impl AgentThreadRepository for PgAgentThreadRepository {
 }
 
 // ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+/// Writes production must never make, gated behind `test-helpers`.
+#[cfg(feature = "test-helpers")]
+impl PgAgentThreadRepository {
+    /// Fast-forwards a suspended managed run's wake instant to now, so the wake
+    /// sweep finds it due — the deadline the drive itself computes, which a test
+    /// cannot pre-choose. Guarded on the `suspended` status a real resume
+    /// requires, and keyed by the run's job-plane anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn fast_forward_wake_for_test(
+        &self,
+        conn: &mut PgConnection,
+        run_key: RunJobId,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE agent_threads SET wake_at = now(), updated_at = now() \
+             WHERE run_key = $1 AND status = 'suspended'",
+        )
+        .bind(run_key.to_string())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("fast-forwarding the wake for run {run_key} (test helper)"),
+            source: e,
+        })?;
+        Ok(result.rows_affected())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Row mapping
 // ---------------------------------------------------------------------------
 

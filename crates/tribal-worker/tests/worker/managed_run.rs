@@ -6,18 +6,23 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Duration;
 use sqlx::PgPool;
+use tokio::sync::Notify;
 use tribal_agent_runtime::{
-    AgentRuntimeError, DrivingClaim, commit_model_call, ensure_managed_thread,
+    AgentRuntimeError, DrivingClaim, ManagedRunDisposition, commit_managed_terminal,
+    commit_model_call, ensure_managed_thread,
 };
 use tribal_db::{
     AgentThreadRecordRepository, AgentThreadRepository, PgAgentThreadRecordRepository,
     PgAgentThreadRepository,
 };
-use tribal_domain::AgentThreadRecordKind;
-use tribal_inference::InferenceError;
+use tribal_domain::{AgentThreadRecordKind, AgentThreadStatus, CompletionResponse};
+use tribal_inference::{
+    CallContext, CompletionRequest, InferenceError, InferenceEventStream, InferenceProvider,
+    Message, ProviderIdentity,
+};
 use tribal_runtime_db::{
     CapBehaviour, ClaimedJob, NewRunJob, PgRunJobRepository, PollBudget, RunJobRepository,
-    RunJobState, TeardownError,
+    RunJobState, TeardownError, mint_grant,
 };
 use tribal_test_utils::{
     ExhaustBehaviour, MockInferenceProvider, TestDb, a_completion_response, provision_runtime_db,
@@ -54,6 +59,87 @@ impl tribal_runtime_db::MeteringGateway for StubGateway {
             .expect("acked lock")
             .push(position_key.as_str().to_owned());
         Ok(())
+    }
+}
+
+/// A provider whose call parks until the drive is torn down, signalling when
+/// the call has begun — so a test can land a cancel strictly mid-call, past the
+/// drive's up-front cancel check.
+struct GatedProvider {
+    began: Arc<Notify>,
+    identity: ProviderIdentity,
+}
+
+impl GatedProvider {
+    fn new(began: Arc<Notify>) -> Self {
+        Self {
+            began,
+            identity: ProviderIdentity {
+                name: "gated".to_owned(),
+                model: "gated-model".to_owned(),
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl InferenceProvider for GatedProvider {
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+    ) -> Result<CompletionResponse, InferenceError> {
+        self.began.notify_one();
+        // Park until the cancel tears the drive down and drops this future.
+        std::future::pending().await
+    }
+
+    fn identity(&self) -> &ProviderIdentity {
+        &self.identity
+    }
+}
+
+/// A provider that records the position key each metered call presents and
+/// serves a canned response, so a test can prove a crash-before-commit
+/// re-presents the same key on resume.
+struct PositionRecordingProvider {
+    keys: Arc<Mutex<Vec<String>>>,
+    inner: Arc<MockInferenceProvider>,
+}
+
+impl PositionRecordingProvider {
+    fn new(keys: Arc<Mutex<Vec<String>>>) -> Self {
+        Self {
+            keys,
+            inner: a_mock_provider(),
+        }
+    }
+}
+
+#[async_trait]
+impl InferenceProvider for PositionRecordingProvider {
+    async fn complete(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, InferenceError> {
+        self.inner.complete(request).await
+    }
+
+    async fn complete_stream(
+        &self,
+        request: CompletionRequest,
+        context: &CallContext,
+    ) -> Result<InferenceEventStream, InferenceError> {
+        if let Some(key) = &context.position_key {
+            self.keys
+                .lock()
+                .expect("keys lock")
+                .push(key.as_str().to_owned());
+        }
+        self.inner.complete_stream(request, context).await
+    }
+
+    fn identity(&self) -> &ProviderIdentity {
+        self.inner.identity()
     }
 }
 
@@ -112,11 +198,10 @@ fn a_capped_provider(refusals: usize, refusal: GatewayError) -> Arc<MockInferenc
 /// instant due and the finder wakes the job back to queued.
 async fn fire_wake(core_pool: &PgPool, runtime_pool: &PgPool, claimed: &ClaimedJob) {
     let mut core_conn = core_pool.acquire().await.expect("core connection");
-    sqlx::query("UPDATE agent_threads SET wake_at = now() WHERE run_key = $1")
-        .bind(claimed.id.to_string())
-        .execute(&mut *core_conn)
+    PgAgentThreadRepository
+        .fast_forward_wake_for_test(&mut core_conn, claimed.id)
         .await
-        .expect("set the wake instant due");
+        .expect("fast-forward the wake instant due");
     let mut runtime_conn = runtime_pool.acquire().await.expect("runtime connection");
     assert!(
         PgRunJobRepository
@@ -151,8 +236,22 @@ fn a_mock_provider() -> Arc<MockInferenceProvider> {
     )
 }
 
-/// Enqueues a probe and claims it, returning the claim the drive receives.
-async fn enqueue_and_claim(runtime_pool: &PgPool, payload: serde_json::Value) -> ClaimedJob {
+/// A completion request shaped like the probe's own metered call.
+fn a_probe_completion_request() -> CompletionRequest {
+    CompletionRequest {
+        system: None,
+        messages: vec![Message::User {
+            content: "probe".to_owned(),
+        }],
+        tools: vec![],
+        temperature: None,
+        max_tokens: Some(256),
+        response_format: None,
+    }
+}
+
+/// Enqueues a probe for the shared tenant without claiming it.
+async fn enqueue_probe(runtime_pool: &PgPool, payload: serde_json::Value) {
     let mut conn = runtime_pool.acquire().await.expect("runtime connection");
     PgRunJobRepository
         .enqueue(
@@ -167,10 +266,23 @@ async fn enqueue_and_claim(runtime_pool: &PgPool, payload: serde_json::Value) ->
         )
         .await
         .expect("enqueue the probe");
+}
+
+/// Claims one probe under the given per-tenant cap, or `None` when the tenant is
+/// saturated or the queue is empty.
+async fn claim_at_cap(runtime_pool: &PgPool, cap: i32) -> Option<ClaimedJob> {
+    let mut conn = runtime_pool.acquire().await.expect("runtime connection");
     PgRunJobRepository
-        .claim(&mut conn, 4, Duration::seconds(60))
+        .claim(&mut conn, cap, Duration::seconds(60))
         .await
         .expect("claim")
+}
+
+/// Enqueues a probe and claims it, returning the claim the drive receives.
+async fn enqueue_and_claim(runtime_pool: &PgPool, payload: serde_json::Value) -> ClaimedJob {
+    enqueue_probe(runtime_pool, payload).await;
+    claim_at_cap(runtime_pool, 4)
+        .await
         .expect("a probe to claim")
 }
 
@@ -321,6 +433,79 @@ async fn test_a_resumed_run_does_not_repeat_a_committed_call() {
     );
 }
 
+/// A crash between a metered call's dispatch and its record commit re-presents
+/// the identical position key on resume, so the gateway's charge-once anchor
+/// bills it once. The re-derive counts committed records, so an uncommitted
+/// dispatch never advances the position.
+#[tokio::test]
+async fn test_a_crash_before_commit_re_presents_the_same_position_key() {
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    let keys = Arc::new(Mutex::new(Vec::new()));
+    let provider = PositionRecordingProvider::new(keys.clone());
+    let gateway = StubGateway::default();
+
+    let claimed = enqueue_and_claim(runtime.pool(), a_probe_payload(1, None)).await;
+    let run_key = claimed.id;
+
+    // Attempt one dispatches call 0 but crashes before committing its record:
+    // the bracket presented `{run_key}:0` to the provider and took no custody.
+    {
+        let mut conn = core.pool().acquire().await.expect("core connection");
+        let thread = ensure_managed_thread(
+            &mut conn,
+            run_key,
+            claimed.claim_token,
+            claimed.payload.clone(),
+        )
+        .await
+        .expect("adopt the thread");
+        PgAgentThreadRepository
+            .mark_running(&mut conn, thread.id(), AgentThreadStatus::Queued)
+            .await
+            .expect("mark the thread running");
+    }
+    let context = CallContext {
+        position_key: Some(PositionKey::new(format!("{run_key}:0"))),
+        grant: Some(mint_grant(&claimed)),
+    };
+    let dispatched = provider
+        .complete_stream(a_probe_completion_request(), &context)
+        .await
+        .expect("dispatch call 0");
+    drop(dispatched); // The crash: no commit_model_call follows the dispatch.
+
+    // The resume re-derives calls_done = 0 and re-presents the identical key.
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        &provider,
+        &gateway,
+        &claimed,
+        &a_config(),
+    )
+    .await
+    .expect("resume to done");
+    assert_eq!(outcome, ManagedRunOutcome::Done);
+
+    let expected = format!("{run_key}:0");
+    assert_eq!(
+        *keys.lock().expect("keys lock"),
+        vec![expected.clone(), expected],
+        "the resume re-presented the same position key the crash dispatched",
+    );
+    assert_eq!(
+        record_count(
+            core.pool(),
+            &claimed,
+            AgentThreadRecordKind::AssistantMessage,
+        )
+        .await,
+        1,
+        "exactly one assistant record results across the two attempts",
+    );
+}
+
 /// A probe with a durable wait parks: the job leaves `running` as `suspended`
 /// with its slot released; firing the signal wakes it, and a fresh claim drives
 /// it to `done`.
@@ -351,22 +536,7 @@ async fn test_a_durable_wait_suspends_then_resumes_under_a_fresh_claim() {
 
     // Fire the signal: the resolver sets the thread's wake instant (making it
     // ready) and the finder wakes the job back to queued.
-    {
-        let mut core_conn = core.pool().acquire().await.expect("core connection");
-        sqlx::query("UPDATE agent_threads SET wake_at = now() WHERE run_key = $1")
-            .bind(claimed.id.to_string())
-            .execute(&mut *core_conn)
-            .await
-            .expect("set the wake instant");
-        let mut runtime_conn = runtime.pool().acquire().await.expect("runtime connection");
-        assert!(
-            PgRunJobRepository
-                .wake(&mut runtime_conn, claimed.id)
-                .await
-                .expect("wake the job"),
-            "the suspended job woke",
-        );
-    }
+    fire_wake(core.pool(), runtime.pool(), &claimed).await;
 
     // A fresh claim resumes under a new token, adopts the ready thread, and
     // drives it to done.
@@ -441,6 +611,69 @@ async fn test_an_observed_cancel_tears_the_run_down() {
     );
 }
 
+/// A cancel that lands during the final metered call tears the run down rather
+/// than completing it: with no next loop iteration to observe the cancel, the
+/// in-call and post-loop paths must honour it themselves.
+#[tokio::test]
+async fn test_a_cancel_during_the_final_call_tears_the_run_down() {
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    let began = Arc::new(Notify::new());
+    let provider = GatedProvider::new(began.clone());
+    let gateway = StubGateway::default();
+
+    let claimed = enqueue_and_claim(runtime.pool(), a_probe_payload(1, None)).await;
+    let run_key = claimed.id;
+
+    // A brisk heartbeat, so the requested cancel is observed within one beat.
+    let config = ManagedConfig {
+        heartbeat_interval: std::time::Duration::from_millis(20),
+        ..a_config()
+    };
+
+    let drive = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        &provider,
+        &gateway,
+        &claimed,
+        &config,
+    );
+    // Once the call is in flight — strictly past the drive's up-front cancel
+    // check — request the cancel the heartbeat fires the run's watch on.
+    let inject = async {
+        began.notified().await;
+        let mut conn = runtime.pool().acquire().await.expect("runtime connection");
+        PgRunJobRepository
+            .request_cancel(&mut conn, run_key)
+            .await
+            .expect("request the cancel");
+    };
+    let (outcome, ()) = tokio::join!(drive, inject);
+    let outcome = outcome.expect("tear down on the mid-call cancel");
+
+    assert_eq!(
+        outcome,
+        ManagedRunOutcome::Cancelled,
+        "a cancel during the final call tears down, never completes",
+    );
+    assert_eq!(
+        job_state(runtime.pool(), &claimed).await,
+        RunJobState::Cancelled,
+        "the cancelled run's job settles cancelled",
+    );
+    assert_eq!(
+        record_count(
+            core.pool(),
+            &claimed,
+            AgentThreadRecordKind::AssistantMessage,
+        )
+        .await,
+        0,
+        "the cancelled call committed no assistant record",
+    );
+}
+
 /// A stale terminal converges: a second drive of a run already `done` adopts
 /// the terminal thread and settles the job under its own token, committing no
 /// new work.
@@ -498,6 +731,63 @@ async fn test_a_second_drive_of_a_done_run_converges() {
         .await,
         calls_after_first,
         "convergence committed no new call",
+    );
+}
+
+/// A stale Failed terminal converges to a `cancelled` job, never a `done` one:
+/// a rival adopting a thread already `Failed` settles the job on the thread's
+/// own truth, not a hardcoded `done`.
+#[tokio::test]
+async fn test_a_stale_failed_terminal_converges_to_a_cancelled_job() {
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    let provider = a_mock_provider();
+    let gateway = StubGateway::default();
+
+    let claimed = enqueue_and_claim(runtime.pool(), a_probe_payload(1, None)).await;
+
+    // A run that reached its thread's `Failed` terminal but crashed before its
+    // teardown settled the job: the thread is `Failed`, the job still `running`.
+    {
+        let mut conn = core.pool().acquire().await.expect("core connection");
+        let claim = DrivingClaim::managed(claimed.id, claimed.claim_token);
+        let thread = ensure_managed_thread(
+            &mut conn,
+            claimed.id,
+            claimed.claim_token,
+            claimed.payload.clone(),
+        )
+        .await
+        .expect("adopt the thread");
+        PgAgentThreadRepository
+            .mark_running(&mut conn, thread.id(), AgentThreadStatus::Queued)
+            .await
+            .expect("mark the thread running");
+        commit_managed_terminal(&mut conn, &thread, &claim, ManagedRunDisposition::Failed)
+            .await
+            .expect("commit the Failed terminal");
+    }
+
+    // A rival re-driving the run adopts the `Failed` thread and converges.
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        provider.as_ref(),
+        &gateway,
+        &claimed,
+        &a_config(),
+    )
+    .await
+    .expect("converge the stale Failed terminal");
+    assert_eq!(
+        outcome,
+        ManagedRunOutcome::Failed,
+        "a Failed thread converges to Failed, never Done",
+    );
+    assert_eq!(
+        job_state(runtime.pool(), &claimed).await,
+        RunJobState::Cancelled,
+        "the failed run's job settles cancelled, not done",
     );
 }
 
@@ -594,6 +884,53 @@ async fn test_the_fence_refuses_a_commit_under_a_rotated_token() {
     assert!(
         matches!(refused, Err(AgentRuntimeError::LeaseLost { .. })),
         "the append under the rotated-away token is refused, got {refused:?}",
+    );
+}
+
+/// The tenant cap holds across the composed drive, not just the repository
+/// seam: while one run holds a saturated tenant's only slot, a second stays
+/// queued; driving the first out of `running` frees the slot and the second
+/// claims.
+#[tokio::test]
+async fn test_the_tenant_cap_holds_across_the_composed_drive() {
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    let provider = a_mock_provider();
+    let gateway = StubGateway::default();
+
+    // Two probes for one tenant; claim the first under a cap of one.
+    enqueue_probe(runtime.pool(), a_probe_payload(1, None)).await;
+    enqueue_probe(runtime.pool(), a_probe_payload(1, None)).await;
+    let first = claim_at_cap(runtime.pool(), 1)
+        .await
+        .expect("the first probe claims");
+
+    // While the first holds the tenant's only slot, the second stays queued.
+    assert!(
+        claim_at_cap(runtime.pool(), 1).await.is_none(),
+        "a saturated tenant yields no second claim while the first runs",
+    );
+
+    // Driving the first to done leaves running and frees the slot.
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        provider.as_ref(),
+        &gateway,
+        &first,
+        &a_config(),
+    )
+    .await
+    .expect("drive the first to done");
+    assert_eq!(outcome, ManagedRunOutcome::Done);
+
+    // Now the second is claimable — the cap released across the composed path.
+    let second = claim_at_cap(runtime.pool(), 1)
+        .await
+        .expect("the second claims once the first leaves running");
+    assert_ne!(
+        second.id, first.id,
+        "the second probe is a distinct run from the first",
     );
 }
 
