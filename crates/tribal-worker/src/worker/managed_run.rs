@@ -207,7 +207,7 @@ pub async fn drive_managed_run(
             gateway,
             run_key,
             claim_token,
-            &position_keys(&thread, progress.calls_done),
+            &position_keys(run_key, progress.calls_done),
             PostRunningState::Cancelled,
             ManagedRunOutcome::Cancelled,
             config,
@@ -232,7 +232,7 @@ pub async fn drive_managed_run(
                 gateway,
                 run_key,
                 claim_token,
-                &position_keys(&thread, progress.calls_done),
+                &position_keys(run_key, progress.calls_done),
                 PostRunningState::Done,
                 ManagedRunOutcome::Done,
                 config,
@@ -375,7 +375,7 @@ async fn walk(
                 gateway,
                 run_key,
                 claim_token,
-                &position_keys(thread, index),
+                &position_keys(run_key, index),
                 PostRunningState::Cancelled,
                 ManagedRunOutcome::Cancelled,
                 config,
@@ -383,7 +383,7 @@ async fn walk(
             .await;
         }
         let context = CallContext {
-            position_key: Some(position_key(thread, index)),
+            position_key: Some(position_key(run_key, index)),
             grant: Some(grant.clone()),
         };
         let call = tokio::select! {
@@ -468,7 +468,7 @@ async fn walk(
         gateway,
         run_key,
         claim_token,
-        &position_keys(thread, spec.calls),
+        &position_keys(run_key, spec.calls),
         PostRunningState::Done,
         ManagedRunOutcome::Done,
         config,
@@ -590,7 +590,7 @@ async fn fail_run(
         gateway,
         run_key,
         claim_token,
-        &position_keys(thread, index),
+        &position_keys(run_key, index),
         PostRunningState::Cancelled,
         ManagedRunOutcome::Failed,
         config,
@@ -694,16 +694,18 @@ async fn teardown(
     })
 }
 
-/// The position keys a run's calls carry — `{thread}:{index}` for each, the
-/// idempotency key the gateway meters against, stable across resumes.
-fn position_keys(thread: &AgentThread, count: u32) -> Vec<PositionKey> {
+/// The position keys a run's calls carry — `{run_key}:{index}` for each, keyed
+/// on the run's job-plane anchor so the holds the gateway files under a position
+/// key's run-key prefix are the holds the teardown reconciles by that same key.
+/// The idempotency key the gateway meters against, stable across resumes.
+fn position_keys(run_key: RunJobId, count: u32) -> Vec<PositionKey> {
     (0..count)
-        .map(|index| position_key(thread, index))
+        .map(|index| position_key(run_key, index))
         .collect()
 }
 
-fn position_key(thread: &AgentThread, index: u32) -> PositionKey {
-    PositionKey::new(format!("{}:{index}", thread.id()))
+fn position_key(run_key: RunJobId, index: u32) -> PositionKey {
+    PositionKey::new(format!("{run_key}:{index}"))
 }
 
 /// A probe's metered call: one user turn, a bounded generation so the gateway
