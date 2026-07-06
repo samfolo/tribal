@@ -81,7 +81,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    let (telemetry_guard, metrics, log_ring) = telemetry_rt.block_on(async {
+    let (telemetry_guard, metrics, log_ring, log_filter) = telemetry_rt.block_on(async {
         tribal_telemetry::init_subscriber_with_log_bridge(
             &config.logging,
             &config.telemetry,
@@ -126,7 +126,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
             std::path::PathBuf::from(shellexpand::tilde(config_path).into_owned());
         let self_write = SelfWriteSentinel::default();
         let control_context = control::ControlContext {
-            config: Arc::new(config.clone()),
+            config: tokio::sync::watch::Sender::new(Arc::new(config.clone())),
             config_path: expanded_config_path.clone(),
             cli_shadow: cli_shadow.clone(),
             self_write: self_write.clone(),
@@ -134,6 +134,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
             pool: handle.state().mcp_pool().clone(),
             events: control_events.clone(),
             log_ring,
+            log_filter,
             project: handle.state().resolved_project().map(|project| {
                 tribal_wire::control::ProjectSummary {
                     id: project.id().to_string(),

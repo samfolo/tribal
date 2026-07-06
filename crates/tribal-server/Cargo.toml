@@ -79,6 +79,7 @@ test-helpers = ["tribal-inference/test-helpers"]
 figment = { workspace = true, features = ["test"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber.workspace = true
 wiremock.workspace = true
 
 tribal-inference = { workspace = true, features = ["test-helpers"] }

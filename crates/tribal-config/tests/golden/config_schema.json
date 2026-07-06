@@ -1655,7 +1655,7 @@
     {
       "path": "logging.level",
       "secret": false,
-      "reload_class": "requires_restart",
+      "reload_class": "hot",
       "default": "info"
     },
     {

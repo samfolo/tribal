@@ -92,8 +92,9 @@ async fn reload_and_publish(
 /// the replaced node, and the file is identified within its directory by name —
 /// robust to the path normalisation a watch backend may apply. The event
 /// carries no keys — an external edit is opaque, so a client re-reads the whole
-/// surface — and [`WriteEffect::NeedsRestart`], since v1 has no substrate to
-/// fold a file edit into the running snapshot live.
+/// surface — and [`WriteEffect::NeedsRestart`]: external edits stay
+/// restart-scoped by decision — live adoption serves only the write path's own
+/// validated writes, never a file edited out-of-band.
 ///
 /// The server's own `config.set` rename lands here too; `sentinel` lets that
 /// self-write be recognised by its content and suppressed, so the authoritative

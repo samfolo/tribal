@@ -77,7 +77,8 @@ impl SkipMask {
             | ValidationError::EmbeddingProviderUnsupported { .. }
             | ValidationError::InvalidCredentialName { .. }
             | ValidationError::DuplicateCredentialEndpoint { .. }
-            | ValidationError::TelemetryFileExportRequiresEnabled => {
+            | ValidationError::TelemetryFileExportRequiresEnabled
+            | ValidationError::LogFilterMalformed { .. } => {
                 // No downstream skip implied.
             }
         }
