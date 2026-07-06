@@ -16,7 +16,7 @@ mod repositories;
 mod teardown;
 
 pub use crossings::{enqueue_job, mint_grant, sync_cap};
-pub use disposition::{CapBehaviour, RunDisposition, cap_disposition, past_give_up};
+pub use disposition::{CapBehaviour, RunDisposition, cap_disposition};
 pub use erase::purge_account;
 pub use error::RuntimeDbError;
 pub use pool::create_pool;

@@ -66,14 +66,6 @@ pub fn cap_disposition(
     }
 }
 
-/// Whether a hard-stopped run has waited past its give-up deadline. A woken run
-/// whose credit is still short and whose `give_up_at` has passed fails cleanly
-/// rather than suspending again.
-#[must_use]
-pub fn past_give_up(give_up_at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
-    now >= give_up_at
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -152,13 +144,5 @@ mod tests {
             );
             assert_eq!(disposition, RunDisposition::Bracket);
         }
-    }
-
-    #[test]
-    fn test_a_run_gives_up_only_once_the_deadline_has_passed() {
-        let give_up_at = instant();
-        assert!(!past_give_up(give_up_at, give_up_at - Duration::seconds(1)));
-        assert!(past_give_up(give_up_at, give_up_at));
-        assert!(past_give_up(give_up_at, give_up_at + Duration::seconds(1)));
     }
 }
