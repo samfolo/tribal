@@ -113,7 +113,7 @@ async fn debit_total(ledger: &PgPool, account_id: &str) -> i64 {
 /// gateway's hold settled and is findable under the run's anchor, the response
 /// store released its custody, and the run's own durable copy remains.
 #[tokio::test]
-async fn managed_run_drives_the_metered_bracket_to_a_charge() {
+async fn test_managed_run_drives_the_metered_bracket_to_a_charge() {
     let Some(stack) = stack() else { return };
 
     let core = TestDb::new().await;
@@ -232,6 +232,150 @@ async fn managed_run_drives_the_metered_bracket_to_a_charge() {
     assert_eq!(
         custody_rows, 0,
         "the response store released the position's custody at the ack",
+    );
+}
+
+/// A cancel tears a run down against the live gateway on ledger state. A probe
+/// charges one metered call, then parks on its durable wait — a dispatched,
+/// unsettled hold at the pause. Cancelled and resumed, its teardown settles that
+/// hold to a charge, acks the custody, and settles the job `cancelled` — the
+/// call billed exactly once across the two drives.
+#[tokio::test]
+async fn test_a_cancelled_run_settles_its_dispatched_hold_on_the_live_ledger() {
+    let Some(stack) = stack() else { return };
+
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    let client = reqwest::Client::new();
+    let ledger = PgPool::connect(&stack.ledger_database_url)
+        .await
+        .expect("connect to the ledger database");
+    let store = PgPool::connect(&stack.response_store_database_url)
+        .await
+        .expect("connect to the response-store database");
+
+    let debit_before = debit_total(&ledger, &stack.account_id).await;
+
+    // A one-call probe that parks on a durable wait after its metered call, so
+    // the run holds a dispatched hold at the pause.
+    let spec = ProbeSpec {
+        calls: 1,
+        wait_signal: Some("go".to_owned()),
+        artifact_note: "cancel walk".to_owned(),
+        cap_behaviour: tribal_runtime_db::CapBehaviour::HardStop,
+        system: Some(steering_directive(40)),
+    };
+    let claimed = enqueue_and_claim(runtime.pool(), &stack.account_id, &spec).await;
+
+    let provider =
+        PlatformInferenceProvider::new(client.clone(), &stack.gateway_url, MODEL, &stack.bearer);
+    let transport = MeteringTransport::new(
+        GatewayMeteringClient::new(client.clone(), &stack.gateway_url, &stack.bearer),
+        mint_grant(&claimed),
+    );
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        &provider,
+        &transport,
+        &claimed,
+        &a_config(),
+    )
+    .await
+    .expect("drive to the wait");
+    assert_eq!(
+        outcome,
+        ManagedRunOutcome::Suspended,
+        "the probe parked on its durable wait",
+    );
+
+    // Cancel the parked run and wake its job so a fresh claim can resume it.
+    {
+        let mut conn = runtime.pool().acquire().await.expect("runtime connection");
+        assert!(
+            PgRunJobRepository
+                .request_cancel(&mut conn, claimed.id)
+                .await
+                .expect("request the cancel"),
+        );
+        assert!(
+            PgRunJobRepository
+                .wake(&mut conn, claimed.id)
+                .await
+                .expect("wake the job"),
+            "the suspended job woke",
+        );
+    }
+    let resumed = {
+        let mut conn = runtime.pool().acquire().await.expect("runtime connection");
+        PgRunJobRepository
+            .claim(&mut conn, 4, Duration::seconds(60))
+            .await
+            .expect("claim")
+            .expect("the woken job claims")
+    };
+    let resumed_transport = MeteringTransport::new(
+        GatewayMeteringClient::new(client.clone(), &stack.gateway_url, &stack.bearer),
+        mint_grant(&resumed),
+    );
+
+    // The resume observes the cancel up front and tears down: the dispatched
+    // hold settles, its debit books, the custody is acked, the job cancels.
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        &provider,
+        &resumed_transport,
+        &resumed,
+        &a_config(),
+    )
+    .await
+    .expect("tear down on the cancel");
+    assert_eq!(
+        outcome,
+        ManagedRunOutcome::Cancelled,
+        "the cancelled run tore down",
+    );
+    assert_eq!(
+        job_state(runtime.pool(), &resumed).await,
+        RunJobState::Cancelled,
+        "the cancelled run's job settled cancelled",
+    );
+
+    // The one dispatched call settled to a charge — billed once across the two
+    // drives, isolated from the plan's lazy period-ration grant as a delta.
+    let charged = (debit_total(&ledger, &stack.account_id).await - debit_before).abs();
+    assert!(
+        charged > 0,
+        "the dispatched call settled to a debit of {charged} nanodollars",
+    );
+
+    // The dispatched hold settled — no live hold remains — and the response
+    // custody was released at the cancel ack.
+    let holds = holds_report(&client, &stack, &resumed).await;
+    let holds = holds["holds"].as_array().expect("a holds array");
+    assert_eq!(
+        holds.len(),
+        1,
+        "the run's one dispatched call left one hold",
+    );
+    assert_eq!(
+        holds[0]["status"], "settled",
+        "the dispatched hold settled at the cancel teardown",
+    );
+
+    let position_key = format!("{}:0", resumed.id);
+    let custody_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM response_row WHERE account_id = $1 AND position_key = $2",
+    )
+    .bind(&stack.account_id)
+    .bind(&position_key)
+    .fetch_one(&store)
+    .await
+    .expect("the response-store read succeeds");
+    assert_eq!(
+        custody_rows, 0,
+        "the response store released the position's custody at the cancel ack",
     );
 }
 

@@ -18,6 +18,17 @@ use super::{
 };
 use crate::worker::Worker;
 
+/// How many managed runs one cycle claims and drives concurrently. Each claim
+/// yields at most one job, so the cycle claims up to this many before driving.
+const MANAGED_CLAIM_BATCH: usize = 4;
+
+/// The per-tenant admission ceiling a tenant with no slot of its own is
+/// admitted under.
+const MANAGED_TENANT_DEFAULT_CAP: i32 = 4;
+
+/// How many lapsed leases one cycle returns to the queue.
+const MANAGED_RECLAIM_LIMIT: i64 = 16;
+
 /// The dependencies the managed-run loop drives with. Absent on a worker that
 /// runs no job plane; present, it binds the loop to a live gateway and the
 /// runtime database.
@@ -60,17 +71,6 @@ impl ManagedRuntime {
         &self.runtime_pool
     }
 }
-
-/// How many managed runs one cycle claims and drives concurrently. Each claim
-/// yields at most one job, so the cycle claims up to this many before driving.
-const MANAGED_CLAIM_BATCH: usize = 4;
-
-/// The per-tenant admission ceiling a tenant with no slot of its own is
-/// admitted under.
-const MANAGED_TENANT_DEFAULT_CAP: i32 = 4;
-
-/// How many lapsed leases one cycle returns to the queue.
-const MANAGED_RECLAIM_LIMIT: i64 = 16;
 
 impl Worker {
     /// Drives the job plane until cancellation: each cycle returns lapsed

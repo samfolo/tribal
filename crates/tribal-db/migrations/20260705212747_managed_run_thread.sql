@@ -30,9 +30,9 @@ ALTER TABLE agent_threads ADD CONSTRAINT chk_managed_has_run_key
 ALTER TABLE agent_threads ADD CONSTRAINT chk_managed_has_no_binding
     CHECK ((pipeline_stage = 'managed') = (binding_version_id IS NULL));
 
--- Only a managed thread may omit its principal (account-level automation);
--- the one-way check leaves room for a future operator-initiated managed run
--- to name one without a migration.
+-- Only a managed thread may omit its principal (account-level automation); a
+-- product thread always carries one. The check is one-way: a managed thread may
+-- carry a principal without being required to.
 ALTER TABLE agent_threads ADD CONSTRAINT chk_product_has_principal
     CHECK (pipeline_stage = 'managed' OR principal_id IS NOT NULL);
 
