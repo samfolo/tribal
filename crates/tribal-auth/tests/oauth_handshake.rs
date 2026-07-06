@@ -256,6 +256,10 @@ fn token_form(code: &str, client_id: &str, verifier: &str, client_secret: Option
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the full DCR handshake reads as one linear round-trip; splitting it obscures the flow"
+)]
 async fn test_handshake_dcr_full_round_trip() {
     let ctx = TestDb::new().await;
     let pool = ctx.create_pool().await.unwrap();

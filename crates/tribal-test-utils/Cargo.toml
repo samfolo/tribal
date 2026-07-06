@@ -29,3 +29,6 @@ tribal-db = { workspace = true, features = ["test-helpers"] }
 tribal-domain.workspace = true
 tribal-inference.workspace = true
 tribal-runtime-db.workspace = true
+
+[lints]
+workspace = true

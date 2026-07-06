@@ -106,6 +106,10 @@ async fn test_relation_stage_commits_relations_and_completes_job() {
 /// Verifies that when all triage outcomes are duplicates, relations
 /// between matched existing items are committed and the job completes
 /// with an `Empty` outcome.
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario reads as one linear narrative"
+)]
 #[tokio::test]
 async fn test_relation_stage_all_duplicates_empty_outcome() {
     let ctx = TestDb::new().await;

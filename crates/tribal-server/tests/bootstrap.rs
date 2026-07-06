@@ -2,7 +2,7 @@
 //! shared credentials.json persistence path.
 //!
 //! Each test owns an isolated database via `TestDb` and uses scoped
-//! guards for its env-var manipulation (XDG_CONFIG_HOME, current
+//! guards for its env-var manipulation (`XDG_CONFIG_HOME`, current
 //! directory).
 
 #[path = "bootstrap/common.rs"]

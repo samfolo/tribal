@@ -1,5 +1,5 @@
 use tribal_db::{DbError, PgProjectRepository, ProjectRepository};
-use tribal_domain::{GitRemote, ProjectId};
+use tribal_domain::{GitRemote, Project, ProjectId};
 use tribal_test_utils::{TestDb, a_new_project, set_timestamp};
 
 #[tokio::test]
@@ -180,7 +180,7 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
     let projects = repo.list(&mut txn).await.expect("list");
 
     assert!(projects.len() >= 2);
-    let ids: Vec<ProjectId> = projects.iter().map(|p| p.id()).collect();
+    let ids: Vec<ProjectId> = projects.iter().map(Project::id).collect();
     let first_pos = ids.iter().position(|id| *id == first.id()).unwrap();
     let second_pos = ids.iter().position(|id| *id == second.id()).unwrap();
     assert!(

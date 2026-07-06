@@ -1,5 +1,3 @@
-#![warn(clippy::pedantic)]
-#![deny(warnings)]
 //! Authentication and authorisation for Tribal.
 //!
 //! Owns the bearer-token resource-server plane (validation, scope

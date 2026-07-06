@@ -1235,9 +1235,6 @@ async fn test_timer_wake_scan_selects_only_due_intentless_stage_threads() {
 
 #[tokio::test]
 async fn test_managed_wake_scan_selects_only_due_intentless_managed_threads() {
-    let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin");
-
     // Suspends a managed thread anchored to `run_key` at `wake_at`.
     async fn suspend_managed(
         txn: &mut sqlx::PgConnection,
@@ -1265,6 +1262,9 @@ async fn test_managed_wake_scan_selects_only_due_intentless_managed_threads() {
             .expect("suspend managed");
         thread
     }
+
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
 
     let past = chrono::Utc::now() - chrono::Duration::seconds(5);
     let future = chrono::Utc::now() + chrono::Duration::minutes(10);

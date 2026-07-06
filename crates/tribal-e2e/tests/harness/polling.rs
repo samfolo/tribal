@@ -58,11 +58,14 @@ pub async fn expect_outcome(harness: &TestHarness, job_id: &str, expected: JobOu
         );
 
         let json = tool_result_json(&result);
-        status = json["status"]
+        json["status"]
             .as_str()
             .expect("status field in job_status response")
-            .to_owned();
-        outcome = json["outcome"].as_str().unwrap_or("").to_owned();
+            .clone_into(&mut status);
+        json["outcome"]
+            .as_str()
+            .unwrap_or("")
+            .clone_into(&mut outcome);
 
         if status == "completed" || status == "failed" {
             break;

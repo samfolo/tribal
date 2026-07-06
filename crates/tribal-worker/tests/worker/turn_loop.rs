@@ -25,10 +25,10 @@ use tribal_db::{
     PgAgentDriverTaskRepository, PgAgentThreadRecordRepository, PgAgentThreadRepository,
 };
 use tribal_domain::{
-    AgentBindingVersionId, AgentThread, AgentThreadId, AgentThreadRecordKind, AgentThreadStatus,
-    AgentThreadSuspension, CompletionResponse, ExecutionBudgets, ExecutionSpend,
-    RecoverableToolFailure, ToolDescriptor, ToolExecutionMode, ToolFailure, ToolSafetyTier,
-    UsageOwner, gen_ai, span_attrs,
+    AgentBindingVersionId, AgentThread, AgentThreadId, AgentThreadRecord, AgentThreadRecordKind,
+    AgentThreadStatus, AgentThreadSuspension, CompletionResponse, ExecutionBudgets, ExecutionSpend,
+    RecoverableToolFailure, TokenUsage, ToolDescriptor, ToolExecutionMode, ToolFailure,
+    ToolSafetyTier, UsageOwner, gen_ai, span_attrs,
 };
 use tribal_inference::{
     CallContext, CompletionRequest, InferenceError, InferenceEventStream, ProviderIdentity,
@@ -672,7 +672,7 @@ async fn test_loop_completes_through_submit_with_per_turn_attribution() {
         .find_by_thread_id(&mut conn, thread.id())
         .await
         .expect("log");
-    let kinds: Vec<_> = records.iter().map(|r| r.kind()).collect();
+    let kinds: Vec<_> = records.iter().map(AgentThreadRecord::kind).collect();
     assert_eq!(
         kinds,
         vec![
@@ -695,7 +695,7 @@ async fn test_loop_completes_through_submit_with_per_turn_attribution() {
         .expect("ledger rows");
     let linked: Vec<_> = usage_rows
         .iter()
-        .filter_map(|row| row.agent_thread_record_id())
+        .filter_map(TokenUsage::agent_thread_record_id)
         .collect();
     assert_eq!(
         linked,

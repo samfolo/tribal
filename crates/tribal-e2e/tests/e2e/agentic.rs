@@ -23,6 +23,10 @@ const VERIFIER_DELAY_MS: u64 = 1_200;
 ///
 /// Theme: Canopy's deployment retry policy. One novel fact, verified and
 /// committed through the loop.
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario reads as one linear narrative"
+)]
 #[tokio::test]
 async fn test_agentic_triage_loop_end_to_end() {
     let mut harness = TestHarness::init(|setup| {

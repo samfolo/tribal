@@ -34,6 +34,15 @@ pub enum TelemetryError {
         source: tracing_subscriber::filter::ParseError,
     },
 
+    /// The level filter could not be swapped because the subscriber that
+    /// owns it is gone.
+    #[error("failed to reload the level filter")]
+    FilterReload {
+        /// The underlying reload error.
+        #[source]
+        source: tracing_subscriber::reload::Error,
+    },
+
     /// Failed to initialise the rolling file appender.
     ///
     /// Covers directory creation failures, permission errors, and other

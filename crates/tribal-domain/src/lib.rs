@@ -1,6 +1,6 @@
-#![warn(clippy::pedantic)]
+// Domain types expose many pure accessors whose result is benign to ignore;
+// #[must_use] is applied by hand where discarding the value is a logic error.
 #![allow(clippy::must_use_candidate)]
-#![deny(warnings)]
 //! Core domain types, ID newtypes, shared error types, and configuration
 //! structs for Tribal.
 

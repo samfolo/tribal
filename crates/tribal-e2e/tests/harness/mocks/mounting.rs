@@ -227,7 +227,7 @@ impl<'a> StageMountBuilder<'a> {
             let last = entry.responses.len() - 1;
             for (i, response) in entry.responses.iter().enumerate() {
                 let mock = self.attach(
-                    self.build_when(endpoint, &entry.matcher),
+                    Self::build_when(endpoint, &entry.matcher),
                     response,
                     entry.streaming,
                     entry.delay_ms,
@@ -271,7 +271,7 @@ impl<'a> StageMountBuilder<'a> {
         }
     }
 
-    fn build_when(&self, endpoint: &str, matcher: &ContentMatcher) -> MockBuilder {
+    fn build_when(endpoint: &str, matcher: &ContentMatcher) -> MockBuilder {
         let base = Mock::given(method("POST")).and(path(endpoint));
         match matcher {
             ContentMatcher::Any => base,

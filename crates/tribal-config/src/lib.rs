@@ -4,9 +4,6 @@
 //! compiled defaults → command defaults → YAML file → nested env vars
 //! → convenience alias env vars → CLI flags.
 
-#![deny(warnings)]
-#![warn(clippy::pedantic)]
-
 mod atomic_write;
 mod cli_overrides;
 mod config_schema;

@@ -55,7 +55,7 @@ pub fn test_config(
     let mut config = TribalConfig::default();
 
     // -- Database ------------------------------------------------------------
-    config.database.url = database_url.to_owned();
+    database_url.clone_into(&mut config.database.url);
     config.database.max_connect_attempts = 1;
     config.database.pool_mcp_max_connections = POOL_MCP_MAX_CONNECTIONS;
     config.database.pool_worker_max_connections = POOL_WORKER_MAX_CONNECTIONS;
@@ -98,12 +98,12 @@ pub fn test_config(
     config
 }
 
-/// Switches the genesis embedding identity to OpenAI for an E2E test and
+/// Switches the genesis embedding identity to `OpenAI` for an E2E test and
 /// registers the matching `openai_default` catalogue credential.
 ///
 /// The runtime resolves the live embedding identity from the active profile
 /// (seeded from `init.embedding`) and its credential from the catalogue, so a
-/// test exercising the OpenAI path sets both here, in its config override,
+/// test exercising the `OpenAI` path sets both here, in its config override,
 /// against the embedding wiremock the harness already mounted.
 pub fn use_openai_embedding(config: &mut TribalConfig, api_key: &str) {
     config.init.embedding.provider = ProviderKind::OpenAi;

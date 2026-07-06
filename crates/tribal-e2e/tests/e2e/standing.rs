@@ -20,6 +20,10 @@ use crate::harness::{
 /// Discover should exclude A (superseded) by default, include it
 /// with `include_superseded`, and report correct standing counts
 /// on each item.
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario reads as one linear narrative"
+)]
 #[tokio::test]
 async fn test_standing_and_supersession() {
     let mut harness = TestHarness::init(|setup| {

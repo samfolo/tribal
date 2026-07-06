@@ -14,6 +14,10 @@ use crate::harness::{
 /// Theme: Canopy's caching layer — a write-through cache fact
 /// supports a debugging heuristic, which contradicts a cache
 /// invalidation procedure.
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario reads as one linear narrative"
+)]
 #[tokio::test]
 async fn test_explore_graph_traversal() {
     let mut harness = TestHarness::init(|setup| {

@@ -16,7 +16,7 @@ use tribal_test_utils::{
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Inserts a principal, project, prompt_version, and job, returning the IDs
+/// Inserts a principal, project, `prompt_version`, and job, returning the IDs
 /// needed for triage result tests.
 async fn setup_prerequisites(
     txn: &mut sqlx::PgConnection,

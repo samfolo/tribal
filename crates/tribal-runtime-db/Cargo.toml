@@ -21,6 +21,9 @@ tribal-domain.workspace = true
 tribal-wire.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
 testcontainers.workspace = true
+tokio.workspace = true
 url.workspace = true
+
+[lints]
+workspace = true

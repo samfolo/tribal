@@ -1,5 +1,5 @@
 use tribal_db::{DbError, PgPrincipalRepository, PrincipalRepository};
-use tribal_domain::{PlatformBinding, PrincipalId};
+use tribal_domain::{PlatformBinding, Principal, PrincipalId};
 use tribal_test_utils::{TestDb, a_new_principal};
 
 // These raw-SQL fixtures assert schema-level behaviour the repository writer
@@ -156,7 +156,7 @@ async fn test_find_by_ids_returns_matching_principals() {
     let found = repo.find_by_ids(&mut txn, &ids).await.expect("find_by_ids");
 
     assert_eq!(found.len(), 3);
-    let found_ids: Vec<PrincipalId> = found.iter().map(|p| p.id()).collect();
+    let found_ids: Vec<PrincipalId> = found.iter().map(Principal::id).collect();
     for id in &ids {
         assert!(found_ids.contains(id), "missing id {id}");
     }
@@ -406,15 +406,16 @@ async fn test_delimiter_straddling_bindings_resolve_to_distinct_principals() {
 
 #[tokio::test]
 async fn test_concurrent_resolves_mint_at_most_one_principal() {
+    // Kept under the per-test pool's connection ceiling so every racer holds a
+    // connection before the barrier releases them together.
+    const RACERS: usize = 4;
+
     // The partial unique index makes the "one principal per binding" property
     // unrepresentable to break: racing resolves converge on a single row.
     let ctx = TestDb::new().await;
     let pool = ctx.pool().clone();
     let binding = PlatformBinding::new("account_race".to_owned(), "user_race".to_owned());
 
-    // Kept under the per-test pool's connection ceiling so every racer holds a
-    // connection before the barrier releases them together.
-    const RACERS: usize = 4;
     let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(RACERS));
     let mut handles = Vec::with_capacity(RACERS);
     for _ in 0..RACERS {

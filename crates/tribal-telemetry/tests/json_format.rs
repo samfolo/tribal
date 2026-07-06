@@ -23,9 +23,9 @@ fn test_json_format_produces_structured_output() {
 
     // Emit an event inside a span so we can verify span context is included.
     let span = tracing::info_span!("test_span");
-    let _enter = span.enter();
+    let enter = span.enter();
     tracing::info!(target: "json_format_test", "structured event");
-    drop(_enter);
+    drop(enter);
 
     // Dropping the guard joins the non-blocking writer thread and flushes
     // all pending writes.

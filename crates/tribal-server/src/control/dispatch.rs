@@ -12,8 +12,9 @@ use std::{path::Path, sync::Arc};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::PgPool;
+use tokio::sync::watch;
 use tribal_auth::AuthenticatedPrincipal;
-use tribal_config::{CliShadow, TribalConfig, is_secret_key};
+use tribal_config::{CliShadow, Persisted, TribalConfig, is_secret_key};
 use tribal_db::{AuthTokenRepository, PgAuthTokenRepository};
 use tribal_domain::{AuthToken, REDACTED};
 use tribal_wire::control::{self as wire, CONTROL_CONTRACT_VERSION, ControlEvent, error_code};
@@ -45,7 +46,7 @@ pub(crate) async fn dispatch(
         "logs.tail" => logs_tail(context, params),
         "token.list" => token_list(&context.pool, principal).await,
         _ => match dispatch_config(
-            &context.config,
+            &context.config_snapshot(),
             &context.config_path,
             &context.cli_shadow,
             method,
@@ -61,12 +62,16 @@ pub(crate) async fn dispatch(
     }
 }
 
-/// Persists a `config.set` and announces it on the bus. A change every
-/// subscriber learns of through `config.changed` — the binary is the only
-/// writer, so the client awaits the event rather than assuming the write took.
+/// Persists a `config.set`, adopts a live write in the running process, and
+/// announces the change on the bus. A change every subscriber learns of
+/// through `config.changed` — the binary is the only writer, so the client
+/// awaits the event rather than assuming the write took.
 ///
-/// The persist holds the write lock so concurrent sets serialise, and runs its
-/// blocking file I/O on a blocking thread rather than the async worker.
+/// The whole write — persist, side effect, snapshot swap, announcement — sits
+/// inside one critical section, so concurrent writes serialise and each
+/// writer's candidate builds on the snapshot the previous writer swapped in.
+/// The blocking file I/O runs on a blocking thread rather than the async
+/// worker.
 async fn config_set_and_publish(
     context: &ControlContext,
     params: Option<Value>,
@@ -85,12 +90,12 @@ async fn config_set_and_publish(
         ));
     }
     let key = request.key.clone();
-    let config = Arc::clone(&context.config);
     let config_path = context.config_path.clone();
     let cli = context.cli_shadow.clone();
 
-    let (outcome, document) = {
-        let _guard = context.config_write_lock.lock().await;
+    let _guard = context.config_write_lock.lock().await;
+    let config = context.config_snapshot();
+    let (outcome, persisted) =
         tokio::task::spawn_blocking(move || config_set(&config, &config_path, &cli, request))
             .await
             .map_err(|source| {
@@ -99,18 +104,80 @@ async fn config_set_and_publish(
                     format!("config.set did not complete: {source}"),
                     None,
                 )
-            })?
-    }?;
+            })??;
 
     // Record the exact bytes written so the file watcher does not re-announce
     // this write as an external edit contradicting the per-key event below.
-    context.self_write.record(document);
-    // A send with no subscribers is not an error — no client is listening yet.
+    context.self_write.record(persisted.document);
+
+    if outcome.effect == wire::WriteEffect::Live {
+        let updated = Arc::new(persisted.config);
+        adopt_live_write(
+            &context.config,
+            Arc::clone(&updated),
+            || apply_hot_key(context, &key, &updated),
+            || publish_config_changed(context, key.clone(), wire::WriteEffect::Live),
+        )
+        .inspect_err(|_| {
+            // The file changed but the process did not adopt the value: the
+            // truthful effect of the persisted write is now needs-restart.
+            publish_config_changed(context, key.clone(), wire::WriteEffect::NeedsRestart);
+        })?;
+    } else {
+        publish_config_changed(context, key, outcome.effect);
+    }
+    Ok(result(outcome))
+}
+
+/// Adopts a validated live write in the running process: the side effect is
+/// applied, the served snapshot swaps, then the change publishes — in that
+/// order, so a read never returns a value whose behaviour is not yet in
+/// force, and a published change is already visible to reads.
+fn adopt_live_write<E>(
+    snapshot: &watch::Sender<Arc<TribalConfig>>,
+    updated: Arc<TribalConfig>,
+    apply: impl FnOnce() -> Result<(), E>,
+    publish: impl FnOnce(),
+) -> Result<(), E> {
+    apply()?;
+    snapshot.send_replace(updated);
+    publish();
+    Ok(())
+}
+
+/// Applies a hot key's side effect to the running process — the substrate
+/// whose existence the promotion rule demands of every `HOT_KEYS` entry.
+fn apply_hot_key(
+    context: &ControlContext,
+    key: &str,
+    updated: &TribalConfig,
+) -> Result<(), wire::ResponseError> {
+    match key {
+        "logging.level" => context
+            .log_filter
+            .reload(&updated.logging.level)
+            .map_err(|source| {
+                error(
+                    INTERNAL_ERROR,
+                    format!("logging.level persisted but was not adopted: {source}"),
+                    None,
+                )
+            }),
+        other => Err(error(
+            INTERNAL_ERROR,
+            format!("hot key {other} has no live-apply substrate"),
+            None,
+        )),
+    }
+}
+
+/// Announces a config change on the bus. A send with no subscribers is not an
+/// error — no client is listening yet.
+fn publish_config_changed(context: &ControlContext, key: String, effect: wire::WriteEffect) {
     let _ = context.events.send(ControlEvent::ConfigChanged {
         keys: vec![key],
-        effect: outcome.effect,
+        effect,
     });
-    Ok(result(outcome))
 }
 
 // ---------------------------------------------------------------------------
@@ -179,16 +246,17 @@ fn config_get_all(config: &TribalConfig) -> wire::ConfigDocument {
 }
 
 /// Persists the write and maps its result onto the wire outcome, returning the
-/// exact bytes written alongside so the caller records its own write. Runs on a
+/// persisted record alongside — the written bytes the caller records as its
+/// own, and the applied configuration a live adoption swaps in. Runs on a
 /// blocking thread — the persist is synchronous file I/O.
 fn config_set(
     config: &TribalConfig,
     config_file: &Path,
     cli_shadow: &CliShadow,
     request: wire::ConfigSetRequest,
-) -> Result<(wire::ConfigWriteOutcome, Vec<u8>), wire::ResponseError> {
+) -> Result<(wire::ConfigWriteOutcome, Persisted), wire::ResponseError> {
     match tribal_config::set(config, config_file, &request.key, request.value, cli_shadow) {
-        Ok(persisted) => Ok((write_outcome(persisted.effect), persisted.document)),
+        Ok(persisted) => Ok((write_outcome(persisted.effect.clone()), persisted)),
         Err(tribal_config::SetError::Rejected { violations }) => Err(error(
             INVALID_PARAMS,
             "the proposed configuration write is invalid".to_owned(),
@@ -222,7 +290,7 @@ fn config_path(config_file: &Path) -> wire::ConfigPath {
 /// Composes the live status from the running context.
 fn status(context: &ControlContext) -> wire::ServerStatus {
     server_status(
-        &context.config,
+        &context.config_snapshot(),
         // The worker-death guard cancels the token when the worker exits, so an
         // un-cancelled token is a running worker; a cancelled one is stopping.
         !context.cancellation_token.is_cancelled(),
@@ -448,12 +516,18 @@ fn error(code: i32, message: String, data: Option<Value>) -> wire::ResponseError
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, sync::Arc};
+    use std::{
+        cell::{Cell, RefCell},
+        path::PathBuf,
+        sync::Arc,
+    };
 
     use chrono::{Duration, Utc};
     use serde_json::json;
     use tokio::sync::broadcast;
     use tokio_util::sync::CancellationToken;
+    use tracing::instrument::WithSubscriber;
+    use tracing_subscriber::layer::SubscriberExt;
     use tribal_config::TransportKind;
     use tribal_domain::{AuthTokenId, PrincipalId, Scope};
     use tribal_telemetry::LogRing;
@@ -468,13 +542,30 @@ mod tests {
     /// A control context over `config` and `config_path` with a fresh event bus,
     /// for the crossings that need no live pool. Callers that assert on published
     /// events keep the returned subscriber; the rest discard it.
+    ///
+    /// The filter layer is leaked so the handle's subscriber never reads as
+    /// gone; a test that must observe the filter builds its own live stack.
     fn test_context(
         config: TribalConfig,
         config_path: PathBuf,
     ) -> (ControlContext, broadcast::Receiver<ControlEvent>) {
+        let (filter_layer, log_filter) =
+            tribal_telemetry::reloadable_env_filter("info").expect("the directive parses");
+        std::mem::forget(filter_layer);
+        let (context, subscriber) = test_context_with_filter(config, config_path, log_filter);
+        (context, subscriber)
+    }
+
+    /// A control context whose hot writes reach `log_filter` — the seam the
+    /// live-adoption tests observe a real subscriber through.
+    fn test_context_with_filter(
+        config: TribalConfig,
+        config_path: PathBuf,
+        log_filter: tribal_telemetry::LogFilterHandle,
+    ) -> (ControlContext, broadcast::Receiver<ControlEvent>) {
         let (events, subscriber) = broadcast::channel(16);
         let context = ControlContext {
-            config: Arc::new(config),
+            config: watch::Sender::new(Arc::new(config)),
             config_path,
             cli_shadow: CliShadow::default(),
             self_write: SelfWriteSentinel::default(),
@@ -482,6 +573,7 @@ mod tests {
             pool: tribal_test_utils::lazy_pool(),
             events,
             log_ring: LogRing::new(16),
+            log_filter,
             project: None,
             cancellation_token: CancellationToken::new(),
             started_at: std::time::Instant::now(),
@@ -595,11 +687,11 @@ mod tests {
     fn test_config_set_persists_and_reports_needs_restart() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("tribal.yaml");
-        let (outcome, _document) = config_set(
+        let (outcome, _persisted) = config_set(
             &base_config(),
             &path,
             &CliShadow::default(),
-            set_request("logging.level", json!("debug")),
+            set_request("worker.poll_interval_ms", json!(5000)),
         )
         .expect("config.set succeeds");
         assert_eq!(outcome.effect, wire::WriteEffect::NeedsRestart);
@@ -631,7 +723,7 @@ mod tests {
             &context,
             None,
             "config.set",
-            Some(json!({ "key": "logging.level", "value": "debug" })),
+            Some(json!({ "key": "worker.poll_interval_ms", "value": 5000 })),
         )
         .await
         .expect("config.set succeeds");
@@ -643,7 +735,7 @@ mod tests {
             .expect("a config.changed was published")
         {
             ControlEvent::ConfigChanged { keys, effect } => {
-                assert_eq!(keys, vec!["logging.level".to_owned()]);
+                assert_eq!(keys, vec!["worker.poll_interval_ms".to_owned()]);
                 assert_eq!(effect, wire::WriteEffect::NeedsRestart);
             }
             other => panic!("expected ConfigChanged, got {other:?}"),
@@ -699,6 +791,268 @@ mod tests {
         );
     }
 
+    // -- live adoption -------------------------------------------------------
+
+    /// A `MakeWriter` over a shared buffer, so a test reads back what the fmt
+    /// layer wrote.
+    #[derive(Clone, Default)]
+    struct SharedWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl SharedWriter {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().expect("writer lock")).into_owned()
+        }
+    }
+
+    impl std::io::Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("writer lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
+        type Writer = SharedWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// A live subscriber stack filtered by `directive`: the subscriber to
+    /// install for the test's scope, the handle a context adopts hot writes
+    /// through, and the buffer its output lands in.
+    fn live_filter_stack(
+        directive: &str,
+    ) -> (
+        impl tracing::Subscriber + Send + Sync,
+        tribal_telemetry::LogFilterHandle,
+        SharedWriter,
+    ) {
+        let (filter_layer, handle) =
+            tribal_telemetry::reloadable_env_filter(directive).expect("the directive parses");
+        let writer = SharedWriter::default();
+        let subscriber = tracing_subscriber::registry().with(filter_layer).with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(writer.clone()),
+        );
+        (subscriber, handle, writer)
+    }
+
+    #[test]
+    fn test_a_live_write_is_applied_before_the_swap_and_published_after_it() {
+        let snapshot = watch::Sender::new(Arc::new(base_config()));
+        let mut updated = base_config();
+        updated.logging.level = "debug".to_owned();
+        let updated = Arc::new(updated);
+        let steps: RefCell<Vec<(&str, String)>> = RefCell::new(Vec::new());
+        let served_level = || snapshot.borrow().logging.level.clone();
+
+        adopt_live_write(
+            &snapshot,
+            Arc::clone(&updated),
+            || {
+                steps.borrow_mut().push(("apply", served_level()));
+                Ok::<(), wire::ResponseError>(())
+            },
+            || steps.borrow_mut().push(("publish", served_level())),
+        )
+        .expect("adoption succeeds");
+
+        assert_eq!(
+            *steps.borrow(),
+            vec![
+                ("apply", "info".to_owned()),
+                ("publish", "debug".to_owned()),
+            ],
+            "the side effect lands while reads still serve the old value, and \
+             the publish sees the already-swapped snapshot",
+        );
+    }
+
+    #[test]
+    fn test_a_failed_apply_leaves_the_snapshot_and_skips_the_publish() {
+        let snapshot = watch::Sender::new(Arc::new(base_config()));
+        let mut updated = base_config();
+        updated.logging.level = "debug".to_owned();
+        let published = Cell::new(false);
+
+        let result = adopt_live_write(
+            &snapshot,
+            Arc::new(updated),
+            || Err(error(INTERNAL_ERROR, "apply failed".to_owned(), None)),
+            || published.set(true),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            snapshot.borrow().logging.level,
+            "info",
+            "a value not in force is never served",
+        );
+        assert!(
+            !published.get(),
+            "no event announces a value that was not adopted",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_hot_write_reports_live_and_the_process_emits_at_the_new_level() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tribal.yaml");
+        let (subscriber, handle, writer) = live_filter_stack("error");
+        let (context, mut events) = test_context_with_filter(base_config(), path.clone(), handle);
+
+        async {
+            tracing::debug!(target: "hot_write_proof", "below before");
+            tracing::error!(target: "hot_write_proof", "above before");
+
+            let value = dispatch(
+                &context,
+                None,
+                "config.set",
+                Some(json!({ "key": "logging.level", "value": "error,hot_write_proof=debug" })),
+            )
+            .await
+            .expect("config.set succeeds");
+            let outcome: wire::ConfigWriteOutcome = serde_json::from_value(value).unwrap();
+            assert_eq!(
+                outcome.effect,
+                wire::WriteEffect::Live,
+                "a hot key reports live",
+            );
+
+            tracing::debug!(target: "hot_write_proof", "below after");
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        let output = writer.contents();
+        assert!(
+            !output.contains("below before"),
+            "debug is filtered before the write: {output}",
+        );
+        assert!(output.contains("above before"), "got: {output}");
+        assert!(
+            output.contains("below after"),
+            "the process emits at the new level without restart: {output}",
+        );
+
+        // The swapped snapshot serves the new value to every read.
+        let all = dispatch(&context, None, "config.getAll", None)
+            .await
+            .expect("config.getAll");
+        let document: wire::ConfigDocument = serde_json::from_value(all).unwrap();
+        assert_eq!(
+            document.values["logging"]["level"],
+            json!("error,hot_write_proof=debug"),
+        );
+
+        match events.try_recv().expect("a config.changed was published") {
+            ControlEvent::ConfigChanged { keys, effect } => {
+                assert_eq!(keys, vec!["logging.level".to_owned()]);
+                assert_eq!(effect, wire::WriteEffect::Live);
+            }
+            other => panic!("expected ConfigChanged, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_an_unparseable_hot_directive_is_refused_before_anything_changes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tribal.yaml");
+        let (subscriber, handle, writer) = live_filter_stack("error,refusal_proof=info");
+        let (context, mut events) = test_context_with_filter(base_config(), path.clone(), handle);
+
+        let error = async {
+            let error = dispatch(
+                &context,
+                None,
+                "config.set",
+                Some(json!({ "key": "logging.level", "value": "not valid [[" })),
+            )
+            .await
+            .expect_err("an unparseable directive is refused");
+            tracing::debug!(target: "refusal_proof", "still below");
+            tracing::info!(target: "refusal_proof", "still above");
+            error
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        assert_eq!(error.code, INVALID_PARAMS);
+        assert!(error.data.is_some(), "the violations ride the error data");
+        assert!(!path.exists(), "nothing persists");
+        assert_eq!(
+            context.config_snapshot().logging.level,
+            base_config().logging.level,
+            "nothing swaps",
+        );
+        assert!(
+            matches!(
+                events.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "no event publishes",
+        );
+        let output = writer.contents();
+        assert!(
+            !output.contains("still below"),
+            "the old filter keeps filtering: {output}",
+        );
+        assert!(output.contains("still above"), "got: {output}");
+    }
+
+    #[tokio::test]
+    async fn test_a_write_the_process_cannot_adopt_errors_and_downgrades_the_event() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tribal.yaml");
+        // The substrate is gone, so the apply must fail after the persist.
+        let (filter_layer, handle) =
+            tribal_telemetry::reloadable_env_filter("info").expect("the directive parses");
+        drop(filter_layer);
+        let (context, mut events) = test_context_with_filter(base_config(), path.clone(), handle);
+
+        let error = dispatch(
+            &context,
+            None,
+            "config.set",
+            Some(json!({ "key": "logging.level", "value": "debug" })),
+        )
+        .await
+        .expect_err("a write the process cannot adopt errors");
+
+        assert_eq!(error.code, INTERNAL_ERROR);
+        assert!(
+            path.exists(),
+            "the write persisted before the failed adoption"
+        );
+        assert_eq!(
+            context.config_snapshot().logging.level,
+            base_config().logging.level,
+            "a value not in force is never served",
+        );
+        match events
+            .try_recv()
+            .expect("the persisted change is announced")
+        {
+            ControlEvent::ConfigChanged { keys, effect } => {
+                assert_eq!(keys, vec!["logging.level".to_owned()]);
+                assert_eq!(
+                    effect,
+                    wire::WriteEffect::NeedsRestart,
+                    "the truthful effect of a persisted-but-unadopted write",
+                );
+            }
+            other => panic!("expected ConfigChanged, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn test_config_set_refuses_the_redaction_mask_for_a_secret() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -726,13 +1080,14 @@ mod tests {
         let path = dir.path().join("tribal.yaml");
         let (context, _) = test_context(base_config(), path.clone());
 
-        // `logging.level` is not a secret, so the mask guard does not apply: the
-        // literal is an ordinary (if unusual) free-form string and it persists.
+        // `telemetry.service_name` is not a secret, so the mask guard does not
+        // apply: the literal is an ordinary (if unusual) free-form string and
+        // it persists.
         dispatch(
             &context,
             None,
             "config.set",
-            Some(json!({ "key": "logging.level", "value": REDACTED })),
+            Some(json!({ "key": "telemetry.service_name", "value": REDACTED })),
         )
         .await
         .expect("a non-secret key is not subject to the mask refusal");

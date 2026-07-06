@@ -39,7 +39,7 @@ async fn test_happy_path_all_phases_green_against_fresh_db() {
     // so pass-or-warn is the contract — never fail, never skip.
     let binary = row_status(&output, "binary_uniqueness");
     assert!(
-        matches!(binary, Some("pass") | Some("warn")),
+        matches!(binary, Some("pass" | "warn")),
         "binary_uniqueness should run (pass or warn), got {binary:?}",
     );
 }

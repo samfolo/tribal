@@ -1,5 +1,3 @@
-#![warn(clippy::pedantic)]
-#![deny(warnings)]
 //! Observability infrastructure for Tribal: tracing subscriber setup,
 //! OTLP export configuration, metric instruments, and structured logging.
 
@@ -11,6 +9,7 @@ mod metrics;
 mod otlp;
 mod propagation;
 mod recorder;
+mod reload;
 mod subscriber;
 
 pub use error::TelemetryError;
@@ -25,4 +24,5 @@ pub use recorder::{
     InferenceOperationRecord, MetricsRecorder, NoopMetricsRecorder, OtelMetricsRecorder,
     noop_recorder,
 };
+pub use reload::{LogFilterHandle, reloadable_env_filter};
 pub use subscriber::{init_subscriber, init_subscriber_with_log_bridge};

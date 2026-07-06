@@ -4,8 +4,8 @@ use tribal_db::{
     SemanticSearchParams,
 };
 use tribal_domain::{
-    Confidence, EpisodeId, GitRemote, JobOutcome, JobStatus, KnowledgeItemId, KnowledgeKind,
-    PrincipalId, ProjectId, RelationBatchId, RelationKind,
+    Confidence, EpisodeId, GitRemote, JobOutcome, JobStatus, KnowledgeItem, KnowledgeItemId,
+    KnowledgeKind, PrincipalId, ProjectId, RelationBatchId, RelationKind,
 };
 use tribal_test_utils::{
     TestDb, a_new_job, a_new_knowledge_item, a_new_principal, a_new_project, a_new_prompt_version,
@@ -55,7 +55,7 @@ async fn setup_prerequisites(
 
 /// Creates a committed supersedes relation from `source_id` to `target_id`.
 ///
-/// Sets up the required prompt_version → job → relation chain so that
+/// Sets up the required `prompt_version` → job → relation chain so that
 /// the superseded-item exclusion query recognises the relation as committed.
 async fn insert_supersedes_relation(
     txn: &mut sqlx::PgConnection,
@@ -318,7 +318,7 @@ async fn test_find_by_ids_returns_matching_items() {
     let found = repo.find_by_ids(&mut txn, &ids).await.expect("find_by_ids");
 
     assert_eq!(found.len(), 3);
-    let found_ids: Vec<KnowledgeItemId> = found.iter().map(|i| i.id()).collect();
+    let found_ids: Vec<KnowledgeItemId> = found.iter().map(KnowledgeItem::id).collect();
     for id in &ids {
         assert!(found_ids.contains(id), "missing id {id}");
     }

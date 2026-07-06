@@ -5391,6 +5391,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "tracing-subscriber",
  "tribal-agent-runtime",
  "tribal-auth",
  "tribal-common",
@@ -5488,6 +5489,7 @@ dependencies = [
  "shellexpand",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing-subscriber",
  "tribal-domain",
  "url",
 ]

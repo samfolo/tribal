@@ -16,10 +16,10 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use sqlx::PgPool;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, broadcast, watch};
 use tokio_util::sync::CancellationToken;
 use tribal_config::{CliShadow, TransportKind, TribalConfig};
-use tribal_telemetry::LogRing;
+use tribal_telemetry::{LogFilterHandle, LogRing};
 use tribal_wire::control::{ControlEvent, ProjectSummary};
 
 use crate::startup::SelfWriteSentinel;
@@ -54,8 +54,9 @@ pub(crate) const EVENT_BUS_CAPACITY: usize = 256;
 /// It carries the extracted project summary and the pool rather than the whole
 /// `AppState`, so the control plane depends only on what its crossings use.
 pub(crate) struct ControlContext {
-    /// The resolved configuration the server is running with.
-    pub config: Arc<TribalConfig>,
+    /// The served configuration snapshot: reads borrow the current value, and
+    /// a live write swaps it once its side effect is in force.
+    pub config: watch::Sender<Arc<TribalConfig>>,
     /// The YAML file `config.set` writes.
     pub config_path: PathBuf,
     /// The command-line overrides this serve launched with, so a `config.set`
@@ -75,6 +76,9 @@ pub(crate) struct ControlContext {
     /// The bounded ring of recent log lines the capturing layer fills, read by
     /// `logs.tail`.
     pub log_ring: LogRing,
+    /// The subscriber's level-filter handle — the `logging.level` hot-apply
+    /// substrate.
+    pub log_filter: LogFilterHandle,
     /// The project this serve resolved, absent when none was.
     pub project: Option<ProjectSummary>,
     /// The serve-lifetime token; its cancellation is the worker-liveness and
@@ -90,4 +94,11 @@ pub(crate) struct ControlContext {
     /// Whether a supervisor owns this process (governs the future restart
     /// contract; recorded in the descriptor).
     pub supervised: bool,
+}
+
+impl ControlContext {
+    /// The configuration snapshot reads serve, as of now.
+    pub fn config_snapshot(&self) -> Arc<TribalConfig> {
+        self.config.borrow().clone()
+    }
 }

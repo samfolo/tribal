@@ -341,6 +341,8 @@ pub enum ValidationError {
     DuplicateCredentialEndpoint { first: String, second: String },
     /// `telemetry.file_export` requires `telemetry.enabled = true`.
     TelemetryFileExportRequiresEnabled,
+    /// `logging.level` is not a parseable tracing filter directive.
+    LogFilterMalformed { value: String },
 }
 
 impl ValidationError {
@@ -482,6 +484,11 @@ impl fmt::Display for ValidationError {
             Self::TelemetryFileExportRequiresEnabled => {
                 f.write_str("telemetry.file_export requires telemetry.enabled to be true")
             }
+
+            Self::LogFilterMalformed { value } => write!(
+                f,
+                "logging.level is not a valid tracing filter directive: {value}"
+            ),
         }
     }
 }
@@ -980,6 +987,17 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "telemetry.file_export requires telemetry.enabled to be true",
+        );
+    }
+
+    #[test]
+    fn test_display_log_filter_malformed() {
+        let err = ValidationError::LogFilterMalformed {
+            value: "not valid [[".to_owned(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "logging.level is not a valid tracing filter directive: not valid [[",
         );
     }
 }
