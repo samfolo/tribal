@@ -145,6 +145,89 @@ async fn test_cancel_requested_reads_the_intent_the_writer_sets() {
     );
 }
 
+/// Enqueues, claims, and leaves a job `suspended` — optionally with a cancel
+/// intent — returning its id.
+async fn suspend_job(conn: &mut PgConnection, key: &str, cancel: bool) -> RunJobId {
+    let id = RUN_JOB
+        .enqueue(
+            &mut *conn,
+            NewRunJob {
+                account_id: key.to_owned(),
+                kind: "probe".to_owned(),
+                payload: serde_json::json!({}),
+                idempotency_key: key.to_owned(),
+                priority: 0,
+            },
+        )
+        .await
+        .expect("enqueue")
+        .id();
+    let claimed = RUN_JOB
+        .claim(&mut *conn, DEFAULT_CAP, lease())
+        .await
+        .expect("claim")
+        .expect("a job to claim");
+    if cancel {
+        RUN_JOB
+            .request_cancel(&mut *conn, id)
+            .await
+            .expect("request cancel");
+    }
+    RUN_JOB
+        .leave_running(
+            &mut *conn,
+            id,
+            claimed.claim_token,
+            PostRunningState::Suspended,
+        )
+        .await
+        .expect("suspend the job");
+    id
+}
+
+#[tokio::test]
+async fn test_find_suspended_cancel_requested_selects_only_suspended_intents() {
+    let db = support::provision().await;
+    let mut conn = db.pool().acquire().await.expect("acquire a connection");
+
+    // Suspended and cancelled: the run the sweep must wake to be torn down.
+    let cancelled = suspend_job(&mut conn, "susp-cancel", true).await;
+    // Suspended without an intent: left parked.
+    suspend_job(&mut conn, "susp-plain", false).await;
+    // Cancelled but still queued: not suspended, so the running-worker path owns
+    // it and the sweep's `state = 'suspended'` filter excludes it.
+    let queued = RUN_JOB
+        .enqueue(
+            &mut conn,
+            NewRunJob {
+                account_id: "queued-cancel".to_owned(),
+                kind: "probe".to_owned(),
+                payload: serde_json::json!({}),
+                idempotency_key: "queued-cancel".to_owned(),
+                priority: 0,
+            },
+        )
+        .await
+        .expect("enqueue")
+        .id();
+    assert!(
+        RUN_JOB
+            .request_cancel(&mut conn, queued)
+            .await
+            .expect("cancel the queued job"),
+    );
+
+    let found = RUN_JOB
+        .find_suspended_cancel_requested(&mut conn, 10)
+        .await
+        .expect("scan");
+    assert_eq!(
+        found,
+        vec![cancelled],
+        "only the suspended cancelled run is returned",
+    );
+}
+
 #[tokio::test]
 async fn test_an_enqueued_job_is_claimable_with_no_schedule() {
     let db = support::provision().await;

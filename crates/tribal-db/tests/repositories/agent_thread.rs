@@ -1234,6 +1234,94 @@ async fn test_timer_wake_scan_selects_only_due_intentless_stage_threads() {
 }
 
 #[tokio::test]
+async fn test_managed_wake_scan_selects_only_due_intentless_managed_threads() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    // Suspends a managed thread anchored to `run_key` at `wake_at`.
+    async fn suspend_managed(
+        txn: &mut sqlx::PgConnection,
+        run_key: RunJobId,
+        wake_at: chrono::DateTime<chrono::Utc>,
+    ) -> AgentThread {
+        let thread = PgAgentThreadRepository
+            .insert(txn, &a_managed_thread(run_key))
+            .await
+            .expect("insert managed thread");
+        PgAgentThreadRepository
+            .mark_running(txn, thread.id(), AgentThreadStatus::Queued)
+            .await
+            .expect("running");
+        PgAgentThreadRepository
+            .suspend(
+                txn,
+                thread.id(),
+                &AgentThreadSuspension::Signal {
+                    key: "cortex.managed.cap-wait".to_owned(),
+                },
+                Some(wake_at),
+            )
+            .await
+            .expect("suspend managed");
+        thread
+    }
+
+    let past = chrono::Utc::now() - chrono::Duration::seconds(5);
+    let future = chrono::Utc::now() + chrono::Duration::minutes(10);
+
+    // Due, intentless, managed: the one run key the predicate returns.
+    let due_key = RunJobId::new();
+    suspend_managed(&mut txn, due_key, past).await;
+    // Suspended with a future wake: not yet due.
+    suspend_managed(&mut txn, RunJobId::new(), future).await;
+    // Due but carrying a cancel intent: the cancel predicate's row.
+    let cancelled = suspend_managed(&mut txn, RunJobId::new(), past).await;
+    PgAgentThreadRepository
+        .record_cancel_intent(&mut txn, cancelled.id(), "operator:test")
+        .await
+        .expect("intent");
+
+    // Due, intentless, but stage-driven: the stage predicate's row, which the
+    // managed scan's run_key filter excludes.
+    let stage = insert_thread(&mut txn, "managed-scan-stage").await;
+    PgAgentThreadRepository
+        .mark_running(&mut txn, stage.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .suspend(
+            &mut txn,
+            stage.id(),
+            &AgentThreadSuspension::Timer,
+            Some(past),
+        )
+        .await
+        .expect("suspend stage");
+
+    let woken = PgAgentThreadRepository
+        .find_due_managed_wakes(&mut txn, 10)
+        .await
+        .expect("managed scan");
+    assert_eq!(
+        woken,
+        vec![due_key],
+        "only the due intentless managed run's key is returned",
+    );
+
+    // The stage-driven thread is the stage scan's, never the managed scan's.
+    let stage_woken = PgAgentThreadRepository
+        .find_due_timer_wakes(&mut txn, 10)
+        .await
+        .expect("stage scan");
+    assert_eq!(
+        stage_woken.len(),
+        1,
+        "the stage thread belongs to the stage predicate",
+    );
+    assert_eq!(stage_woken[0].id(), stage.id());
+}
+
+#[tokio::test]
 async fn test_complete_from_suspended_clears_the_suspension_payload() {
     let ctx = TestDb::new().await;
     let mut txn = ctx.begin().await.expect("begin");

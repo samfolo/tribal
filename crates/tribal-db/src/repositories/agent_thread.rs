@@ -325,6 +325,23 @@ pub trait AgentThreadRepository {
         limit: u32,
     ) -> Result<Vec<AgentThread>, DbError>;
 
+    /// Finds the run keys of suspended managed threads whose wake instant has
+    /// elapsed and that carry no cancellation intent, the sweep's managed-timer
+    /// predicate. A managed thread anchors a `run_key` and drives no stage task,
+    /// so [`find_due_timer_wakes`](Self::find_due_timer_wakes)'s stage-only scan
+    /// excludes it; the sweep wakes each run's job on the other plane and never
+    /// touches the thread, so the run key is all it needs. `SKIP LOCKED` sheds
+    /// rows a rival scan holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_due_managed_wakes(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+    ) -> Result<Vec<RunJobId>, DbError>;
+
     /// Finds live threads carrying a durable cancellation intent, the sweep's
     /// cancel-fallback predicate. Rows are locked with `SKIP LOCKED`.
     ///
@@ -785,6 +802,34 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         Ok(rows.iter().map(map_agent_thread_row).collect())
     }
 
+    async fn find_due_managed_wakes(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+    ) -> Result<Vec<RunJobId>, DbError> {
+        // The managed sibling of the stage timer scan: a managed thread anchors
+        // a run_key and drives no stage task, so the sweep wakes its job rather
+        // than re-queueing a task. An intent-carrying thread belongs to the
+        // cancel path, whose wake the cancellation would immediately discard.
+        let sql = "SELECT run_key FROM agent_threads \
+             WHERE status = 'suspended' AND wake_at IS NOT NULL AND wake_at <= now() \
+               AND cancel_requested_at IS NULL \
+               AND run_key IS NOT NULL \
+             ORDER BY wake_at \
+             LIMIT $1 \
+             FOR UPDATE SKIP LOCKED";
+        let rows = sqlx::query(sql)
+            .bind(i64::from(limit))
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "scanning for due managed wakes".to_owned(),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(managed_wake_run_key).collect())
+    }
+
     async fn find_cancel_intents(
         &self,
         conn: &mut PgConnection,
@@ -1082,6 +1127,15 @@ fn driver_task_is_live(alias: &str) -> String {
         "{alias}.state NOT IN ({})",
         terminal_driver_state_literals().join(", ")
     )
+}
+
+/// Reads the `run_key` of a due-managed-wake row. A managed thread's run key is
+/// a schema invariant, so a malformed one is corruption, not a recoverable
+/// error — the row mapping's convention for schema-guaranteed shapes.
+fn managed_wake_run_key(r: &sqlx::postgres::PgRow) -> RunJobId {
+    r.get::<String, _>("run_key")
+        .parse()
+        .expect("a managed thread's run_key is a valid job id")
 }
 
 fn map_agent_thread_row(r: &sqlx::postgres::PgRow) -> AgentThread {

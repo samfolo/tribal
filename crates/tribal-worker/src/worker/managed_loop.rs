@@ -54,6 +54,11 @@ impl ManagedRuntime {
             config,
         }
     }
+
+    /// The job-plane pool, the sweep's other plane.
+    pub(crate) fn runtime_pool(&self) -> &PgPool {
+        &self.runtime_pool
+    }
 }
 
 /// How many managed runs one cycle claims and drives concurrently. Each claim

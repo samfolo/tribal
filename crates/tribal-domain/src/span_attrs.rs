@@ -312,6 +312,14 @@ pub const SWEEP_CANCELLED: &str = "tribal.sweep.cancelled";
 /// Span field name for stranded relation threads the sweep failed.
 pub const SWEEP_STUCK_RELATING: &str = "tribal.sweep.stuck_relating";
 
+/// Span field name for managed runs whose elapsed cap or signal wake the sweep
+/// carried to the job plane.
+pub const SWEEP_MANAGED_WAKES: &str = "tribal.sweep.managed_wakes";
+
+/// Span field name for suspended managed runs the sweep woke to be torn down on
+/// a durable cancel intent.
+pub const SWEEP_MANAGED_CANCELS: &str = "tribal.sweep.managed_cancels";
+
 /// Span field name for which sweep predicate a per-action event reports.
 pub const SWEEP_ACTION: &str = "tribal.sweep.action";
 
@@ -329,3 +337,9 @@ pub const SWEEP_ACTION_CANCEL_FALLBACK: &str = "cancel_fallback";
 
 /// [`SWEEP_ACTION`] value: the stuck-relating predicate.
 pub const SWEEP_ACTION_STUCK_RELATING: &str = "stuck_relating";
+
+/// [`SWEEP_ACTION`] value: the managed timer-wake predicate.
+pub const SWEEP_ACTION_MANAGED_WAKE: &str = "managed_wake";
+
+/// [`SWEEP_ACTION`] value: the cancel-while-suspended predicate.
+pub const SWEEP_ACTION_MANAGED_CANCEL: &str = "managed_cancel";

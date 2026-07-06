@@ -243,6 +243,16 @@ pub trait RunJobRepository {
         conn: &mut PgConnection,
         id: RunJobId,
     ) -> Result<Option<RunJobState>, RuntimeDbError>;
+
+    /// Finds suspended jobs carrying a durable cancel intent, the sweep that
+    /// wakes a run cancelled mid-wait so a claiming worker tears it down rather
+    /// than leaving it parked until a distant deadline. `SKIP LOCKED` sheds rows
+    /// a rival scan holds.
+    async fn find_suspended_cancel_requested(
+        &self,
+        conn: &mut PgConnection,
+        limit: i64,
+    ) -> Result<Vec<RunJobId>, RuntimeDbError>;
 }
 
 /// Postgres implementation of [`RunJobRepository`].
@@ -518,6 +528,35 @@ impl RunJobRepository for PgRunJobRepository {
                 source,
             })?;
         state.map(|value| RunJobState::from_db(&value)).transpose()
+    }
+
+    async fn find_suspended_cancel_requested(
+        &self,
+        conn: &mut PgConnection,
+        limit: i64,
+    ) -> Result<Vec<RunJobId>, RuntimeDbError> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM run_job \
+             WHERE state = 'suspended' AND cancel_requested = true \
+             ORDER BY updated_at \
+             LIMIT $1 \
+             FOR UPDATE SKIP LOCKED",
+        )
+        .bind(limit)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|source| RuntimeDbError::QueryFailed {
+            context: "scanning for suspended cancel intents".to_owned(),
+            source,
+        })?;
+        rows.into_iter()
+            .map(|raw| {
+                raw.parse::<RunJobId>()
+                    .map_err(|_| RuntimeDbError::Malformed {
+                        context: format!("run_job.id is not a job id: '{raw}'"),
+                    })
+            })
+            .collect()
     }
 }
 

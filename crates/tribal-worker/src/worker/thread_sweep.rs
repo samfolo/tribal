@@ -16,6 +16,7 @@ use tribal_db::{
     PgAgentThreadRepository,
 };
 use tribal_domain::{AgentThread, AgentThreadSuspension, StageExecutorKind, span_attrs};
+use tribal_runtime_db::{PgRunJobRepository, RunJobRepository};
 use tribal_telemetry::MetricsRecorder;
 
 use crate::{
@@ -38,6 +39,10 @@ pub(crate) struct ThreadSweepStats {
     pub(crate) cancelled: u32,
     /// Stranded relation threads failed: their job had no live resolver.
     pub(crate) stuck_relating: u32,
+    /// Managed runs whose elapsed wake the sweep carried to the job plane.
+    pub(crate) managed_wakes: u32,
+    /// Suspended managed runs woken to be torn down on a cancel intent.
+    pub(crate) managed_cancels: u32,
 }
 
 impl Worker {
@@ -68,6 +73,21 @@ impl Worker {
         stats.cancelled = sweep_cancel_fallback(self, &mut conn).await;
         stats.stuck_relating = sweep_stuck_relating(self, &mut conn).await;
 
+        // The managed sweeps run only on a worker that drives the job plane; the
+        // wake predicate spans both planes (find on core, wake on runtime), the
+        // cancel predicate is job-plane only.
+        if let Some(managed) = self.managed() {
+            match managed.runtime_pool().acquire().await {
+                Ok(mut runtime) => {
+                    stats.managed_wakes = sweep_managed_wakes(&mut conn, &mut runtime).await;
+                    stats.managed_cancels = sweep_managed_cancels(&mut runtime).await;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "runtime pool acquire failed for the managed sweep");
+                }
+            }
+        }
+
         record_sweep_outcome(self.metrics(), &stats);
         stats
     }
@@ -82,6 +102,8 @@ fn thread_sweep_span() -> tracing::Span {
         { span_attrs::SWEEP_CASCADED } = tracing::field::Empty,
         { span_attrs::SWEEP_CANCELLED } = tracing::field::Empty,
         { span_attrs::SWEEP_STUCK_RELATING } = tracing::field::Empty,
+        { span_attrs::SWEEP_MANAGED_WAKES } = tracing::field::Empty,
+        { span_attrs::SWEEP_MANAGED_CANCELS } = tracing::field::Empty,
     )
 }
 
@@ -94,6 +116,8 @@ fn record_sweep_outcome(recorder: &dyn MetricsRecorder, stats: &ThreadSweepStats
     span.record(span_attrs::SWEEP_CASCADED, stats.cascaded);
     span.record(span_attrs::SWEEP_CANCELLED, stats.cancelled);
     span.record(span_attrs::SWEEP_STUCK_RELATING, stats.stuck_relating);
+    span.record(span_attrs::SWEEP_MANAGED_WAKES, stats.managed_wakes);
+    span.record(span_attrs::SWEEP_MANAGED_CANCELS, stats.managed_cancels);
     emit_sweep_action(
         recorder,
         span_attrs::SWEEP_ACTION_TIMER_WAKE,
@@ -113,6 +137,16 @@ fn record_sweep_outcome(recorder: &dyn MetricsRecorder, stats: &ThreadSweepStats
         recorder,
         span_attrs::SWEEP_ACTION_STUCK_RELATING,
         stats.stuck_relating,
+    );
+    emit_sweep_action(
+        recorder,
+        span_attrs::SWEEP_ACTION_MANAGED_WAKE,
+        stats.managed_wakes,
+    );
+    emit_sweep_action(
+        recorder,
+        span_attrs::SWEEP_ACTION_MANAGED_CANCEL,
+        stats.managed_cancels,
     );
 }
 
@@ -318,6 +352,70 @@ async fn sweep_stuck_relating(worker: &Worker, conn: &mut sqlx::PgConnection) ->
     failed
 }
 
+/// The managed timer-wake predicate: a suspended managed thread whose `wake_at`
+/// elapsed has its job woken on the other plane (`suspended`→`queued`), so a
+/// worker claims and resolves it. The sweep touches the thread not at all — the
+/// worker owns the resume — and re-scans every cycle (level-triggered) until the
+/// thread is resolved, so no wake is lost. Best-effort: a failed wake warns and
+/// the next cycle re-attempts.
+async fn sweep_managed_wakes(
+    core: &mut sqlx::PgConnection,
+    runtime: &mut sqlx::PgConnection,
+) -> u32 {
+    let due = match PgAgentThreadRepository
+        .find_due_managed_wakes(core, SWEEP_BATCH)
+        .await
+    {
+        Ok(due) => due,
+        Err(e) => {
+            tracing::warn!(error = %e, "managed-wake scan failed");
+            return 0;
+        }
+    };
+
+    let mut woken = 0;
+    for run_key in due {
+        match PgRunJobRepository.wake(runtime, run_key).await {
+            // The job woke; the thread stays suspended until a worker resolves
+            // it, so a later cycle re-finds it and re-wakes a job the worker has
+            // not yet claimed — a no-op once it is queued or running.
+            Ok(true) => woken += 1,
+            Ok(false) => {
+                tracing::debug!(%run_key, "managed wake found the job already off suspended");
+            }
+            Err(e) => tracing::warn!(%run_key, error = %e, "managed wake failed"),
+        }
+    }
+    woken
+}
+
+/// The cancel-while-suspended predicate: a suspended job carrying a durable
+/// cancel intent is woken so a claiming worker tears it down, rather than
+/// leaving it parked until a deadline the cancellation makes moot. Job-plane
+/// only — the thread is resolved by the claiming worker's teardown.
+async fn sweep_managed_cancels(runtime: &mut sqlx::PgConnection) -> u32 {
+    let cancelled = match PgRunJobRepository
+        .find_suspended_cancel_requested(runtime, i64::from(SWEEP_BATCH))
+        .await
+    {
+        Ok(cancelled) => cancelled,
+        Err(e) => {
+            tracing::warn!(error = %e, "suspended-cancel scan failed");
+            return 0;
+        }
+    };
+
+    let mut woken = 0;
+    for run_key in cancelled {
+        match PgRunJobRepository.wake(runtime, run_key).await {
+            Ok(true) => woken += 1,
+            Ok(false) => {}
+            Err(e) => tracing::warn!(%run_key, error = %e, "cancel wake failed"),
+        }
+    }
+    woken
+}
+
 #[cfg(test)]
 mod tests {
     use tribal_agent_runtime::{SuspendOutcome, suspend_stage_thread};
@@ -504,6 +602,8 @@ mod tests {
             cascaded: 0,
             cancelled: 1,
             stuck_relating: 0,
+            managed_wakes: 0,
+            managed_cancels: 0,
         };
         thread_sweep_span().in_scope(|| record_sweep_outcome(recorder.as_ref(), &stats));
 
@@ -529,5 +629,146 @@ mod tests {
             event.field(span_attrs::SWEEP_ACTION) == Some("cancel_fallback")
                 && event.field(span_attrs::SWEEP_ACTION_COUNT) == Some("1")
         }));
+    }
+
+    // -- Managed sweeps -----------------------------------------------------
+
+    /// Suspends a managed thread in the core plane, anchored to `run_key`, so
+    /// the managed-wake scan finds it once `wake_at` elapses.
+    async fn suspend_managed_thread_at(
+        core: &mut sqlx::PgConnection,
+        run_key: tribal_domain::RunJobId,
+        wake_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        let thread = PgAgentThreadRepository
+            .insert(
+                core,
+                &NewAgentThread::builder()
+                    .stage(AgentThreadStage::Managed)
+                    .driving_task(DrivingTaskRef::Managed(run_key))
+                    .run_claim_token(Some(uuid::Uuid::new_v4()))
+                    .format_version(AGENT_THREAD_FORMAT_VERSION)
+                    .build(),
+            )
+            .await
+            .expect("insert managed thread");
+        PgAgentThreadRepository
+            .mark_running(core, thread.id(), tribal_domain::AgentThreadStatus::Queued)
+            .await
+            .expect("running");
+        PgAgentThreadRepository
+            .suspend(
+                core,
+                thread.id(),
+                &AgentThreadSuspension::Signal {
+                    key: "cortex.managed.cap-wait".to_owned(),
+                },
+                Some(wake_at),
+            )
+            .await
+            .expect("suspend managed");
+    }
+
+    /// Enqueues, claims, and leaves a job `suspended` — optionally with a cancel
+    /// intent — returning its run key.
+    async fn a_suspended_job(
+        runtime: &mut sqlx::PgConnection,
+        suffix: &str,
+        cancel: bool,
+    ) -> tribal_domain::RunJobId {
+        PgRunJobRepository
+            .enqueue(
+                runtime,
+                tribal_runtime_db::NewRunJob {
+                    account_id: format!("acct-{suffix}"),
+                    kind: "probe".to_owned(),
+                    payload: serde_json::json!({}),
+                    idempotency_key: format!("sweep-{suffix}"),
+                    priority: 0,
+                },
+            )
+            .await
+            .expect("enqueue");
+        let claimed = PgRunJobRepository
+            .claim(runtime, 4, chrono::Duration::seconds(60))
+            .await
+            .expect("claim")
+            .expect("a job to claim");
+        if cancel {
+            PgRunJobRepository
+                .request_cancel(runtime, claimed.id)
+                .await
+                .expect("request cancel");
+        }
+        PgRunJobRepository
+            .leave_running(
+                runtime,
+                claimed.id,
+                claimed.claim_token,
+                tribal_runtime_db::PostRunningState::Suspended,
+            )
+            .await
+            .expect("suspend the job");
+        claimed.id
+    }
+
+    async fn job_state(
+        runtime: &mut sqlx::PgConnection,
+        id: tribal_domain::RunJobId,
+    ) -> tribal_runtime_db::RunJobState {
+        PgRunJobRepository
+            .state_of(runtime, id)
+            .await
+            .expect("state read")
+            .expect("the job exists")
+    }
+
+    #[tokio::test]
+    async fn test_managed_wake_sweep_wakes_a_due_run_and_leaves_a_pending_one() {
+        let ctx = TestDb::new().await;
+        let rt = tribal_test_utils::provision_runtime_db().await;
+        let mut core = ctx.raw_connection().await.expect("core connection");
+        let mut runtime = rt.pool().acquire().await.expect("runtime connection");
+
+        let past = chrono::Utc::now() - chrono::Duration::seconds(5);
+        let future = chrono::Utc::now() + chrono::Duration::minutes(10);
+
+        let due = a_suspended_job(&mut runtime, "due", false).await;
+        suspend_managed_thread_at(&mut core, due, past).await;
+        let pending = a_suspended_job(&mut runtime, "pending", false).await;
+        suspend_managed_thread_at(&mut core, pending, future).await;
+
+        let woken = sweep_managed_wakes(&mut core, &mut runtime).await;
+        assert_eq!(woken, 1, "only the due run's job woke");
+        assert_eq!(
+            job_state(&mut runtime, due).await,
+            tribal_runtime_db::RunJobState::Queued
+        );
+        assert_eq!(
+            job_state(&mut runtime, pending).await,
+            tribal_runtime_db::RunJobState::Suspended,
+            "the not-yet-due run stays parked",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cancel_sweep_wakes_a_suspended_cancelled_run_alone() {
+        let rt = tribal_test_utils::provision_runtime_db().await;
+        let mut runtime = rt.pool().acquire().await.expect("runtime connection");
+
+        let cancelled = a_suspended_job(&mut runtime, "cancel", true).await;
+        let plain = a_suspended_job(&mut runtime, "plain", false).await;
+
+        let woken = sweep_managed_cancels(&mut runtime).await;
+        assert_eq!(woken, 1, "only the cancelled suspended run woke");
+        assert_eq!(
+            job_state(&mut runtime, cancelled).await,
+            tribal_runtime_db::RunJobState::Queued,
+        );
+        assert_eq!(
+            job_state(&mut runtime, plain).await,
+            tribal_runtime_db::RunJobState::Suspended,
+            "an uncancelled suspended run is left parked",
+        );
     }
 }
