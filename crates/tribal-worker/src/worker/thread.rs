@@ -484,6 +484,7 @@ pub(crate) fn map_runtime_error(
         | AgentRuntimeError::ContentSerialisation { .. }
         | AgentRuntimeError::ToolExecution { .. }
         | AgentRuntimeError::LogProjection { .. }
+        | AgentRuntimeError::ProductInvariant { .. }
         | AgentRuntimeError::CancelWatchClosed) => StageError::Runtime {
             context: context.to_owned(),
             source,

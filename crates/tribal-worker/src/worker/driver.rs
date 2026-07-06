@@ -229,7 +229,12 @@ impl Worker {
         // resumed child sends what it was admitted under, never a default.
         let binding_version_id = child
             .binding_version_id()
-            .expect("a driver child records its binding");
+            .ok_or_else(|| StageError::Runtime {
+                context: "loading the child's binding".to_owned(),
+                source: AgentRuntimeError::ProductInvariant {
+                    context: "a driver child records its binding".to_owned(),
+                },
+            })?;
         let binding = PgAgentBindingVersionRepository
             .find_by_id(&mut conn, binding_version_id)
             .await
@@ -247,10 +252,12 @@ impl Worker {
         // edit that moved the stage's route after the child was admitted
         // would run it under an endpoint its recorded binding does not
         // name; fail terminal before the call, as the stage path does.
-        let child_stage = child
-            .stage()
-            .product()
-            .expect("a driver child runs a product stage");
+        let child_stage = child.stage().product().ok_or_else(|| StageError::Runtime {
+            context: "resolving the child's stage".to_owned(),
+            source: AgentRuntimeError::ProductInvariant {
+                context: "a driver child runs a product stage".to_owned(),
+            },
+        })?;
         guard_binding(
             child_stage.as_str(),
             binding.definition(),

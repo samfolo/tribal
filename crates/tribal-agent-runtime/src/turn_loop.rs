@@ -1939,13 +1939,16 @@ async fn launch_verifier(
     // The heartbeat stops before the suspension clears the claim, lest a
     // beat in flight race a spurious ownership-lost signal.
     deps.pump.abort();
+    let principal_id =
+        deps.thread
+            .principal_id()
+            .ok_or_else(|| AgentRuntimeError::ProductInvariant {
+                context: "a product thread carries a principal".to_owned(),
+            })?;
     let child = ChildLaunch {
         pipeline_stage: launch.pipeline_stage,
         binding_version_id: launch.binding_version_id,
-        principal_id: deps
-            .thread
-            .principal_id()
-            .expect("a product thread carries a principal"),
+        principal_id,
         // The parent's job, so the child's spend meters to it without a
         // lineage walk.
         job_id: deps.attribution.owner.job_id(),

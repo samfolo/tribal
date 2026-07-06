@@ -217,9 +217,12 @@ async fn load_recorded_binding(
     conn: &mut PgConnection,
     thread: &AgentThread,
 ) -> Result<AgentBinding, AgentRuntimeError> {
-    let binding_version_id = thread
-        .binding_version_id()
-        .expect("a product thread records its binding");
+    let binding_version_id =
+        thread
+            .binding_version_id()
+            .ok_or_else(|| AgentRuntimeError::ProductInvariant {
+                context: "a product thread has no recorded binding".to_owned(),
+            })?;
     PgAgentBindingVersionRepository
         .find_by_id(conn, binding_version_id)
         .await

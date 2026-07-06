@@ -212,15 +212,17 @@ async fn sweep_timer_wakes(agents: &AgentsConfig, conn: &mut sqlx::PgConnection)
 /// The budgets a woken thread's re-admission will run against, as of
 /// this wake: re-resolved from the current configuration under the
 /// thread's recorded executor kind. Provenance for the resolution
-/// record; `null` when the binding cannot be read.
+/// record; `null` when the thread carries no product binding or stage.
 async fn wake_budgets_basis(
     agents: &AgentsConfig,
     conn: &mut sqlx::PgConnection,
     thread: &AgentThread,
 ) -> serde_json::Value {
-    let binding_version_id = thread
-        .binding_version_id()
-        .expect("a product thread records its binding");
+    let (Some(binding_version_id), Some(stage)) =
+        (thread.binding_version_id(), thread.stage().product())
+    else {
+        return serde_json::Value::Null;
+    };
     let executor = match PgAgentBindingVersionRepository
         .find_by_id(conn, binding_version_id)
         .await
@@ -228,10 +230,6 @@ async fn wake_budgets_basis(
         Ok(Some(binding)) => binding.definition().executor,
         Ok(None) | Err(_) => StageExecutorKind::OneShot,
     };
-    let stage = thread
-        .stage()
-        .product()
-        .expect("a product thread runs a product stage");
     let budgets = current_stage_budgets(stage, executor, agents);
     serde_json::to_value(budgets).unwrap_or(serde_json::Value::Null)
 }

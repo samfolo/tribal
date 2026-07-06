@@ -64,9 +64,11 @@ pub(crate) async fn recovery_cap_for_thread(
     conn: &mut sqlx::PgConnection,
     thread: &AgentThread,
 ) -> u32 {
-    let binding_version_id = thread
-        .binding_version_id()
-        .expect("a product thread records its binding");
+    let Some(binding_version_id) = thread.binding_version_id() else {
+        // No recorded binding: the conservative fail-fast cap, as an unreadable
+        // one takes.
+        return 0;
+    };
     let executor = match PgAgentBindingVersionRepository
         .find_by_id(conn, binding_version_id)
         .await
