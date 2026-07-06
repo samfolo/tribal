@@ -21,13 +21,16 @@ use tribal_db::{
     PgAgentThreadRepository,
 };
 use tribal_domain::{AgentThreadRecordKind, AgentThreadStatus};
-use tribal_inference::{GatewayMeteringClient, PlatformInferenceProvider};
+use tribal_inference::{
+    CallContext, CompletionRequest, GatewayMeteringClient, InferenceProvider, Message,
+    PlatformInferenceProvider, collect_completion,
+};
 use tribal_runtime_db::{
-    ClaimedJob, PgRunJobRepository, PollBudget, RunJobRepository, RunJobState, enqueue_job,
-    mint_grant,
+    CapBehaviour, ClaimedJob, PgRunJobRepository, PollBudget, RunJobRepository, RunJobState,
+    enqueue_job, mint_grant,
 };
 use tribal_test_utils::{TestDb, provision_runtime_db};
-use tribal_wire::gateway::{GRANT_SET_HEADER, JobEnqueue, JobKind};
+use tribal_wire::gateway::{GRANT_SET_HEADER, JobEnqueue, JobKind, PositionKey};
 use tribal_worker::{
     ManagedConfig, ManagedRunOutcome, MeteringTransport, ProbeSpec, drive_managed_run,
 };
@@ -137,7 +140,7 @@ async fn test_managed_run_drives_the_metered_bracket_to_a_charge() {
         calls: 1,
         wait_signal: None,
         artifact_note: "acceptance walk".to_owned(),
-        cap_behaviour: tribal_runtime_db::CapBehaviour::HardStop,
+        cap_behaviour: CapBehaviour::HardStop,
         system: Some(steering_directive(40)),
     };
     let claimed = enqueue_and_claim(runtime.pool(), &stack.account_id, &spec).await;
@@ -194,6 +197,14 @@ async fn test_managed_run_drives_the_metered_bracket_to_a_charge() {
         assistant_records, 1,
         "the run committed its own durable copy of the metered call",
     );
+    let artifact_records = records
+        .iter()
+        .filter(|record| record.kind() == AgentThreadRecordKind::AppendArtifact)
+        .count();
+    assert_eq!(
+        artifact_records, 1,
+        "the run's artifact committed and is readable from the thread's records",
+    );
 
     // The metered call moved money: the ledger booked a debit for it.
     let debit_after = debit_total(&ledger, &stack.account_id).await;
@@ -240,6 +251,13 @@ async fn test_managed_run_drives_the_metered_bracket_to_a_charge() {
 /// unsettled hold at the pause. Cancelled and resumed, its teardown settles that
 /// hold to a charge, acks the custody, and settles the job `cancelled` — the
 /// call billed exactly once across the two drives.
+///
+/// This walks the split's dispatched-settled half. The undispatched-released half
+/// — a hold reserved but never dispatched, freed with no charge — is proven
+/// against a scripted gateway in `tribal-runtime-db`'s `teardown` suite instead:
+/// racing a cancel onto the gateway's brief reserve-to-dispatch window from outside
+/// its process is not reliably reproducible, so the live walk proves the half it
+/// can drive deterministically.
 #[tokio::test]
 async fn test_a_cancelled_run_settles_its_dispatched_hold_on_the_live_ledger() {
     let Some(stack) = stack() else { return };
@@ -262,7 +280,7 @@ async fn test_a_cancelled_run_settles_its_dispatched_hold_on_the_live_ledger() {
         calls: 1,
         wait_signal: Some("go".to_owned()),
         artifact_note: "cancel walk".to_owned(),
-        cap_behaviour: tribal_runtime_db::CapBehaviour::HardStop,
+        cap_behaviour: CapBehaviour::HardStop,
         system: Some(steering_directive(40)),
     };
     let claimed = enqueue_and_claim(runtime.pool(), &stack.account_id, &spec).await;
@@ -377,6 +395,219 @@ async fn test_a_cancelled_run_settles_its_dispatched_hold_on_the_live_ledger() {
         custody_rows, 0,
         "the response store released the position's custody at the cancel ack",
     );
+}
+
+/// Crash-resume charges once against the live ledger. A metered call dispatched
+/// under `{run_key}:0` but crashed before its record commits leaves the gateway's
+/// hold under that anchor; the resume re-derives no committed call and re-presents
+/// the identical key, so the gateway charges the anchor once — one hold, one
+/// debit — across the two attempts.
+#[tokio::test]
+async fn test_a_crash_before_commit_charges_the_re_presented_key_once() {
+    let Some(stack) = stack() else { return };
+
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    let client = reqwest::Client::new();
+    let ledger = PgPool::connect(&stack.ledger_database_url)
+        .await
+        .expect("connect to the ledger database");
+
+    let debit_before = debit_total(&ledger, &stack.account_id).await;
+
+    let spec = ProbeSpec {
+        calls: 1,
+        wait_signal: None,
+        artifact_note: "crash walk".to_owned(),
+        cap_behaviour: CapBehaviour::HardStop,
+        system: Some(steering_directive(40)),
+    };
+    let claimed = enqueue_and_claim(runtime.pool(), &stack.account_id, &spec).await;
+
+    let provider =
+        PlatformInferenceProvider::new(client.clone(), &stack.gateway_url, MODEL, &stack.bearer);
+    let transport = MeteringTransport::new(
+        GatewayMeteringClient::new(client.clone(), &stack.gateway_url, &stack.bearer),
+        mint_grant(&claimed),
+    );
+
+    // Attempt one dispatches call 0 under `{run_key}:0`, charging the gateway's
+    // hold, then crashes before committing its record — no `commit_model_call`
+    // follows, so the run's log holds no assistant record.
+    let context = CallContext {
+        position_key: Some(PositionKey::new(format!("{}:0", claimed.id))),
+        grant: Some(mint_grant(&claimed)),
+    };
+    let stream = provider
+        .complete_stream(a_metered_request(&spec), &context)
+        .await
+        .expect("dispatch call 0 to the gateway");
+    let _crashed = collect_completion(stream)
+        .await
+        .expect("call 0 completes at the gateway");
+
+    // The resume re-derives calls_done = 0 and re-presents the identical key; the
+    // gateway dedups it to the one anchor and drives on to done.
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        &provider,
+        &transport,
+        &claimed,
+        &a_config(),
+    )
+    .await
+    .expect("resume to done");
+    assert_eq!(
+        outcome,
+        ManagedRunOutcome::Done,
+        "the resumed run drove to done",
+    );
+
+    // One hold under the run's anchor — the re-presented key deduped to a single
+    // charge, not two — settled, with a booked debit.
+    let holds = holds_report(&client, &stack, &claimed).await;
+    let holds = holds["holds"].as_array().expect("a holds array");
+    assert_eq!(
+        holds.len(),
+        1,
+        "the re-presented position key charged one hold, not two",
+    );
+    assert_eq!(holds[0]["status"], "settled", "the one hold settled");
+    let charged = (debit_total(&ledger, &stack.account_id).await - debit_before).abs();
+    assert!(
+        charged > 0,
+        "the re-presented call booked one debit of {charged} nanodollars",
+    );
+}
+
+/// A hard-stop disposition composes against the live gateway. A call whose worst
+/// case cannot fit the funded balance draws a live `OverCap` before any dispatch;
+/// the run suspends to its give-up deadline, and the deadline's wake — the cap
+/// still hit — fails it cleanly, having moved no money and left no hold.
+#[tokio::test]
+async fn test_a_hard_stop_over_cap_fails_cleanly_on_the_live_gateway() {
+    let Some(stack) = stack() else { return };
+
+    let core = TestDb::new().await;
+    let runtime = provision_runtime_db().await;
+    let client = reqwest::Client::new();
+    let ledger = PgPool::connect(&stack.ledger_database_url)
+        .await
+        .expect("connect to the ledger database");
+
+    let debit_before = debit_total(&ledger, &stack.account_id).await;
+
+    let spec = ProbeSpec {
+        calls: 1,
+        wait_signal: None,
+        artifact_note: "disposition walk".to_owned(),
+        cap_behaviour: CapBehaviour::HardStop,
+        system: Some(steering_directive(40)),
+    };
+    // A call sized far past the account's balance, so the gateway's reserve refuses
+    // it as OverCap; a zero give-up window, so the deadline is due the moment the
+    // run parks and the resume re-attempts rather than re-parking.
+    let config = ManagedConfig {
+        call_max_tokens: 10_000_000,
+        cap_give_up_after: Duration::seconds(0),
+        ..a_config()
+    };
+    let claimed = enqueue_and_claim(runtime.pool(), &stack.account_id, &spec).await;
+
+    let provider =
+        PlatformInferenceProvider::new(client.clone(), &stack.gateway_url, MODEL, &stack.bearer);
+    let transport = MeteringTransport::new(
+        GatewayMeteringClient::new(client.clone(), &stack.gateway_url, &stack.bearer),
+        mint_grant(&claimed),
+    );
+
+    // The first drive draws the OverCap and parks on the give-up deadline.
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        &provider,
+        &transport,
+        &claimed,
+        &config,
+    )
+    .await
+    .expect("park on the cap");
+    assert_eq!(
+        outcome,
+        ManagedRunOutcome::Suspended,
+        "the hard stop parked on its give-up deadline",
+    );
+
+    // Wake the due job and re-claim; the deadline has elapsed, so the resumed
+    // hard-stop's renewed refusal fails it rather than parking afresh.
+    {
+        let mut conn = runtime.pool().acquire().await.expect("runtime connection");
+        assert!(
+            PgRunJobRepository
+                .wake(&mut conn, claimed.id)
+                .await
+                .expect("wake the job"),
+            "the suspended job woke",
+        );
+    }
+    let resumed = {
+        let mut conn = runtime.pool().acquire().await.expect("runtime connection");
+        PgRunJobRepository
+            .claim(&mut conn, 4, Duration::seconds(60))
+            .await
+            .expect("claim")
+            .expect("the woken job claims")
+    };
+    let resumed_transport = MeteringTransport::new(
+        GatewayMeteringClient::new(client.clone(), &stack.gateway_url, &stack.bearer),
+        mint_grant(&resumed),
+    );
+    let outcome = drive_managed_run(
+        core.pool(),
+        runtime.pool(),
+        &provider,
+        &resumed_transport,
+        &resumed,
+        &config,
+    )
+    .await
+    .expect("fail at the deadline");
+    assert_eq!(
+        outcome,
+        ManagedRunOutcome::Failed,
+        "the renewed refusal past the deadline fails the run",
+    );
+    assert_eq!(
+        job_state(runtime.pool(), &resumed).await,
+        RunJobState::Cancelled,
+        "the failed run's job settled cancelled",
+    );
+
+    // The refused reserve moved no money and left no hold on the ledger.
+    let charged = (debit_total(&ledger, &stack.account_id).await - debit_before).abs();
+    assert_eq!(charged, 0, "an OverCap refusal books no debit");
+    let holds = holds_report(&client, &stack, &resumed).await;
+    let holds = holds["holds"].as_array().expect("a holds array");
+    assert!(
+        holds.is_empty(),
+        "the refused reserve created no hold, got {holds:?}",
+    );
+}
+
+/// A completion request shaped like the probe's own metered call, steered so the
+/// mock reports usage the gateway meters.
+fn a_metered_request(spec: &ProbeSpec) -> CompletionRequest {
+    CompletionRequest {
+        system: spec.system.clone(),
+        messages: vec![Message::User {
+            content: "probe".to_owned(),
+        }],
+        tools: vec![],
+        temperature: None,
+        max_tokens: Some(a_config().call_max_tokens),
+        response_format: None,
+    }
 }
 
 /// Enqueues a probe under `account_id` and claims it, as the managed loop would.

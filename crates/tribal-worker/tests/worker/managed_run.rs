@@ -894,6 +894,32 @@ async fn test_the_fence_refuses_a_commit_under_a_rotated_token() {
         matches!(refused, Err(AgentRuntimeError::LeaseLost { .. })),
         "the append under the rotated-away token is refused, got {refused:?}",
     );
+
+    // The winner, holding token B, commits the call: exactly one runner's record
+    // lands for the contested position, the loser's having been refused.
+    let winner = DrivingClaim::managed(claimed.id, token_b);
+    PgAgentThreadRepository
+        .mark_running(&mut conn, thread.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("mark running under the winning token");
+    commit_model_call(
+        &mut conn,
+        &thread,
+        &winner,
+        &a_completion_response("winner"),
+    )
+    .await
+    .expect("the winner's append lands under the live token");
+    assert_eq!(
+        record_count(
+            core.pool(),
+            &claimed,
+            AgentThreadRecordKind::AssistantMessage,
+        )
+        .await,
+        1,
+        "exactly one runner's record committed for the contested position",
+    );
 }
 
 /// The tenant cap holds across the composed drive, not just the repository
