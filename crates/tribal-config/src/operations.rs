@@ -42,6 +42,8 @@ const CONFIG_FILE_MODE: u32 = 0o600;
 pub enum WriteEffect {
     /// The write took effect immediately.
     Live,
+    /// The file already held the requested value, so nothing was written.
+    Unchanged,
     /// The write is persisted but applies only after a restart.
     NeedsRestart,
     /// A higher-precedence layer overrides the write, so it is persisted but
@@ -55,14 +57,16 @@ pub enum WriteEffect {
 }
 
 /// A completed `config.set`: how the write takes effect, and the exact bytes
-/// written to the file — so a caller coordinating with a file watcher records
-/// what it wrote rather than re-reading and racing a concurrent edit.
+/// written to the file when persistence occurred — so a caller coordinating
+/// with a file watcher records what it wrote rather than re-reading and racing
+/// a concurrent edit.
 #[derive(Debug, Clone)]
 pub struct Persisted {
     /// How the write takes effect for the running binary.
     pub effect: WriteEffect,
-    /// The exact bytes written to the config file.
-    pub document: Vec<u8>,
+    /// The exact bytes written to the config file, absent for an unchanged
+    /// write.
+    pub document: Option<Vec<u8>>,
     /// The resolved configuration with the write applied — the snapshot the
     /// running process serves once a live write is adopted.
     pub config: TribalConfig,
@@ -244,18 +248,50 @@ pub fn set(
 ) -> Result<Persisted, SetError> {
     let candidate = validated_candidate(config, key, value.clone())
         .map_err(|violations| SetError::Rejected { violations })?;
-    let document = persist(config_file, key, value)?;
+    let document = read_document(config_file)?;
+    if lookup(&document, key) == Some(&value) {
+        return Ok(Persisted {
+            effect: WriteEffect::Unchanged,
+            document: None,
+            config: candidate,
+        });
+    }
+    let (persist_key, persist_value) = persistence_entry(&candidate, key, value);
+    let document = persist_document(config_file, &persist_key, persist_value, document)?;
     Ok(Persisted {
         effect: write_effect(key, cli),
-        document,
+        document: Some(document),
         config: candidate,
     })
 }
 
+fn persistence_entry(config: &TribalConfig, key: &str, value: Value) -> (String, Value) {
+    let Some(connection) = credential_connection_name(key) else {
+        return (key.to_owned(), value);
+    };
+    let entry_key = format!("credentials.{connection}");
+    let tree = serde_json::to_value(config).expect("a resolved config serialises to JSON");
+    match lookup(&tree, &entry_key) {
+        Some(entry) => (entry_key, entry.clone()),
+        None => (key.to_owned(), value),
+    }
+}
+
+fn credential_connection_name(key: &str) -> Option<&str> {
+    let mut segments = key.split('.');
+    (segments.next()? == "credentials")
+        .then(|| segments.next())
+        .flatten()
+}
+
 /// Writes one key into the config file's YAML document atomically, returning the
 /// bytes it wrote.
-fn persist(config_file: &Path, key: &str, value: Value) -> Result<Vec<u8>, SetError> {
-    let mut document = read_document(config_file)?;
+fn persist_document(
+    config_file: &Path,
+    key: &str,
+    value: Value,
+    mut document: Value,
+) -> Result<Vec<u8>, SetError> {
     apply_value(&mut document, key, value).map_err(|message| SetError::Rejected {
         violations: vec![ConfigViolation {
             key: key.to_owned(),
@@ -401,7 +437,9 @@ fn write_effect(key: &str, cli: &CliShadow) -> WriteEffect {
 fn effect_for_class(class: ReloadClass) -> WriteEffect {
     match class {
         ReloadClass::Hot => WriteEffect::Live,
-        ReloadClass::RequiresRestart | ReloadClass::Unclassified => WriteEffect::NeedsRestart,
+        ReloadClass::GenesisOnly | ReloadClass::RequiresRestart | ReloadClass::Unclassified => {
+            WriteEffect::NeedsRestart
+        }
     }
 }
 
@@ -451,6 +489,7 @@ fn non_object_error(key: &str) -> String {
 #[allow(clippy::result_large_err)]
 mod tests {
     use serde_json::json;
+    use tribal_domain::ProviderKind;
 
     use super::*;
     use crate::DatabaseCliOverrides;
@@ -653,9 +692,113 @@ mod tests {
             WriteEffect::NeedsRestart,
         );
         assert_eq!(
+            effect_for_class(ReloadClass::GenesisOnly),
+            WriteEffect::NeedsRestart,
+        );
+        assert_eq!(
             effect_for_class(ReloadClass::Unclassified),
             WriteEffect::NeedsRestart,
         );
+    }
+
+    #[test]
+    fn test_set_equal_to_persisted_value_writes_nothing() {
+        figment::Jail::expect_with(|jail| {
+            let path = jail.directory().join("tribal.yaml");
+            set(
+                &base_config(),
+                &path,
+                "logging.level",
+                json!("debug"),
+                &CliShadow::default(),
+            )
+            .unwrap();
+            let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+            let persisted = set(
+                &base_config(),
+                &path,
+                "logging.level",
+                json!("debug"),
+                &CliShadow::default(),
+            )
+            .unwrap();
+
+            assert_eq!(persisted.effect, WriteEffect::Unchanged);
+            assert!(
+                persisted.document.is_none(),
+                "an unchanged write records no owned bytes",
+            );
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().modified().unwrap(),
+                before,
+                "the file is not touched",
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_set_allows_dynamic_credential_paths_that_validate() {
+        figment::Jail::expect_with(|jail| {
+            let mut config = base_config();
+            config.credentials.insert(
+                "openai_default".to_owned(),
+                serde_yaml::from_str("provider_kind: openai\nbase_url: https://api.openai.com\n")
+                    .unwrap(),
+            );
+            let path = jail.directory().join("tribal.yaml");
+
+            let persisted = set(
+                &config,
+                &path,
+                "credentials.openai_default.api_key",
+                json!("sk-dynamic-secret"),
+                &CliShadow::default(),
+            )
+            .unwrap();
+
+            assert_eq!(persisted.effect, WriteEffect::NeedsRestart);
+            let reloaded = crate::load_config(path.to_str().unwrap(), None, None).unwrap();
+            let (_, entry) = reloaded
+                .credentials
+                .resolve(ProviderKind::OpenAi, "https://api.openai.com:443")
+                .expect("the credential entry resolves");
+            assert_eq!(
+                entry.api_key.as_ref().unwrap().as_str(),
+                "sk-dynamic-secret"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_set_rejects_dynamic_credential_paths_that_violate_catalogue_rules() {
+        figment::Jail::expect_with(|jail| {
+            let mut config = base_config();
+            config.credentials.insert(
+                "openai_default".to_owned(),
+                serde_yaml::from_str("provider_kind: openai\nbase_url: https://api.openai.com\n")
+                    .unwrap(),
+            );
+            let path = jail.directory().join("tribal.yaml");
+
+            let error = set(
+                &config,
+                &path,
+                "credentials.openai_default.base_url",
+                json!("not a url"),
+                &CliShadow::default(),
+            )
+            .unwrap_err();
+
+            assert!(matches!(error, SetError::Rejected { .. }));
+            assert!(
+                !path.exists(),
+                "a catalogue-invalid write never touches the file",
+            );
+            Ok(())
+        });
     }
 
     #[test]

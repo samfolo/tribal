@@ -19,8 +19,9 @@ use sqlx::PgPool;
 use tokio::sync::{Mutex, broadcast, watch};
 use tokio_util::sync::CancellationToken;
 use tribal_config::{CliShadow, TransportKind, TribalConfig};
+use tribal_domain::EmbeddingProfile;
 use tribal_telemetry::{LogFilterHandle, LogRing};
-use tribal_wire::control::{ControlEvent, ProjectSummary};
+use tribal_wire::control::{ControlEvent, EmbeddingProfileSummary, ProjectSummary};
 
 use crate::startup::SelfWriteSentinel;
 
@@ -70,6 +71,9 @@ pub(crate) struct ControlContext {
     pub config_write_lock: Mutex<()>,
     /// The MCP read-path pool, for principal resolution and `token.list`.
     pub pool: PgPool,
+    /// Best known active embedding profile state, used to gate genesis-only
+    /// writes without a database read on every `config.set`.
+    pub embedding_profile: watch::Sender<EmbeddingProfileSnapshot>,
     /// The process event bus. Each connection subscribes to fan events out to
     /// its client; `config.set` and the file watchers publish onto it.
     pub events: broadcast::Sender<ControlEvent>,
@@ -100,5 +104,41 @@ impl ControlContext {
     /// The configuration snapshot reads serve, as of now.
     pub fn config_snapshot(&self) -> Arc<TribalConfig> {
         self.config.borrow().clone()
+    }
+
+    /// The active embedding profile snapshot reads serve, as of now.
+    pub fn embedding_profile_snapshot(&self) -> EmbeddingProfileSnapshot {
+        self.embedding_profile.borrow().clone()
+    }
+}
+
+/// Best known active embedding profile state for the control surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EmbeddingProfileSnapshot {
+    /// The profile could not be read yet.
+    Unknown {
+        /// Why the profile state is unknown.
+        detail: String,
+    },
+    /// No active profile exists.
+    NoProfile,
+    /// The active profile identity.
+    Active {
+        /// Stable summary of the active profile.
+        profile: EmbeddingProfileSummary,
+    },
+}
+
+impl EmbeddingProfileSnapshot {
+    /// Builds a snapshot from a domain profile.
+    pub(crate) fn active(profile: &EmbeddingProfile) -> Self {
+        Self::Active {
+            profile: EmbeddingProfileSummary {
+                provider: profile.provider_kind(),
+                base_url: profile.normalised_base_url().to_owned(),
+                model: profile.model().to_owned(),
+                dimensions: profile.dimensions(),
+            },
+        }
     }
 }

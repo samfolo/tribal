@@ -38,6 +38,30 @@ pub struct CheckOptions<'a> {
     pub theme: &'a Theme,
 }
 
+impl<'a> CheckOptions<'a> {
+    fn report_options(&self) -> CheckReportOptions<'a> {
+        CheckReportOptions {
+            config_path: self.config_path,
+            providers: self.providers,
+            project: self.project,
+            token: self.token,
+        }
+    }
+}
+
+/// Inputs for a check report that is returned as data instead of written to a
+/// CLI stream.
+pub(crate) struct CheckReportOptions<'a> {
+    /// Absolute path to the resolved config file.
+    pub config_path: &'a Path,
+    /// Whether to run fatal provider probes.
+    pub providers: bool,
+    /// Project ID override.
+    pub project: Option<&'a str>,
+    /// Bearer token override.
+    pub token: Option<&'a str>,
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -116,20 +140,7 @@ pub async fn run_async(
     out_stdout: &mut dyn Write,
     out_stderr: &mut dyn Write,
 ) -> Result<CheckOutput, AppError> {
-    let mut state = build_state(&opts)?;
-    let mut outcomes = CheckOutcomes::new();
-
-    for step in CheckStep::iter() {
-        match step.preflight(&state) {
-            Preflight::Run => outcomes.push(step.act(&mut state).await),
-            Preflight::Skip(reason) => {
-                outcomes.push(CheckOutcome::dependency_skipped(step.name(), reason));
-            }
-            Preflight::Omit => {}
-        }
-    }
-
-    let output = CheckOutput::from(&outcomes);
+    let output = run_report_async(opts.report_options()).await?;
     if opts.json {
         write_json(out_stdout, &output).map_err(|source| AppError::Io {
             context: "writing tribal check output to stdout".to_owned(),
@@ -144,6 +155,30 @@ pub async fn run_async(
     Ok(output)
 }
 
+/// Async core that returns the same report `tribal check --json` writes.
+///
+/// # Errors
+///
+/// Returns an [`AppError`] if the shared HTTP client cannot be built.
+pub(crate) async fn run_report_async(
+    opts: CheckReportOptions<'_>,
+) -> Result<CheckOutput, AppError> {
+    let mut state = build_state(&opts)?;
+    let mut outcomes = CheckOutcomes::new();
+
+    for step in CheckStep::iter() {
+        match step.preflight(&state) {
+            Preflight::Run => outcomes.push(step.act(&mut state).await),
+            Preflight::Skip(reason) => {
+                outcomes.push(CheckOutcome::dependency_skipped(step.name(), reason));
+            }
+            Preflight::Omit => {}
+        }
+    }
+
+    Ok(CheckOutput::from(&outcomes))
+}
+
 // ---------------------------------------------------------------------------
 // State construction
 // ---------------------------------------------------------------------------
@@ -152,7 +187,7 @@ pub async fn run_async(
 /// per-request timeouts (e.g. advertised-url's 2s) override.
 const PROBE_CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn build_state(opts: &CheckOptions<'_>) -> Result<CheckState, AppError> {
+fn build_state(opts: &CheckReportOptions<'_>) -> Result<CheckState, AppError> {
     // advertised_url's "something is bound" semantics treat any HTTP
     // response — including 3xx — as proof.  Following redirects would
     // turn a redirect to a broken target into a false unreachable.

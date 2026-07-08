@@ -448,6 +448,9 @@ mod tests {
             self_write: SelfWriteSentinel::default(),
             config_write_lock: tokio::sync::Mutex::new(()),
             pool: lazy_pool(),
+            embedding_profile: tokio::sync::watch::Sender::new(
+                super::super::EmbeddingProfileSnapshot::NoProfile,
+            ),
             events,
             log_ring: LogRing::new(16),
             log_filter,

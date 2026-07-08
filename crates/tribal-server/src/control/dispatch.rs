@@ -7,19 +7,28 @@
 //! and this binding is the one place those vocabularies meet. An `Ok` carries
 //! the result payload; an `Err` carries the JSON-RPC error the caller frames.
 
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::PgPool;
 use tokio::sync::watch;
+use tribal_agent_runtime::PgLedgerSink;
 use tribal_auth::AuthenticatedPrincipal;
-use tribal_config::{CliShadow, Persisted, TribalConfig, is_secret_key};
-use tribal_db::{AuthTokenRepository, PgAuthTokenRepository};
-use tribal_domain::{AuthToken, REDACTED};
+use tribal_config::{
+    AudienceTier, CliShadow, DatabaseConfig, Persisted, ReloadClass, TribalConfig, is_secret_key,
+};
+use tribal_db::{
+    AuthTokenRepository, EmbeddingProfileRepository, PgAuthTokenRepository,
+    PgEmbeddingProfileRepository,
+};
+use tribal_domain::{AuthToken, ProviderKind, REDACTED, TaskType, normalise_endpoint_url};
+use tribal_inference::{InferenceGateway, LedgerSink, UsageAttribution};
+use tribal_telemetry::noop_recorder;
 use tribal_wire::control::{self as wire, CONTROL_CONTRACT_VERSION, ControlEvent, error_code};
 
-use super::{ControlContext, listening_bind_address};
+use super::{ControlContext, EmbeddingProfileSnapshot, listening_bind_address};
+use crate::startup::{CatalogueCredentialResolver, build_command_registry, completion_stage_specs};
 
 /// JSON-RPC reserved code: the method name is not one this server dispatches.
 const METHOD_NOT_FOUND: i32 = -32601;
@@ -40,6 +49,11 @@ pub(crate) async fn dispatch(
         // Handled here, not in `dispatch_config`, because a successful write
         // publishes a `config.changed` event to the bus.
         "config.set" => config_set_and_publish(context, params).await,
+        "check.report" => check_report(context, params).await,
+        "database.probe" => database_probe(context, params).await,
+        "credential.probe" => credential_probe(context, params).await,
+        "graph.embedding_profile" => graph_embedding_profile(context).await,
+        "models.catalogue" => Ok(result(models_catalogue())),
         "server.status" => Ok(result(status(context))),
         "server.stop" => Ok(result(server_stop(context))),
         "server.restart" => Ok(result(server_restart(context))),
@@ -94,8 +108,9 @@ async fn config_set_and_publish(
     let cli = context.cli_shadow.clone();
 
     let _guard = context.config_write_lock.lock().await;
+    let write_mode = classify_config_write(context, &request)?;
     let config = context.config_snapshot();
-    let (outcome, persisted) =
+    let (mut outcome, persisted) =
         tokio::task::spawn_blocking(move || config_set(&config, &config_path, &cli, request))
             .await
             .map_err(|source| {
@@ -105,26 +120,41 @@ async fn config_set_and_publish(
                     None,
                 )
             })??;
+    if write_mode == ConfigWriteMode::GenesisConvergence
+        && outcome.effect == wire::WriteEffect::NeedsRestart
+    {
+        outcome.effect = wire::WriteEffect::NoRestart;
+    }
 
     // Record the exact bytes written so the file watcher does not re-announce
     // this write as an external edit contradicting the per-key event below.
-    context.self_write.record(persisted.document);
+    if let Some(document) = persisted.document {
+        context.self_write.record(document);
+    }
 
-    if outcome.effect == wire::WriteEffect::Live {
-        let updated = Arc::new(persisted.config);
-        adopt_live_write(
-            &context.config,
-            Arc::clone(&updated),
-            || apply_hot_key(context, &key, &updated),
-            || publish_config_changed(context, key.clone(), wire::WriteEffect::Live),
-        )
-        .inspect_err(|_| {
-            // The file changed but the process did not adopt the value: the
-            // truthful effect of the persisted write is now needs-restart.
-            publish_config_changed(context, key.clone(), wire::WriteEffect::NeedsRestart);
-        })?;
-    } else {
-        publish_config_changed(context, key, outcome.effect);
+    match outcome.effect {
+        wire::WriteEffect::Live => {
+            let updated = Arc::new(persisted.config);
+            adopt_live_write(
+                &context.config,
+                Arc::clone(&updated),
+                || apply_hot_key(context, &key, &updated),
+                || publish_config_changed(context, key.clone(), wire::WriteEffect::Live),
+            )
+            .inspect_err(|_| {
+                // The file changed but the process did not adopt the value: the
+                // truthful effect of the persisted write is now needs-restart.
+                publish_config_changed(context, key.clone(), wire::WriteEffect::NeedsRestart);
+            })?;
+        }
+        wire::WriteEffect::NoRestart => {
+            context.config.send_replace(Arc::new(persisted.config));
+            publish_config_changed(context, key, wire::WriteEffect::NoRestart);
+        }
+        wire::WriteEffect::Unchanged => {}
+        wire::WriteEffect::NeedsRestart | wire::WriteEffect::Shadowed => {
+            publish_config_changed(context, key, outcome.effect);
+        }
     }
     Ok(result(outcome))
 }
@@ -180,6 +210,79 @@ fn publish_config_changed(context: &ControlContext, key: String, effect: wire::W
     });
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigWriteMode {
+    Normal,
+    GenesisConvergence,
+}
+
+fn classify_config_write(
+    context: &ControlContext,
+    request: &wire::ConfigSetRequest,
+) -> Result<ConfigWriteMode, wire::ResponseError> {
+    if tribal_config::audience_tier(&request.key) == Some(AudienceTier::MachineOwned) {
+        return Err(error(
+            error_code::CONFIG_KEY_NOT_WRITABLE,
+            format!("`{}` is machine-owned and cannot be written", request.key),
+            None,
+        ));
+    }
+
+    if tribal_config::reload_class(&request.key) != ReloadClass::GenesisOnly {
+        return Ok(ConfigWriteMode::Normal);
+    }
+
+    match context.embedding_profile_snapshot() {
+        EmbeddingProfileSnapshot::Unknown { detail } => Err(error(
+            error_code::GENESIS_PROFILE_UNKNOWN,
+            format!(
+                "`{}` cannot be written until the active embedding profile is known",
+                request.key,
+            ),
+            Some(serde_json::json!({ "reason": detail })),
+        )),
+        EmbeddingProfileSnapshot::NoProfile => Ok(ConfigWriteMode::Normal),
+        EmbeddingProfileSnapshot::Active { profile } => {
+            let expected = genesis_profile_value(&profile, &request.key).ok_or_else(|| {
+                error(
+                    INVALID_PARAMS,
+                    format!("`{}` is not a genesis embedding key", request.key),
+                    None,
+                )
+            })?;
+            if request.value == expected {
+                Ok(ConfigWriteMode::GenesisConvergence)
+            } else {
+                Err(error(
+                    error_code::GENESIS_PROFILE_DRIFT,
+                    format!(
+                        "`{}` cannot change after genesis because it differs from the active \
+                         embedding profile",
+                        request.key,
+                    ),
+                    Some(serde_json::json!({
+                        "key": request.key,
+                        "expected": expected,
+                        "actual": request.value,
+                    })),
+                ))
+            }
+        }
+    }
+}
+
+fn genesis_profile_value(profile: &wire::EmbeddingProfileSummary, key: &str) -> Option<Value> {
+    match key {
+        "init.embedding.provider" => serde_json::to_value(profile.provider).ok(),
+        "init.embedding.base_url" => Some(Value::String(profile.base_url.clone())),
+        "init.embedding.model" => Some(Value::String(profile.model.clone())),
+        "init.embedding.dimensions" => {
+            Some(Value::Number(serde_json::Number::from(profile.dimensions)))
+        }
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // config.* — pure over the config surface, so it tests without an AppState
 // ---------------------------------------------------------------------------
@@ -216,12 +319,15 @@ fn config_schema(cli_shadow: &CliShadow) -> wire::ConfigSchema {
             shadowed: tribal_config::shadowed_by(&field.path, cli_shadow).is_some(),
             reload_class: reload_class(field.reload_class),
             secret: field.secret,
+            tier: audience_tier(field.tier),
+            group: field.group,
             default_value: field.default,
             path: field.path,
         })
         .collect();
     wire::ConfigSchema {
         schema: assembled.schema,
+        groups: assembled.groups,
         fields,
     }
 }
@@ -430,6 +536,272 @@ fn token_info(principal_key: &str, token: &AuthToken) -> wire::TokenInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Facade reads and probes
+// ---------------------------------------------------------------------------
+
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn check_report(
+    context: &ControlContext,
+    params: Option<Value>,
+) -> Result<Value, wire::ResponseError> {
+    let request: wire::CheckReportRequest = parse_params_or_default(params)?;
+    let output: crate::commands::CheckOutput =
+        crate::commands::run_report_async(crate::commands::CheckReportOptions {
+            config_path: &context.config_path,
+            providers: request.probe_providers,
+            project: None,
+            token: None,
+        })
+        .await
+        .map_err(|source| {
+            error(
+                INTERNAL_ERROR,
+                format!("check.report failed: {source}"),
+                None,
+            )
+        })?;
+    let report = serde_json::from_value::<wire::CheckReport>(result(output)).map_err(|source| {
+        error(
+            INTERNAL_ERROR,
+            format!("check.report produced an invalid control payload: {source}"),
+            None,
+        )
+    })?;
+    Ok(result(report))
+}
+
+async fn database_probe(
+    context: &ControlContext,
+    params: Option<Value>,
+) -> Result<Value, wire::ResponseError> {
+    let request: wire::DatabaseProbeRequest = parse_params(params)?;
+    let mut database: DatabaseConfig = context.config_snapshot().database.clone();
+    database.url = request.url;
+
+    let probe = match tokio::time::timeout(
+        PROBE_TIMEOUT,
+        tribal_db::create_pool(
+            &database,
+            "control_probe",
+            1,
+            database.statement_timeout_mcp_ms,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(pool)) => {
+            pool.close().await;
+            wire::DatabaseProbe::Reachable
+        }
+        Ok(Err(source)) if database_auth_refused(&source) => wire::DatabaseProbe::Unauthorized {
+            detail: source.to_string(),
+        },
+        Ok(Err(source)) => wire::DatabaseProbe::Unreachable {
+            detail: source.to_string(),
+        },
+        Err(_) => wire::DatabaseProbe::Unreachable {
+            detail: format!("no response within {}s", PROBE_TIMEOUT.as_secs()),
+        },
+    };
+    Ok(result(probe))
+}
+
+async fn credential_probe(
+    context: &ControlContext,
+    params: Option<Value>,
+) -> Result<Value, wire::ResponseError> {
+    let request: wire::CredentialProbeRequest = parse_params(params)?;
+    let config = context.config_snapshot();
+    let Some(stage) = stage_for_provider(&config, request.provider) else {
+        return Ok(result(wire::CredentialProbe::Unknown {
+            detail: format!(
+                "{} is not configured for an inference stage",
+                request.provider
+            ),
+        }));
+    };
+
+    let gateway = match build_probe_gateway(&config, context.pool.clone()) {
+        Ok(gateway) => gateway,
+        Err(detail) => {
+            return Ok(result(wire::CredentialProbe::Unknown { detail }));
+        }
+    };
+    let attribution = UsageAttribution::default();
+    let probe = gateway.probe_completion(stage, &attribution);
+    let outcome = match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
+        Ok(Ok(())) => wire::CredentialProbe::Healthy,
+        Ok(Err(source)) if is_auth_refusal(&source.to_string()) => {
+            wire::CredentialProbe::Unauthorized {
+                detail: source.to_string(),
+            }
+        }
+        Ok(Err(source)) => wire::CredentialProbe::Unknown {
+            detail: source.to_string(),
+        },
+        Err(_) => wire::CredentialProbe::Unknown {
+            detail: format!("no response within {}s", PROBE_TIMEOUT.as_secs()),
+        },
+    };
+    Ok(result(outcome))
+}
+
+async fn graph_embedding_profile(context: &ControlContext) -> Result<Value, wire::ResponseError> {
+    let snapshot = read_embedding_profile_snapshot(context).await;
+    context.embedding_profile.send_replace(snapshot.clone());
+    let config = context.config_snapshot();
+    Ok(result(graph_embedding_profile_payload(&config, &snapshot)))
+}
+
+fn models_catalogue() -> wire::ModelsCatalogue {
+    wire::ModelsCatalogue {
+        models: tribal_inference::known_models()
+            .iter()
+            .map(|model| wire::KnownModelEntry {
+                provider: model.provider,
+                model: model.model.to_owned(),
+                display_name: model.display_name.to_owned(),
+            })
+            .collect(),
+    }
+}
+
+async fn read_embedding_profile_snapshot(context: &ControlContext) -> EmbeddingProfileSnapshot {
+    let mut connection = match context.pool.acquire().await {
+        Ok(connection) => connection,
+        Err(source) => {
+            return EmbeddingProfileSnapshot::Unknown {
+                detail: source.to_string(),
+            };
+        }
+    };
+    match PgEmbeddingProfileRepository
+        .find_active(&mut connection)
+        .await
+    {
+        Ok(Some(profile)) => EmbeddingProfileSnapshot::active(&profile),
+        Ok(None) => EmbeddingProfileSnapshot::NoProfile,
+        Err(source) => EmbeddingProfileSnapshot::Unknown {
+            detail: source.to_string(),
+        },
+    }
+}
+
+fn graph_embedding_profile_payload(
+    config: &TribalConfig,
+    snapshot: &EmbeddingProfileSnapshot,
+) -> wire::GraphEmbeddingProfile {
+    match snapshot {
+        EmbeddingProfileSnapshot::Unknown { detail } => wire::GraphEmbeddingProfile {
+            status: wire::GraphEmbeddingProfileStatus::Unknown,
+            profile: None,
+            genesis_drift: None,
+            detail: Some(detail.clone()),
+        },
+        EmbeddingProfileSnapshot::NoProfile => wire::GraphEmbeddingProfile {
+            status: wire::GraphEmbeddingProfileStatus::NoProfile,
+            profile: None,
+            genesis_drift: None,
+            detail: None,
+        },
+        EmbeddingProfileSnapshot::Active { profile } => wire::GraphEmbeddingProfile {
+            status: wire::GraphEmbeddingProfileStatus::Active,
+            profile: Some(profile.clone()),
+            genesis_drift: genesis_drift(&config.init.embedding, profile),
+            detail: None,
+        },
+    }
+}
+
+fn stage_for_provider(config: &TribalConfig, provider: ProviderKind) -> Option<TaskType> {
+    if config.inference.extraction.provider == provider {
+        Some(TaskType::Extraction)
+    } else if config.inference.triage.provider == provider {
+        Some(TaskType::Triage)
+    } else if config.inference.relation.provider == provider {
+        Some(TaskType::Relation)
+    } else {
+        None
+    }
+}
+
+fn build_probe_gateway(
+    config: &TribalConfig,
+    pool: PgPool,
+) -> Result<Arc<InferenceGateway>, String> {
+    let registry = build_command_registry(config).map_err(|source| source.to_string())?;
+    let sink: Arc<dyn LedgerSink> = Arc::new(PgLedgerSink::new(pool, noop_recorder()));
+    let gateway = InferenceGateway::new(
+        registry,
+        &completion_stage_specs(config),
+        Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
+        sink,
+    )
+    .map_err(|source| source.to_string())?;
+    Ok(Arc::new(gateway))
+}
+
+fn database_auth_refused(error: &tribal_db::DbError) -> bool {
+    match error {
+        tribal_db::DbError::QueryFailed { source, .. } => {
+            source
+                .as_database_error()
+                .and_then(sqlx::error::DatabaseError::code)
+                .is_some_and(|code| matches!(code.as_ref(), "28P01" | "42501"))
+                || is_auth_refusal(&source.to_string())
+        }
+        _ => is_auth_refusal(&error.to_string()),
+    }
+}
+
+fn is_auth_refusal(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("unauthorized")
+        || detail.contains("authentication")
+        || detail.contains("api key")
+        || detail.contains("credential")
+        || detail.contains("permission denied")
+        || detail.contains("28p01")
+}
+
+fn genesis_drift(
+    genesis: &tribal_config::InitEmbeddingConfig,
+    active: &wire::EmbeddingProfileSummary,
+) -> Option<String> {
+    let genesis_base_url = genesis
+        .base_url
+        .as_deref()
+        .or_else(|| genesis.provider.default_base_url())
+        .unwrap_or_default();
+    let genesis_normalised = normalise_endpoint_url(genesis_base_url);
+    let endpoint_differs = match &genesis_normalised {
+        Ok(normalised) => normalised != &active.base_url,
+        Err(_) => genesis_base_url != active.base_url,
+    };
+
+    let diverges = genesis.provider != active.provider
+        || genesis.model != active.model
+        || endpoint_differs
+        || genesis
+            .dimensions
+            .is_some_and(|dimensions| dimensions != active.dimensions);
+    if !diverges {
+        return None;
+    }
+
+    let endpoint = genesis_normalised.unwrap_or_else(|_| genesis_base_url.to_owned());
+    let dimensions = genesis.dimensions.map_or_else(
+        || "native".to_owned(),
+        |dimensions| format!("{dimensions}d"),
+    );
+    Some(format!(
+        "{}/{} at {endpoint} ({dimensions})",
+        genesis.provider, genesis.model
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // config-native → wire mapping
 // ---------------------------------------------------------------------------
 
@@ -437,6 +809,10 @@ fn write_outcome(effect: tribal_config::WriteEffect) -> wire::ConfigWriteOutcome
     match effect {
         tribal_config::WriteEffect::Live => wire::ConfigWriteOutcome {
             effect: wire::WriteEffect::Live,
+            shadowed_by: None,
+        },
+        tribal_config::WriteEffect::Unchanged => wire::ConfigWriteOutcome {
+            effect: wire::WriteEffect::Unchanged,
             shadowed_by: None,
         },
         tribal_config::WriteEffect::NeedsRestart => wire::ConfigWriteOutcome {
@@ -456,9 +832,20 @@ fn write_outcome(effect: tribal_config::WriteEffect) -> wire::ConfigWriteOutcome
 fn reload_class(class: tribal_config::ReloadClass) -> wire::ReloadClass {
     match class {
         tribal_config::ReloadClass::Hot => wire::ReloadClass::Hot,
+        tribal_config::ReloadClass::GenesisOnly => wire::ReloadClass::GenesisOnly,
         tribal_config::ReloadClass::RequiresRestart | tribal_config::ReloadClass::Unclassified => {
             wire::ReloadClass::RequiresRestart
         }
+    }
+}
+
+fn audience_tier(tier: tribal_config::AudienceTier) -> wire::AudienceTier {
+    match tier {
+        tribal_config::AudienceTier::Primary => wire::AudienceTier::Primary,
+        tribal_config::AudienceTier::Standard => wire::AudienceTier::Standard,
+        tribal_config::AudienceTier::Advanced => wire::AudienceTier::Advanced,
+        tribal_config::AudienceTier::Hidden => wire::AudienceTier::Hidden,
+        tribal_config::AudienceTier::MachineOwned => wire::AudienceTier::MachineOwned,
     }
 }
 
@@ -506,6 +893,22 @@ fn parse_params<T: DeserializeOwned>(params: Option<Value>) -> Result<T, wire::R
     })
 }
 
+fn parse_params_or_default<T>(params: Option<Value>) -> Result<T, wire::ResponseError>
+where
+    T: DeserializeOwned + Default,
+{
+    match params {
+        Some(value) => serde_json::from_value(value).map_err(|source| {
+            error(
+                INVALID_PARAMS,
+                format!("invalid parameters: {source}"),
+                None,
+            )
+        }),
+        None => Ok(T::default()),
+    }
+}
+
 fn error(code: i32, message: String, data: Option<Value>) -> wire::ResponseError {
     wire::ResponseError {
         code,
@@ -529,7 +932,7 @@ mod tests {
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::layer::SubscriberExt;
     use tribal_config::TransportKind;
-    use tribal_domain::{AuthTokenId, PrincipalId, Scope};
+    use tribal_domain::{AuthTokenId, PrincipalId, ProviderKind, Scope};
     use tribal_telemetry::LogRing;
 
     use super::*;
@@ -571,6 +974,7 @@ mod tests {
             self_write: SelfWriteSentinel::default(),
             config_write_lock: tokio::sync::Mutex::new(()),
             pool: tribal_test_utils::lazy_pool(),
+            embedding_profile: watch::Sender::new(EmbeddingProfileSnapshot::NoProfile),
             events,
             log_ring: LogRing::new(16),
             log_filter,
@@ -683,6 +1087,17 @@ mod tests {
         }
     }
 
+    fn active_profile_snapshot() -> EmbeddingProfileSnapshot {
+        EmbeddingProfileSnapshot::Active {
+            profile: wire::EmbeddingProfileSummary {
+                provider: ProviderKind::Ollama,
+                base_url: "http://localhost:11434".to_owned(),
+                model: "nomic-embed-text:v1.5".to_owned(),
+                dimensions: 768,
+            },
+        }
+    }
+
     #[test]
     fn test_config_set_persists_and_reports_needs_restart() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -736,6 +1151,137 @@ mod tests {
         {
             ControlEvent::ConfigChanged { keys, effect } => {
                 assert_eq!(keys, vec!["worker.poll_interval_ms".to_owned()]);
+                assert_eq!(effect, wire::WriteEffect::NeedsRestart);
+            }
+            other => panic!("expected ConfigChanged, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_config_set_unchanged_publishes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (context, mut subscriber) = test_context(base_config(), dir.path().join("tribal.yaml"));
+
+        dispatch(
+            &context,
+            None,
+            "config.set",
+            Some(json!({ "key": "logging.level", "value": "debug" })),
+        )
+        .await
+        .expect("first write succeeds");
+        subscriber.try_recv().expect("first write publishes");
+
+        let value = dispatch(
+            &context,
+            None,
+            "config.set",
+            Some(json!({ "key": "logging.level", "value": "debug" })),
+        )
+        .await
+        .expect("unchanged write succeeds");
+        let outcome: wire::ConfigWriteOutcome = serde_json::from_value(value).unwrap();
+        assert_eq!(outcome.effect, wire::WriteEffect::Unchanged);
+        assert!(
+            matches!(
+                subscriber.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "an unchanged write marks nothing and publishes nothing",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_genesis_write_refuses_when_profile_is_unknown() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (context, _) = test_context(base_config(), dir.path().join("tribal.yaml"));
+        context
+            .embedding_profile
+            .send_replace(EmbeddingProfileSnapshot::Unknown {
+                detail: "database unavailable".to_owned(),
+            });
+
+        let error = dispatch(
+            &context,
+            None,
+            "config.set",
+            Some(json!({ "key": "init.embedding.model", "value": "nomic-embed-text:v1.5" })),
+        )
+        .await
+        .expect_err("unknown profile refuses");
+
+        assert_eq!(error.code, error_code::GENESIS_PROFILE_UNKNOWN);
+    }
+
+    #[tokio::test]
+    async fn test_genesis_write_refuses_active_profile_drift() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (context, _) = test_context(base_config(), dir.path().join("tribal.yaml"));
+        context
+            .embedding_profile
+            .send_replace(active_profile_snapshot());
+
+        let error = dispatch(
+            &context,
+            None,
+            "config.set",
+            Some(json!({ "key": "init.embedding.model", "value": "different-model" })),
+        )
+        .await
+        .expect_err("drift refuses");
+
+        assert_eq!(error.code, error_code::GENESIS_PROFILE_DRIFT);
+    }
+
+    #[tokio::test]
+    async fn test_genesis_write_converging_with_active_profile_has_no_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tribal.yaml");
+        let (context, mut events) = test_context(base_config(), path.clone());
+        context
+            .embedding_profile
+            .send_replace(active_profile_snapshot());
+
+        let value = dispatch(
+            &context,
+            None,
+            "config.set",
+            Some(json!({ "key": "init.embedding.model", "value": "nomic-embed-text:v1.5" })),
+        )
+        .await
+        .expect("converging genesis write succeeds");
+        let outcome: wire::ConfigWriteOutcome = serde_json::from_value(value).unwrap();
+        assert_eq!(outcome.effect, wire::WriteEffect::NoRestart);
+        assert!(path.exists(), "the converging write persists");
+        match events.try_recv().expect("a config.changed was published") {
+            ControlEvent::ConfigChanged { keys, effect } => {
+                assert_eq!(keys, vec!["init.embedding.model".to_owned()]);
+                assert_eq!(effect, wire::WriteEffect::NoRestart);
+            }
+            other => panic!("expected ConfigChanged, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_genesis_write_before_profile_exists_is_restart_pending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tribal.yaml");
+        let (context, mut events) = test_context(base_config(), path.clone());
+
+        let value = dispatch(
+            &context,
+            None,
+            "config.set",
+            Some(json!({ "key": "init.embedding.model", "value": "nomic-embed-text:v1.5" })),
+        )
+        .await
+        .expect("pre-profile genesis write succeeds");
+        let outcome: wire::ConfigWriteOutcome = serde_json::from_value(value).unwrap();
+        assert_eq!(outcome.effect, wire::WriteEffect::NeedsRestart);
+        assert!(path.exists(), "the genesis write persists");
+        match events.try_recv().expect("a config.changed was published") {
+            ControlEvent::ConfigChanged { keys, effect } => {
+                assert_eq!(keys, vec!["init.embedding.model".to_owned()]);
                 assert_eq!(effect, wire::WriteEffect::NeedsRestart);
             }
             other => panic!("expected ConfigChanged, got {other:?}"),
@@ -1124,6 +1670,42 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_check_report_omits_provider_rows_by_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tribal.yaml");
+        let config = TribalConfig::minimum_valid("postgres://user:pass@127.0.0.1:1/tribal");
+        std::fs::write(
+            &path,
+            tribal_config::render_minimal_config(&config.database.url).unwrap(),
+        )
+        .unwrap();
+        let (context, _) = test_context(config, path);
+
+        let value = dispatch(&context, None, "check.report", None)
+            .await
+            .expect("check.report answers");
+        let report: wire::CheckReport = serde_json::from_value(value).unwrap();
+        assert!(
+            report
+                .checks
+                .iter()
+                .map(check_result_name)
+                .all(|name| !matches!(
+                    name,
+                    wire::CheckName::ProviderEmbedding
+                        | wire::CheckName::ProviderExtraction
+                        | wire::CheckName::ProviderTriage
+                        | wire::CheckName::ProviderRelation
+                )),
+            "provider rows are omitted unless requested",
+        );
+    }
+
+    fn check_result_name(result: &wire::CheckResult) -> wire::CheckName {
+        result.name
+    }
+
     #[test]
     fn test_config_schema_covers_every_leaf_with_metadata() {
         let value = dispatch_cfg(
@@ -1148,6 +1730,30 @@ mod tests {
             database_url.reload_class,
             wire::ReloadClass::RequiresRestart
         );
+        assert_eq!(database_url.tier, wire::AudienceTier::Primary);
+        assert_eq!(database_url.group, "connection");
+        assert_eq!(
+            parsed.groups,
+            vec![
+                "connection",
+                "models",
+                "graph",
+                "auth",
+                "retrieval",
+                "agents",
+                "prompts",
+                "logging",
+                "telemetry",
+                "server",
+                "worker",
+            ],
+        );
+        let init_model = parsed
+            .fields
+            .iter()
+            .find(|field| field.path == "init.embedding.model")
+            .expect("init embedding model is a classified leaf");
+        assert_eq!(init_model.reload_class, wire::ReloadClass::GenesisOnly);
     }
 
     #[test]

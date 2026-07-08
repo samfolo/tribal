@@ -10,6 +10,7 @@ mod error;
 mod gateway;
 mod http;
 mod ledger;
+mod model_catalogue;
 mod ollama;
 mod openai;
 mod platform;
@@ -43,6 +44,7 @@ pub use gateway::{
 #[cfg(feature = "test-helpers")]
 pub use http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT};
 pub use ledger::{LedgerSink, NoopLedgerSink, UsageAttribution};
+pub use model_catalogue::{KnownModel, known_models};
 #[cfg(feature = "test-helpers")]
 pub use ollama::{
     CHAT_PATH as OLLAMA_CHAT_PATH, EMBED_PATH as OLLAMA_EMBED_PATH, TAGS_PATH as OLLAMA_TAGS_PATH,

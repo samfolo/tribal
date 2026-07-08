@@ -1309,550 +1309,745 @@
     "title": "TribalConfig",
     "type": "object"
   },
+  "groups": [
+    "connection",
+    "models",
+    "graph",
+    "auth",
+    "retrieval",
+    "agents",
+    "prompts",
+    "logging",
+    "telemetry",
+    "server",
+    "worker"
+  ],
   "fields": [
     {
       "path": "agents.extraction.execution_deadline_seconds",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.extraction.executor",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.extraction.max_total_tokens",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.extraction.max_turns",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.extraction.verifier",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.relation.execution_deadline_seconds",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.relation.executor",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.relation.max_total_tokens",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.relation.max_turns",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.relation.verifier",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.triage.execution_deadline_seconds",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.triage.executor",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.triage.max_total_tokens",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.triage.max_turns",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "agents.triage.verifier",
       "secret": false,
+      "tier": "advanced",
+      "group": "agents",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "auth.token_ttl_hours",
       "secret": false,
+      "tier": "standard",
+      "group": "auth",
       "reload_class": "requires_restart",
       "default": 8760
     },
     {
       "path": "database.acquire_timeout_ms",
       "secret": false,
+      "tier": "hidden",
+      "group": "connection",
       "reload_class": "requires_restart",
       "default": 5000
     },
     {
       "path": "database.max_connect_attempts",
       "secret": false,
+      "tier": "hidden",
+      "group": "connection",
       "reload_class": "requires_restart",
       "default": 5
     },
     {
       "path": "database.pool_mcp_max_connections",
       "secret": false,
+      "tier": "hidden",
+      "group": "connection",
       "reload_class": "requires_restart",
       "default": 8
     },
     {
       "path": "database.pool_worker_max_connections",
       "secret": false,
+      "tier": "hidden",
+      "group": "connection",
       "reload_class": "requires_restart",
       "default": 16
     },
     {
       "path": "database.statement_timeout_mcp_ms",
       "secret": false,
+      "tier": "hidden",
+      "group": "connection",
       "reload_class": "requires_restart",
       "default": 10000
     },
     {
       "path": "database.statement_timeout_worker_ms",
       "secret": false,
+      "tier": "hidden",
+      "group": "connection",
       "reload_class": "requires_restart",
       "default": 60000
     },
     {
       "path": "database.url",
       "secret": true,
+      "tier": "primary",
+      "group": "connection",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "discovery.default_limit",
       "secret": false,
+      "tier": "advanced",
+      "group": "retrieval",
       "reload_class": "requires_restart",
       "default": 10
     },
     {
       "path": "discovery.max_limit",
       "secret": false,
+      "tier": "advanced",
+      "group": "retrieval",
       "reload_class": "requires_restart",
       "default": 50
     },
     {
       "path": "discovery.overfetch_multiplier",
       "secret": false,
+      "tier": "hidden",
+      "group": "retrieval",
       "reload_class": "requires_restart",
       "default": 3
     },
     {
       "path": "discovery.similarity_threshold",
       "secret": false,
+      "tier": "hidden",
+      "group": "retrieval",
       "reload_class": "requires_restart",
       "default": 0.3
     },
     {
       "path": "exploration.default_depth",
       "secret": false,
+      "tier": "advanced",
+      "group": "retrieval",
       "reload_class": "requires_restart",
       "default": 1
     },
     {
       "path": "exploration.default_limit",
       "secret": false,
+      "tier": "advanced",
+      "group": "retrieval",
       "reload_class": "requires_restart",
       "default": 20
     },
     {
       "path": "exploration.max_depth",
       "secret": false,
+      "tier": "advanced",
+      "group": "retrieval",
       "reload_class": "requires_restart",
       "default": 3
     },
     {
       "path": "exploration.max_limit",
       "secret": false,
+      "tier": "advanced",
+      "group": "retrieval",
       "reload_class": "requires_restart",
       "default": 100
     },
     {
       "path": "inference.extraction.api_key",
       "secret": true,
+      "tier": "advanced",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.extraction.base_url",
       "secret": false,
+      "tier": "advanced",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.extraction.max_tokens",
       "secret": false,
+      "tier": "advanced",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.extraction.model",
       "secret": false,
+      "tier": "primary",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.extraction.provider",
       "secret": false,
+      "tier": "primary",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.extraction.temperature",
       "secret": false,
+      "tier": "advanced",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.relation.api_key",
       "secret": true,
+      "tier": "advanced",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.relation.base_url",
       "secret": false,
+      "tier": "advanced",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.relation.max_tokens",
       "secret": false,
+      "tier": "advanced",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.relation.model",
       "secret": false,
+      "tier": "primary",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.relation.provider",
       "secret": false,
+      "tier": "primary",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.relation.temperature",
       "secret": false,
+      "tier": "advanced",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.triage.api_key",
       "secret": true,
+      "tier": "advanced",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.triage.base_url",
       "secret": false,
+      "tier": "advanced",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.triage.max_tokens",
       "secret": false,
+      "tier": "advanced",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.triage.model",
       "secret": false,
+      "tier": "primary",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.triage.provider",
       "secret": false,
+      "tier": "primary",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "inference.triage.temperature",
       "secret": false,
+      "tier": "advanced",
+      "group": "models",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "init.embedding.base_url",
       "secret": false,
-      "reload_class": "requires_restart",
+      "tier": "primary",
+      "group": "graph",
+      "reload_class": "genesis_only",
       "default": null
     },
     {
       "path": "init.embedding.dimensions",
       "secret": false,
-      "reload_class": "requires_restart",
+      "tier": "primary",
+      "group": "graph",
+      "reload_class": "genesis_only",
       "default": null
     },
     {
       "path": "init.embedding.model",
       "secret": false,
-      "reload_class": "requires_restart",
+      "tier": "primary",
+      "group": "graph",
+      "reload_class": "genesis_only",
       "default": "nomic-embed-text:v1.5"
     },
     {
       "path": "init.embedding.provider",
       "secret": false,
-      "reload_class": "requires_restart",
+      "tier": "primary",
+      "group": "graph",
+      "reload_class": "genesis_only",
       "default": null
     },
     {
       "path": "logging.file_directory",
       "secret": false,
+      "tier": "advanced",
+      "group": "logging",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "logging.file_rotation",
       "secret": false,
+      "tier": "advanced",
+      "group": "logging",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "logging.format",
       "secret": false,
+      "tier": "advanced",
+      "group": "logging",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "logging.include_llm_content",
       "secret": false,
+      "tier": "advanced",
+      "group": "logging",
       "reload_class": "requires_restart",
       "default": false
     },
     {
       "path": "logging.level",
       "secret": false,
+      "tier": "advanced",
+      "group": "logging",
       "reload_class": "hot",
       "default": "info"
     },
     {
       "path": "logging.output",
       "secret": false,
+      "tier": "advanced",
+      "group": "logging",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "oauth.access_token_ttl_hours",
       "secret": false,
+      "tier": "standard",
+      "group": "auth",
       "reload_class": "requires_restart",
       "default": 24
     },
     {
       "path": "oauth.authorization_code_ttl_seconds",
       "secret": false,
+      "tier": "standard",
+      "group": "auth",
       "reload_class": "requires_restart",
       "default": 600
     },
     {
       "path": "oauth.dcr_enabled",
       "secret": false,
+      "tier": "standard",
+      "group": "auth",
       "reload_class": "requires_restart",
       "default": true
     },
     {
       "path": "oauth.issuer_url",
       "secret": false,
+      "tier": "standard",
+      "group": "auth",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "oauth.resource_url",
       "secret": false,
+      "tier": "standard",
+      "group": "auth",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "prompts.source",
       "secret": false,
+      "tier": "advanced",
+      "group": "prompts",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "server.bind_address",
       "secret": false,
+      "tier": "advanced",
+      "group": "server",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "server.job_state_hard_ttl_seconds",
       "secret": false,
+      "tier": "advanced",
+      "group": "server",
       "reload_class": "requires_restart",
       "default": 3600
     },
     {
       "path": "server.job_state_ttl_seconds",
       "secret": false,
+      "tier": "advanced",
+      "group": "server",
       "reload_class": "requires_restart",
       "default": 300
     },
     {
       "path": "server.shutdown_deadline_ms",
       "secret": false,
+      "tier": "advanced",
+      "group": "server",
       "reload_class": "requires_restart",
       "default": 30000
     },
     {
       "path": "server.sse.idle_timeout_ms",
       "secret": false,
+      "tier": "advanced",
+      "group": "server",
       "reload_class": "requires_restart",
       "default": 300000
     },
     {
       "path": "server.sse.keepalive_interval_ms",
       "secret": false,
+      "tier": "advanced",
+      "group": "server",
       "reload_class": "requires_restart",
       "default": 30000
     },
     {
       "path": "server.sse.max_connection_age_ms",
       "secret": false,
+      "tier": "advanced",
+      "group": "server",
       "reload_class": "requires_restart",
       "default": 900000
     },
     {
       "path": "server.transport",
       "secret": false,
+      "tier": "hidden",
+      "group": "server",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "telemetry.console_export",
       "secret": false,
+      "tier": "advanced",
+      "group": "telemetry",
       "reload_class": "requires_restart",
       "default": true
     },
     {
       "path": "telemetry.enabled",
       "secret": false,
+      "tier": "advanced",
+      "group": "telemetry",
       "reload_class": "requires_restart",
       "default": true
     },
     {
       "path": "telemetry.file_directory",
       "secret": false,
+      "tier": "advanced",
+      "group": "telemetry",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "telemetry.file_export",
       "secret": false,
+      "tier": "advanced",
+      "group": "telemetry",
       "reload_class": "requires_restart",
       "default": false
     },
     {
       "path": "telemetry.file_rotation",
       "secret": false,
+      "tier": "advanced",
+      "group": "telemetry",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "telemetry.otlp_endpoint",
       "secret": false,
+      "tier": "advanced",
+      "group": "telemetry",
       "reload_class": "requires_restart",
       "default": null
     },
     {
       "path": "telemetry.otlp_protocol",
       "secret": false,
+      "tier": "advanced",
+      "group": "telemetry",
       "reload_class": "requires_restart",
       "default": "grpc"
     },
     {
       "path": "telemetry.service_name",
       "secret": false,
+      "tier": "advanced",
+      "group": "telemetry",
       "reload_class": "requires_restart",
       "default": "tribal"
     },
     {
       "path": "version",
       "secret": false,
+      "tier": "machine_owned",
+      "group": "machine",
       "reload_class": "requires_restart",
       "default": "0.4.1"
     },
     {
       "path": "worker.heartbeat_interval_ms",
       "secret": false,
+      "tier": "advanced",
+      "group": "worker",
       "reload_class": "requires_restart",
       "default": 100000
     },
     {
       "path": "worker.max_candidates_per_job",
       "secret": false,
+      "tier": "advanced",
+      "group": "worker",
       "reload_class": "requires_restart",
       "default": 1000
     },
     {
       "path": "worker.max_concurrent_tasks",
       "secret": false,
+      "tier": "advanced",
+      "group": "worker",
       "reload_class": "requires_restart",
       "default": 4
     },
     {
       "path": "worker.poll_interval_ms",
       "secret": false,
+      "tier": "advanced",
+      "group": "worker",
       "reload_class": "requires_restart",
       "default": 2000
     },
     {
       "path": "worker.reclaim_interval_ms",
       "secret": false,
+      "tier": "advanced",
+      "group": "worker",
       "reload_class": "requires_restart",
       "default": 10000
     },
     {
       "path": "worker.tag_similarity_threshold",
       "secret": false,
+      "tier": "advanced",
+      "group": "worker",
       "reload_class": "requires_restart",
       "default": 0.85
     },
     {
       "path": "worker.task_max_retries",
       "secret": false,
+      "tier": "advanced",
+      "group": "worker",
       "reload_class": "requires_restart",
       "default": 3
     },
     {
       "path": "worker.task_timeout_ms",
       "secret": false,
+      "tier": "advanced",
+      "group": "worker",
       "reload_class": "requires_restart",
       "default": 300000
     },
     {
       "path": "worker.triage_search_limit",
       "secret": false,
+      "tier": "advanced",
+      "group": "worker",
       "reload_class": "requires_restart",
       "default": 10
     }

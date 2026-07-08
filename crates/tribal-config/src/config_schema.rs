@@ -2,9 +2,10 @@
 //!
 //! `config.schema` answers a client that must render and gate a settings form:
 //! the JSON Schema of [`TribalConfig`] paired with, for every fixed scalar
-//! leaf, whether it is a secret and whether a write takes effect live or only
-//! on restart. The overlay is config-native — the wire layer maps it to its
-//! DTO — so this crate never depends on the wire contract.
+//! leaf, whether it is a secret, which disclosure tier and UI group it belongs
+//! to, and whether a write takes effect live, at genesis, or only on restart.
+//! The overlay is config-native — the wire layer maps it to its DTO — so this
+//! crate never depends on the wire contract.
 
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "schema")]
@@ -30,10 +31,31 @@ use {
 pub enum ReloadClass {
     /// The key reloads live, without a restart.
     Hot,
+    /// The key is meaningful only before the active embedding profile exists.
+    GenesisOnly,
     /// The key takes effect only after the binary restarts.
     RequiresRestart,
     /// No classifier list covers the key.
     Unclassified,
+}
+
+/// How prominently an operator-facing client should disclose a config leaf.
+///
+/// This is a rendering-depth classifier only. It is not an entitlement,
+/// permission, or write authorisation boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudienceTier {
+    /// The ordinary setup path a first-run operator sees.
+    Primary,
+    /// A common operational setting that is not part of the first-run path.
+    Standard,
+    /// A legitimate but lower-frequency tuning control.
+    Advanced,
+    /// A control hidden from normal UI surfaces unless explicitly requested.
+    Hidden,
+    /// A value owned by the binary or migration machinery, not by operators.
+    MachineOwned,
 }
 
 /// The metadata overlay for one fixed configuration leaf, paired with the
@@ -45,6 +67,10 @@ pub struct ConfigFieldMeta {
     pub path: String,
     /// Whether the value is a secret and reads back redacted.
     pub secret: bool,
+    /// Disclosure depth for UI rendering; never an entitlement decision.
+    pub tier: AudienceTier,
+    /// Stable display group for settings surfaces.
+    pub group: String,
     /// Whether the key takes effect live or only on restart.
     pub reload_class: ReloadClass,
     /// The leaf's fixed default, for a reset-to-default affordance. Absent for a
@@ -59,6 +85,8 @@ pub struct ConfigFieldMeta {
 pub struct ConfigSchema {
     /// The structural JSON Schema of [`TribalConfig`], carried opaquely.
     pub schema: Value,
+    /// Display groups in their intended order.
+    pub groups: Vec<String>,
     /// The metadata overlay for each fixed leaf key.
     pub fields: Vec<ConfigFieldMeta>,
 }
@@ -124,10 +152,6 @@ const RESTART_KEYS: &[&str] = &[
     "inference.triage.model",
     "inference.triage.provider",
     "inference.triage.temperature",
-    "init.embedding.base_url",
-    "init.embedding.dimensions",
-    "init.embedding.model",
-    "init.embedding.provider",
     "logging.file_directory",
     "logging.file_rotation",
     "logging.format",
@@ -167,6 +191,17 @@ const RESTART_KEYS: &[&str] = &[
     "worker.triage_search_limit",
 ];
 
+/// Every fixed configuration leaf whose write is gated by the active embedding
+/// profile. These keys seed genesis only; once a corpus exists, changing them
+/// would lie about the active vector geometry unless the value converges with
+/// the active profile.
+pub const GENESIS_KEYS: &[&str] = &[
+    "init.embedding.base_url",
+    "init.embedding.dimensions",
+    "init.embedding.model",
+    "init.embedding.provider",
+];
+
 /// Every fixed configuration leaf that reloads live, without a restart.
 ///
 /// The promotion rule: a key joins this list only once a substrate reloads it
@@ -175,16 +210,323 @@ const RESTART_KEYS: &[&str] = &[
 /// aspiration. The list stays exactly as large as its substrates.
 const HOT_KEYS: &[&str] = &["logging.level"];
 
+#[cfg(feature = "schema")]
+const GROUPS: &[&str] = &[
+    "connection",
+    "models",
+    "graph",
+    "auth",
+    "retrieval",
+    "agents",
+    "prompts",
+    "logging",
+    "telemetry",
+    "server",
+    "worker",
+];
+
+#[cfg(feature = "schema")]
+const MACHINE_GROUP: &str = "machine";
+
+const PRIMARY_KEYS: &[&str] = &[
+    "database.url",
+    "inference.extraction.model",
+    "inference.extraction.provider",
+    "inference.relation.model",
+    "inference.relation.provider",
+    "inference.triage.model",
+    "inference.triage.provider",
+    "init.embedding.base_url",
+    "init.embedding.dimensions",
+    "init.embedding.model",
+    "init.embedding.provider",
+];
+
+const STANDARD_KEYS: &[&str] = &[
+    "auth.token_ttl_hours",
+    "oauth.access_token_ttl_hours",
+    "oauth.authorization_code_ttl_seconds",
+    "oauth.dcr_enabled",
+    "oauth.issuer_url",
+    "oauth.resource_url",
+];
+
+const ADVANCED_KEYS: &[&str] = &[
+    "agents.extraction.execution_deadline_seconds",
+    "agents.extraction.executor",
+    "agents.extraction.max_total_tokens",
+    "agents.extraction.max_turns",
+    "agents.extraction.verifier",
+    "agents.relation.execution_deadline_seconds",
+    "agents.relation.executor",
+    "agents.relation.max_total_tokens",
+    "agents.relation.max_turns",
+    "agents.relation.verifier",
+    "agents.triage.execution_deadline_seconds",
+    "agents.triage.executor",
+    "agents.triage.max_total_tokens",
+    "agents.triage.max_turns",
+    "agents.triage.verifier",
+    "discovery.default_limit",
+    "discovery.max_limit",
+    "exploration.default_depth",
+    "exploration.default_limit",
+    "exploration.max_depth",
+    "exploration.max_limit",
+    "inference.extraction.api_key",
+    "inference.extraction.base_url",
+    "inference.extraction.max_tokens",
+    "inference.extraction.temperature",
+    "inference.relation.api_key",
+    "inference.relation.base_url",
+    "inference.relation.max_tokens",
+    "inference.relation.temperature",
+    "inference.triage.api_key",
+    "inference.triage.base_url",
+    "inference.triage.max_tokens",
+    "inference.triage.temperature",
+    "logging.file_directory",
+    "logging.file_rotation",
+    "logging.format",
+    "logging.include_llm_content",
+    "logging.level",
+    "logging.output",
+    "prompts.source",
+    "server.bind_address",
+    "server.job_state_hard_ttl_seconds",
+    "server.job_state_ttl_seconds",
+    "server.shutdown_deadline_ms",
+    "server.sse.idle_timeout_ms",
+    "server.sse.keepalive_interval_ms",
+    "server.sse.max_connection_age_ms",
+    "telemetry.console_export",
+    "telemetry.enabled",
+    "telemetry.file_directory",
+    "telemetry.file_export",
+    "telemetry.file_rotation",
+    "telemetry.otlp_endpoint",
+    "telemetry.otlp_protocol",
+    "telemetry.service_name",
+    "worker.heartbeat_interval_ms",
+    "worker.max_candidates_per_job",
+    "worker.max_concurrent_tasks",
+    "worker.poll_interval_ms",
+    "worker.reclaim_interval_ms",
+    "worker.tag_similarity_threshold",
+    "worker.task_max_retries",
+    "worker.task_timeout_ms",
+    "worker.triage_search_limit",
+];
+
+const HIDDEN_KEYS: &[&str] = &[
+    "database.acquire_timeout_ms",
+    "database.max_connect_attempts",
+    "database.pool_mcp_max_connections",
+    "database.pool_worker_max_connections",
+    "database.statement_timeout_mcp_ms",
+    "database.statement_timeout_worker_ms",
+    "discovery.overfetch_multiplier",
+    "discovery.similarity_threshold",
+    "server.transport",
+];
+
+const MACHINE_OWNED_KEYS: &[&str] = &["version"];
+
+#[cfg(feature = "schema")]
+const CONNECTION_GROUP_KEYS: &[&str] = &[
+    "database.acquire_timeout_ms",
+    "database.max_connect_attempts",
+    "database.pool_mcp_max_connections",
+    "database.pool_worker_max_connections",
+    "database.statement_timeout_mcp_ms",
+    "database.statement_timeout_worker_ms",
+    "database.url",
+];
+
+#[cfg(feature = "schema")]
+const MODELS_GROUP_KEYS: &[&str] = &[
+    "inference.extraction.api_key",
+    "inference.extraction.base_url",
+    "inference.extraction.max_tokens",
+    "inference.extraction.model",
+    "inference.extraction.provider",
+    "inference.extraction.temperature",
+    "inference.relation.api_key",
+    "inference.relation.base_url",
+    "inference.relation.max_tokens",
+    "inference.relation.model",
+    "inference.relation.provider",
+    "inference.relation.temperature",
+    "inference.triage.api_key",
+    "inference.triage.base_url",
+    "inference.triage.max_tokens",
+    "inference.triage.model",
+    "inference.triage.provider",
+    "inference.triage.temperature",
+];
+
+#[cfg(feature = "schema")]
+const GRAPH_GROUP_KEYS: &[&str] = &[
+    "init.embedding.base_url",
+    "init.embedding.dimensions",
+    "init.embedding.model",
+    "init.embedding.provider",
+];
+
+#[cfg(feature = "schema")]
+const AUTH_GROUP_KEYS: &[&str] = &[
+    "auth.token_ttl_hours",
+    "oauth.access_token_ttl_hours",
+    "oauth.authorization_code_ttl_seconds",
+    "oauth.dcr_enabled",
+    "oauth.issuer_url",
+    "oauth.resource_url",
+];
+
+#[cfg(feature = "schema")]
+const RETRIEVAL_GROUP_KEYS: &[&str] = &[
+    "discovery.default_limit",
+    "discovery.max_limit",
+    "discovery.overfetch_multiplier",
+    "discovery.similarity_threshold",
+    "exploration.default_depth",
+    "exploration.default_limit",
+    "exploration.max_depth",
+    "exploration.max_limit",
+];
+
+#[cfg(feature = "schema")]
+const AGENTS_GROUP_KEYS: &[&str] = &[
+    "agents.extraction.execution_deadline_seconds",
+    "agents.extraction.executor",
+    "agents.extraction.max_total_tokens",
+    "agents.extraction.max_turns",
+    "agents.extraction.verifier",
+    "agents.relation.execution_deadline_seconds",
+    "agents.relation.executor",
+    "agents.relation.max_total_tokens",
+    "agents.relation.max_turns",
+    "agents.relation.verifier",
+    "agents.triage.execution_deadline_seconds",
+    "agents.triage.executor",
+    "agents.triage.max_total_tokens",
+    "agents.triage.max_turns",
+    "agents.triage.verifier",
+];
+
+#[cfg(feature = "schema")]
+const PROMPTS_GROUP_KEYS: &[&str] = &["prompts.source"];
+
+#[cfg(feature = "schema")]
+const LOGGING_GROUP_KEYS: &[&str] = &[
+    "logging.file_directory",
+    "logging.file_rotation",
+    "logging.format",
+    "logging.include_llm_content",
+    "logging.level",
+    "logging.output",
+];
+
+#[cfg(feature = "schema")]
+const TELEMETRY_GROUP_KEYS: &[&str] = &[
+    "telemetry.console_export",
+    "telemetry.enabled",
+    "telemetry.file_directory",
+    "telemetry.file_export",
+    "telemetry.file_rotation",
+    "telemetry.otlp_endpoint",
+    "telemetry.otlp_protocol",
+    "telemetry.service_name",
+];
+
+#[cfg(feature = "schema")]
+const SERVER_GROUP_KEYS: &[&str] = &[
+    "server.bind_address",
+    "server.job_state_hard_ttl_seconds",
+    "server.job_state_ttl_seconds",
+    "server.shutdown_deadline_ms",
+    "server.sse.idle_timeout_ms",
+    "server.sse.keepalive_interval_ms",
+    "server.sse.max_connection_age_ms",
+    "server.transport",
+];
+
+#[cfg(feature = "schema")]
+const WORKER_GROUP_KEYS: &[&str] = &[
+    "worker.heartbeat_interval_ms",
+    "worker.max_candidates_per_job",
+    "worker.max_concurrent_tasks",
+    "worker.poll_interval_ms",
+    "worker.reclaim_interval_ms",
+    "worker.tag_similarity_threshold",
+    "worker.task_max_retries",
+    "worker.task_timeout_ms",
+    "worker.triage_search_limit",
+];
+
 /// Classifies how a write to `path` takes effect. A leaf in neither
 /// classification list is [`ReloadClass::Unclassified`]. This is the source
 /// both `config.schema`'s overlay and `config.set`'s write effect read from.
-pub(crate) fn reload_class(path: &str) -> ReloadClass {
+#[must_use]
+pub fn reload_class(path: &str) -> ReloadClass {
     if HOT_KEYS.contains(&path) {
         ReloadClass::Hot
+    } else if GENESIS_KEYS.contains(&path) {
+        ReloadClass::GenesisOnly
     } else if RESTART_KEYS.contains(&path) {
         ReloadClass::RequiresRestart
     } else {
         ReloadClass::Unclassified
+    }
+}
+
+/// Classifies a key by disclosure tier. Returns `None` for unknown keys so the
+/// schema-totality test catches new fixed leaves without a table row.
+#[must_use]
+pub fn audience_tier(path: &str) -> Option<AudienceTier> {
+    if PRIMARY_KEYS.contains(&path) {
+        Some(AudienceTier::Primary)
+    } else if STANDARD_KEYS.contains(&path) {
+        Some(AudienceTier::Standard)
+    } else if ADVANCED_KEYS.contains(&path) {
+        Some(AudienceTier::Advanced)
+    } else if HIDDEN_KEYS.contains(&path) {
+        Some(AudienceTier::Hidden)
+    } else if MACHINE_OWNED_KEYS.contains(&path) {
+        Some(AudienceTier::MachineOwned)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "schema")]
+fn group(path: &str) -> Option<&'static str> {
+    if CONNECTION_GROUP_KEYS.contains(&path) {
+        Some("connection")
+    } else if MODELS_GROUP_KEYS.contains(&path) {
+        Some("models")
+    } else if GRAPH_GROUP_KEYS.contains(&path) {
+        Some("graph")
+    } else if AUTH_GROUP_KEYS.contains(&path) {
+        Some("auth")
+    } else if RETRIEVAL_GROUP_KEYS.contains(&path) {
+        Some("retrieval")
+    } else if AGENTS_GROUP_KEYS.contains(&path) {
+        Some("agents")
+    } else if PROMPTS_GROUP_KEYS.contains(&path) {
+        Some("prompts")
+    } else if LOGGING_GROUP_KEYS.contains(&path) {
+        Some("logging")
+    } else if TELEMETRY_GROUP_KEYS.contains(&path) {
+        Some("telemetry")
+    } else if SERVER_GROUP_KEYS.contains(&path) {
+        Some("server")
+    } else if WORKER_GROUP_KEYS.contains(&path) {
+        Some("worker")
+    } else if MACHINE_OWNED_KEYS.contains(&path) {
+        Some(MACHINE_GROUP)
+    } else {
+        None
     }
 }
 
@@ -235,13 +577,19 @@ pub fn config_schema() -> ConfigSchema {
         .into_iter()
         .map(|(path, node)| ConfigFieldMeta {
             secret: secret.contains(path.as_str()),
+            tier: audience_tier(&path).unwrap_or(AudienceTier::Hidden),
+            group: group(&path).unwrap_or_default().to_owned(),
             reload_class: reload_class(&path),
             default: node.get("default").cloned(),
             path,
         })
         .collect();
     fields.sort_by(|left, right| left.path.cmp(&right.path));
-    ConfigSchema { schema, fields }
+    ConfigSchema {
+        schema,
+        groups: GROUPS.iter().map(|group| (*group).to_owned()).collect(),
+        fields,
+    }
 }
 
 /// Removes each [`MACHINE_RESOLVED_DEFAULTS`] entry wherever a host path leaks:
@@ -406,7 +754,7 @@ fn push_leaf<'a>(prefix: String, node: &'a Value, out: &mut Vec<(String, &'a Val
 
 #[cfg(test)]
 mod classifier_tests {
-    use super::{HOT_KEYS, RESTART_KEYS, ReloadClass, reload_class};
+    use super::{GENESIS_KEYS, HOT_KEYS, RESTART_KEYS, ReloadClass, reload_class};
 
     /// AC11 liveness honesty at the classifier: every restart key classifies
     /// `RequiresRestart` (never `Hot`), and the two lists are disjoint — so a
@@ -429,6 +777,9 @@ mod classifier_tests {
         for &key in HOT_KEYS {
             assert_eq!(reload_class(key), ReloadClass::Hot);
         }
+        for &key in GENESIS_KEYS {
+            assert_eq!(reload_class(key), ReloadClass::GenesisOnly);
+        }
     }
 
     /// Pins the exact hot membership: a key joins only beside its live-apply
@@ -437,6 +788,19 @@ mod classifier_tests {
     #[test]
     fn test_hot_keys_membership_is_exactly_logging_level() {
         assert_eq!(HOT_KEYS, &["logging.level"]);
+    }
+
+    #[test]
+    fn test_genesis_keys_membership_is_exactly_init_embedding() {
+        assert_eq!(
+            GENESIS_KEYS,
+            &[
+                "init.embedding.base_url",
+                "init.embedding.dimensions",
+                "init.embedding.model",
+                "init.embedding.provider",
+            ],
+        );
     }
 }
 
@@ -482,6 +846,7 @@ mod tests {
         let leaves: BTreeSet<String> = leaf_paths(&structural_schema()).into_iter().collect();
         let stale: Vec<&str> = RESTART_KEYS
             .iter()
+            .chain(GENESIS_KEYS)
             .chain(HOT_KEYS)
             .copied()
             .filter(|key| !leaves.contains(*key))
@@ -490,6 +855,70 @@ mod tests {
             stale.is_empty(),
             "these classified keys are not leaves of the current schema: {stale:?}",
         );
+    }
+
+    /// Every fixed leaf needs a disclosure tier and display group in addition
+    /// to its reload class. A new field that reaches the schema but not the
+    /// facade tables fails here before clients receive incomplete metadata.
+    #[test]
+    fn test_every_leaf_has_a_tier_and_group() {
+        let schema = config_schema();
+        let missing: Vec<&str> = schema
+            .fields
+            .iter()
+            .filter(|field| audience_tier(&field.path).is_none() || group(&field.path).is_none())
+            .map(|field| field.path.as_str())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "every config leaf must be classified by tier and group; these are not: {missing:?}",
+        );
+    }
+
+    #[test]
+    fn test_groups_are_in_display_order() {
+        assert_eq!(
+            config_schema().groups,
+            vec![
+                "connection",
+                "models",
+                "graph",
+                "auth",
+                "retrieval",
+                "agents",
+                "prompts",
+                "logging",
+                "telemetry",
+                "server",
+                "worker",
+            ],
+        );
+    }
+
+    #[test]
+    fn test_facade_table_examples_match_the_design() {
+        let fields = config_schema().fields;
+        let field = |path: &str| {
+            fields
+                .iter()
+                .find(|field| field.path == path)
+                .unwrap_or_else(|| panic!("{path} should be in config.schema"))
+        };
+
+        assert_eq!(field("database.url").group, "connection");
+        assert_eq!(field("database.url").tier, AudienceTier::Primary);
+        assert_eq!(
+            field("init.embedding.model").reload_class,
+            ReloadClass::GenesisOnly
+        );
+        assert_eq!(field("init.embedding.model").group, "graph");
+        assert_eq!(
+            field("inference.triage.api_key").tier,
+            AudienceTier::Advanced
+        );
+        assert_eq!(field("server.transport").tier, AudienceTier::Hidden);
+        assert_eq!(field("version").tier, AudienceTier::MachineOwned);
+        assert_eq!(field("version").group, MACHINE_GROUP);
     }
 
     /// Every secret [`SecretField`] path is a fixed leaf marked `secret` in the

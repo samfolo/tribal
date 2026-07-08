@@ -19,9 +19,14 @@ pub(crate) mod setup;
 pub(crate) mod threads;
 pub(crate) mod token;
 
+#[cfg(not(feature = "test-helpers"))]
+pub(crate) use self::check::CheckOutput;
 pub(crate) use self::{
-    bootstrap::run as bootstrap, check::run as check, mcp_config::run as mcp_config,
-    serve::run as serve, setup::run as setup,
+    bootstrap::run as bootstrap,
+    check::{CheckReportOptions, run as check, run_report_async},
+    mcp_config::run as mcp_config,
+    serve::run as serve,
+    setup::run as setup,
 };
 #[cfg(feature = "test-helpers")]
 pub use self::{
