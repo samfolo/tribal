@@ -631,15 +631,8 @@ async fn credential_probe(
     let attribution = UsageAttribution::default();
     let probe = gateway.probe_completion(stage, &attribution);
     let outcome = match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
-        Ok(Ok(())) => wire::CredentialProbe::Healthy,
-        Ok(Err(source)) if is_auth_refusal(&source.to_string()) => {
-            wire::CredentialProbe::Unauthorized {
-                detail: source.to_string(),
-            }
-        }
-        Ok(Err(source)) => wire::CredentialProbe::Unknown {
-            detail: source.to_string(),
-        },
+        Ok(Ok(())) => credential_probe_outcome(Ok(())),
+        Ok(Err(source)) => credential_probe_outcome(Err(source.to_string())),
         Err(_) => wire::CredentialProbe::Unknown {
             detail: format!("no response within {}s", PROBE_TIMEOUT.as_secs()),
         },
@@ -693,23 +686,13 @@ fn graph_embedding_profile_payload(
     snapshot: &EmbeddingProfileSnapshot,
 ) -> wire::GraphEmbeddingProfile {
     match snapshot {
-        EmbeddingProfileSnapshot::Unknown { detail } => wire::GraphEmbeddingProfile {
-            status: wire::GraphEmbeddingProfileStatus::Unknown,
-            profile: None,
-            genesis_drift: None,
-            detail: Some(detail.clone()),
+        EmbeddingProfileSnapshot::Unknown { detail } => wire::GraphEmbeddingProfile::Unknown {
+            detail: detail.clone(),
         },
-        EmbeddingProfileSnapshot::NoProfile => wire::GraphEmbeddingProfile {
-            status: wire::GraphEmbeddingProfileStatus::NoProfile,
-            profile: None,
-            genesis_drift: None,
-            detail: None,
-        },
-        EmbeddingProfileSnapshot::Active { profile } => wire::GraphEmbeddingProfile {
-            status: wire::GraphEmbeddingProfileStatus::Active,
-            profile: Some(profile.clone()),
+        EmbeddingProfileSnapshot::NoProfile => wire::GraphEmbeddingProfile::NoProfile,
+        EmbeddingProfileSnapshot::Active { profile } => wire::GraphEmbeddingProfile::Active {
+            profile: profile.clone(),
             genesis_drift: genesis_drift(&config.init.embedding, profile),
-            detail: None,
         },
     }
 }
@@ -740,6 +723,14 @@ fn build_probe_gateway(
     )
     .map_err(|source| source.to_string())?;
     Ok(Arc::new(gateway))
+}
+
+fn credential_probe_outcome(result: Result<(), String>) -> wire::CredentialProbe {
+    match result {
+        Ok(()) => wire::CredentialProbe::Healthy,
+        Err(detail) if is_auth_refusal(&detail) => wire::CredentialProbe::Unauthorized { detail },
+        Err(detail) => wire::CredentialProbe::Unknown { detail },
+    }
 }
 
 fn database_auth_refused(error: &tribal_db::DbError) -> bool {
@@ -956,6 +947,16 @@ mod tests {
             tribal_telemetry::reloadable_env_filter("info").expect("the directive parses");
         std::mem::forget(filter_layer);
         let (context, subscriber) = test_context_with_filter(config, config_path, log_filter);
+        (context, subscriber)
+    }
+
+    fn test_context_with_pool(
+        config: TribalConfig,
+        config_path: PathBuf,
+        pool: PgPool,
+    ) -> (ControlContext, broadcast::Receiver<ControlEvent>) {
+        let (mut context, subscriber) = test_context(config, config_path);
+        context.pool = pool;
         (context, subscriber)
     }
 
@@ -1702,8 +1703,191 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_check_report_includes_provider_rows_when_requested() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tribal.yaml");
+        let config = TribalConfig::minimum_valid("postgres://user:pass@127.0.0.1:1/tribal");
+        std::fs::write(
+            &path,
+            tribal_config::render_minimal_config(&config.database.url).unwrap(),
+        )
+        .unwrap();
+        let (context, _) = test_context(config, path);
+
+        let value = dispatch(
+            &context,
+            None,
+            "check.report",
+            Some(json!({ "probe_providers": true })),
+        )
+        .await
+        .expect("check.report answers");
+        let report: wire::CheckReport = serde_json::from_value(value).unwrap();
+        let names: Vec<_> = report.checks.iter().map(check_result_name).collect();
+        for name in [
+            wire::CheckName::ProviderEmbedding,
+            wire::CheckName::ProviderExtraction,
+            wire::CheckName::ProviderTriage,
+            wire::CheckName::ProviderRelation,
+        ] {
+            assert!(
+                names.contains(&name),
+                "provider row {name:?} missing from {names:?}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_database_probe_reports_reachable_database() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = TribalConfig::minimum_valid(database.database_url());
+        let (context, _) = test_context(config, dir.path().join("tribal.yaml"));
+
+        let value = dispatch(
+            &context,
+            None,
+            "database.probe",
+            Some(json!({ "url": database.database_url() })),
+        )
+        .await
+        .expect("database.probe answers");
+        let parsed: wire::DatabaseProbe = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, wire::DatabaseProbe::Reachable);
+    }
+
+    #[tokio::test]
+    async fn test_database_probe_reports_unreachable_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (context, _) = test_context(base_config(), dir.path().join("tribal.yaml"));
+
+        let value = dispatch(
+            &context,
+            None,
+            "database.probe",
+            Some(json!({ "url": "postgres://user:pass@127.0.0.1:1/tribal" })),
+        )
+        .await
+        .expect("database.probe answers");
+        let parsed: wire::DatabaseProbe = serde_json::from_value(value).unwrap();
+        match parsed {
+            wire::DatabaseProbe::Unreachable { detail } => {
+                assert!(!detail.is_empty(), "unreachable probes carry detail");
+            }
+            other => panic!("expected unreachable database, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_database_auth_refusal_classifier_states() {
+        let refused = tribal_db::DbError::QueryFailed {
+            context: "probing database".to_owned(),
+            source: sqlx::Error::Protocol("password authentication failed".into()),
+        };
+        assert!(database_auth_refused(&refused));
+
+        let non_auth = tribal_db::DbError::QueryFailed {
+            context: "probing database".to_owned(),
+            source: sqlx::Error::RowNotFound,
+        };
+        assert!(!database_auth_refused(&non_auth));
+    }
+
+    #[tokio::test]
+    async fn test_credential_probe_reports_unknown_for_unconfigured_provider() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (context, _) = test_context(base_config(), dir.path().join("tribal.yaml"));
+
+        let value = dispatch(
+            &context,
+            None,
+            "credential.probe",
+            Some(json!({ "provider": "openai" })),
+        )
+        .await
+        .expect("credential.probe answers");
+        let parsed: wire::CredentialProbe = serde_json::from_value(value).unwrap();
+        match parsed {
+            wire::CredentialProbe::Unknown { detail } => {
+                assert!(detail.contains("not configured"), "{detail}");
+            }
+            other => panic!("expected unknown credential state, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_credential_probe_outcome_classifier_states() {
+        assert_eq!(
+            credential_probe_outcome(Ok(())),
+            wire::CredentialProbe::Healthy,
+        );
+        assert_eq!(
+            credential_probe_outcome(Err("provider returned unauthorized".to_owned())),
+            wire::CredentialProbe::Unauthorized {
+                detail: "provider returned unauthorized".to_owned(),
+            },
+        );
+        assert_eq!(
+            credential_probe_outcome(Err("provider timed out".to_owned())),
+            wire::CredentialProbe::Unknown {
+                detail: "provider timed out".to_owned(),
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn test_graph_embedding_profile_reports_no_profile() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = TribalConfig::minimum_valid(database.database_url());
+        let pool = database.create_pool().await.expect("create pool");
+        let (context, _) = test_context_with_pool(config, dir.path().join("tribal.yaml"), pool);
+
+        let value = dispatch(&context, None, "graph.embedding_profile", None)
+            .await
+            .expect("graph.embedding_profile answers");
+        let parsed: wire::GraphEmbeddingProfile = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, wire::GraphEmbeddingProfile::NoProfile);
+    }
+
+    #[tokio::test]
+    async fn test_graph_embedding_profile_reports_active_profile() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let mut connection = database.raw_connection().await.expect("raw connection");
+        tribal_test_utils::ensure_genesis_profile(&mut connection, "nomic-embed-text:v1.5", 768)
+            .await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = TribalConfig::minimum_valid(database.database_url());
+        let pool = database.create_pool().await.expect("create pool");
+        let (context, _) = test_context_with_pool(config, dir.path().join("tribal.yaml"), pool);
+
+        let value = dispatch(&context, None, "graph.embedding_profile", None)
+            .await
+            .expect("graph.embedding_profile answers");
+        let parsed: wire::GraphEmbeddingProfile = serde_json::from_value(value).unwrap();
+        match parsed {
+            wire::GraphEmbeddingProfile::Active {
+                profile,
+                genesis_drift,
+            } => {
+                assert_eq!(profile.provider, ProviderKind::Ollama);
+                assert_eq!(profile.base_url, ProviderKind::DEFAULT_OLLAMA_BASE_URL);
+                assert_eq!(profile.model, "nomic-embed-text:v1.5");
+                assert_eq!(profile.dimensions, 768);
+                assert_eq!(genesis_drift, None);
+            }
+            other => panic!("expected active profile, got {other:?}"),
+        }
+    }
+
     fn check_result_name(result: &wire::CheckResult) -> wire::CheckName {
-        result.name
+        match result {
+            wire::CheckResult::Pass { name, .. }
+            | wire::CheckResult::Warn { name, .. }
+            | wire::CheckResult::Fail { name, .. }
+            | wire::CheckResult::Skip { name, .. } => *name,
+        }
     }
 
     #[test]
