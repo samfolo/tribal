@@ -86,29 +86,21 @@ pub struct EmbeddingProfileSummary {
 /// Result of reading the active embedding profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct GraphEmbeddingProfile {
-    /// Profile status.
-    pub status: GraphEmbeddingProfileStatus,
-    /// The active profile identity, present only when status is `active`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile: Option<EmbeddingProfileSummary>,
-    /// The genesis seed identity when it differs from the active profile.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub genesis_drift: Option<String>,
-    /// Why the profile state is unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
-
-/// Status of the active embedding profile read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum GraphEmbeddingProfileStatus {
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum GraphEmbeddingProfile {
     /// No active profile exists yet.
     NoProfile,
     /// The active profile exists.
-    Active,
+    Active {
+        /// The active profile identity.
+        profile: EmbeddingProfileSummary,
+        /// The genesis seed identity when it differs from the active profile.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        genesis_drift: Option<String>,
+    },
     /// The database could not answer profile state.
-    Unknown,
+    Unknown {
+        /// Why the profile state is unknown.
+        detail: String,
+    },
 }

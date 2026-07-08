@@ -23,7 +23,7 @@ mod probe;
 mod server;
 mod token;
 
-pub use check::{CheckName, CheckReport, CheckReportRequest, CheckResult, CheckStatus};
+pub use check::{CheckName, CheckReport, CheckReportRequest, CheckResult};
 pub use config::{
     AudienceTier, ConfigDocument, ConfigFieldMeta, ConfigGetRequest, ConfigPath, ConfigSchema,
     ConfigSetRequest, ConfigValidateRequest, ConfigValidation, ConfigValue, ConfigViolation,
@@ -38,7 +38,7 @@ pub use logs::{LogLevel, LogLine, LogLines, LogsTailRequest};
 pub use models::{KnownModelEntry, ModelsCatalogue};
 pub use probe::{
     CredentialProbe, CredentialProbeRequest, DatabaseProbe, DatabaseProbeRequest,
-    EmbeddingProfileSummary, GraphEmbeddingProfile, GraphEmbeddingProfileStatus,
+    EmbeddingProfileSummary, GraphEmbeddingProfile,
 };
 pub use server::{ProjectSummary, RestartOutcome, ServerStatus, StopOutcome, WorkerStatus};
 pub use token::{TokenInfo, TokenList};

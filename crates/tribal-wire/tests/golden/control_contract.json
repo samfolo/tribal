@@ -120,72 +120,132 @@
       },
       "CheckResult": {
         "description": "One row of the check report.",
-        "type": "object",
-        "required": [
-          "detail",
-          "name",
-          "status"
-        ],
-        "properties": {
-          "detail": {
-            "description": "Human-readable detail for the observed state.",
-            "type": "string"
-          },
-          "name": {
-            "description": "Which check produced the row.",
-            "allOf": [
-              {
-                "$ref": "#/definitions/CheckName"
-              }
-            ]
-          },
-          "remediation": {
-            "description": "Suggested operator action, present only for warnings and failures.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "status": {
-            "description": "Check status.",
-            "allOf": [
-              {
-                "$ref": "#/definitions/CheckStatus"
-              }
-            ]
-          }
-        }
-      },
-      "CheckStatus": {
-        "description": "Status of one check row.",
         "oneOf": [
           {
             "description": "The check passed.",
-            "type": "string",
-            "enum": [
-              "pass"
-            ]
+            "type": "object",
+            "required": [
+              "detail",
+              "name",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Human-readable detail for the observed state.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Which check produced the row.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/CheckName"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass"
+                ]
+              }
+            }
           },
           {
             "description": "The check surfaced a warning.",
-            "type": "string",
-            "enum": [
-              "warn"
-            ]
+            "type": "object",
+            "required": [
+              "detail",
+              "name",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Human-readable detail for the observed state.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Which check produced the row.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/CheckName"
+                  }
+                ]
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "warn"
+                ]
+              }
+            }
           },
           {
             "description": "The check failed.",
-            "type": "string",
-            "enum": [
-              "fail"
-            ]
+            "type": "object",
+            "required": [
+              "detail",
+              "name",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Human-readable detail for the observed state.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Which check produced the row.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/CheckName"
+                  }
+                ]
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "fail"
+                ]
+              }
+            }
           },
           {
             "description": "The check was skipped because a precondition did not hold.",
-            "type": "string",
-            "enum": [
-              "skip"
-            ]
+            "type": "object",
+            "required": [
+              "detail",
+              "name",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Human-readable detail for the observed state.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Which check produced the row.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/CheckName"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "skip"
+                ]
+              }
+            }
           }
         ]
       }
@@ -1167,45 +1227,74 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "GraphEmbeddingProfile",
     "description": "Result of reading the active embedding profile.",
-    "type": "object",
-    "required": [
-      "status"
-    ],
-    "properties": {
-      "detail": {
-        "description": "Why the profile state is unknown.",
-        "type": [
-          "string",
-          "null"
-        ]
+    "oneOf": [
+      {
+        "description": "No active profile exists yet.",
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "no_profile"
+            ]
+          }
+        }
       },
-      "genesis_drift": {
-        "description": "The genesis seed identity when it differs from the active profile.",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "profile": {
-        "description": "The active profile identity, present only when status is `active`.",
-        "anyOf": [
-          {
-            "$ref": "#/definitions/EmbeddingProfileSummary"
+      {
+        "description": "The active profile exists.",
+        "type": "object",
+        "required": [
+          "profile",
+          "status"
+        ],
+        "properties": {
+          "genesis_drift": {
+            "description": "The genesis seed identity when it differs from the active profile.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
-          {
-            "type": "null"
+          "profile": {
+            "description": "The active profile identity.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/EmbeddingProfileSummary"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active"
+            ]
           }
-        ]
+        }
       },
-      "status": {
-        "description": "Profile status.",
-        "allOf": [
-          {
-            "$ref": "#/definitions/GraphEmbeddingProfileStatus"
+      {
+        "description": "The database could not answer profile state.",
+        "type": "object",
+        "required": [
+          "detail",
+          "status"
+        ],
+        "properties": {
+          "detail": {
+            "description": "Why the profile state is unknown.",
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "unknown"
+            ]
           }
-        ]
+        }
       }
-    },
+    ],
     "definitions": {
       "EmbeddingProfileSummary": {
         "description": "Stable summary of an active embedding profile.",
@@ -1240,32 +1329,6 @@
             ]
           }
         }
-      },
-      "GraphEmbeddingProfileStatus": {
-        "description": "Status of the active embedding profile read.",
-        "oneOf": [
-          {
-            "description": "No active profile exists yet.",
-            "type": "string",
-            "enum": [
-              "no_profile"
-            ]
-          },
-          {
-            "description": "The active profile exists.",
-            "type": "string",
-            "enum": [
-              "active"
-            ]
-          },
-          {
-            "description": "The database could not answer profile state.",
-            "type": "string",
-            "enum": [
-              "unknown"
-            ]
-          }
-        ]
       },
       "ProviderKind": {
         "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",

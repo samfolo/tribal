@@ -55,31 +55,40 @@ pub enum CheckName {
 /// One row of the check report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct CheckResult {
-    /// Check status.
-    pub status: CheckStatus,
-    /// Which check produced the row.
-    pub name: CheckName,
-    /// Human-readable detail for the observed state.
-    pub detail: String,
-    /// Suggested operator action, present only for warnings and failures.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remediation: Option<String>,
-}
-
-/// Status of one check row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "lowercase")]
-pub enum CheckStatus {
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum CheckResult {
     /// The check passed.
-    Pass,
+    Pass {
+        /// Which check produced the row.
+        name: CheckName,
+        /// Human-readable detail for the observed state.
+        detail: String,
+    },
     /// The check surfaced a warning.
-    Warn,
+    Warn {
+        /// Which check produced the row.
+        name: CheckName,
+        /// Human-readable detail for the observed state.
+        detail: String,
+        /// Suggested operator action.
+        remediation: String,
+    },
     /// The check failed.
-    Fail,
+    Fail {
+        /// Which check produced the row.
+        name: CheckName,
+        /// Human-readable detail for the observed state.
+        detail: String,
+        /// Suggested operator action.
+        remediation: String,
+    },
     /// The check was skipped because a precondition did not hold.
-    Skip,
+    Skip {
+        /// Which check produced the row.
+        name: CheckName,
+        /// Human-readable detail for the observed state.
+        detail: String,
+    },
 }
 
 /// The full `check.report` payload.
