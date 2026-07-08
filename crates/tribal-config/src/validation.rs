@@ -529,22 +529,12 @@ fn validate_inference(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 }
 
-/// Rejects the platform provider selected for any local-provider stage — the
-/// embedding genesis seed or an inference stage.
+/// Rejects the platform provider for the local embedding genesis seed.
 fn validate_provider_locality(config: &TribalConfig, diags: &mut Diagnostics) {
-    let stages = [
-        (ProviderStage::Embedding, config.init.embedding.provider),
-        (
-            ProviderStage::Extraction,
-            config.inference.extraction.provider,
-        ),
-        (ProviderStage::Triage, config.inference.triage.provider),
-        (ProviderStage::Relation, config.inference.relation.provider),
-    ];
-    for (stage, provider) in stages {
-        if provider == ProviderKind::Platform {
-            diags.push(ValidationError::PlatformProviderNotLocal { stage });
-        }
+    if config.init.embedding.provider == ProviderKind::Platform {
+        diags.push(ValidationError::PlatformProviderNotLocal {
+            stage: ProviderStage::Embedding,
+        });
     }
 }
 
@@ -1616,27 +1606,25 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_rejects_platform_as_a_local_provider() {
+    fn test_validate_rejects_platform_as_embedding_provider() {
         let mut config = valid_config();
         config.init.embedding.provider = ProviderKind::Platform;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::PlatformProviderNotLocal {
+                stage: ProviderStage::Embedding,
+            },
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_platform_for_inference_stages() {
+        let mut config = valid_config();
         config.inference.extraction.provider = ProviderKind::Platform;
         config.inference.triage.provider = ProviderKind::Platform;
         config.inference.relation.provider = ProviderKind::Platform;
-        let diags = diagnostics_for(&config);
-        for stage in [
-            ProviderStage::Embedding,
-            ProviderStage::Extraction,
-            ProviderStage::Triage,
-            ProviderStage::Relation,
-        ] {
-            assert!(
-                any(&diags, |d| matches!(
-                    d,
-                    ValidationError::PlatformProviderNotLocal { stage: s } if *s == stage,
-                )),
-                "platform not rejected for {stage:?}; diagnostics: {diags:?}",
-            );
-        }
+        assert!(validate(&config).is_ok());
     }
 
     // -- discovery ---------------------------------------------------------

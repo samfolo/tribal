@@ -328,9 +328,8 @@ pub enum ValidationError {
     /// `embedding.provider` is a provider that does not support
     /// embedding.  Renders the provider name in both clauses for clarity.
     EmbeddingProviderUnsupported { provider: ProviderKind },
-    /// A local-provider stage — the embedding genesis seed or an inference
-    /// stage — selects the platform provider, which is served through the
-    /// managed gateway, not addressed by URL as a local provider.
+    /// The embedding genesis seed selects the platform provider, which is
+    /// served through the managed gateway, not addressed as a local provider.
     PlatformProviderNotLocal { stage: ProviderStage },
     /// A credential connection name does not match the `[a-z][a-z0-9_]*`
     /// grammar required by the environment-override path.
