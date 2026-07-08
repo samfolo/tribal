@@ -48,6 +48,7 @@ fn new_file_debouncer<Handler>(handler: Handler) -> Result<Debouncer<PollWatcher
 where
     Handler: DebounceEventHandler,
 {
+    // Polling gives tests the same debouncer contract without native watcher availability.
     let notify_config = NotifyConfig::default()
         .with_poll_interval(Duration::from_millis(50))
         .with_compare_contents(true);

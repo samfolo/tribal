@@ -3,10 +3,10 @@
 //! `init` holds values used only when a corpus is first created: the genesis
 //! embedding profile's identity. Once the corpus exists the active profile,
 //! not this section, is the live embedding identity (the model is corpus
-//! state, changed only by a reindex), so editing `init` afterwards is inert
-//! and `tribal check` reports any divergence as informational state. The
-//! section stays in the file for legibility: it records the seed a corpus
-//! began from, and carries no live authority.
+//! state, changed only by a reindex), so the config facade's genesis gate
+//! refuses post-genesis drift and `tribal check` reports existing divergence
+//! as informational state. The section stays in the file for legibility: it
+//! records the seed a corpus began from, and carries no live authority.
 
 use serde::{Deserialize, Serialize};
 use tribal_domain::ProviderKind;
