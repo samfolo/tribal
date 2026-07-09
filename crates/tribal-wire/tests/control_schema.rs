@@ -12,10 +12,12 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use schemars::{schema::RootSchema, schema_for};
 use tribal_wire::control::{
-    ClientHello, ConfigDocument, ConfigGetRequest, ConfigPath, ConfigSchema, ConfigSetRequest,
-    ConfigValidateRequest, ConfigValidation, ConfigValue, ConfigWriteOutcome, ControlEvent,
-    ControlNotification, ControlRequest, ControlResponse, LogLines, LogsTailRequest,
-    RestartOutcome, ServerHello, ServerStatus, StopOutcome, TokenList,
+    CheckReport, CheckReportRequest, ClientHello, ConfigDocument, ConfigGetRequest, ConfigPath,
+    ConfigSchema, ConfigSetRequest, ConfigValidateRequest, ConfigValidation, ConfigValue,
+    ConfigWriteOutcome, ControlEvent, ControlNotification, ControlRequest, ControlResponse,
+    CredentialProbe, CredentialProbeRequest, DatabaseProbe, DatabaseProbeRequest,
+    GraphEmbeddingProfile, LogLines, LogsTailRequest, ModelsCatalogue, RestartOutcome, ServerHello,
+    ServerStatus, StopOutcome, TokenList,
 };
 
 /// The environment variable that regenerates the golden file instead of
@@ -45,6 +47,17 @@ fn contract_schemas() -> BTreeMap<&'static str, RootSchema> {
         ("ConfigValidateRequest", schema_for!(ConfigValidateRequest)),
         ("ConfigValidation", schema_for!(ConfigValidation)),
         ("ConfigPath", schema_for!(ConfigPath)),
+        ("CheckReportRequest", schema_for!(CheckReportRequest)),
+        ("CheckReport", schema_for!(CheckReport)),
+        ("DatabaseProbeRequest", schema_for!(DatabaseProbeRequest)),
+        ("DatabaseProbe", schema_for!(DatabaseProbe)),
+        (
+            "CredentialProbeRequest",
+            schema_for!(CredentialProbeRequest),
+        ),
+        ("CredentialProbe", schema_for!(CredentialProbe)),
+        ("GraphEmbeddingProfile", schema_for!(GraphEmbeddingProfile)),
+        ("ModelsCatalogue", schema_for!(ModelsCatalogue)),
         ("ServerStatus", schema_for!(ServerStatus)),
         ("RestartOutcome", schema_for!(RestartOutcome)),
         ("StopOutcome", schema_for!(StopOutcome)),

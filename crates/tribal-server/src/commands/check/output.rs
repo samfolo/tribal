@@ -1,12 +1,8 @@
-//! Wire types and writers for `tribal check`.
-//!
-//! [`CheckOutput`] is the JSON shape consumed by downstream tooling.
-//! The status is the variant tag: `Pass` and `Skip` cannot carry a
-//! `remediation` field, mirroring [`CheckOutcome`].
+//! Projection and writers for `tribal check`.
 
-use serde::{Deserialize, Serialize};
+pub use tribal_wire::control::{CheckReport as CheckOutput, CheckResult};
 
-use super::checks::{CheckName, CheckOutcome, CheckOutcomes};
+use super::checks::{CheckOutcome, CheckOutcomes};
 
 mod human;
 mod json;
@@ -15,93 +11,44 @@ pub(in crate::commands::check) use human::write_human;
 pub(in crate::commands::check) use json::write_json;
 
 // ---------------------------------------------------------------------------
-// CheckResult
+// Projection
 // ---------------------------------------------------------------------------
 
-/// One row of the `checks` array in the wire format.
-///
-/// Serialised with `status` as an internal tag so each row deserialises
-/// to `{"status": "<lowercase variant>", "name": ..., "detail": ...,
-/// "remediation"?: ...}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "lowercase")]
-pub enum CheckResult {
-    Pass {
-        name: CheckName,
-        detail: String,
-    },
-    Warn {
-        name: CheckName,
-        detail: String,
-        remediation: String,
-    },
-    Fail {
-        name: CheckName,
-        detail: String,
-        remediation: String,
-    },
-    Skip {
-        name: CheckName,
-        detail: String,
-    },
-}
-
-// ---------------------------------------------------------------------------
-// CheckOutput
-// ---------------------------------------------------------------------------
-
-/// The wire format `tribal check --json` emits.
-///
-/// `ok` is `true` iff no entry in `checks` is `fail`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckOutput {
-    pub ok: bool,
-    pub checks: Vec<CheckResult>,
-}
-
-// ---------------------------------------------------------------------------
-// Conversion
-// ---------------------------------------------------------------------------
-
-impl From<&CheckOutcome> for CheckResult {
-    fn from(outcome: &CheckOutcome) -> Self {
-        match outcome {
-            CheckOutcome::Pass { detail } => Self::Pass {
-                name: detail.name(),
-                detail: detail.render(),
-            },
-            CheckOutcome::Warn {
-                detail,
-                remediation,
-            } => Self::Warn {
-                name: detail.name(),
-                detail: detail.render(),
-                remediation: remediation.render(),
-            },
-            CheckOutcome::Fail {
-                detail,
-                remediation,
-            } => Self::Fail {
-                name: detail.name(),
-                detail: detail.render(),
-                remediation: remediation.render(),
-            },
-            CheckOutcome::Skip { detail } => Self::Skip {
-                name: detail.name(),
-                detail: detail.render(),
-            },
-        }
+pub(in crate::commands::check) fn from_outcomes(outcomes: &CheckOutcomes) -> CheckOutput {
+    CheckOutput {
+        ok: outcomes
+            .iter()
+            .all(|o| !matches!(o, CheckOutcome::Fail { .. })),
+        checks: outcomes.iter().map(result_from_outcome).collect(),
     }
 }
 
-impl From<&CheckOutcomes> for CheckOutput {
-    fn from(outcomes: &CheckOutcomes) -> Self {
-        Self {
-            ok: outcomes
-                .iter()
-                .all(|o| !matches!(o, CheckOutcome::Fail { .. })),
-            checks: outcomes.iter().map(CheckResult::from).collect(),
-        }
+fn result_from_outcome(outcome: &CheckOutcome) -> CheckResult {
+    match outcome {
+        CheckOutcome::Pass { detail } => CheckResult::Pass {
+            name: detail.name(),
+            detail: detail.render(),
+        },
+        CheckOutcome::Warn {
+            detail,
+            remediation,
+        } => CheckResult::Warn {
+            name: detail.name(),
+            detail: detail.render(),
+            remediation: remediation.render(),
+        },
+        CheckOutcome::Fail {
+            detail,
+            remediation,
+        } => CheckResult::Fail {
+            name: detail.name(),
+            detail: detail.render(),
+            remediation: remediation.render(),
+        },
+        CheckOutcome::Skip { detail } => CheckResult::Skip {
+            name: detail.name(),
+            detail: detail.render(),
+        },
     }
 }
 
@@ -114,13 +61,14 @@ mod tests {
     use std::path::PathBuf;
 
     use tribal_config::{ConfigPath, Diagnostics, ValidationError};
+    use tribal_wire::control::CheckName;
 
     use super::*;
 
     #[test]
     fn test_check_result_from_pass_outcome_omits_remediation() {
         let outcome = CheckOutcome::config_parse_loaded(PathBuf::from("/etc/tribal/config.yaml"));
-        let result = CheckResult::from(&outcome);
+        let result = result_from_outcome(&outcome);
         assert!(matches!(
             &result,
             CheckResult::Pass {
@@ -138,7 +86,7 @@ mod tests {
         )));
         outcomes.push(CheckOutcome::config_validate_satisfied());
 
-        let output = CheckOutput::from(&outcomes);
+        let output = from_outcomes(&outcomes);
         assert!(output.ok);
         assert_eq!(output.checks.len(), 2);
     }
@@ -155,7 +103,7 @@ mod tests {
             }],
         )));
 
-        let output = CheckOutput::from(&outcomes);
+        let output = from_outcomes(&outcomes);
         assert!(!output.ok);
         assert_eq!(output.checks.len(), 2);
     }

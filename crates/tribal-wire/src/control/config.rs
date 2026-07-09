@@ -22,18 +22,44 @@ use serde::{Deserialize, Serialize};
 pub enum ReloadClass {
     /// The key reloads live, without a restart.
     Hot,
+    /// The key is meaningful only before the active embedding profile exists.
+    GenesisOnly,
     /// The key takes effect only after the binary restarts.
     RequiresRestart,
 }
 
-/// What a write to a key achieved. The three honest outcomes of writing layer
-/// four of the cascade.
+/// How prominently an operator-facing client should disclose a config field.
+///
+/// This is a rendering-depth classifier only. It is not an entitlement,
+/// permission, or write authorisation boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum AudienceTier {
+    /// The ordinary setup path a first-run operator sees.
+    Primary,
+    /// A common operational setting that is not part of the first-run path.
+    Standard,
+    /// A legitimate but lower-frequency tuning control.
+    Advanced,
+    /// A control hidden from normal UI surfaces unless explicitly requested.
+    Hidden,
+    /// A value owned by the binary or migration machinery, not by operators.
+    MachineOwned,
+}
+
+/// What a write to a key achieved. The honest outcomes of writing layer four of
+/// the cascade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum WriteEffect {
     /// The write took effect immediately.
     Live,
+    /// The file already held the requested value, so nothing was written.
+    Unchanged,
+    /// The write updated the served snapshot without marking a restart pending.
+    NoRestart,
     /// The write is persisted but applies only after a restart.
     NeedsRestart,
     /// A higher-precedence layer overrides the write, so it is persisted but
@@ -50,6 +76,10 @@ pub struct ConfigFieldMeta {
     pub path: String,
     /// Whether the value is a secret and reads back redacted.
     pub secret: bool,
+    /// Disclosure depth for UI rendering; never an entitlement decision.
+    pub tier: AudienceTier,
+    /// Stable display group for settings surfaces.
+    pub group: String,
     /// Whether the key takes effect live or only on restart.
     pub reload_class: ReloadClass,
     /// Whether a higher-precedence layer currently shadows this key, computed
@@ -73,6 +103,8 @@ pub struct ConfigFieldMeta {
 pub struct ConfigSchema {
     /// The structural JSON Schema of the config type, carried opaquely.
     pub schema: serde_json::Value,
+    /// Display groups in their intended order.
+    pub groups: Vec<String>,
     /// The metadata overlay for each classifiable leaf key.
     pub fields: Vec<ConfigFieldMeta>,
 }
@@ -219,9 +251,12 @@ mod tests {
     fn test_a_config_schema_round_trips() {
         let schema = ConfigSchema {
             schema: serde_json::json!({ "type": "object" }),
+            groups: vec!["logging".to_owned()],
             fields: vec![ConfigFieldMeta {
                 path: "logging.level".to_owned(),
                 secret: false,
+                tier: AudienceTier::Advanced,
+                group: "logging".to_owned(),
                 reload_class: ReloadClass::RequiresRestart,
                 shadowed: true,
                 default_value: Some(serde_json::json!("info")),

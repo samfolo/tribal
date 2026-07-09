@@ -226,16 +226,6 @@ fn add_entry(
     request_class: RequestClass,
     config: &TribalConfig,
 ) -> Result<(), AppError> {
-    // Platform is served by the managed gateway, not a local endpoint; reject it
-    // here with an honest reason rather than let its absent base URL fail opaquely below.
-    if provider == ProviderKind::Platform {
-        return Err(AppError::ProviderSetup {
-            context: "the platform provider is served by the managed gateway, \
-                      not a local provider"
-                .to_owned(),
-        });
-    }
-
     let url = resolve_base_url(provider, base_url);
     let key = ProviderKey::new(provider.to_string(), &url, request_class)
         .map_err(|source| AppError::ProviderRegistry { source })?;
@@ -346,13 +336,24 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_rejects_platform_inference_provider() {
+    fn test_registry_accepts_platform_inference_provider() {
         let mut config = TribalConfig::default();
         config.inference.extraction.provider = ProviderKind::Platform;
-        let err = build_command_registry(&config).expect_err("platform is not a local provider");
-        assert!(
-            matches!(err, AppError::ProviderSetup { .. }),
-            "expected the honest ProviderSetup rejection, got {err:?}",
+        config.inference.extraction.base_url = Some("https://gateway.example.com".to_owned());
+
+        let registry = build_command_registry(&config).expect("platform has a gateway endpoint");
+        let gateway = InferenceGateway::new(
+            registry,
+            &completion_stage_specs(&config),
+            Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
+            Arc::new(NoopLedgerSink),
+        )
+        .expect("a platform stage builds a gateway");
+
+        assert_eq!(
+            gateway.completion_identity(TaskType::Extraction).name,
+            ProviderKind::Platform.as_str(),
+            "the extraction stage is bound to the platform provider",
         );
     }
 

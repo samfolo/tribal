@@ -10,10 +10,10 @@ use strum::EnumIter;
 use tribal_config::{ProviderStage, TransportKind};
 
 use super::{
-    advertised_url_reachable, binary_uniqueness, config_parse, config_validate, database_reachable,
-    embedding_profile, migrations_current, project_resolution, provider_probes,
+    CheckName, advertised_url_reachable, binary_uniqueness, config_parse, config_validate,
+    database_reachable, embedding_profile, migrations_current, project_resolution, provider_probes,
     state::CheckState,
-    types::{CheckName, CheckOutcome, SkipReason},
+    types::{CheckOutcome, SkipReason},
     valid_token_exists,
 };
 

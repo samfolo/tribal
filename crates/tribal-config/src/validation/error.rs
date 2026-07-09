@@ -247,6 +247,12 @@ impl ProviderStage {
         self.section_path().extend("api_key")
     }
 
+    /// Config path of the base-url field for this stage.
+    #[must_use]
+    pub fn base_url_path(self) -> ConfigPath {
+        self.section_path().extend("base_url")
+    }
+
     /// Config path of the provider field for this stage.
     #[must_use]
     pub fn provider_path(self) -> ConfigPath {
@@ -309,6 +315,11 @@ pub enum ValidationError {
         stage: ProviderStage,
         provider: ProviderKind,
     },
+    /// Provider stage has no endpoint URL and the provider has no default.
+    MissingBaseUrl {
+        stage: ProviderStage,
+        provider: ProviderKind,
+    },
     /// `server.bind_address` is set while `server.transport` is stdio.
     BindAddressStdioConflict,
     /// `server.bind_address` failed to parse as `<host>:<port>`.
@@ -328,9 +339,8 @@ pub enum ValidationError {
     /// `embedding.provider` is a provider that does not support
     /// embedding.  Renders the provider name in both clauses for clarity.
     EmbeddingProviderUnsupported { provider: ProviderKind },
-    /// A local-provider stage — the embedding genesis seed or an inference
-    /// stage — selects the platform provider, which is served through the
-    /// managed gateway, not addressed by URL as a local provider.
+    /// The embedding genesis seed selects the platform provider, which is
+    /// served through the managed gateway, not addressed as a local provider.
     PlatformProviderNotLocal { stage: ProviderStage },
     /// A credential connection name does not match the `[a-z][a-z0-9_]*`
     /// grammar required by the environment-override path.
@@ -423,6 +433,13 @@ impl fmt::Display for ValidationError {
                 f,
                 "{} is required when {} is {provider}",
                 stage.api_key_path(),
+                stage.provider_path(),
+            ),
+
+            Self::MissingBaseUrl { stage, provider } => write!(
+                f,
+                "{} is required when {} is {provider}",
+                stage.base_url_path(),
                 stage.provider_path(),
             ),
 
@@ -887,6 +904,19 @@ mod tests {
             };
             assert_eq!(err.to_string(), expected);
         }
+    }
+
+    #[test]
+    fn test_display_missing_base_url() {
+        let err = ValidationError::MissingBaseUrl {
+            stage: ProviderStage::Extraction,
+            provider: ProviderKind::Platform,
+        };
+        assert_eq!(
+            err.to_string(),
+            "inference.extraction.base_url is required when \
+             inference.extraction.provider is platform",
+        );
     }
 
     #[test]

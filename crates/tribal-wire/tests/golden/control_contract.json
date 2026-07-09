@@ -1,4 +1,269 @@
 {
+  "CheckReport": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CheckReport",
+    "description": "The full `check.report` payload.",
+    "type": "object",
+    "required": [
+      "checks",
+      "ok"
+    ],
+    "properties": {
+      "checks": {
+        "description": "Ordered check rows.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/CheckResult"
+        }
+      },
+      "ok": {
+        "description": "`true` iff no row failed.",
+        "type": "boolean"
+      }
+    },
+    "definitions": {
+      "CheckName": {
+        "description": "Identifier for a single check row.",
+        "oneOf": [
+          {
+            "description": "Config file parse/read check.",
+            "type": "string",
+            "enum": [
+              "config_parse"
+            ]
+          },
+          {
+            "description": "Config invariant validation check.",
+            "type": "string",
+            "enum": [
+              "config_validate"
+            ]
+          },
+          {
+            "description": "Database connectivity check.",
+            "type": "string",
+            "enum": [
+              "database_reachable"
+            ]
+          },
+          {
+            "description": "Migration head check.",
+            "type": "string",
+            "enum": [
+              "migrations_current"
+            ]
+          },
+          {
+            "description": "Project resolution check.",
+            "type": "string",
+            "enum": [
+              "project_resolution"
+            ]
+          },
+          {
+            "description": "Static token verification check.",
+            "type": "string",
+            "enum": [
+              "valid_token_exists"
+            ]
+          },
+          {
+            "description": "Advertised URL reachability check.",
+            "type": "string",
+            "enum": [
+              "advertised_url_reachable"
+            ]
+          },
+          {
+            "description": "PATH binary uniqueness check.",
+            "type": "string",
+            "enum": [
+              "binary_uniqueness"
+            ]
+          },
+          {
+            "description": "Active embedding profile check.",
+            "type": "string",
+            "enum": [
+              "embedding_profile"
+            ]
+          },
+          {
+            "description": "Embedding provider probe check.",
+            "type": "string",
+            "enum": [
+              "provider_embedding"
+            ]
+          },
+          {
+            "description": "Extraction provider probe check.",
+            "type": "string",
+            "enum": [
+              "provider_extraction"
+            ]
+          },
+          {
+            "description": "Triage provider probe check.",
+            "type": "string",
+            "enum": [
+              "provider_triage"
+            ]
+          },
+          {
+            "description": "Relation provider probe check.",
+            "type": "string",
+            "enum": [
+              "provider_relation"
+            ]
+          }
+        ]
+      },
+      "CheckResult": {
+        "description": "One row of the check report.",
+        "oneOf": [
+          {
+            "description": "The check passed.",
+            "type": "object",
+            "required": [
+              "detail",
+              "name",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Human-readable detail for the observed state.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Which check produced the row.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/CheckName"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The check surfaced a warning.",
+            "type": "object",
+            "required": [
+              "detail",
+              "name",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Human-readable detail for the observed state.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Which check produced the row.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/CheckName"
+                  }
+                ]
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "warn"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The check failed.",
+            "type": "object",
+            "required": [
+              "detail",
+              "name",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Human-readable detail for the observed state.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Which check produced the row.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/CheckName"
+                  }
+                ]
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "fail"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The check was skipped because a precondition did not hold.",
+            "type": "object",
+            "required": [
+              "detail",
+              "name",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Human-readable detail for the observed state.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Which check produced the row.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/CheckName"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "skip"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "CheckReportRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CheckReportRequest",
+    "description": "Parameters for `check.report`.",
+    "type": "object",
+    "properties": {
+      "probe_providers": {
+        "description": "Whether provider probes should run and appear in the report.",
+        "default": false,
+        "type": "boolean"
+      }
+    }
+  },
   "ClientHello": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ClientHello",
@@ -67,6 +332,7 @@
     "type": "object",
     "required": [
       "fields",
+      "groups",
       "schema"
     ],
     "properties": {
@@ -77,23 +343,76 @@
           "$ref": "#/definitions/ConfigFieldMeta"
         }
       },
+      "groups": {
+        "description": "Display groups in their intended order.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
       "schema": {
         "description": "The structural JSON Schema of the config type, carried opaquely."
       }
     },
     "definitions": {
+      "AudienceTier": {
+        "description": "How prominently an operator-facing client should disclose a config field.\n\nThis is a rendering-depth classifier only. It is not an entitlement, permission, or write authorisation boundary.",
+        "oneOf": [
+          {
+            "description": "The ordinary setup path a first-run operator sees.",
+            "type": "string",
+            "enum": [
+              "primary"
+            ]
+          },
+          {
+            "description": "A common operational setting that is not part of the first-run path.",
+            "type": "string",
+            "enum": [
+              "standard"
+            ]
+          },
+          {
+            "description": "A legitimate but lower-frequency tuning control.",
+            "type": "string",
+            "enum": [
+              "advanced"
+            ]
+          },
+          {
+            "description": "A control hidden from normal UI surfaces unless explicitly requested.",
+            "type": "string",
+            "enum": [
+              "hidden"
+            ]
+          },
+          {
+            "description": "A value owned by the binary or migration machinery, not by operators.",
+            "type": "string",
+            "enum": [
+              "machine_owned"
+            ]
+          }
+        ]
+      },
       "ConfigFieldMeta": {
         "description": "The metadata overlay for one configurable key, paired with the structural schema so a client can render and gate the settings form.",
         "type": "object",
         "required": [
+          "group",
           "path",
           "reload_class",
           "secret",
-          "shadowed"
+          "shadowed",
+          "tier"
         ],
         "properties": {
           "default_value": {
             "description": "The key's fixed default, for a reset-to-default affordance. Absent for a machine-resolved key whose default is computed per host and stripped."
+          },
+          "group": {
+            "description": "Stable display group for settings surfaces.",
+            "type": "string"
           },
           "path": {
             "description": "The dotted key, e.g. `logging.level`.",
@@ -114,6 +433,14 @@
           "shadowed": {
             "description": "Whether a higher-precedence layer currently shadows this key, computed against the live cascade at the time of the call.",
             "type": "boolean"
+          },
+          "tier": {
+            "description": "Disclosure depth for UI rendering; never an entitlement decision.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/AudienceTier"
+              }
+            ]
           }
         }
       },
@@ -125,6 +452,13 @@
             "type": "string",
             "enum": [
               "hot"
+            ]
+          },
+          {
+            "description": "The key is meaningful only before the active embedding profile exists.",
+            "type": "string",
+            "enum": [
+              "genesis_only"
             ]
           },
           {
@@ -265,13 +599,27 @@
     },
     "definitions": {
       "WriteEffect": {
-        "description": "What a write to a key achieved. The three honest outcomes of writing layer four of the cascade.",
+        "description": "What a write to a key achieved. The honest outcomes of writing layer four of the cascade.",
         "oneOf": [
           {
             "description": "The write took effect immediately.",
             "type": "string",
             "enum": [
               "live"
+            ]
+          },
+          {
+            "description": "The file already held the requested value, so nothing was written.",
+            "type": "string",
+            "enum": [
+              "unchanged"
+            ]
+          },
+          {
+            "description": "The write updated the served snapshot without marking a restart pending.",
+            "type": "string",
+            "enum": [
+              "no_restart"
             ]
           },
           {
@@ -483,13 +831,27 @@
         }
       },
       "WriteEffect": {
-        "description": "What a write to a key achieved. The three honest outcomes of writing layer four of the cascade.",
+        "description": "What a write to a key achieved. The honest outcomes of writing layer four of the cascade.",
         "oneOf": [
           {
             "description": "The write took effect immediately.",
             "type": "string",
             "enum": [
               "live"
+            ]
+          },
+          {
+            "description": "The file already held the requested value, so nothing was written.",
+            "type": "string",
+            "enum": [
+              "unchanged"
+            ]
+          },
+          {
+            "description": "The write updated the served snapshot without marking a restart pending.",
+            "type": "string",
+            "enum": [
+              "no_restart"
             ]
           },
           {
@@ -668,6 +1030,341 @@
       }
     }
   },
+  "CredentialProbe": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CredentialProbe",
+    "description": "Result of probing a configured provider credential.",
+    "oneOf": [
+      {
+        "description": "The provider accepted the configured credential.",
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy"
+            ]
+          }
+        }
+      },
+      {
+        "description": "The provider rejected the configured credential.",
+        "type": "object",
+        "required": [
+          "detail",
+          "status"
+        ],
+        "properties": {
+          "detail": {
+            "description": "The underlying refusal, rendered for operators.",
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "unauthorized"
+            ]
+          }
+        }
+      },
+      {
+        "description": "The provider could not be probed from the current configuration.",
+        "type": "object",
+        "required": [
+          "detail",
+          "status"
+        ],
+        "properties": {
+          "detail": {
+            "description": "Why the probe could not determine credential health.",
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "unknown"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "CredentialProbeRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CredentialProbeRequest",
+    "description": "Parameters for `credential.probe`.",
+    "type": "object",
+    "required": [
+      "provider"
+    ],
+    "properties": {
+      "provider": {
+        "description": "Provider whose configured credential should be probed.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/ProviderKind"
+          }
+        ]
+      }
+    },
+    "definitions": {
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "DatabaseProbe": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DatabaseProbe",
+    "description": "Result of probing a database URL.",
+    "oneOf": [
+      {
+        "description": "The database accepted a connection.",
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "reachable"
+            ]
+          }
+        }
+      },
+      {
+        "description": "The endpoint responded but rejected credentials.",
+        "type": "object",
+        "required": [
+          "detail",
+          "status"
+        ],
+        "properties": {
+          "detail": {
+            "description": "The underlying refusal, rendered for operators.",
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "unauthorized"
+            ]
+          }
+        }
+      },
+      {
+        "description": "The endpoint could not be reached.",
+        "type": "object",
+        "required": [
+          "detail",
+          "status"
+        ],
+        "properties": {
+          "detail": {
+            "description": "The underlying connection failure, rendered for operators.",
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "unreachable"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "DatabaseProbeRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DatabaseProbeRequest",
+    "description": "Parameters for `database.probe`.",
+    "type": "object",
+    "required": [
+      "url"
+    ],
+    "properties": {
+      "url": {
+        "description": "`PostgreSQL` URL to test.",
+        "type": "string"
+      }
+    }
+  },
+  "GraphEmbeddingProfile": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "GraphEmbeddingProfile",
+    "description": "Result of reading the active embedding profile.",
+    "oneOf": [
+      {
+        "description": "No active profile exists yet.",
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "no_profile"
+            ]
+          }
+        }
+      },
+      {
+        "description": "The active profile exists.",
+        "type": "object",
+        "required": [
+          "profile",
+          "status"
+        ],
+        "properties": {
+          "genesis_drift": {
+            "description": "The genesis seed identity when it differs from the active profile.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "profile": {
+            "description": "The active profile identity.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/EmbeddingProfileSummary"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active"
+            ]
+          }
+        }
+      },
+      {
+        "description": "The database could not answer profile state.",
+        "type": "object",
+        "required": [
+          "detail",
+          "status"
+        ],
+        "properties": {
+          "detail": {
+            "description": "Why the profile state is unknown.",
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "unknown"
+            ]
+          }
+        }
+      }
+    ],
+    "definitions": {
+      "EmbeddingProfileSummary": {
+        "description": "Stable summary of an active embedding profile.",
+        "type": "object",
+        "required": [
+          "base_url",
+          "dimensions",
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "base_url": {
+            "description": "Normalised endpoint for the profile.",
+            "type": "string"
+          },
+          "dimensions": {
+            "description": "Embedding dimensionality.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "model": {
+            "description": "Embedding model.",
+            "type": "string"
+          },
+          "provider": {
+            "description": "Provider used by the profile.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProviderKind"
+              }
+            ]
+          }
+        }
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      }
+    }
+  },
   "LogLines": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "LogLines",
@@ -775,6 +1472,86 @@
         "type": "integer",
         "format": "uint32",
         "minimum": 0.0
+      }
+    }
+  },
+  "ModelsCatalogue": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ModelsCatalogue",
+    "description": "Static model catalogue served by `models.catalogue`.",
+    "type": "object",
+    "required": [
+      "models"
+    ],
+    "properties": {
+      "models": {
+        "description": "Known model rows.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/KnownModelEntry"
+        }
+      }
+    },
+    "definitions": {
+      "KnownModelEntry": {
+        "description": "One known model option.",
+        "type": "object",
+        "required": [
+          "display_name",
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "display_name": {
+            "description": "Operator-facing display name.",
+            "type": "string"
+          },
+          "model": {
+            "description": "Provider-native model identifier.",
+            "type": "string"
+          },
+          "provider": {
+            "description": "Provider this row belongs to.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProviderKind"
+              }
+            ]
+          }
+        }
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
       }
     }
   },

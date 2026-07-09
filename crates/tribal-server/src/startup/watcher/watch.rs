@@ -11,7 +11,14 @@ use std::{
     time::Duration,
 };
 
-use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
+#[cfg(test)]
+use notify_debouncer_mini::{
+    Config as DebounceConfig, new_debouncer_opt,
+    notify::{Config as NotifyConfig, PollWatcher},
+};
+use notify_debouncer_mini::{DebounceEventHandler, DebounceEventResult, Debouncer};
+#[cfg(not(test))]
+use notify_debouncer_mini::{new_debouncer, notify::RecommendedWatcher};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -25,6 +32,31 @@ const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
 /// Bounded channel capacity for debounced batches. A full channel drops stale
 /// batches; the next one carries the current file state.
 const EVENT_CHANNEL_CAPACITY: usize = 16;
+
+#[cfg(not(test))]
+fn new_file_debouncer<Handler>(
+    handler: Handler,
+) -> Result<Debouncer<RecommendedWatcher>, notify::Error>
+where
+    Handler: DebounceEventHandler,
+{
+    new_debouncer(DEBOUNCE_DURATION, handler)
+}
+
+#[cfg(test)]
+fn new_file_debouncer<Handler>(handler: Handler) -> Result<Debouncer<PollWatcher>, notify::Error>
+where
+    Handler: DebounceEventHandler,
+{
+    // Polling gives tests the same debouncer contract without native watcher availability.
+    let notify_config = NotifyConfig::default()
+        .with_poll_interval(Duration::from_millis(50))
+        .with_compare_contents(true);
+    let debounce_config = DebounceConfig::default()
+        .with_timeout(DEBOUNCE_DURATION)
+        .with_notify_config(notify_config);
+    new_debouncer_opt::<Handler, PollWatcher>(debounce_config, handler)
+}
 
 /// Watches `root` at `mode` and runs `on_change` for each debounced batch of
 /// changed paths, until the token fires.
@@ -49,7 +81,7 @@ where
 {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<DebounceEventResult>(EVENT_CHANNEL_CAPACITY);
 
-    let mut debouncer = new_debouncer(DEBOUNCE_DURATION, move |event: DebounceEventResult| {
+    let mut debouncer = new_file_debouncer(move |event: DebounceEventResult| {
         let _ = tx.try_send(event);
     })
     .map_err(|source| AppError::FileWatcher {

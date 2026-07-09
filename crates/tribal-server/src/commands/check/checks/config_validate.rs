@@ -50,6 +50,7 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
         ValidationError::BindAddressStdioConflict => Some(STDIO_CONFLICT_HINT.into()),
         ValidationError::BindAddressMalformed { .. } => Some(MALFORMED_ADDRESS_HINT.into()),
         ValidationError::MissingApiKey { stage, provider } => Some(api_key_hint(*stage, *provider)),
+        ValidationError::MissingBaseUrl { stage, .. } => Some(base_url_hint(*stage)),
         ValidationError::Empty { .. }
         | ValidationError::ContainsWhitespace { .. }
         | ValidationError::BelowMin { .. }
@@ -78,6 +79,14 @@ fn api_key_hint(stage: ProviderStage, provider: ProviderKind) -> String {
         Some(standard) => format!("set `{path}` or export `{figment}` / `{standard}`"),
         None => format!("set `{path}` or export `{figment}`"),
     }
+}
+
+/// Renders the hint for a [`ValidationError::MissingBaseUrl`], naming
+/// the field path and its config-cascade environment variable.
+fn base_url_hint(stage: ProviderStage) -> String {
+    let path = stage.base_url_path();
+    let figment = path.env_var();
+    format!("set `{path}` or export `{figment}`")
 }
 
 /// Validates the parsed config currently on `state` and, on failure,
@@ -145,6 +154,26 @@ mod tests {
                 && hints[0].contains("inference.triage.api_key")
                 && hints[0].contains("TRIBAL_INFERENCE__TRIAGE__API_KEY")
                 && hints[0].contains("OPENAI_API_KEY"),
+        ));
+    }
+
+    #[test]
+    fn test_config_validate_failed_with_base_url_error_has_targeted_hint() {
+        let diagnostics = Diagnostics::from(vec![ValidationError::MissingBaseUrl {
+            stage: ProviderStage::Extraction,
+            provider: ProviderKind::Platform,
+        }]);
+        let outcome = CheckOutcome::config_validate_failed(diagnostics);
+
+        assert!(matches!(
+            &outcome,
+            CheckOutcome::Fail {
+                detail: CheckDetail::ValidationFailed { diagnostics: stored },
+                remediation: CheckRemediation::FixConfigInvariant { hints },
+            } if stored.len() == 1
+                && hints.len() == 1
+                && hints[0].contains("inference.extraction.base_url")
+                && hints[0].contains("TRIBAL_INFERENCE__EXTRACTION__BASE_URL"),
         ));
     }
 

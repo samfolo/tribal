@@ -125,6 +125,13 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         let expanded_config_path =
             std::path::PathBuf::from(shellexpand::tilde(config_path).into_owned());
         let self_write = SelfWriteSentinel::default();
+        let embedding_profile =
+            match crate::startup::read_active_profile(handle.state().mcp_pool()).await {
+                Ok(profile) => control::EmbeddingProfileSnapshot::active(&profile),
+                Err(error) => control::EmbeddingProfileSnapshot::Unknown {
+                    detail: error.to_string(),
+                },
+            };
         let control_context = control::ControlContext {
             config: tokio::sync::watch::Sender::new(Arc::new(config.clone())),
             config_path: expanded_config_path.clone(),
@@ -132,6 +139,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
             self_write: self_write.clone(),
             config_write_lock: tokio::sync::Mutex::new(()),
             pool: handle.state().mcp_pool().clone(),
+            embedding_profile: tokio::sync::watch::Sender::new(embedding_profile),
             events: control_events.clone(),
             log_ring,
             log_filter,

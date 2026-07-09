@@ -13,17 +13,21 @@
 //! [`CONTROL_CONTRACT_VERSION`], exchanged at connect so an unknown-version
 //! client is refused before it speaks.
 
+mod check;
 mod config;
 mod envelope;
 mod event;
 mod logs;
+mod models;
+mod probe;
 mod server;
 mod token;
 
+pub use check::{CheckName, CheckReport, CheckReportRequest, CheckResult};
 pub use config::{
-    ConfigDocument, ConfigFieldMeta, ConfigGetRequest, ConfigPath, ConfigSchema, ConfigSetRequest,
-    ConfigValidateRequest, ConfigValidation, ConfigValue, ConfigViolation, ConfigWriteOutcome,
-    ReloadClass, WriteEffect,
+    AudienceTier, ConfigDocument, ConfigFieldMeta, ConfigGetRequest, ConfigPath, ConfigSchema,
+    ConfigSetRequest, ConfigValidateRequest, ConfigValidation, ConfigValue, ConfigViolation,
+    ConfigWriteOutcome, ReloadClass, WriteEffect,
 };
 pub use envelope::{
     ClientHello, ControlNotification, ControlRequest, ControlResponse, JsonRpcVersion, RequestId,
@@ -31,6 +35,11 @@ pub use envelope::{
 };
 pub use event::ControlEvent;
 pub use logs::{LogLevel, LogLine, LogLines, LogsTailRequest};
+pub use models::{KnownModelEntry, ModelsCatalogue};
+pub use probe::{
+    CredentialProbe, CredentialProbeRequest, DatabaseProbe, DatabaseProbeRequest,
+    EmbeddingProfileSummary, GraphEmbeddingProfile,
+};
 pub use server::{ProjectSummary, RestartOutcome, ServerStatus, StopOutcome, WorkerStatus};
 pub use token::{TokenInfo, TokenList};
 
@@ -38,7 +47,7 @@ pub use token::{TokenInfo, TokenList};
 /// [`ClientHello`](envelope::ClientHello) at connect; a mismatch the server does
 /// not support is refused before any method is dispatched, and the payload
 /// vocabulary grows only when this does.
-pub const CONTROL_CONTRACT_VERSION: u16 = 1;
+pub const CONTROL_CONTRACT_VERSION: u16 = 2;
 
 /// Control-plane [`ResponseError::code`] values, in the range JSON-RPC reserves
 /// for implementation-defined server errors (`-32000..=-32099`), so a client
@@ -53,4 +62,15 @@ pub mod error_code {
     /// The write is refused so the mask never overwrites the real secret a
     /// redacted read never revealed.
     pub const SECRET_MASK_REJECTED: i32 = -32002;
+
+    /// A `config.set` targeted `init.embedding.*` while the active embedding
+    /// profile snapshot is unknown.
+    pub const GENESIS_PROFILE_UNKNOWN: i32 = -32003;
+
+    /// A `config.set` tried to change `init.embedding.*` away from the active
+    /// embedding profile after genesis.
+    pub const GENESIS_PROFILE_DRIFT: i32 = -32004;
+
+    /// A `config.set` targeted a machine-owned value.
+    pub const CONFIG_KEY_NOT_WRITABLE: i32 = -32005;
 }

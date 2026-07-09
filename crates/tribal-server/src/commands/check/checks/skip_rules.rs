@@ -4,7 +4,10 @@
 
 use tribal_config::{ProviderStage, ValidationError};
 
-use super::types::{CheckDetail, CheckName, CheckOutcome, SkipReason};
+use super::{
+    CheckName,
+    types::{CheckDetail, CheckOutcome, SkipReason},
+};
 
 impl CheckOutcome {
     /// Constructs a `Skip` outcome for `name`, attributing the skip to
@@ -55,17 +58,24 @@ impl SkipMask {
         match diagnostic {
             ValidationError::BindAddressStdioConflict
             | ValidationError::BindAddressMalformed { .. }
-            | ValidationError::UrlMalformed { .. }
             | ValidationError::UrlUnsupportedForm { .. }
             | ValidationError::NonLoopbackDcrConflict => {
                 self.bits |= flag::ADVERTISED_URL;
             }
+            ValidationError::UrlMalformed { field, .. } => {
+                if let Some(stage) = provider_base_url_stage(field.as_str()) {
+                    self.skip_provider_stage(stage);
+                } else if is_advertised_url_field(field.as_str()) {
+                    self.bits |= flag::ADVERTISED_URL;
+                }
+            }
             ValidationError::MissingApiKey { stage, .. }
+            | ValidationError::MissingBaseUrl { stage, .. }
             | ValidationError::PlatformProviderNotLocal { stage } => match stage {
-                ProviderStage::Embedding => self.bits |= flag::PROVIDER_EMBEDDING,
-                ProviderStage::Extraction => self.bits |= flag::PROVIDER_EXTRACTION,
-                ProviderStage::Triage => self.bits |= flag::PROVIDER_TRIAGE,
-                ProviderStage::Relation => self.bits |= flag::PROVIDER_RELATION,
+                ProviderStage::Embedding => self.skip_provider_stage(ProviderStage::Embedding),
+                ProviderStage::Extraction => self.skip_provider_stage(ProviderStage::Extraction),
+                ProviderStage::Triage => self.skip_provider_stage(ProviderStage::Triage),
+                ProviderStage::Relation => self.skip_provider_stage(ProviderStage::Relation),
             },
             ValidationError::Empty { .. }
             | ValidationError::ContainsWhitespace { .. }
@@ -84,6 +94,15 @@ impl SkipMask {
         }
     }
 
+    fn skip_provider_stage(&mut self, stage: ProviderStage) {
+        self.bits |= match stage {
+            ProviderStage::Embedding => flag::PROVIDER_EMBEDDING,
+            ProviderStage::Extraction => flag::PROVIDER_EXTRACTION,
+            ProviderStage::Triage => flag::PROVIDER_TRIAGE,
+            ProviderStage::Relation => flag::PROVIDER_RELATION,
+        };
+    }
+
     pub(in crate::commands::check) fn skip_advertised_url(self) -> bool {
         self.bits & flag::ADVERTISED_URL != 0
     }
@@ -97,6 +116,23 @@ impl SkipMask {
         };
         self.bits & bit != 0
     }
+}
+
+fn provider_base_url_stage(field: &str) -> Option<ProviderStage> {
+    [
+        ProviderStage::Extraction,
+        ProviderStage::Triage,
+        ProviderStage::Relation,
+    ]
+    .into_iter()
+    .find(|stage| stage.base_url_path().as_str() == field)
+}
+
+fn is_advertised_url_field(field: &str) -> bool {
+    matches!(
+        field,
+        "oauth.issuer_url" | "oauth.resource_url" | "server.public_mcp_url"
+    )
 }
 
 #[cfg(test)]
@@ -158,6 +194,26 @@ mod tests {
             value: "not a url".into(),
         }]);
         assert!(mask.skip_advertised_url());
+    }
+
+    #[test]
+    fn test_skip_mask_sets_provider_stage_for_missing_base_url() {
+        let mask = SkipMask::from_validation_errors(&[ValidationError::MissingBaseUrl {
+            stage: ProviderStage::Extraction,
+            provider: ProviderKind::Platform,
+        }]);
+        assert!(mask.skip_provider_probe(ProviderStage::Extraction));
+        assert!(!mask.skip_advertised_url());
+    }
+
+    #[test]
+    fn test_skip_mask_sets_provider_stage_for_malformed_inference_base_url() {
+        let mask = SkipMask::from_validation_errors(&[ValidationError::UrlMalformed {
+            field: ConfigPath::from_static("inference.relation.base_url"),
+            value: "not a url".into(),
+        }]);
+        assert!(mask.skip_provider_probe(ProviderStage::Relation));
+        assert!(!mask.skip_advertised_url());
     }
 
     #[test]

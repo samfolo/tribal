@@ -23,4 +23,5 @@ mod valid_token_exists;
 pub(super) use skip_rules::SkipMask;
 pub(super) use state::CheckState;
 pub(super) use step::{CheckStep, Preflight};
-pub(super) use types::{CheckName, CheckOutcome, CheckOutcomes};
+pub(super) use tribal_wire::control::CheckName;
+pub(super) use types::{CheckOutcome, CheckOutcomes};

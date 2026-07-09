@@ -24,7 +24,7 @@ pub use cli_overrides::{
     InferenceStageCliOverrides, InitCliOverrides, PersistedCredentialEntry, ServerCliOverrides,
     TelemetryCliOverrides,
 };
-pub use config_schema::ReloadClass;
+pub use config_schema::{AudienceTier, GENESIS_KEYS, ReloadClass, audience_tier, reload_class};
 #[cfg(feature = "schema")]
 pub use config_schema::{ConfigFieldMeta, ConfigSchema, config_schema, structural_schema};
 pub use divergence::{
