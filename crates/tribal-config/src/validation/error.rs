@@ -247,6 +247,12 @@ impl ProviderStage {
         self.section_path().extend("api_key")
     }
 
+    /// Config path of the base-url field for this stage.
+    #[must_use]
+    pub fn base_url_path(self) -> ConfigPath {
+        self.section_path().extend("base_url")
+    }
+
     /// Config path of the provider field for this stage.
     #[must_use]
     pub fn provider_path(self) -> ConfigPath {
@@ -306,6 +312,11 @@ pub enum ValidationError {
     // -- Semantic -------------------------------------------------------
     /// Cloud-provider stage is missing its api-key.
     MissingApiKey {
+        stage: ProviderStage,
+        provider: ProviderKind,
+    },
+    /// Provider stage has no endpoint URL and the provider has no default.
+    MissingBaseUrl {
         stage: ProviderStage,
         provider: ProviderKind,
     },
@@ -422,6 +433,13 @@ impl fmt::Display for ValidationError {
                 f,
                 "{} is required when {} is {provider}",
                 stage.api_key_path(),
+                stage.provider_path(),
+            ),
+
+            Self::MissingBaseUrl { stage, provider } => write!(
+                f,
+                "{} is required when {} is {provider}",
+                stage.base_url_path(),
                 stage.provider_path(),
             ),
 
@@ -886,6 +904,19 @@ mod tests {
             };
             assert_eq!(err.to_string(), expected);
         }
+    }
+
+    #[test]
+    fn test_display_missing_base_url() {
+        let err = ValidationError::MissingBaseUrl {
+            stage: ProviderStage::Extraction,
+            provider: ProviderKind::Platform,
+        };
+        assert_eq!(
+            err.to_string(),
+            "inference.extraction.base_url is required when \
+             inference.extraction.provider is platform",
+        );
     }
 
     #[test]

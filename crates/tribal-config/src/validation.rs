@@ -503,12 +503,40 @@ fn validate_inference(config: &TribalConfig, diags: &mut Diagnostics) {
     // Range checks apply only to set values; `None` means provider default
     // and is always admissible.
     let stages = [
-        ("inference.extraction", &config.inference.extraction),
-        ("inference.triage", &config.inference.triage),
-        ("inference.relation", &config.inference.relation),
+        (
+            ProviderStage::Extraction,
+            "inference.extraction",
+            &config.inference.extraction,
+        ),
+        (
+            ProviderStage::Triage,
+            "inference.triage",
+            &config.inference.triage,
+        ),
+        (
+            ProviderStage::Relation,
+            "inference.relation",
+            &config.inference.relation,
+        ),
     ];
-    for (prefix, cfg) in stages {
+    for (stage, prefix, cfg) in stages {
         validate_model_id(ConfigPath::child(prefix, "model"), &cfg.model, diags);
+
+        match cfg.base_url.as_deref() {
+            Some(raw) if normalise_endpoint_url(raw).is_err() => {
+                diags.push(ValidationError::UrlMalformed {
+                    field: stage.base_url_path(),
+                    value: raw.to_owned(),
+                });
+            }
+            None if cfg.provider.default_base_url().is_none() => {
+                diags.push(ValidationError::MissingBaseUrl {
+                    stage,
+                    provider: cfg.provider,
+                });
+            }
+            Some(_) | None => {}
+        }
 
         if let Some(temperature) = cfg.temperature
             && !TEMPERATURE_RANGE.contains(temperature)
@@ -1619,11 +1647,40 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_accepts_platform_for_inference_stages() {
+    fn test_validate_rejects_platform_inference_without_gateway_endpoint() {
         let mut config = valid_config();
         config.inference.extraction.provider = ProviderKind::Platform;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::MissingBaseUrl {
+                stage: ProviderStage::Extraction,
+                provider: ProviderKind::Platform,
+            },
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_malformed_inference_base_url() {
+        let mut config = valid_config();
+        config.inference.extraction.base_url = Some("not a url".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlMalformed { field, .. }
+                if field.as_str() == "inference.extraction.base_url",
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_platform_for_inference_stages_with_gateway_endpoints() {
+        let mut config = valid_config();
+        config.inference.extraction.provider = ProviderKind::Platform;
+        config.inference.extraction.base_url = Some("https://gateway.example.com".to_owned());
         config.inference.triage.provider = ProviderKind::Platform;
+        config.inference.triage.base_url = Some("https://gateway.example.com".to_owned());
         config.inference.relation.provider = ProviderKind::Platform;
+        config.inference.relation.base_url = Some("https://gateway.example.com".to_owned());
         assert!(validate(&config).is_ok());
     }
 
