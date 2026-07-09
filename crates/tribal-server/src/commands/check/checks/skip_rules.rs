@@ -4,7 +4,10 @@
 
 use tribal_config::{ProviderStage, ValidationError};
 
-use super::types::{CheckDetail, CheckName, CheckOutcome, SkipReason};
+use super::{
+    CheckName,
+    types::{CheckDetail, CheckOutcome, SkipReason},
+};
 
 impl CheckOutcome {
     /// Constructs a `Skip` outcome for `name`, attributing the skip to

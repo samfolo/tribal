@@ -546,25 +546,17 @@ async fn check_report(
     params: Option<Value>,
 ) -> Result<Value, wire::ResponseError> {
     let request: wire::CheckReportRequest = parse_params_or_default(params)?;
-    let output: crate::commands::CheckOutput =
-        crate::commands::run_report_async(crate::commands::CheckReportOptions {
-            config_path: &context.config_path,
-            providers: request.probe_providers,
-            project: None,
-            token: None,
-        })
-        .await
-        .map_err(|source| {
-            error(
-                INTERNAL_ERROR,
-                format!("check.report failed: {source}"),
-                None,
-            )
-        })?;
-    let report = serde_json::from_value::<wire::CheckReport>(result(output)).map_err(|source| {
+    let report = crate::commands::run_report_async(crate::commands::CheckReportOptions {
+        config_path: &context.config_path,
+        providers: request.probe_providers,
+        project: None,
+        token: None,
+    })
+    .await
+    .map_err(|source| {
         error(
             INTERNAL_ERROR,
-            format!("check.report produced an invalid control payload: {source}"),
+            format!("check.report failed: {source}"),
             None,
         )
     })?;

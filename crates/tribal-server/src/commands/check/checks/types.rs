@@ -7,58 +7,13 @@
 
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
 use tribal_config::{
     Diagnostics, MissingApiKeyKind, ProviderStage, ValidationError, standard_env_var_name,
 };
 use tribal_domain::{ProjectId, ProviderKind, ReindexRunState};
+use tribal_wire::control::CheckName;
 
 use crate::error::FIRST_RUN_REQUIRED;
-
-// ---------------------------------------------------------------------------
-// CheckName
-// ---------------------------------------------------------------------------
-
-/// Identifier for a single check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CheckName {
-    ConfigParse,
-    ConfigValidate,
-    DatabaseReachable,
-    MigrationsCurrent,
-    ProjectResolution,
-    ValidTokenExists,
-    AdvertisedUrlReachable,
-    BinaryUniqueness,
-    EmbeddingProfile,
-    ProviderEmbedding,
-    ProviderExtraction,
-    ProviderTriage,
-    ProviderRelation,
-}
-
-impl CheckName {
-    /// Snake-case identifier matching the serde wire form.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ConfigParse => "config_parse",
-            Self::ConfigValidate => "config_validate",
-            Self::DatabaseReachable => "database_reachable",
-            Self::MigrationsCurrent => "migrations_current",
-            Self::ProjectResolution => "project_resolution",
-            Self::ValidTokenExists => "valid_token_exists",
-            Self::AdvertisedUrlReachable => "advertised_url_reachable",
-            Self::BinaryUniqueness => "binary_uniqueness",
-            Self::EmbeddingProfile => "embedding_profile",
-            Self::ProviderEmbedding => "provider_embedding",
-            Self::ProviderExtraction => "provider_extraction",
-            Self::ProviderTriage => "provider_triage",
-            Self::ProviderRelation => "provider_relation",
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // CheckOutcome
@@ -232,17 +187,15 @@ pub(in crate::commands::check) enum CheckDetail {
 }
 
 // ---------------------------------------------------------------------------
-// CheckName ← ProviderStage
+// CheckName from provider stage
 // ---------------------------------------------------------------------------
 
-impl From<ProviderStage> for CheckName {
-    fn from(stage: ProviderStage) -> Self {
-        match stage {
-            ProviderStage::Embedding => Self::ProviderEmbedding,
-            ProviderStage::Extraction => Self::ProviderExtraction,
-            ProviderStage::Triage => Self::ProviderTriage,
-            ProviderStage::Relation => Self::ProviderRelation,
-        }
+pub(in crate::commands::check) fn check_name_for_provider_stage(stage: ProviderStage) -> CheckName {
+    match stage {
+        ProviderStage::Embedding => CheckName::ProviderEmbedding,
+        ProviderStage::Extraction => CheckName::ProviderExtraction,
+        ProviderStage::Triage => CheckName::ProviderTriage,
+        ProviderStage::Relation => CheckName::ProviderRelation,
     }
 }
 
@@ -332,7 +285,7 @@ impl CheckDetail {
             }
             Self::DependencySkipped { name, .. } => *name,
             Self::ProviderProbePassed { target, .. } | Self::ProviderProbeFailed { target, .. } => {
-                CheckName::from(*target)
+                check_name_for_provider_stage(*target)
             }
             Self::EmbeddingProfilePending
             | Self::EmbeddingProfileLive { .. }

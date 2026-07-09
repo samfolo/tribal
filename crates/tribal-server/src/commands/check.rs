@@ -6,15 +6,13 @@
 //!
 //! - [`checks`] owns the internal data layer — typed outcomes and the
 //!   per-check helpers that produce them.
-//! - [`output`] owns the wire types and the serialisation entry points
-//!   the dispatch site calls.
+//! - [`output`] projects outcomes into the wire report and owns the
+//!   serialisation entry points the dispatch site calls.
 
 mod checks;
 mod output;
 mod run;
 
-#[cfg(not(feature = "test-helpers"))]
-pub(crate) use output::CheckOutput;
 pub(crate) use run::{CheckReportOptions, run, run_report_async};
 #[cfg(feature = "test-helpers")]
 pub use {

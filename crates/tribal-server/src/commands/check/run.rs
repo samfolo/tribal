@@ -12,7 +12,7 @@ use tribal_ui::{Mode, StreamThemeContext, Theme, resolve_mode};
 
 use super::{
     checks::{CheckOutcome, CheckOutcomes, CheckState, CheckStep, Preflight, SkipMask},
-    output::{CheckOutput, write_human, write_json},
+    output::{self, CheckOutput, write_human, write_json},
 };
 use crate::{cli::CheckArgs, commands::common::resolve_absolute_config_path, error::AppError};
 
@@ -176,7 +176,7 @@ pub(crate) async fn run_report_async(
         }
     }
 
-    Ok(CheckOutput::from(&outcomes))
+    Ok(output::from_outcomes(&outcomes))
 }
 
 // ---------------------------------------------------------------------------
