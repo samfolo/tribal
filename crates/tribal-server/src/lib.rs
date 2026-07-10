@@ -6,6 +6,7 @@ mod commands;
 mod control;
 mod error;
 mod git;
+mod management;
 mod orchestration;
 mod output;
 mod startup;

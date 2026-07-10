@@ -5,7 +5,12 @@
 //! bootstrap and worker startup, then blocks on OS signal handling until
 //! shutdown.
 
-use std::{io, sync::Arc};
+use std::{
+    io,
+    os::fd::{FromRawFd as _, OwnedFd, RawFd},
+    path::Path,
+    sync::Arc,
+};
 
 #[cfg(not(unix))]
 use tokio::signal;
@@ -20,6 +25,10 @@ use crate::{
     cli::ServeArgs,
     control,
     error::AppError,
+    management::authority::{
+        AuthorityAcquire, AuthorityDescriptor, AuthorityError, AuthorityLease, AuthorityOwnerKind,
+    },
+    management::custody::RuntimeCustodyGuard,
     orchestration,
     startup::{POOL_NAME_MCP, SelfWriteSentinel, init_config_watcher},
     transport,
@@ -29,6 +38,9 @@ use crate::{
 /// it spawns the binary, declaring that it owns the process's lifecycle. It
 /// governs `server.restart`: mediated when set, refused otherwise.
 const SUPERVISED_MARKER: &str = "TRIBAL_SUPERVISED";
+
+/// Inherited locked authority description for a manager-spawned runtime.
+pub(crate) const MANAGED_AUTHORITY_FD: &str = "TRIBAL_MANAGED_AUTHORITY_FD";
 
 /// Whether a supervisor owns this process, read from [`SUPERVISED_MARKER`].
 fn is_supervised() -> bool {
@@ -60,6 +72,15 @@ fn supervised_from(value: Option<&str>) -> bool {
 /// Returns an [`AppError`] if any startup phase fails or if the worker
 /// dies unexpectedly during operation.
 pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
+    let authority_lease = acquire_runtime_authority(Path::new(config_path))?;
+    let cancellation_token = CancellationToken::new();
+    let _runtime_custody = RuntimeCustodyGuard::bootstrap_from_environment(
+        &authority_lease,
+        cancellation_token.clone(),
+    )
+    .map_err(|source| AppError::Management {
+        source: Box::new(source),
+    })?;
     let (cli_overrides, cli_project) = args.into_cli_overrides();
     let cli_shadow = CliShadow::from_overrides(&cli_overrides);
 
@@ -94,8 +115,6 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     for warning in config_warnings(&config) {
         tracing::warn!("{warning}");
     }
-
-    let cancellation_token = CancellationToken::new();
 
     let transport = config.server.transport;
 
@@ -210,6 +229,52 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     match transport_error {
         Some(err) => Err(err),
         None => shutdown_result,
+    }
+}
+
+fn acquire_runtime_authority(config_path: &Path) -> Result<AuthorityLease, AppError> {
+    if let Some(raw) = std::env::var_os(MANAGED_AUTHORITY_FD) {
+        let fd = raw
+            .to_string_lossy()
+            .parse::<RawFd>()
+            .map_err(|_| AppError::Management {
+                source: Box::new(AuthorityError::Filesystem {
+                    path: config_path.to_owned(),
+                    source: io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "managed authority descriptor is invalid",
+                    ),
+                }),
+            })?;
+        // SAFETY: the manager passes one owned inherited descriptor number;
+        // this process adopts it exactly once at serve entry.
+        let descriptor = unsafe { OwnedFd::from_raw_fd(fd) };
+        return AuthorityLease::from_inherited(config_path, descriptor).map_err(management_error);
+    }
+
+    match AuthorityLease::acquire(config_path).map_err(management_error)? {
+        AuthorityAcquire::Acquired(mut lease) => {
+            let descriptor = AuthorityDescriptor {
+                kind: AuthorityOwnerKind::StandaloneRuntime,
+                instance_id: uuid::Uuid::new_v4().to_string(),
+                pid: std::process::id(),
+                binary_version: env!("CARGO_PKG_VERSION").to_owned(),
+                canonical_config_path: lease.paths().canonical_config_path.clone(),
+                socket_path: None,
+                protocol_version: None,
+            };
+            lease.publish(&descriptor).map_err(management_error)?;
+            Ok(lease)
+        }
+        AuthorityAcquire::Occupied(_) => Err(management_error(AuthorityError::Occupied {
+            path: config_path.to_owned(),
+        })),
+    }
+}
+
+fn management_error(source: AuthorityError) -> AppError {
+    AppError::Management {
+        source: Box::new(source),
     }
 }
 

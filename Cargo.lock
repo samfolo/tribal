@@ -1280,6 +1280,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5362,16 +5372,21 @@ version = "0.4.1"
 dependencies = [
  "anstream 1.0.0",
  "axum",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "clap",
  "dashmap",
  "dirs",
  "figment",
+ "fs2",
  "gethostname",
+ "getrandom 0.3.4",
  "gix",
+ "hmac",
  "http",
  "http-body",
+ "libc",
  "notify",
  "notify-debouncer-mini",
  "path-clean",
@@ -5380,6 +5395,8 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "sha2",
  "shellexpand",
  "shlex 2.0.1",
  "sqlx",
@@ -5408,6 +5425,7 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]

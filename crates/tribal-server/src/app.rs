@@ -6,7 +6,8 @@ use clap::{CommandFactory, Parser};
 
 use crate::{
     cli::{
-        Cli, Command, ConfigCommand, ProjectCommand, ReindexCommand, ThreadsCommand, TokenCommand,
+        Cli, Command, ConfigCommand, ProjectCommand, ReindexCommand, RuntimeCommand,
+        ThreadsCommand, TokenCommand,
     },
     commands,
     error::AppError,
@@ -76,6 +77,18 @@ impl App {
             Command::Serve { args } => {
                 commands::serve(&self.cli.global.config, args)?;
             }
+            Command::Manage { args } => {
+                commands::manage(&self.cli.global.config, args)?;
+            }
+            Command::Runtime(command) => {
+                let method = match command {
+                    RuntimeCommand::Start => "runtime.start",
+                    RuntimeCommand::Stop => "runtime.stop",
+                    RuntimeCommand::Restart => "runtime.restart",
+                    RuntimeCommand::Status => "manager.snapshot",
+                };
+                commands::runtime(&self.cli.global.config, method)?;
+            }
             Command::Project(command) => match command {
                 ProjectCommand::Register { args } => {
                     commands::project::register(&self.cli.global.config, args)?;
@@ -87,6 +100,18 @@ impl App {
             Command::Config(command) => match command {
                 ConfigCommand::Show { args } => {
                     commands::config::show(&self.cli.global.config, args)?;
+                }
+                ConfigCommand::Get { args } => {
+                    commands::config::get(&self.cli.global.config, args)?;
+                }
+                ConfigCommand::Set { args } => {
+                    commands::config::set(&self.cli.global.config, args)?;
+                }
+                ConfigCommand::Validate { args } => {
+                    commands::config::validate(&self.cli.global.config, args)?;
+                }
+                ConfigCommand::Path => {
+                    commands::config::path(&self.cli.global.config)?;
                 }
             },
             Command::Token(command) => match command {
