@@ -2,6 +2,7 @@
 //!
 //! This façade owns the lifecycle and readiness DTOs exposed to operator clients.
 
+mod config_schema;
 mod configuration;
 mod envelope;
 mod event;
@@ -11,6 +12,7 @@ mod readiness;
 mod runtime;
 mod wire_id;
 
+pub use config_schema::{AudienceTier, ConfigFieldMeta, ConfigSchema, ReloadClass};
 pub use configuration::{
     ConfigChangeEvent, ConfigChangeSource, ConfigDocument, ConfigFieldOutcome, ConfigGetRequest,
     ConfigLiteral, ConfigPatchChange, ConfigPatchOutcome, ConfigPatchRefusal, ConfigPatchRequest,
@@ -31,7 +33,7 @@ pub use envelope::{
     BootstrapShutdownRefusal, ManagementBootstrapRequest, ManagementBootstrapResponse,
     ManagementClientHello, ManagementServerHello,
 };
-pub use event::ManagementEvent;
+pub use event::{ManagementEvent, ManagementLogLoss};
 pub use launch::{
     AuthorityUnavailableReason, ConflictingRuntimeIdentity, ManagerAnnouncement,
     ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord, ManagerStartupFailure,
@@ -86,4 +88,4 @@ pub use crate::{
 };
 
 /// The version of the public local-management contract.
-pub const MANAGEMENT_CONTRACT_VERSION: u16 = 1;
+pub const MANAGEMENT_CONTRACT_VERSION: u16 = 2;

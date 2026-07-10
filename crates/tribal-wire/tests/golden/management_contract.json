@@ -434,6 +434,148 @@
       }
     }
   },
+  "ConfigSchema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigSchema",
+    "description": "Structural JSON Schema paired with its ordered presentation overlay.",
+    "type": "object",
+    "required": [
+      "fields",
+      "groups",
+      "schema"
+    ],
+    "properties": {
+      "fields": {
+        "description": "Static metadata for every fixed field.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/ConfigFieldMeta"
+        }
+      },
+      "groups": {
+        "description": "Presentation group keys in display order.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "schema": {
+        "description": "The structural configuration schema."
+      }
+    },
+    "definitions": {
+      "AudienceTier": {
+        "description": "Disclosure depth for one operator-facing configuration field.",
+        "oneOf": [
+          {
+            "description": "The ordinary setup path.",
+            "type": "string",
+            "enum": [
+              "primary"
+            ]
+          },
+          {
+            "description": "A common operational setting outside first-run setup.",
+            "type": "string",
+            "enum": [
+              "standard"
+            ]
+          },
+          {
+            "description": "A lower-frequency tuning control.",
+            "type": "string",
+            "enum": [
+              "advanced"
+            ]
+          },
+          {
+            "description": "A field omitted from normal operator surfaces.",
+            "type": "string",
+            "enum": [
+              "hidden"
+            ]
+          },
+          {
+            "description": "A field owned by the binary or migration machinery.",
+            "type": "string",
+            "enum": [
+              "machine_owned"
+            ]
+          }
+        ]
+      },
+      "ConfigFieldMeta": {
+        "description": "Static presentation metadata for one fixed configuration field.",
+        "type": "object",
+        "required": [
+          "group",
+          "path",
+          "reload_class",
+          "secret",
+          "tier"
+        ],
+        "properties": {
+          "default": {
+            "description": "The fixed default, absent when the host computes it."
+          },
+          "group": {
+            "description": "The stable presentation group key.",
+            "type": "string"
+          },
+          "path": {
+            "description": "The field's validated dotted path.",
+            "type": "string"
+          },
+          "reload_class": {
+            "description": "When a write to the field applies.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ReloadClass"
+              }
+            ]
+          },
+          "secret": {
+            "description": "Whether reads return a redacted value.",
+            "type": "boolean"
+          },
+          "tier": {
+            "description": "The field's disclosure depth.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/AudienceTier"
+              }
+            ]
+          }
+        }
+      },
+      "ReloadClass": {
+        "description": "Whether a configuration field applies live, at genesis, or after restart.",
+        "oneOf": [
+          {
+            "description": "The field applies while the runtime remains live.",
+            "type": "string",
+            "enum": [
+              "hot"
+            ]
+          },
+          {
+            "description": "The field applies only before the active graph profile exists.",
+            "type": "string",
+            "enum": [
+              "genesis_only"
+            ]
+          },
+          {
+            "description": "The field applies after the runtime restarts.",
+            "type": "string",
+            "enum": [
+              "requires_restart"
+            ]
+          }
+        ]
+      }
+    }
+  },
   "ConfigSetRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ConfigSetRequest",
@@ -4512,13 +4654,11 @@
           "data": {
             "type": "object",
             "required": [
-              "dropped"
+              "loss"
             ],
             "properties": {
-              "dropped": {
-                "type": "integer",
-                "format": "uint64",
-                "minimum": 0.0
+              "loss": {
+                "$ref": "#/definitions/ManagementLogLoss"
               }
             }
           },
@@ -5736,6 +5876,55 @@
             "minimum": 0.0
           }
         }
+      },
+      "ManagementLogLoss": {
+        "description": "Why a log consumer must reseed from `logs.tail`.",
+        "oneOf": [
+          {
+            "description": "A bounded channel dropped a known number of lines.",
+            "type": "object",
+            "required": [
+              "data",
+              "reason"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "dropped"
+                ],
+                "properties": {
+                  "dropped": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0.0
+                  }
+                }
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "lagged"
+                ]
+              }
+            }
+          },
+          {
+            "description": "Runtime observation was interrupted for an unknowable interval.",
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "observation_interrupted"
+                ]
+              }
+            }
+          }
+        ]
       },
       "ManagerTermination": {
         "description": "Fatal reason the manager stopped accepting full-protocol commands.",

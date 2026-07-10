@@ -18,6 +18,7 @@ use tribal_wire::management::{
 };
 
 use super::{
+    config_schema,
     configuration::ConfigAuthorityError,
     lifecycle::LifecycleController,
     probe::{ProbeError, ProbeService},
@@ -396,8 +397,11 @@ async fn dispatch(
         }
         "config.getAll" => to_value(config.document().await),
         "config.path" => to_value(config.path().await),
-        "config.schema" => serde_json::to_value(tribal_config::config_schema())
-            .map_err(|_| invalid_request("configuration schema encoding failed")),
+        "config.schema" => serde_json::to_value(
+            config_schema::project(tribal_config::config_schema())
+                .map_err(|_| invalid_request("configuration schema projection failed"))?,
+        )
+        .map_err(|_| invalid_request("configuration schema encoding failed")),
         "config.get" => to_value(config.get(parse_params(request.params)?).await),
         "config.validate" => {
             let request: ConfigValidateRequest = parse_params(request.params)?;
@@ -835,8 +839,9 @@ mod tests {
             let mut bytes = serde_json::to_vec(&request).expect("request serialises");
             bytes.push(b'\n');
             stream.write_all(&bytes).await.expect("request writes");
+            let mut reader = BufReader::new(stream);
             let mut response = String::new();
-            BufReader::new(stream)
+            reader
                 .read_line(&mut response)
                 .await
                 .expect("response reads");
@@ -847,6 +852,24 @@ mod tests {
                 expected_compatible,
             );
             if expected_compatible {
+                reader
+                    .get_mut()
+                    .write_all(b"{\"id\":1,\"method\":\"config.schema\"}\n")
+                    .await
+                    .expect("schema request writes");
+                let mut response = String::new();
+                reader
+                    .read_line(&mut response)
+                    .await
+                    .expect("schema response reads");
+                let response: serde_json::Value =
+                    serde_json::from_str(&response).expect("schema response parses");
+                let schema: tribal_wire::management::ConfigSchema =
+                    serde_json::from_value(response["result"].clone())
+                        .expect("schema response uses the public DTO");
+                assert!(schema.schema.is_object());
+                assert!(!schema.fields.is_empty());
+                assert_eq!(schema.groups, tribal_config::config_schema().groups);
                 shutdown.cancel();
             } else {
                 super::super::client::ManagementClient::request_shutdown(
