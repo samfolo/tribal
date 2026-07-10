@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use tribal_domain::ConfigFieldPath;
 
-use crate::control::{CheckName, CheckResult};
+use crate::operator_check::{CheckName, CheckResult};
 
 /// Readiness derived from one set of typed check observations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

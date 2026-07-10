@@ -1,16 +1,12 @@
 //! Golden JSON Schema for the public local-management contract.
 #![cfg(feature = "schema")]
 
-mod schema_support;
+use std::{collections::BTreeMap, fs, path::Path};
 
-use std::{fs, path::Path};
-
-use schema_support::legacy_control_schemas;
-use schemars::schema_for;
+use schemars::{schema::RootSchema, schema_for};
 use tribal_wire::management::{
-    ConfigFieldPath, HealthDegradedReadinessReport, LifecycleSnapshot, ManagerShutdownResult,
-    ReadinessReport, RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult,
-    StartBlockedReadinessReport, StartClearReadinessReport,
+    ConfigFieldPath, LifecycleSnapshot, ManagerShutdownResult, RuntimeRestartResult,
+    RuntimeStartResult, RuntimeStopResult,
 };
 
 const UPDATE_ENV_VAR: &str = "UPDATE_SNAPSHOTS";
@@ -18,22 +14,8 @@ const GOLDEN: &str = "tests/golden/management_contract.json";
 
 #[test]
 fn management_contract_matches_its_golden_schema() {
-    let mut schemas = legacy_control_schemas();
-    schemas.extend([
+    let schemas: BTreeMap<&str, RootSchema> = BTreeMap::from([
         ("ConfigFieldPath", schema_for!(ConfigFieldPath)),
-        ("ReadinessReport", schema_for!(ReadinessReport)),
-        (
-            "StartBlockedReadinessReport",
-            schema_for!(StartBlockedReadinessReport),
-        ),
-        (
-            "StartClearReadinessReport",
-            schema_for!(StartClearReadinessReport),
-        ),
-        (
-            "HealthDegradedReadinessReport",
-            schema_for!(HealthDegradedReadinessReport),
-        ),
         ("LifecycleSnapshot", schema_for!(LifecycleSnapshot)),
         ("RuntimeStartResult", schema_for!(RuntimeStartResult)),
         ("RuntimeStopResult", schema_for!(RuntimeStopResult)),

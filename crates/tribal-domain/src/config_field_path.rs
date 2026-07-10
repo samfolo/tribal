@@ -90,12 +90,16 @@ impl schemars::JsonSchema for ConfigFieldPath {
             pattern: Some(CONFIG_FIELD_PATH_PATTERN.to_owned()),
             ..Default::default()
         };
-        schemars::schema::SchemaObject {
+        let mut schema = schemars::schema::SchemaObject {
             instance_type: Some(schemars::schema::InstanceType::String.into()),
             string: Some(Box::new(validation)),
             ..Default::default()
-        }
-        .into()
+        };
+        schema.extensions.insert(
+            "x-cortex-swift-type".to_owned(),
+            serde_json::Value::String("validated-string".to_owned()),
+        );
+        schema.into()
     }
 }
 

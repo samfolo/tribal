@@ -3,9 +3,12 @@
 use serde::{Deserialize, Serialize};
 use tribal_domain::ConfigFieldPath;
 
-use super::readiness::{
-    ConfigFilePath, HealthDegradedReadinessReport, ReadinessReport, StartBlockedReadinessReport,
-    StartClearReadinessReport,
+use super::{
+    PanicCorrelationId,
+    readiness::{
+        ConfigFilePath, HealthDegradedReadinessReport, ReadinessReport,
+        StartBlockedReadinessReport, StartClearReadinessReport,
+    },
 };
 
 /// Stable identity for one managed runtime process.
@@ -136,16 +139,6 @@ pub enum EarlyChildTerminationEvidence {
         runtime: RuntimeIdentity,
     },
 }
-
-/// Non-rendering correlation for a contained panic.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(transparent)
-)]
-#[serde(transparent)]
-pub struct PanicCorrelationId(pub String);
 
 /// Fatal reason the manager stopped accepting full-protocol commands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

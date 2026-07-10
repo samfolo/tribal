@@ -10,6 +10,7 @@ license.workspace = true
 schema = ["dep:schemars", "tribal-domain/schema"]
 
 [dependencies]
+base64.workspace = true
 chrono.workspace = true
 schemars = { workspace = true, optional = true }
 serde.workspace = true
