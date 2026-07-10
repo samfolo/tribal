@@ -617,6 +617,8 @@ pub struct ManagementResponseError {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "code", content = "data", rename_all = "snake_case")]
 pub enum ManagementError {
+    /// An explicitly requested external probe could not produce evidence.
+    ProbeUnavailable,
     ConfigurationInvalid {
         fields: Vec<ConfigFieldPath>,
     },

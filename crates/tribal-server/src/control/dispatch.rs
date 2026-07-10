@@ -516,6 +516,9 @@ async fn check_report(
     let request: wire::CheckReportRequest = parse_params_or_default(params)?;
     let report = crate::commands::run_report_async(crate::commands::CheckReportOptions {
         config_path: &context.config_path,
+        source: crate::commands::CheckConfigSource::Parsed(Box::new(
+            context.config_snapshot().as_ref().clone(),
+        )),
         providers: request.probe_providers,
         project: None,
         token: None,

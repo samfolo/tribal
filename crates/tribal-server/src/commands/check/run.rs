@@ -42,6 +42,7 @@ impl<'a> CheckOptions<'a> {
     fn report_options(&self) -> CheckReportOptions<'a> {
         CheckReportOptions {
             config_path: self.config_path,
+            source: CheckConfigSource::Path,
             providers: self.providers,
             project: self.project,
             token: self.token,
@@ -54,12 +55,24 @@ impl<'a> CheckOptions<'a> {
 pub(crate) struct CheckReportOptions<'a> {
     /// Absolute path to the resolved config file.
     pub config_path: &'a Path,
+    /// Configuration source the check pipeline must consume.
+    pub source: CheckConfigSource,
     /// Whether to run fatal provider probes.
     pub providers: bool,
     /// Project ID override.
     pub project: Option<&'a str>,
     /// Bearer token override.
     pub token: Option<&'a str>,
+}
+
+/// Mutually exclusive configuration input for one check run.
+pub(crate) enum CheckConfigSource {
+    /// Load the named filesystem path.
+    Path,
+    /// Consume an already-parsed in-process snapshot.
+    Parsed(Box<tribal_config::TribalConfig>),
+    /// Parse bytes whose filesystem identity and revision were proven.
+    ProvenBytes(zeroize::Zeroizing<Vec<u8>>),
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +176,7 @@ pub async fn run_async(
 pub(crate) async fn run_report_async(
     opts: CheckReportOptions<'_>,
 ) -> Result<CheckOutput, AppError> {
-    let mut state = build_state(&opts)?;
+    let mut state = build_state(opts)?;
     let mut outcomes = CheckOutcomes::new();
 
     for step in CheckStep::iter() {
@@ -187,7 +200,7 @@ pub(crate) async fn run_report_async(
 /// per-request timeouts (e.g. advertised-url's 2s) override.
 const PROBE_CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn build_state(opts: &CheckReportOptions<'_>) -> Result<CheckState, AppError> {
+fn build_state(opts: CheckReportOptions<'_>) -> Result<CheckState, AppError> {
     // advertised_url's "something is bound" semantics treat any HTTP
     // response — including 3xx — as proof.  Following redirects would
     // turn a redirect to a broken target into a false unreachable.
@@ -199,6 +212,11 @@ fn build_state(opts: &CheckReportOptions<'_>) -> Result<CheckState, AppError> {
             context: "tribal check probe client".into(),
             source,
         })?;
+    let (config, config_bytes) = match opts.source {
+        CheckConfigSource::Path => (None, None),
+        CheckConfigSource::Parsed(config) => (Some(*config), None),
+        CheckConfigSource::ProvenBytes(bytes) => (None, Some(bytes)),
+    };
     Ok(CheckState {
         config_path: opts.config_path.to_path_buf(),
         providers: opts.providers,
@@ -206,7 +224,8 @@ fn build_state(opts: &CheckReportOptions<'_>) -> Result<CheckState, AppError> {
         token_override: opts.token.and_then(canonical_token),
         path_var: std::env::var("PATH").unwrap_or_default(),
         http_client,
-        config: None,
+        config,
+        config_bytes,
         skip_mask: SkipMask::default(),
         pool: None,
         gateway: None,
@@ -218,4 +237,44 @@ fn build_state(opts: &CheckReportOptions<'_>) -> Result<CheckState, AppError> {
 fn canonical_token(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tribal_wire::control::{CheckName, CheckResult};
+
+    #[tokio::test]
+    async fn test_proven_bytes_win_over_the_live_path() {
+        let temp = tempfile::tempdir().expect("temporary check root");
+        let path = temp.path().join("tribal.yaml");
+        let config = tribal_config::TribalConfig::minimum_valid(
+            "postgres://user:pass@localhost:5432/tribal",
+        );
+        std::fs::write(
+            &path,
+            serde_yaml::to_string(&config).expect("config serialises"),
+        )
+        .expect("config writes");
+
+        let report = run_report_async(CheckReportOptions {
+            config_path: &path,
+            source: CheckConfigSource::ProvenBytes(zeroize::Zeroizing::new(
+                b"database: [".to_vec(),
+            )),
+            providers: false,
+            project: None,
+            token: None,
+        })
+        .await
+        .expect("check report is produced");
+
+        assert!(matches!(
+            report.checks.first(),
+            Some(CheckResult::Fail {
+                name: CheckName::ConfigParse,
+                ..
+            })
+        ));
+    }
 }

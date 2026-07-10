@@ -3222,7 +3222,7 @@ fn running_from_unresponsive(
         phase: RunningPhase::Degraded {
             runtime: runtime.clone(),
             reason: DegradedReason::RuntimeControlLost {
-                report: readiness::derive(Vec::new(), false),
+                report: readiness::derive(Vec::new(), false, Vec::new()),
                 presentation: failure_presentation(
                     "runtime control is unavailable",
                     "retry the requested lifecycle operation",
@@ -3344,6 +3344,7 @@ fn start_clear() -> StartClearReadinessReport {
             Vec::new(),
         )],
         false,
+        Vec::new(),
     );
     StartClearReadinessReport::try_from(report).unwrap_or(StartClearReadinessReport {
         start: StartClearVerdict::Clear,
@@ -3369,6 +3370,7 @@ fn start_blocked() -> StartBlockedReadinessReport {
                 .collect(),
         )],
         false,
+        Vec::new(),
     );
     StartBlockedReadinessReport::try_from(report).unwrap_or(StartBlockedReadinessReport {
         start: StartBlockedVerdict::Blocked {

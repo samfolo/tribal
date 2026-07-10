@@ -20,6 +20,7 @@ use tribal_wire::management::{
 use super::{
     configuration::ConfigAuthorityError,
     lifecycle::LifecycleController,
+    probe::{ProbeError, ProbeService},
     product::{ProductService, ProductSession},
     readiness,
     worker::ConfigWorkerClient,
@@ -37,9 +38,38 @@ pub(crate) struct ManagerSocketIdentity {
     pub(crate) binary_version: String,
 }
 
+/// Shared services retained by the management listener.
+#[derive(Clone)]
+pub(crate) struct ManagerSocketServices {
+    config: ConfigWorkerClient,
+    product: ProductService,
+    probe: ProbeService,
+    lifecycle: LifecycleController,
+    shutdown: CancellationToken,
+}
+
+impl ManagerSocketServices {
+    pub(crate) fn new(
+        config: ConfigWorkerClient,
+        product: ProductService,
+        probe: ProbeService,
+        lifecycle: LifecycleController,
+        shutdown: CancellationToken,
+    ) -> Self {
+        Self {
+            config,
+            product,
+            probe,
+            lifecycle,
+            shutdown,
+        }
+    }
+}
+
 struct ConnectionServices<'a> {
     config: &'a ConfigWorkerClient,
     product: &'a ProductSession,
+    probe: &'a ProbeService,
     lifecycle: &'a LifecycleController,
     shutdown: &'a CancellationToken,
 }
@@ -91,10 +121,7 @@ pub(crate) async fn bind(path: &Path) -> Result<UnixListener, ManagerSocketError
 pub(crate) async fn serve(
     listener: UnixListener,
     identity: ManagerSocketIdentity,
-    config: ConfigWorkerClient,
-    product: ProductService,
-    lifecycle: LifecycleController,
-    shutdown: CancellationToken,
+    services: ManagerSocketServices,
 ) {
     let Some(owner_uid) = listener_owner_uid(&listener) else {
         return;
@@ -104,7 +131,7 @@ pub(crate) async fn serve(
     loop {
         tokio::select! {
             biased;
-            () = shutdown.cancelled() => break,
+            () = services.shutdown.cancelled() => break,
             joined = connections.join_next(), if !connections.is_empty() => {
                 if let Some(Err(error)) = joined {
                     tracing::error!(%error, "management connection task failed");
@@ -113,19 +140,13 @@ pub(crate) async fn serve(
             accepted = listener.accept(), if connections.len() < MAX_CONNECTIONS => match accepted {
                 Ok((stream, _)) => {
                     let identity = identity.clone();
-                    let config = config.clone();
-                    let product = product.clone();
-                    let lifecycle = lifecycle.clone();
-                    let shutdown = shutdown.clone();
+                    let services = services.clone();
                     connections.spawn(async move {
                         handle_connection(
                             stream,
                             owner_uid,
                             identity,
-                            config,
-                            product,
-                            lifecycle,
-                            shutdown,
+                            services,
                         )
                         .await;
                     });
@@ -145,10 +166,7 @@ async fn handle_connection(
     stream: UnixStream,
     owner_uid: u32,
     identity: ManagerSocketIdentity,
-    config: ConfigWorkerClient,
-    product: ProductService,
-    lifecycle: LifecycleController,
-    shutdown: CancellationToken,
+    services: ManagerSocketServices,
 ) {
     let peer_uid = match stream.peer_cred() {
         Ok(credentials) => credentials.uid(),
@@ -185,7 +203,7 @@ async fn handle_connection(
             ManagementBootstrapResponse::VersionMismatch { hello }
         }
         ManagementBootstrapRequest::Shutdown => {
-            shutdown.cancel();
+            services.shutdown.cancel();
             ManagementBootstrapResponse::ShutdownAccepted
         }
     };
@@ -194,25 +212,26 @@ async fn handle_connection(
     }
 
     if compatible {
-        let mut lifecycle_updates = lifecycle.subscribe();
-        let mut config_updates = config.subscribe();
-        let product = product.session();
-        let services = ConnectionServices {
-            config: &config,
+        let mut lifecycle_updates = services.lifecycle.subscribe();
+        let mut config_updates = services.config.subscribe();
+        let product = services.product.session();
+        let connection = ConnectionServices {
+            config: &services.config,
             product: &product,
-            lifecycle: &lifecycle,
-            shutdown: &shutdown,
+            probe: &services.probe,
+            lifecycle: &services.lifecycle,
+            shutdown: &services.shutdown,
         };
         serve_full(
             &mut reader,
             &mut write,
-            &services,
+            &connection,
             &mut lifecycle_updates,
             &mut config_updates,
         )
         .await;
     } else {
-        serve_restricted(&mut reader, &mut write, &shutdown).await;
+        serve_restricted(&mut reader, &mut write, &services.shutdown).await;
     }
 }
 
@@ -269,6 +288,7 @@ async fn serve_full(
                 let response = match dispatch(
                     services.config,
                     services.product,
+                    services.probe,
                     services.lifecycle,
                     request,
                 ).await {
@@ -346,6 +366,7 @@ enum ManagementResponse {
 async fn dispatch(
     config: &ConfigWorkerClient,
     product: &ProductSession,
+    probe: &ProbeService,
     lifecycle: &LifecycleController,
     request: ManagementRequest,
 ) -> Result<serde_json::Value, ManagementResponseError> {
@@ -362,8 +383,17 @@ async fn dispatch(
             lifecycle_value(lifecycle.runtime_logs_tail(request.lines).await)
         }
         "token.list" => lifecycle_value(lifecycle.runtime_token_list().await),
-        "check.report" | "database.probe" => readiness_value(config, lifecycle, false).await,
-        "credential.probe" => readiness_value(config, lifecycle, true).await,
+        "check.report" => readiness_value(config, probe, lifecycle).await,
+        "database.probe" => {
+            let receipt = probe.database().await.map_err(probe_error)?;
+            refresh_readiness(config, probe, lifecycle).await?;
+            product_value(Ok(receipt))
+        }
+        "credential.probe" => {
+            let receipts = probe.credentials().await.map_err(probe_error)?;
+            refresh_readiness(config, probe, lifecycle).await?;
+            product_value(Ok(receipts))
+        }
         "config.getAll" => to_value(config.document().await),
         "config.path" => to_value(config.path().await),
         "config.schema" => serde_json::to_value(tribal_config::config_schema())
@@ -481,24 +511,35 @@ fn lifecycle_value<T: serde::Serialize>(
 
 async fn readiness_value(
     config: &ConfigWorkerClient,
+    probe: &ProbeService,
     lifecycle: &LifecycleController,
-    providers: bool,
 ) -> Result<serde_json::Value, ManagementResponseError> {
-    let path = config.path().await.map_err(management_error)?;
-    let report = crate::commands::run_report_async(crate::commands::CheckReportOptions {
-        config_path: Path::new(&path.path),
-        providers,
-        project: None,
-        token: None,
-    })
-    .await
-    .map_err(|_| invalid_request("readiness observation failed"))?;
+    let report = readiness_report(config, probe, lifecycle).await?;
+    serde_json::to_value(report).map_err(|_| invalid_request("readiness response encoding failed"))
+}
+
+async fn refresh_readiness(
+    config: &ConfigWorkerClient,
+    probe: &ProbeService,
+    lifecycle: &LifecycleController,
+) -> Result<(), ManagementResponseError> {
+    let report = readiness_report(config, probe, lifecycle).await?;
+    lifecycle.update_readiness(report).await;
+    Ok(())
+}
+
+async fn readiness_report(
+    config: &ConfigWorkerClient,
+    probe: &ProbeService,
+    lifecycle: &LifecycleController,
+) -> Result<tribal_wire::management::ReadinessReport, ManagementResponseError> {
     let runtime_present = lifecycle
         .snapshot()
         .await
         .is_some_and(|snapshot| lifecycle_has_runtime(&snapshot.phase));
-    serde_json::to_value(readiness::from_results(report.checks, runtime_present))
-        .map_err(|_| invalid_request("readiness response encoding failed"))
+    readiness::automatic(config, probe, runtime_present)
+        .await
+        .map_err(|_| invalid_request("readiness observation failed"))
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(
@@ -624,6 +665,13 @@ fn invalid_request(message: &str) -> ManagementResponseError {
     ManagementResponseError {
         message: message.to_owned(),
         error: ManagementError::ConfigurationInvalid { fields: Vec::new() },
+    }
+}
+
+fn probe_error(_error: ProbeError) -> ManagementResponseError {
+    ManagementResponseError {
+        message: "external probe is unavailable".to_owned(),
+        error: ManagementError::ProbeUnavailable,
     }
 }
 
@@ -769,10 +817,13 @@ mod tests {
                     instance_id: "manager".to_owned(),
                     binary_version: "test".to_owned(),
                 },
-                config.clone(),
-                ProductService::new(config),
-                lifecycle,
-                shutdown.clone(),
+                ManagerSocketServices::new(
+                    config.clone(),
+                    ProductService::new(config.clone()),
+                    ProbeService::new(config),
+                    lifecycle,
+                    shutdown.clone(),
+                ),
             ));
             let mut stream = UnixStream::connect(&path).await.expect("client connects");
             let request = ManagementBootstrapRequest::Handshake {

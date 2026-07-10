@@ -5,6 +5,7 @@ pub(crate) mod client;
 pub(crate) mod configuration;
 pub(crate) mod custody;
 pub(crate) mod lifecycle;
+pub(crate) mod probe;
 pub(crate) mod product;
 pub(crate) mod readiness;
 pub(crate) mod runtime_control;

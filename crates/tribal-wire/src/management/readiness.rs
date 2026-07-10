@@ -1,9 +1,11 @@
 //! Readiness observations and their phase-safe verdict refinements.
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::ConfigFieldPath;
+use tribal_domain::{ConfigFieldPath, ProviderKind};
 
 use crate::operator_check::{CheckName, CheckResult};
+
+use super::ConfigRevision;
 
 /// Readiness derived from one set of typed check observations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,6 +17,8 @@ pub struct ReadinessReport {
     pub health: HealthVerdict,
     /// The observations from which both verdicts were derived.
     pub checks: Vec<CheckObservation>,
+    /// Latest explicit probe evidence, including stale receipts.
+    pub probe_receipts: Vec<ProbeReceipt>,
 }
 
 /// Readiness narrowed to a start-blocked verdict.
@@ -51,6 +55,98 @@ pub struct HealthDegradedReadinessReport {
     pub health: HealthDegradedVerdict,
     /// The observations from which both verdicts were derived.
     pub checks: Vec<CheckObservation>,
+}
+
+/// Retained result of one explicitly requested external probe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ProbeReceipt {
+    /// Unix time in milliseconds when the observation completed.
+    pub observed_at_unix_ms: u64,
+    /// Durable configuration revision used by the probe.
+    pub revision: ConfigRevision,
+    /// External capability that was exercised.
+    pub subject: ProbeSubject,
+    /// Typed check result returned by the probe.
+    pub result: ProbeOutcome,
+    /// Whether the subject's effective inputs still match the observation.
+    pub freshness: ProbeReceiptFreshness,
+}
+
+/// External capability named by a probe receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum ProbeSubject {
+    /// The configured database endpoint.
+    Database,
+    /// One inference capability and its configured provider.
+    Provider {
+        /// Provider capability exercised by the check.
+        capability: ProviderProbeCapability,
+        /// Provider configured for that capability.
+        provider: ProviderKind,
+    },
+}
+
+/// Provider capability exercised by an explicit probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProbeCapability {
+    /// Genesis or active-profile embedding.
+    Embedding,
+    /// Entity and relation extraction.
+    Extraction,
+    /// Message triage.
+    Triage,
+    /// Relation classification.
+    Relation,
+}
+
+/// Result of a probe whose subject already owns its check identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum ProbeOutcome {
+    /// The external capability answered successfully.
+    Pass {
+        /// Operator-facing observation detail.
+        detail: String,
+    },
+    /// The capability answered with a non-blocking concern.
+    Warn {
+        /// Operator-facing observation detail.
+        detail: String,
+        /// Suggested operator action.
+        remediation: String,
+    },
+    /// The capability failed its probe.
+    Fail {
+        /// Operator-facing observation detail.
+        detail: String,
+        /// Suggested operator action.
+        remediation: String,
+    },
+    /// A typed prerequisite prevented the probe.
+    Skip {
+        /// Operator-facing skip detail.
+        detail: String,
+    },
+}
+
+/// Relationship between a retained probe and current configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "state", content = "data", rename_all = "snake_case")]
+pub enum ProbeReceiptFreshness {
+    /// The relevant effective configuration is unchanged.
+    Current,
+    /// Relevant inputs changed after the observation.
+    Stale {
+        /// Current durable revision, when one can still be proven.
+        current_revision: Option<ConfigRevision>,
+    },
 }
 
 /// Whether local evidence permits starting a runtime.
@@ -277,6 +373,7 @@ mod tests {
             start,
             health,
             checks: Vec::new(),
+            probe_receipts: Vec::new(),
         }
     }
 

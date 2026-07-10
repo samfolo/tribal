@@ -36,6 +36,8 @@ pub(in crate::commands::check) struct CheckState {
 
     /// Populated by `config_parse` on success.
     pub config: Option<TribalConfig>,
+    /// Revision-proven YAML bytes supplied by an in-process authority.
+    pub config_bytes: Option<zeroize::Zeroizing<Vec<u8>>>,
     /// Populated by `config_validate` when validation fails; the
     /// default empty mask is correct for both "validation passed" and
     /// "validation never ran".

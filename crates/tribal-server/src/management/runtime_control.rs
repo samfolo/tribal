@@ -493,15 +493,17 @@ async fn dispatch(
             },
         },
         RuntimeControlRequest::Readiness => {
+            let config = service.config.borrow().as_ref().clone();
             let report = crate::commands::run_report_async(crate::commands::CheckReportOptions {
                 config_path: &service.config_path,
+                source: crate::commands::CheckConfigSource::Parsed(Box::new(config)),
                 providers: false,
                 project: None,
                 token: None,
             })
             .await
             .map_or_else(
-                |_| readiness::derive(Vec::new(), true),
+                |_| readiness::derive(Vec::new(), true, Vec::new()),
                 |report| readiness::from_results(report.checks, true),
             );
             RuntimeControlResponse::Readiness { report }

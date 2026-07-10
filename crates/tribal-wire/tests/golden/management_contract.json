@@ -2337,6 +2337,12 @@
           }
         }
       },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
       "CredentialEntryMember": {
         "description": "A member of a dynamic credential entry.",
         "oneOf": [
@@ -3224,12 +3230,338 @@
         "x-cortex-base64url-prefix": "pcorr_",
         "x-cortex-swift-type": "canonical-base64url-32"
       },
+      "ProbeOutcome": {
+        "description": "Result of a probe whose subject already owns its check identity.",
+        "oneOf": [
+          {
+            "description": "The external capability answered successfully.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability answered with a non-blocking concern.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "warn"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability failed its probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "fail"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A typed prerequisite prevented the probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing skip detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "skip"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeReceipt": {
+        "description": "Retained result of one explicitly requested external probe.",
+        "type": "object",
+        "required": [
+          "freshness",
+          "observed_at_unix_ms",
+          "result",
+          "revision",
+          "subject"
+        ],
+        "properties": {
+          "freshness": {
+            "description": "Whether the subject's effective inputs still match the observation.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeReceiptFreshness"
+              }
+            ]
+          },
+          "observed_at_unix_ms": {
+            "description": "Unix time in milliseconds when the observation completed.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "result": {
+            "description": "Typed check result returned by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeOutcome"
+              }
+            ]
+          },
+          "revision": {
+            "description": "Durable configuration revision used by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ConfigRevision"
+              }
+            ]
+          },
+          "subject": {
+            "description": "External capability that was exercised.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeSubject"
+              }
+            ]
+          }
+        }
+      },
+      "ProbeReceiptFreshness": {
+        "description": "Relationship between a retained probe and current configuration.",
+        "oneOf": [
+          {
+            "description": "The relevant effective configuration is unchanged.",
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "current"
+                ]
+              }
+            }
+          },
+          {
+            "description": "Relevant inputs changed after the observation.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "current_revision": {
+                    "description": "Current durable revision, when one can still be proven.",
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/ConfigRevision"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "stale"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeSubject": {
+        "description": "External capability named by a probe receipt.",
+        "oneOf": [
+          {
+            "description": "The configured database endpoint.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "database"
+                ]
+              }
+            }
+          },
+          {
+            "description": "One inference capability and its configured provider.",
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "capability",
+                  "provider"
+                ],
+                "properties": {
+                  "capability": {
+                    "description": "Provider capability exercised by the check.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderProbeCapability"
+                      }
+                    ]
+                  },
+                  "provider": {
+                    "description": "Provider configured for that capability.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderKind"
+                      }
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "provider"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      },
+      "ProviderProbeCapability": {
+        "description": "Provider capability exercised by an explicit probe.",
+        "oneOf": [
+          {
+            "description": "Genesis or active-profile embedding.",
+            "type": "string",
+            "enum": [
+              "embedding"
+            ]
+          },
+          {
+            "description": "Entity and relation extraction.",
+            "type": "string",
+            "enum": [
+              "extraction"
+            ]
+          },
+          {
+            "description": "Message triage.",
+            "type": "string",
+            "enum": [
+              "triage"
+            ]
+          },
+          {
+            "description": "Relation classification.",
+            "type": "string",
+            "enum": [
+              "relation"
+            ]
+          }
+        ]
+      },
       "ReadinessReport": {
         "description": "Readiness derived from one set of typed check observations.",
         "type": "object",
         "required": [
           "checks",
           "health",
+          "probe_receipts",
           "start"
         ],
         "properties": {
@@ -3247,6 +3579,13 @@
                 "$ref": "#/definitions/HealthVerdict"
               }
             ]
+          },
+          "probe_receipts": {
+            "description": "Latest explicit probe evidence, including stale receipts.",
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ProbeReceipt"
+            }
           },
           "start": {
             "description": "Whether a runtime may start.",
@@ -5580,12 +5919,338 @@
         "x-cortex-base64url-prefix": "pcorr_",
         "x-cortex-swift-type": "canonical-base64url-32"
       },
+      "ProbeOutcome": {
+        "description": "Result of a probe whose subject already owns its check identity.",
+        "oneOf": [
+          {
+            "description": "The external capability answered successfully.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability answered with a non-blocking concern.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "warn"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability failed its probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "fail"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A typed prerequisite prevented the probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing skip detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "skip"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeReceipt": {
+        "description": "Retained result of one explicitly requested external probe.",
+        "type": "object",
+        "required": [
+          "freshness",
+          "observed_at_unix_ms",
+          "result",
+          "revision",
+          "subject"
+        ],
+        "properties": {
+          "freshness": {
+            "description": "Whether the subject's effective inputs still match the observation.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeReceiptFreshness"
+              }
+            ]
+          },
+          "observed_at_unix_ms": {
+            "description": "Unix time in milliseconds when the observation completed.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "result": {
+            "description": "Typed check result returned by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeOutcome"
+              }
+            ]
+          },
+          "revision": {
+            "description": "Durable configuration revision used by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ConfigRevision"
+              }
+            ]
+          },
+          "subject": {
+            "description": "External capability that was exercised.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeSubject"
+              }
+            ]
+          }
+        }
+      },
+      "ProbeReceiptFreshness": {
+        "description": "Relationship between a retained probe and current configuration.",
+        "oneOf": [
+          {
+            "description": "The relevant effective configuration is unchanged.",
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "current"
+                ]
+              }
+            }
+          },
+          {
+            "description": "Relevant inputs changed after the observation.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "current_revision": {
+                    "description": "Current durable revision, when one can still be proven.",
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/ConfigRevision"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "stale"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeSubject": {
+        "description": "External capability named by a probe receipt.",
+        "oneOf": [
+          {
+            "description": "The configured database endpoint.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "database"
+                ]
+              }
+            }
+          },
+          {
+            "description": "One inference capability and its configured provider.",
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "capability",
+                  "provider"
+                ],
+                "properties": {
+                  "capability": {
+                    "description": "Provider capability exercised by the check.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderProbeCapability"
+                      }
+                    ]
+                  },
+                  "provider": {
+                    "description": "Provider configured for that capability.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderKind"
+                      }
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "provider"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      },
+      "ProviderProbeCapability": {
+        "description": "Provider capability exercised by an explicit probe.",
+        "oneOf": [
+          {
+            "description": "Genesis or active-profile embedding.",
+            "type": "string",
+            "enum": [
+              "embedding"
+            ]
+          },
+          {
+            "description": "Entity and relation extraction.",
+            "type": "string",
+            "enum": [
+              "extraction"
+            ]
+          },
+          {
+            "description": "Message triage.",
+            "type": "string",
+            "enum": [
+              "triage"
+            ]
+          },
+          {
+            "description": "Relation classification.",
+            "type": "string",
+            "enum": [
+              "relation"
+            ]
+          }
+        ]
+      },
       "ReadinessReport": {
         "description": "Readiness derived from one set of typed check observations.",
         "type": "object",
         "required": [
           "checks",
           "health",
+          "probe_receipts",
           "start"
         ],
         "properties": {
@@ -5603,6 +6268,13 @@
                 "$ref": "#/definitions/HealthVerdict"
               }
             ]
+          },
+          "probe_receipts": {
+            "description": "Latest explicit probe evidence, including stale receipts.",
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ProbeReceipt"
+            }
           },
           "start": {
             "description": "Whether a runtime may start.",
@@ -6474,6 +7146,21 @@
       "ManagementError": {
         "description": "Stable failure classification for configuration and product actions.",
         "oneOf": [
+          {
+            "description": "An explicitly requested external probe could not produce evidence.",
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "probe_unavailable"
+                ]
+              }
+            }
+          },
           {
             "type": "object",
             "required": [
@@ -7682,6 +8369,12 @@
           }
         }
       },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
       "CredentialEntryMember": {
         "description": "A member of a dynamic credential entry.",
         "oneOf": [
@@ -8290,12 +8983,338 @@
         "x-cortex-base64url-prefix": "pcorr_",
         "x-cortex-swift-type": "canonical-base64url-32"
       },
+      "ProbeOutcome": {
+        "description": "Result of a probe whose subject already owns its check identity.",
+        "oneOf": [
+          {
+            "description": "The external capability answered successfully.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability answered with a non-blocking concern.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "warn"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability failed its probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "fail"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A typed prerequisite prevented the probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing skip detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "skip"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeReceipt": {
+        "description": "Retained result of one explicitly requested external probe.",
+        "type": "object",
+        "required": [
+          "freshness",
+          "observed_at_unix_ms",
+          "result",
+          "revision",
+          "subject"
+        ],
+        "properties": {
+          "freshness": {
+            "description": "Whether the subject's effective inputs still match the observation.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeReceiptFreshness"
+              }
+            ]
+          },
+          "observed_at_unix_ms": {
+            "description": "Unix time in milliseconds when the observation completed.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "result": {
+            "description": "Typed check result returned by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeOutcome"
+              }
+            ]
+          },
+          "revision": {
+            "description": "Durable configuration revision used by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ConfigRevision"
+              }
+            ]
+          },
+          "subject": {
+            "description": "External capability that was exercised.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeSubject"
+              }
+            ]
+          }
+        }
+      },
+      "ProbeReceiptFreshness": {
+        "description": "Relationship between a retained probe and current configuration.",
+        "oneOf": [
+          {
+            "description": "The relevant effective configuration is unchanged.",
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "current"
+                ]
+              }
+            }
+          },
+          {
+            "description": "Relevant inputs changed after the observation.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "current_revision": {
+                    "description": "Current durable revision, when one can still be proven.",
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/ConfigRevision"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "stale"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeSubject": {
+        "description": "External capability named by a probe receipt.",
+        "oneOf": [
+          {
+            "description": "The configured database endpoint.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "database"
+                ]
+              }
+            }
+          },
+          {
+            "description": "One inference capability and its configured provider.",
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "capability",
+                  "provider"
+                ],
+                "properties": {
+                  "capability": {
+                    "description": "Provider capability exercised by the check.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderProbeCapability"
+                      }
+                    ]
+                  },
+                  "provider": {
+                    "description": "Provider configured for that capability.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderKind"
+                      }
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "provider"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      },
+      "ProviderProbeCapability": {
+        "description": "Provider capability exercised by an explicit probe.",
+        "oneOf": [
+          {
+            "description": "Genesis or active-profile embedding.",
+            "type": "string",
+            "enum": [
+              "embedding"
+            ]
+          },
+          {
+            "description": "Entity and relation extraction.",
+            "type": "string",
+            "enum": [
+              "extraction"
+            ]
+          },
+          {
+            "description": "Message triage.",
+            "type": "string",
+            "enum": [
+              "triage"
+            ]
+          },
+          {
+            "description": "Relation classification.",
+            "type": "string",
+            "enum": [
+              "relation"
+            ]
+          }
+        ]
+      },
       "ReadinessReport": {
         "description": "Readiness derived from one set of typed check observations.",
         "type": "object",
         "required": [
           "checks",
           "health",
+          "probe_receipts",
           "start"
         ],
         "properties": {
@@ -8313,6 +9332,13 @@
                 "$ref": "#/definitions/HealthVerdict"
               }
             ]
+          },
+          "probe_receipts": {
+            "description": "Latest explicit probe evidence, including stale receipts.",
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ProbeReceipt"
+            }
           },
           "start": {
             "description": "Whether a runtime may start.",
@@ -9441,6 +10467,341 @@
       }
     }
   },
+  "ProbeReceipt": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ProbeReceipt",
+    "description": "Retained result of one explicitly requested external probe.",
+    "type": "object",
+    "required": [
+      "freshness",
+      "observed_at_unix_ms",
+      "result",
+      "revision",
+      "subject"
+    ],
+    "properties": {
+      "freshness": {
+        "description": "Whether the subject's effective inputs still match the observation.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/ProbeReceiptFreshness"
+          }
+        ]
+      },
+      "observed_at_unix_ms": {
+        "description": "Unix time in milliseconds when the observation completed.",
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
+      },
+      "result": {
+        "description": "Typed check result returned by the probe.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/ProbeOutcome"
+          }
+        ]
+      },
+      "revision": {
+        "description": "Durable configuration revision used by the probe.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/ConfigRevision"
+          }
+        ]
+      },
+      "subject": {
+        "description": "External capability that was exercised.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/ProbeSubject"
+          }
+        ]
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "ProbeOutcome": {
+        "description": "Result of a probe whose subject already owns its check identity.",
+        "oneOf": [
+          {
+            "description": "The external capability answered successfully.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability answered with a non-blocking concern.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "warn"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability failed its probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "fail"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A typed prerequisite prevented the probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing skip detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "skip"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeReceiptFreshness": {
+        "description": "Relationship between a retained probe and current configuration.",
+        "oneOf": [
+          {
+            "description": "The relevant effective configuration is unchanged.",
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "current"
+                ]
+              }
+            }
+          },
+          {
+            "description": "Relevant inputs changed after the observation.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "current_revision": {
+                    "description": "Current durable revision, when one can still be proven.",
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/ConfigRevision"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "stale"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeSubject": {
+        "description": "External capability named by a probe receipt.",
+        "oneOf": [
+          {
+            "description": "The configured database endpoint.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "database"
+                ]
+              }
+            }
+          },
+          {
+            "description": "One inference capability and its configured provider.",
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "capability",
+                  "provider"
+                ],
+                "properties": {
+                  "capability": {
+                    "description": "Provider capability exercised by the check.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderProbeCapability"
+                      }
+                    ]
+                  },
+                  "provider": {
+                    "description": "Provider configured for that capability.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderKind"
+                      }
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "provider"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      },
+      "ProviderProbeCapability": {
+        "description": "Provider capability exercised by an explicit probe.",
+        "oneOf": [
+          {
+            "description": "Genesis or active-profile embedding.",
+            "type": "string",
+            "enum": [
+              "embedding"
+            ]
+          },
+          {
+            "description": "Entity and relation extraction.",
+            "type": "string",
+            "enum": [
+              "extraction"
+            ]
+          },
+          {
+            "description": "Message triage.",
+            "type": "string",
+            "enum": [
+              "triage"
+            ]
+          },
+          {
+            "description": "Relation classification.",
+            "type": "string",
+            "enum": [
+              "relation"
+            ]
+          }
+        ]
+      }
+    }
+  },
   "RuntimeLogsTailRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "RuntimeLogsTailRequest",
@@ -10445,6 +11806,12 @@
           }
         }
       },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
       "CredentialEntryMember": {
         "description": "A member of a dynamic credential entry.",
         "oneOf": [
@@ -11369,12 +12736,338 @@
         "x-cortex-base64url-prefix": "pcorr_",
         "x-cortex-swift-type": "canonical-base64url-32"
       },
+      "ProbeOutcome": {
+        "description": "Result of a probe whose subject already owns its check identity.",
+        "oneOf": [
+          {
+            "description": "The external capability answered successfully.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability answered with a non-blocking concern.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "warn"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability failed its probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "fail"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A typed prerequisite prevented the probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing skip detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "skip"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeReceipt": {
+        "description": "Retained result of one explicitly requested external probe.",
+        "type": "object",
+        "required": [
+          "freshness",
+          "observed_at_unix_ms",
+          "result",
+          "revision",
+          "subject"
+        ],
+        "properties": {
+          "freshness": {
+            "description": "Whether the subject's effective inputs still match the observation.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeReceiptFreshness"
+              }
+            ]
+          },
+          "observed_at_unix_ms": {
+            "description": "Unix time in milliseconds when the observation completed.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "result": {
+            "description": "Typed check result returned by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeOutcome"
+              }
+            ]
+          },
+          "revision": {
+            "description": "Durable configuration revision used by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ConfigRevision"
+              }
+            ]
+          },
+          "subject": {
+            "description": "External capability that was exercised.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeSubject"
+              }
+            ]
+          }
+        }
+      },
+      "ProbeReceiptFreshness": {
+        "description": "Relationship between a retained probe and current configuration.",
+        "oneOf": [
+          {
+            "description": "The relevant effective configuration is unchanged.",
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "current"
+                ]
+              }
+            }
+          },
+          {
+            "description": "Relevant inputs changed after the observation.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "current_revision": {
+                    "description": "Current durable revision, when one can still be proven.",
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/ConfigRevision"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "stale"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeSubject": {
+        "description": "External capability named by a probe receipt.",
+        "oneOf": [
+          {
+            "description": "The configured database endpoint.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "database"
+                ]
+              }
+            }
+          },
+          {
+            "description": "One inference capability and its configured provider.",
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "capability",
+                  "provider"
+                ],
+                "properties": {
+                  "capability": {
+                    "description": "Provider capability exercised by the check.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderProbeCapability"
+                      }
+                    ]
+                  },
+                  "provider": {
+                    "description": "Provider configured for that capability.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderKind"
+                      }
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "provider"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      },
+      "ProviderProbeCapability": {
+        "description": "Provider capability exercised by an explicit probe.",
+        "oneOf": [
+          {
+            "description": "Genesis or active-profile embedding.",
+            "type": "string",
+            "enum": [
+              "embedding"
+            ]
+          },
+          {
+            "description": "Entity and relation extraction.",
+            "type": "string",
+            "enum": [
+              "extraction"
+            ]
+          },
+          {
+            "description": "Message triage.",
+            "type": "string",
+            "enum": [
+              "triage"
+            ]
+          },
+          {
+            "description": "Relation classification.",
+            "type": "string",
+            "enum": [
+              "relation"
+            ]
+          }
+        ]
+      },
       "ReadinessReport": {
         "description": "Readiness derived from one set of typed check observations.",
         "type": "object",
         "required": [
           "checks",
           "health",
+          "probe_receipts",
           "start"
         ],
         "properties": {
@@ -11392,6 +13085,13 @@
                 "$ref": "#/definitions/HealthVerdict"
               }
             ]
+          },
+          "probe_receipts": {
+            "description": "Latest explicit probe evidence, including stale receipts.",
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ProbeReceipt"
+            }
           },
           "start": {
             "description": "Whether a runtime may start.",
@@ -13327,6 +15027,12 @@
           }
         }
       },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
       "CredentialEntryMember": {
         "description": "A member of a dynamic credential entry.",
         "oneOf": [
@@ -14144,12 +15850,338 @@
         "x-cortex-base64url-prefix": "pcorr_",
         "x-cortex-swift-type": "canonical-base64url-32"
       },
+      "ProbeOutcome": {
+        "description": "Result of a probe whose subject already owns its check identity.",
+        "oneOf": [
+          {
+            "description": "The external capability answered successfully.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability answered with a non-blocking concern.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "warn"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability failed its probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "fail"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A typed prerequisite prevented the probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing skip detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "skip"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeReceipt": {
+        "description": "Retained result of one explicitly requested external probe.",
+        "type": "object",
+        "required": [
+          "freshness",
+          "observed_at_unix_ms",
+          "result",
+          "revision",
+          "subject"
+        ],
+        "properties": {
+          "freshness": {
+            "description": "Whether the subject's effective inputs still match the observation.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeReceiptFreshness"
+              }
+            ]
+          },
+          "observed_at_unix_ms": {
+            "description": "Unix time in milliseconds when the observation completed.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "result": {
+            "description": "Typed check result returned by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeOutcome"
+              }
+            ]
+          },
+          "revision": {
+            "description": "Durable configuration revision used by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ConfigRevision"
+              }
+            ]
+          },
+          "subject": {
+            "description": "External capability that was exercised.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeSubject"
+              }
+            ]
+          }
+        }
+      },
+      "ProbeReceiptFreshness": {
+        "description": "Relationship between a retained probe and current configuration.",
+        "oneOf": [
+          {
+            "description": "The relevant effective configuration is unchanged.",
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "current"
+                ]
+              }
+            }
+          },
+          {
+            "description": "Relevant inputs changed after the observation.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "current_revision": {
+                    "description": "Current durable revision, when one can still be proven.",
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/ConfigRevision"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "stale"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeSubject": {
+        "description": "External capability named by a probe receipt.",
+        "oneOf": [
+          {
+            "description": "The configured database endpoint.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "database"
+                ]
+              }
+            }
+          },
+          {
+            "description": "One inference capability and its configured provider.",
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "capability",
+                  "provider"
+                ],
+                "properties": {
+                  "capability": {
+                    "description": "Provider capability exercised by the check.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderProbeCapability"
+                      }
+                    ]
+                  },
+                  "provider": {
+                    "description": "Provider configured for that capability.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderKind"
+                      }
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "provider"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      },
+      "ProviderProbeCapability": {
+        "description": "Provider capability exercised by an explicit probe.",
+        "oneOf": [
+          {
+            "description": "Genesis or active-profile embedding.",
+            "type": "string",
+            "enum": [
+              "embedding"
+            ]
+          },
+          {
+            "description": "Entity and relation extraction.",
+            "type": "string",
+            "enum": [
+              "extraction"
+            ]
+          },
+          {
+            "description": "Message triage.",
+            "type": "string",
+            "enum": [
+              "triage"
+            ]
+          },
+          {
+            "description": "Relation classification.",
+            "type": "string",
+            "enum": [
+              "relation"
+            ]
+          }
+        ]
+      },
       "ReadinessReport": {
         "description": "Readiness derived from one set of typed check observations.",
         "type": "object",
         "required": [
           "checks",
           "health",
+          "probe_receipts",
           "start"
         ],
         "properties": {
@@ -14167,6 +16199,13 @@
                 "$ref": "#/definitions/HealthVerdict"
               }
             ]
+          },
+          "probe_receipts": {
+            "description": "Latest explicit probe evidence, including stale receipts.",
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ProbeReceipt"
+            }
           },
           "start": {
             "description": "Whether a runtime may start.",
@@ -16078,6 +18117,12 @@
           }
         }
       },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
       "CredentialEntryMember": {
         "description": "A member of a dynamic credential entry.",
         "oneOf": [
@@ -16691,12 +18736,338 @@
         "x-cortex-base64url-prefix": "pcorr_",
         "x-cortex-swift-type": "canonical-base64url-32"
       },
+      "ProbeOutcome": {
+        "description": "Result of a probe whose subject already owns its check identity.",
+        "oneOf": [
+          {
+            "description": "The external capability answered successfully.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability answered with a non-blocking concern.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "warn"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability failed its probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "fail"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A typed prerequisite prevented the probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing skip detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "skip"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeReceipt": {
+        "description": "Retained result of one explicitly requested external probe.",
+        "type": "object",
+        "required": [
+          "freshness",
+          "observed_at_unix_ms",
+          "result",
+          "revision",
+          "subject"
+        ],
+        "properties": {
+          "freshness": {
+            "description": "Whether the subject's effective inputs still match the observation.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeReceiptFreshness"
+              }
+            ]
+          },
+          "observed_at_unix_ms": {
+            "description": "Unix time in milliseconds when the observation completed.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "result": {
+            "description": "Typed check result returned by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeOutcome"
+              }
+            ]
+          },
+          "revision": {
+            "description": "Durable configuration revision used by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ConfigRevision"
+              }
+            ]
+          },
+          "subject": {
+            "description": "External capability that was exercised.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeSubject"
+              }
+            ]
+          }
+        }
+      },
+      "ProbeReceiptFreshness": {
+        "description": "Relationship between a retained probe and current configuration.",
+        "oneOf": [
+          {
+            "description": "The relevant effective configuration is unchanged.",
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "current"
+                ]
+              }
+            }
+          },
+          {
+            "description": "Relevant inputs changed after the observation.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "current_revision": {
+                    "description": "Current durable revision, when one can still be proven.",
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/ConfigRevision"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "stale"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeSubject": {
+        "description": "External capability named by a probe receipt.",
+        "oneOf": [
+          {
+            "description": "The configured database endpoint.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "database"
+                ]
+              }
+            }
+          },
+          {
+            "description": "One inference capability and its configured provider.",
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "capability",
+                  "provider"
+                ],
+                "properties": {
+                  "capability": {
+                    "description": "Provider capability exercised by the check.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderProbeCapability"
+                      }
+                    ]
+                  },
+                  "provider": {
+                    "description": "Provider configured for that capability.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderKind"
+                      }
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "provider"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      },
+      "ProviderProbeCapability": {
+        "description": "Provider capability exercised by an explicit probe.",
+        "oneOf": [
+          {
+            "description": "Genesis or active-profile embedding.",
+            "type": "string",
+            "enum": [
+              "embedding"
+            ]
+          },
+          {
+            "description": "Entity and relation extraction.",
+            "type": "string",
+            "enum": [
+              "extraction"
+            ]
+          },
+          {
+            "description": "Message triage.",
+            "type": "string",
+            "enum": [
+              "triage"
+            ]
+          },
+          {
+            "description": "Relation classification.",
+            "type": "string",
+            "enum": [
+              "relation"
+            ]
+          }
+        ]
+      },
       "ReadinessReport": {
         "description": "Readiness derived from one set of typed check observations.",
         "type": "object",
         "required": [
           "checks",
           "health",
+          "probe_receipts",
           "start"
         ],
         "properties": {
@@ -16714,6 +19085,13 @@
                 "$ref": "#/definitions/HealthVerdict"
               }
             ]
+          },
+          "probe_receipts": {
+            "description": "Latest explicit probe evidence, including stale receipts.",
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ProbeReceipt"
+            }
           },
           "start": {
             "description": "Whether a runtime may start.",

@@ -25,9 +25,10 @@ use crate::{
         configuration::ConfigAuthority,
         custody::{CustodyError, PendingRecovery},
         lifecycle::{LifecycleController, LifecycleExit, LifecycleStartError, RecoveredRuntime},
+        probe::ProbeService,
         product::ProductService,
         readiness,
-        socket::{self, ManagerSocketError, ManagerSocketIdentity},
+        socket::{self, ManagerSocketError, ManagerSocketIdentity, ManagerSocketServices},
         worker::{self, ConfigWorkerExit, ConfigWorkerStartError},
     },
 };
@@ -202,7 +203,8 @@ async fn run_async(
     )
     .await
     .map_err(|source| ManageError::LifecycleStart { source })?;
-    observe_readiness_once(&lease.paths().canonical_config_path, &lifecycle).await;
+    let probe = ProbeService::new(config.clone());
+    observe_readiness_once(&config, &probe, &lifecycle).await;
     let product = ProductService::new(config.clone());
     let config_watch_task = tokio::spawn(watch_config_file(
         config.clone(),
@@ -210,8 +212,8 @@ async fn run_async(
         shutdown.clone(),
     ));
     let readiness_task = tokio::spawn(refresh_readiness(
-        lease.paths().canonical_config_path.clone(),
         config.clone(),
+        probe.clone(),
         lifecycle.clone(),
         shutdown.clone(),
     ));
@@ -219,10 +221,13 @@ async fn run_async(
     let socket_task = tokio::spawn(socket::serve(
         listener,
         identity,
-        config,
-        product,
-        lifecycle_for_socket,
-        shutdown.clone(),
+        ManagerSocketServices::new(
+            config,
+            product,
+            probe,
+            lifecycle_for_socket,
+            shutdown.clone(),
+        ),
     ));
     emit_if_requested(
         writer,
@@ -377,8 +382,8 @@ async fn watch_config_file(
 }
 
 async fn refresh_readiness(
-    config_path: PathBuf,
     config: worker::ConfigWorkerClient,
+    probe: ProbeService,
     lifecycle: LifecycleController,
     shutdown: CancellationToken,
 ) {
@@ -394,28 +399,23 @@ async fn refresh_readiness(
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
         }
-        observe_readiness_once(&config_path, &lifecycle).await;
+        observe_readiness_once(&config, &probe, &lifecycle).await;
     }
 }
 
-async fn observe_readiness_once(config_path: &Path, lifecycle: &LifecycleController) {
-    let Ok(report) = crate::commands::run_report_async(crate::commands::CheckReportOptions {
-        config_path,
-        providers: false,
-        project: None,
-        token: None,
-    })
-    .await
-    else {
-        return;
-    };
+async fn observe_readiness_once(
+    config: &worker::ConfigWorkerClient,
+    probe: &ProbeService,
+    lifecycle: &LifecycleController,
+) {
     let runtime_present = lifecycle
         .snapshot()
         .await
         .is_some_and(|snapshot| lifecycle_phase_has_runtime(&snapshot.phase));
-    lifecycle
-        .update_readiness(readiness::from_results(report.checks, runtime_present))
-        .await;
+    match readiness::automatic(config, probe, runtime_present).await {
+        Ok(report) => lifecycle.update_readiness(report).await,
+        Err(error) => tracing::warn!(%error, "automatic readiness observation unavailable"),
+    }
 }
 
 fn lifecycle_phase_has_runtime(phase: &tribal_wire::management::LifecyclePhase) -> bool {

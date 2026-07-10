@@ -60,6 +60,42 @@ pub(crate) struct ConfigAuthority {
     durability_uncertain: Cell<bool>,
 }
 
+/// Revision-proven valid configuration used by external probes.
+pub(crate) struct ConfigProbeSnapshot {
+    pub(crate) path: PathBuf,
+    pub(crate) config: TribalConfig,
+    pub(crate) revision: ConfigRevision,
+}
+
+impl std::fmt::Debug for ConfigProbeSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfigProbeSnapshot")
+            .field("path", &self.path)
+            .field("config", &"<redacted>")
+            .field("revision", &self.revision)
+            .finish()
+    }
+}
+
+/// Revision-proven bytes used by readiness checks, including invalid YAML.
+pub(crate) struct ConfigCheckSnapshot {
+    pub(crate) path: PathBuf,
+    pub(crate) bytes: zeroize::Zeroizing<Vec<u8>>,
+    pub(crate) revision: ConfigRevision,
+}
+
+impl std::fmt::Debug for ConfigCheckSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfigCheckSnapshot")
+            .field("path", &self.path)
+            .field("bytes", &"<redacted>")
+            .field("revision", &self.revision)
+            .finish()
+    }
+}
+
 /// Secret-bearing credential origin retained only inside the manager process.
 pub(crate) struct CredentialMaterial {
     pub(crate) kind: CredentialSourceKind,
@@ -226,6 +262,29 @@ impl ConfigAuthority {
         Ok(zeroize::Zeroizing::new(
             Self::load_valid(&proven)?.database.url,
         ))
+    }
+
+    /// Returns a parsed configuration and the revision proven from the same bytes.
+    pub(crate) fn probe_snapshot(&self) -> Result<ConfigProbeSnapshot, ConfigAuthorityError> {
+        self.reconcile_if_needed()?;
+        let proven = self.stable_winner()?;
+        let config = Self::load_valid(&proven)?;
+        Ok(ConfigProbeSnapshot {
+            path: self.path.clone(),
+            config,
+            revision: proven.revision,
+        })
+    }
+
+    /// Returns exact stable bytes for local readiness without reopening the path.
+    pub(crate) fn check_snapshot(&self) -> Result<ConfigCheckSnapshot, ConfigAuthorityError> {
+        self.reconcile_if_needed()?;
+        let proven = self.stable_winner()?;
+        Ok(ConfigCheckSnapshot {
+            path: self.path.clone(),
+            bytes: zeroize::Zeroizing::new(proven.bytes),
+            revision: proven.revision,
+        })
     }
 
     /// Current durable document, preserving invalid and unreadable states.

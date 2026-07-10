@@ -36,6 +36,7 @@ fn management_contract_matches_its_golden_schema() {
         ("ConfigSetRequest", schema_for!(m::ConfigSetRequest)),
         ("ConfigPatchRequest", schema_for!(m::ConfigPatchRequest)),
         ("ConfigPatchOutcome", schema_for!(m::ConfigPatchOutcome)),
+        ("ProbeReceipt", schema_for!(m::ProbeReceipt)),
         ("ModelsCatalogue", schema_for!(m::ModelsCatalogue)),
         (
             "ModelSelectionRequest",
