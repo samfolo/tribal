@@ -1,10 +1,1876 @@
 {
+  "ConfigChangeEvent": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigChangeEvent",
+    "description": "Durable configuration delta notification.",
+    "type": "object",
+    "required": [
+      "changed",
+      "revision",
+      "source"
+    ],
+    "properties": {
+      "changed": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/ConfigFieldPath"
+        }
+      },
+      "revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "source": {
+        "$ref": "#/definitions/ConfigChangeSource"
+      }
+    },
+    "definitions": {
+      "ConfigChangeSource": {
+        "description": "Origin of a durable configuration change.",
+        "type": "string",
+        "enum": [
+          "managed",
+          "raw_file"
+        ]
+      },
+      "ConfigFieldPath": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      }
+    }
+  },
+  "ConfigDocument": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigDocument",
+    "description": "Durability state of the complete configuration document.",
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "state"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "revision",
+              "values"
+            ],
+            "properties": {
+              "revision": {
+                "$ref": "#/definitions/ConfigRevision"
+              },
+              "values": {
+                "$ref": "#/definitions/ConfigLiteral"
+              }
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "durable_valid"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "state"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "revision"
+            ],
+            "properties": {
+              "revision": {
+                "$ref": "#/definitions/ConfigRevision"
+              }
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "durable_invalid"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "state"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "observed_digest",
+              "phase",
+              "values"
+            ],
+            "properties": {
+              "observed_digest": {
+                "$ref": "#/definitions/ConfigDigest"
+              },
+              "phase": {
+                "$ref": "#/definitions/ConfigPersistencePhase"
+              },
+              "values": {
+                "$ref": "#/definitions/ConfigLiteral"
+              }
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "uncertain_valid"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "state"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "observed_digest",
+              "phase"
+            ],
+            "properties": {
+              "observed_digest": {
+                "$ref": "#/definitions/ConfigDigest"
+              },
+              "phase": {
+                "$ref": "#/definitions/ConfigPersistencePhase"
+              }
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "uncertain_invalid"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "state"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "phase"
+            ],
+            "properties": {
+              "phase": {
+                "$ref": "#/definitions/ConfigPersistencePhase"
+              }
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "unreadable"
+            ]
+          }
+        }
+      }
+    ],
+    "definitions": {
+      "ConfigDigest": {
+        "type": "string",
+        "pattern": "^cdig_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cdig_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "ConfigLiteral": {
+        "x-cortex-swift-type": "redacted-json"
+      },
+      "ConfigPersistencePhase": {
+        "description": "Point at which durable configuration persistence became uncertain.",
+        "type": "string",
+        "enum": [
+          "not_committed",
+          "durability_uncertain"
+        ]
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      }
+    }
+  },
   "ConfigFieldPath": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ConfigFieldPath",
     "type": "string",
     "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
     "x-cortex-swift-type": "validated-string"
+  },
+  "ConfigPatchOutcome": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigPatchOutcome",
+    "description": "Field-by-field effects from one atomic patch.",
+    "type": "object",
+    "required": [
+      "fields",
+      "revision"
+    ],
+    "properties": {
+      "fields": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/ConfigFieldOutcome"
+        }
+      },
+      "revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      }
+    },
+    "definitions": {
+      "ConfigFieldOutcome": {
+        "description": "Runtime effect assigned to one patched field.",
+        "type": "object",
+        "required": [
+          "effect",
+          "key"
+        ],
+        "properties": {
+          "effect": {
+            "$ref": "#/definitions/ConfigWriteEffect"
+          },
+          "key": {
+            "$ref": "#/definitions/ConfigFieldPath"
+          }
+        }
+      },
+      "ConfigFieldPath": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "ConfigWriteEffect": {
+        "description": "Observable effect of a successful configuration write.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "effect"
+            ],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "unchanged"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "effect"
+            ],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "committed_no_runtime_effect"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "effect"
+            ],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "applied_live"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "effect"
+            ],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "on_next_start"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "effect"
+            ],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "awaiting_restart"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "effect"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "by"
+                ],
+                "properties": {
+                  "by": {
+                    "type": "string"
+                  }
+                }
+              },
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "shadowed"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "ConfigPatchRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigPatchRequest",
+    "description": "Revision-checked atomic multi-field write.",
+    "type": "object",
+    "required": [
+      "changes",
+      "expected_revision"
+    ],
+    "properties": {
+      "changes": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/ConfigPatchChange"
+        }
+      },
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      }
+    },
+    "definitions": {
+      "ConfigFieldPath": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ConfigLiteral": {
+        "x-cortex-swift-type": "redacted-json"
+      },
+      "ConfigPatchChange": {
+        "description": "One field in an atomic configuration patch.",
+        "type": "object",
+        "required": [
+          "key",
+          "value"
+        ],
+        "properties": {
+          "key": {
+            "$ref": "#/definitions/ConfigFieldPath"
+          },
+          "value": {
+            "$ref": "#/definitions/ConfigLiteral"
+          }
+        }
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      }
+    }
+  },
+  "ConfigSetRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigSetRequest",
+    "description": "Revision-checked single-field write.",
+    "type": "object",
+    "required": [
+      "expected_revision",
+      "key",
+      "value"
+    ],
+    "properties": {
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "key": {
+        "$ref": "#/definitions/ConfigFieldPath"
+      },
+      "value": {
+        "$ref": "#/definitions/ConfigLiteral"
+      }
+    },
+    "definitions": {
+      "ConfigFieldPath": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ConfigLiteral": {
+        "x-cortex-swift-type": "redacted-json"
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      }
+    }
+  },
+  "ConfigValue": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigValue",
+    "description": "Durability state of a single configuration value.",
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "state"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "key",
+              "revision",
+              "value"
+            ],
+            "properties": {
+              "key": {
+                "$ref": "#/definitions/ConfigFieldPath"
+              },
+              "revision": {
+                "$ref": "#/definitions/ConfigRevision"
+              },
+              "value": {
+                "$ref": "#/definitions/ConfigLiteral"
+              }
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "durable_valid"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "state"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "key",
+              "revision"
+            ],
+            "properties": {
+              "key": {
+                "$ref": "#/definitions/ConfigFieldPath"
+              },
+              "revision": {
+                "$ref": "#/definitions/ConfigRevision"
+              }
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "durable_invalid"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "state"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "key",
+              "observed_digest",
+              "phase",
+              "value"
+            ],
+            "properties": {
+              "key": {
+                "$ref": "#/definitions/ConfigFieldPath"
+              },
+              "observed_digest": {
+                "$ref": "#/definitions/ConfigDigest"
+              },
+              "phase": {
+                "$ref": "#/definitions/ConfigPersistencePhase"
+              },
+              "value": {
+                "$ref": "#/definitions/ConfigLiteral"
+              }
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "uncertain_valid"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "state"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "key",
+              "observed_digest",
+              "phase"
+            ],
+            "properties": {
+              "key": {
+                "$ref": "#/definitions/ConfigFieldPath"
+              },
+              "observed_digest": {
+                "$ref": "#/definitions/ConfigDigest"
+              },
+              "phase": {
+                "$ref": "#/definitions/ConfigPersistencePhase"
+              }
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "uncertain_invalid"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "state"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "phase"
+            ],
+            "properties": {
+              "phase": {
+                "$ref": "#/definitions/ConfigPersistencePhase"
+              }
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "unreadable"
+            ]
+          }
+        }
+      }
+    ],
+    "definitions": {
+      "ConfigDigest": {
+        "type": "string",
+        "pattern": "^cdig_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cdig_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "ConfigFieldPath": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ConfigLiteral": {
+        "x-cortex-swift-type": "redacted-json"
+      },
+      "ConfigPersistencePhase": {
+        "description": "Point at which durable configuration persistence became uncertain.",
+        "type": "string",
+        "enum": [
+          "not_committed",
+          "durability_uncertain"
+        ]
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      }
+    }
+  },
+  "CredentialSources": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CredentialSources",
+    "description": "Available credential capabilities for one exact request context.",
+    "type": "object",
+    "required": [
+      "capabilities",
+      "revision",
+      "sources"
+    ],
+    "properties": {
+      "capabilities": {
+        "$ref": "#/definitions/CredentialUseCapabilities"
+      },
+      "revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "sources": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/CredentialSource"
+        }
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "CredentialSource": {
+        "description": "One opaque credential capability.",
+        "type": "object",
+        "required": [
+          "id",
+          "kind"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/definitions/CredentialSourceId"
+          },
+          "kind": {
+            "$ref": "#/definitions/CredentialSourceKind"
+          }
+        }
+      },
+      "CredentialSourceId": {
+        "type": "string",
+        "pattern": "^credsrc_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "credsrc_",
+        "x-cortex-swift-type": "redacted-canonical-base64url-32"
+      },
+      "CredentialSourceKind": {
+        "description": "Durable configuration origin referenced by a capability.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "stage"
+                ],
+                "properties": {
+                  "stage": {
+                    "$ref": "#/definitions/InferenceStage"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "inference_stage"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "embedding_connection"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "CredentialUseCapabilities": {
+        "description": "Additional actions permitted by a credential capability set.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "embedding_reuse"
+                ],
+                "properties": {
+                  "embedding_reuse": {
+                    "$ref": "#/definitions/EmbeddingReuseAvailability"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "model_selection"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "genesis"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "EmbeddingReuseAvailability": {
+        "description": "Whether an inference key can also back an embedding connection.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "connection"
+                ],
+                "properties": {
+                  "connection": {
+                    "type": "string"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "available_existing"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "connection"
+                ],
+                "properties": {
+                  "connection": {
+                    "type": "string"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "available_create"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/definitions/EmbeddingReuseUnavailableReason"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "EmbeddingReuseUnavailableReason": {
+        "description": "Reason embedding-key reuse is unavailable.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "provider_unsupported"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "endpoint_mismatch"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "reason"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "connection"
+                ],
+                "properties": {
+                  "connection": {
+                    "type": "string"
+                  }
+                }
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "connection_name_conflict"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "InferenceStage": {
+        "description": "Inference configuration stage.",
+        "type": "string",
+        "enum": [
+          "extraction",
+          "triage",
+          "relation"
+        ]
+      }
+    }
+  },
+  "CredentialSourcesRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CredentialSourcesRequest",
+    "description": "Request for use-bound credential capabilities.",
+    "type": "object",
+    "required": [
+      "expected_revision",
+      "use_case"
+    ],
+    "properties": {
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "use_case": {
+        "$ref": "#/definitions/CredentialUse"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "CredentialUse": {
+        "description": "Operation to which a credential capability is bound.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "endpoint",
+                  "model",
+                  "stages"
+                ],
+                "properties": {
+                  "endpoint": {
+                    "$ref": "#/definitions/EndpointSelection"
+                  },
+                  "model": {
+                    "$ref": "#/definitions/KnownModelId"
+                  },
+                  "stages": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/definitions/InferenceStage"
+                    }
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "model_selection"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "embedding"
+                ],
+                "properties": {
+                  "embedding": {
+                    "$ref": "#/definitions/GenesisEmbeddingInput"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "genesis"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "EndpointSelection": {
+        "description": "Requested endpoint transition for model selection.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "preserve"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "provider_default"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "custom"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "GenesisEmbeddingInput": {
+        "description": "Candidate embedding identity for graph genesis.",
+        "type": "object",
+        "required": [
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dimensions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/definitions/ProviderKind"
+          }
+        }
+      },
+      "InferenceStage": {
+        "description": "Inference configuration stage.",
+        "type": "string",
+        "enum": [
+          "extraction",
+          "triage",
+          "relation"
+        ]
+      },
+      "KnownModelId": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "GenesisConfigurationRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "GenesisConfigurationRequest",
+    "description": "Atomic request to establish graph genesis configuration.",
+    "type": "object",
+    "required": [
+      "embedding",
+      "expected_revision"
+    ],
+    "properties": {
+      "credential": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CredentialInput"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "embedding": {
+        "$ref": "#/definitions/GenesisEmbeddingInput"
+      },
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "CredentialInput": {
+        "description": "Inline credential or manager-issued credential capability.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "$ref": "#/definitions/SecretLiteral"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "literal"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "source"
+                ],
+                "properties": {
+                  "source": {
+                    "$ref": "#/definitions/CredentialSourceId"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "source"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "CredentialSourceId": {
+        "type": "string",
+        "pattern": "^credsrc_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "credsrc_",
+        "x-cortex-swift-type": "redacted-canonical-base64url-32"
+      },
+      "GenesisEmbeddingInput": {
+        "description": "Candidate embedding identity for graph genesis.",
+        "type": "object",
+        "required": [
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dimensions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/definitions/ProviderKind"
+          }
+        }
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      },
+      "SecretLiteral": {
+        "type": "string",
+        "pattern": "^\\S+$",
+        "x-cortex-swift-type": "redacted-validated-string"
+      }
+    }
+  },
+  "GenesisConvergenceRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "GenesisConvergenceRequest",
+    "description": "Revision-checked request to converge config on the active profile.",
+    "type": "object",
+    "required": [
+      "expected_profile_revision",
+      "expected_revision"
+    ],
+    "properties": {
+      "expected_profile_revision": {
+        "$ref": "#/definitions/EmbeddingProfileRevision"
+      },
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "EmbeddingProfileRevision": {
+        "type": "string",
+        "pattern": "^epr_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "epr_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      }
+    }
+  },
+  "GenesisOptions": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "GenesisOptions",
+    "description": "Available genesis choices under one configuration revision.",
+    "type": "object",
+    "required": [
+      "providers",
+      "recommended",
+      "revision"
+    ],
+    "properties": {
+      "providers": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/GenesisProviderOption"
+        }
+      },
+      "recommended": {
+        "$ref": "#/definitions/GenesisEmbeddingInput"
+      },
+      "revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "CredentialRequirement": {
+        "description": "Credential input required by a product action.",
+        "type": "string",
+        "enum": [
+          "none",
+          "api_key"
+        ]
+      },
+      "EndpointRequirement": {
+        "description": "Endpoint input supported by a product action.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "primary_with_default"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "advanced_with_default"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "GenesisDimensionsConstraint": {
+        "description": "Validation rule for genesis embedding dimensions.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "max",
+                  "min"
+                ],
+                "properties": {
+                  "max": {
+                    "type": "integer",
+                    "format": "uint32",
+                    "minimum": 0.0
+                  },
+                  "min": {
+                    "type": "integer",
+                    "format": "uint32",
+                    "minimum": 0.0
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "optional_range"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "GenesisEmbeddingInput": {
+        "description": "Candidate embedding identity for graph genesis.",
+        "type": "object",
+        "required": [
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dimensions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/definitions/ProviderKind"
+          }
+        }
+      },
+      "GenesisModelConstraint": {
+        "description": "Validation rule for a genesis model name.",
+        "type": "string",
+        "enum": [
+          "non_empty_no_whitespace"
+        ]
+      },
+      "GenesisProviderAvailability": {
+        "description": "Whether a provider can establish graph genesis.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "credential",
+                  "dimensions",
+                  "endpoint",
+                  "model"
+                ],
+                "properties": {
+                  "credential": {
+                    "$ref": "#/definitions/CredentialRequirement"
+                  },
+                  "dimensions": {
+                    "$ref": "#/definitions/GenesisDimensionsConstraint"
+                  },
+                  "endpoint": {
+                    "$ref": "#/definitions/EndpointRequirement"
+                  },
+                  "model": {
+                    "$ref": "#/definitions/GenesisModelConstraint"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "available"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/definitions/GenesisUnavailableReason"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "GenesisProviderOption": {
+        "description": "Genesis capability for one provider.",
+        "type": "object",
+        "required": [
+          "availability",
+          "provider"
+        ],
+        "properties": {
+          "availability": {
+            "$ref": "#/definitions/GenesisProviderAvailability"
+          },
+          "provider": {
+            "$ref": "#/definitions/ProviderKind"
+          }
+        }
+      },
+      "GenesisUnavailableReason": {
+        "description": "Reason a provider cannot establish graph genesis.",
+        "type": "string",
+        "enum": [
+          "no_embedding_api",
+          "managed_gateway_transport"
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "GraphEmbeddingProfile": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "GraphEmbeddingProfile",
+    "description": "Active graph embedding identity and drift classification.",
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "no_profile"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "state"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "profile",
+              "profile_revision"
+            ],
+            "properties": {
+              "genesis_drift": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "profile": {
+                "$ref": "#/definitions/EmbeddingProfileSummary"
+              },
+              "profile_revision": {
+                "$ref": "#/definitions/EmbeddingProfileRevision"
+              }
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "state"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "detail"
+            ],
+            "properties": {
+              "detail": {
+                "type": "string"
+              }
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "unknown"
+            ]
+          }
+        }
+      }
+    ],
+    "definitions": {
+      "EmbeddingProfileRevision": {
+        "type": "string",
+        "pattern": "^epr_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "epr_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "EmbeddingProfileSummary": {
+        "description": "Stable summary of a graph's active embedding profile.",
+        "type": "object",
+        "required": [
+          "base_url",
+          "dimensions",
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "base_url": {
+            "type": "string"
+          },
+          "dimensions": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/definitions/ProviderKind"
+          }
+        }
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      }
+    }
   },
   "LifecycleSnapshot": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1901,6 +3767,1174 @@
       }
     }
   },
+  "ManagementBootstrapRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ManagementBootstrapRequest",
+    "description": "Request available before contract-version compatibility is established.",
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "hello",
+          "method"
+        ],
+        "properties": {
+          "hello": {
+            "$ref": "#/definitions/ManagementClientHello"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "handshake"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "method"
+        ],
+        "properties": {
+          "method": {
+            "type": "string",
+            "enum": [
+              "shutdown"
+            ]
+          }
+        }
+      }
+    ],
+    "definitions": {
+      "ManagementClientHello": {
+        "description": "First frame sent by a management client.",
+        "type": "object",
+        "required": [
+          "protocol_version"
+        ],
+        "properties": {
+          "protocol_version": {
+            "type": "integer",
+            "format": "uint16",
+            "minimum": 0.0
+          }
+        }
+      }
+    }
+  },
+  "ManagementBootstrapResponse": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ManagementBootstrapResponse",
+    "description": "Response available on the stable replacement envelope.",
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "status"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "hello"
+            ],
+            "properties": {
+              "hello": {
+                "$ref": "#/definitions/ManagementServerHello"
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "compatible"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "status"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "hello"
+            ],
+            "properties": {
+              "hello": {
+                "$ref": "#/definitions/ManagementServerHello"
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "version_mismatch"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "shutdown_accepted"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "status"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "$ref": "#/definitions/BootstrapShutdownRefusal"
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "shutdown_refused"
+            ]
+          }
+        }
+      }
+    ],
+    "definitions": {
+      "BootstrapShutdownRefusal": {
+        "description": "Reason a restricted replacement shutdown is refused.",
+        "type": "string",
+        "enum": [
+          "manager_terminating",
+          "peer_identity_mismatch"
+        ]
+      },
+      "ManagementServerHello": {
+        "description": "Manager identity returned before full-protocol admission.",
+        "type": "object",
+        "required": [
+          "binary_version",
+          "manager_instance_id",
+          "protocol_version"
+        ],
+        "properties": {
+          "binary_version": {
+            "type": "string"
+          },
+          "manager_instance_id": {
+            "type": "string"
+          },
+          "protocol_version": {
+            "type": "integer",
+            "format": "uint16",
+            "minimum": 0.0
+          }
+        }
+      }
+    }
+  },
+  "ManagementResponseError": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ManagementResponseError",
+    "description": "Public error envelope for configuration and product actions.",
+    "type": "object",
+    "required": [
+      "error",
+      "message"
+    ],
+    "properties": {
+      "error": {
+        "$ref": "#/definitions/ManagementError"
+      },
+      "message": {
+        "type": "string"
+      }
+    },
+    "definitions": {
+      "ConfigDigest": {
+        "type": "string",
+        "pattern": "^cdig_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cdig_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "ConfigFieldPath": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ConfigPatchRefusal": {
+        "description": "Structural reason an atomic patch is refused.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "empty"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "reason"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "key"
+                ],
+                "properties": {
+                  "key": {
+                    "$ref": "#/definitions/ConfigFieldPath"
+                  }
+                }
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "duplicate"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "reason"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "child",
+                  "parent"
+                ],
+                "properties": {
+                  "child": {
+                    "$ref": "#/definitions/ConfigFieldPath"
+                  },
+                  "parent": {
+                    "$ref": "#/definitions/ConfigFieldPath"
+                  }
+                }
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "overlapping"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "mixed_hot_and_non_hot"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "multiple_hot_fields"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ConfigPersistenceObservation": {
+        "description": "Filesystem observation retained after persistence uncertainty.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "digest"
+                ],
+                "properties": {
+                  "digest": {
+                    "$ref": "#/definitions/ConfigDigest"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "observed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unreadable"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ConfigPersistencePhase": {
+        "description": "Point at which durable configuration persistence became uncertain.",
+        "type": "string",
+        "enum": [
+          "not_committed",
+          "durability_uncertain"
+        ]
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "CredentialCapabilityInvalidReason": {
+        "description": "Reason a credential capability cannot be consumed.",
+        "type": "string",
+        "enum": [
+          "wrong_connection",
+          "manager_replaced",
+          "revision_changed",
+          "reissued",
+          "consumed",
+          "use_mismatch",
+          "unknown"
+        ]
+      },
+      "EmbeddingProfileRevision": {
+        "type": "string",
+        "pattern": "^epr_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "epr_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "EmbeddingReuseUnavailableReason": {
+        "description": "Reason embedding-key reuse is unavailable.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "provider_unsupported"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "endpoint_mismatch"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "reason"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "connection"
+                ],
+                "properties": {
+                  "connection": {
+                    "type": "string"
+                  }
+                }
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "connection_name_conflict"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "EndpointTransitionRefusal": {
+        "description": "Reason an endpoint transition is unsafe or incomplete.",
+        "type": "string",
+        "enum": [
+          "provider_change_requires_endpoint",
+          "provider_has_no_default",
+          "credential_fanout_has_multiple_endpoints",
+          "credential_required"
+        ]
+      },
+      "GenesisPolicyRefusal": {
+        "description": "Reason a graph-genesis action violates active-profile policy.",
+        "type": "string",
+        "enum": [
+          "profile_unavailable",
+          "profile_authority_busy",
+          "active_profile_forbids_drift",
+          "provider_unavailable"
+        ]
+      },
+      "InferenceStage": {
+        "description": "Inference configuration stage.",
+        "type": "string",
+        "enum": [
+          "extraction",
+          "triage",
+          "relation"
+        ]
+      },
+      "InvalidStageSetReason": {
+        "description": "Structural reason an inference-stage set is invalid.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "empty"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "reason"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "stage"
+                ],
+                "properties": {
+                  "stage": {
+                    "$ref": "#/definitions/InferenceStage"
+                  }
+                }
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "duplicate"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "KnownModelId": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ManagementError": {
+        "description": "Stable failure classification for configuration and product actions.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "config_conflict"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "actual",
+                  "expected"
+                ],
+                "properties": {
+                  "actual": {
+                    "$ref": "#/definitions/ConfigRevision"
+                  },
+                  "expected": {
+                    "$ref": "#/definitions/ConfigRevision"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "profile_conflict"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "actual",
+                  "expected"
+                ],
+                "properties": {
+                  "actual": {
+                    "$ref": "#/definitions/EmbeddingProfileRevision"
+                  },
+                  "expected": {
+                    "$ref": "#/definitions/EmbeddingProfileRevision"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "credential_capability_invalid"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/definitions/CredentialCapabilityInvalidReason"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "credential_source_unavailable"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "credential_connection_conflict"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "connection"
+                ],
+                "properties": {
+                  "connection": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "endpoint_transition_refused"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/definitions/EndpointTransitionRefusal"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "config_patch_refused"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/definitions/ConfigPatchRefusal"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "unknown_model"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "$ref": "#/definitions/KnownModelId"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "invalid_stage_set"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/definitions/InvalidStageSetReason"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "embedding_reuse_refused"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/definitions/EmbeddingReuseUnavailableReason"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "config_persistence_unavailable"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "observation",
+                  "phase"
+                ],
+                "properties": {
+                  "observation": {
+                    "$ref": "#/definitions/ConfigPersistenceObservation"
+                  },
+                  "phase": {
+                    "$ref": "#/definitions/ConfigPersistencePhase"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "model_unavailable"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/definitions/ModelUnavailableReason"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "genesis_policy_refused"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/definitions/GenesisPolicyRefusal"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "ModelUnavailableReason": {
+        "description": "Stable reason a catalogue row is unavailable.",
+        "type": "string",
+        "enum": [
+          "platform_endpoint_unavailable"
+        ]
+      }
+    }
+  },
+  "ManagerLaunchRecord": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ManagerLaunchRecord",
+    "description": "Sole stdout record emitted during manager launch or attachment.",
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "status"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "announcement",
+              "disposition"
+            ],
+            "properties": {
+              "announcement": {
+                "$ref": "#/definitions/ManagerAnnouncement"
+              },
+              "disposition": {
+                "$ref": "#/definitions/ManagerLaunchDisposition"
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "status"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "failure"
+            ],
+            "properties": {
+              "failure": {
+                "$ref": "#/definitions/ManagerLaunchFailure"
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "failed"
+            ]
+          }
+        }
+      }
+    ],
+    "definitions": {
+      "AuthorityUnavailableReason": {
+        "description": "Reason the current authority cannot be attached to safely.",
+        "type": "string",
+        "enum": [
+          "permission_denied",
+          "invalid_descriptor",
+          "lease_owner_unreachable"
+        ]
+      },
+      "ConfigFilePath": {
+        "description": "The active configuration file's location.",
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "description": "Filesystem path read by the authority.",
+            "type": "string"
+          }
+        }
+      },
+      "ConflictingRuntimeIdentity": {
+        "description": "Standalone runtime currently fencing a configuration path.",
+        "type": "object",
+        "required": [
+          "binary_version",
+          "config_path",
+          "pid"
+        ],
+        "properties": {
+          "binary_version": {
+            "type": "string"
+          },
+          "config_path": {
+            "$ref": "#/definitions/ConfigFilePath"
+          },
+          "pid": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          }
+        }
+      },
+      "ManagerAnnouncement": {
+        "description": "Connection coordinates for one live manager authority.",
+        "type": "object",
+        "required": [
+          "binary_version",
+          "config_path",
+          "instance_id",
+          "pid",
+          "protocol_version",
+          "socket_path"
+        ],
+        "properties": {
+          "binary_version": {
+            "type": "string"
+          },
+          "config_path": {
+            "$ref": "#/definitions/ConfigFilePath"
+          },
+          "instance_id": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "protocol_version": {
+            "type": "integer",
+            "format": "uint16",
+            "minimum": 0.0
+          },
+          "socket_path": {
+            "type": "string"
+          }
+        }
+      },
+      "ManagerLaunchDisposition": {
+        "description": "Whether the announcing process remains the authority.",
+        "type": "string",
+        "enum": [
+          "manager_continues",
+          "contender_exits"
+        ]
+      },
+      "ManagerLaunchFailure": {
+        "description": "Stable failure classification for manager launch.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "direct_runtime_conflict"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "runtime"
+                ],
+                "properties": {
+                  "runtime": {
+                    "$ref": "#/definitions/ConflictingRuntimeIdentity"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "authority_recovering"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "config_path"
+                ],
+                "properties": {
+                  "config_path": {
+                    "$ref": "#/definitions/ConfigFilePath"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "authority_unavailable"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "config_path",
+                  "reason"
+                ],
+                "properties": {
+                  "config_path": {
+                    "$ref": "#/definitions/ConfigFilePath"
+                  },
+                  "reason": {
+                    "$ref": "#/definitions/AuthorityUnavailableReason"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "manager_startup_failed"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "config_path",
+                  "failure"
+                ],
+                "properties": {
+                  "config_path": {
+                    "$ref": "#/definitions/ConfigFilePath"
+                  },
+                  "failure": {
+                    "$ref": "#/definitions/ManagerStartupFailure"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "ManagerStartupFailure": {
+        "description": "Stage at which a winning manager could not become ready.",
+        "type": "string",
+        "enum": [
+          "config_path_unavailable",
+          "authority_lease_unavailable",
+          "entropy_unavailable",
+          "bootstrap_protocol_initialization_failed",
+          "management_socket_unavailable",
+          "authority_descriptor_persistence_failed"
+        ]
+      }
+    }
+  },
   "ManagerShutdownResult": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ManagerShutdownResult",
@@ -3749,6 +6783,460 @@
                 ]
               }
             }
+          }
+        ]
+      }
+    }
+  },
+  "ModelSelectionRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ModelSelectionRequest",
+    "description": "Atomic model-selection request.",
+    "type": "object",
+    "required": [
+      "endpoint",
+      "expected_revision",
+      "model",
+      "reuse_api_key_for_embedding",
+      "stages"
+    ],
+    "properties": {
+      "credential": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CredentialInput"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "endpoint": {
+        "$ref": "#/definitions/EndpointSelection"
+      },
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "model": {
+        "$ref": "#/definitions/KnownModelId"
+      },
+      "reuse_api_key_for_embedding": {
+        "type": "boolean"
+      },
+      "stages": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/InferenceStage"
+        }
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "CredentialInput": {
+        "description": "Inline credential or manager-issued credential capability.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "$ref": "#/definitions/SecretLiteral"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "literal"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "source"
+                ],
+                "properties": {
+                  "source": {
+                    "$ref": "#/definitions/CredentialSourceId"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "source"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "CredentialSourceId": {
+        "type": "string",
+        "pattern": "^credsrc_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "credsrc_",
+        "x-cortex-swift-type": "redacted-canonical-base64url-32"
+      },
+      "EndpointSelection": {
+        "description": "Requested endpoint transition for model selection.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "preserve"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "provider_default"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "custom"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "InferenceStage": {
+        "description": "Inference configuration stage.",
+        "type": "string",
+        "enum": [
+          "extraction",
+          "triage",
+          "relation"
+        ]
+      },
+      "KnownModelId": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "SecretLiteral": {
+        "type": "string",
+        "pattern": "^\\S+$",
+        "x-cortex-swift-type": "redacted-validated-string"
+      }
+    }
+  },
+  "ModelsCatalogue": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ModelsCatalogue",
+    "description": "Curated model choices under one configuration revision.",
+    "type": "object",
+    "required": [
+      "models",
+      "revision"
+    ],
+    "properties": {
+      "models": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/KnownModelEntry"
+        }
+      },
+      "revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "CredentialRequirement": {
+        "description": "Credential input required by a product action.",
+        "type": "string",
+        "enum": [
+          "none",
+          "api_key"
+        ]
+      },
+      "EndpointRequirement": {
+        "description": "Endpoint input supported by a product action.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "primary_with_default"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "advanced_with_default"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "KnownModelEntry": {
+        "description": "One curated model choice and its current capability classification.",
+        "type": "object",
+        "required": [
+          "access",
+          "availability",
+          "display_name",
+          "id",
+          "model",
+          "provider",
+          "settings"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/definitions/ModelAccess"
+          },
+          "availability": {
+            "$ref": "#/definitions/ModelAvailability"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/definitions/KnownModelId"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/definitions/ProviderKind"
+          },
+          "settings": {
+            "$ref": "#/definitions/ModelSettingsCapability"
+          }
+        }
+      },
+      "KnownModelId": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ModelAccess": {
+        "description": "How a model is authenticated.",
+        "type": "string",
+        "enum": [
+          "platform",
+          "bring_your_own"
+        ]
+      },
+      "ModelAvailability": {
+        "description": "Whether a catalogue row is currently selectable.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "available"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/definitions/ModelUnavailableReason"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ModelSettingsCapability": {
+        "description": "Settings inputs supported by one model row.",
+        "type": "object",
+        "required": [
+          "api_key_embedding_reuse",
+          "credential",
+          "endpoint"
+        ],
+        "properties": {
+          "api_key_embedding_reuse": {
+            "type": "boolean"
+          },
+          "credential": {
+            "$ref": "#/definitions/CredentialRequirement"
+          },
+          "endpoint": {
+            "$ref": "#/definitions/EndpointRequirement"
+          }
+        }
+      },
+      "ModelUnavailableReason": {
+        "description": "Stable reason a catalogue row is unavailable.",
+        "type": "string",
+        "enum": [
+          "platform_endpoint_unavailable"
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
           }
         ]
       }

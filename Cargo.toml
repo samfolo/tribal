@@ -82,6 +82,7 @@ strum = { version = "0.28", features = ["derive"] }
 # Hashing
 fnv = "1"
 sha2 = "0.10"
+zeroize = { version = "1", features = ["derive"] }
 
 # Constant-time cryptographic comparisons
 subtle = "2"

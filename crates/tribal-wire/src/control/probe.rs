@@ -72,6 +72,7 @@ pub enum CredentialProbe {
 /// Stable summary of an active embedding profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "LegacyEmbeddingProfileSummary"))]
 pub struct EmbeddingProfileSummary {
     /// Provider used by the profile.
     pub provider: ProviderKind,
@@ -86,6 +87,7 @@ pub struct EmbeddingProfileSummary {
 /// Result of reading the active embedding profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "LegacyGraphEmbeddingProfile"))]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum GraphEmbeddingProfile {
     /// No active profile exists yet.

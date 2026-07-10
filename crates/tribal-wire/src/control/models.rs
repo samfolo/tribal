@@ -6,6 +6,7 @@ use tribal_domain::ProviderKind;
 /// One known model option.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "LegacyKnownModelEntry"))]
 pub struct KnownModelEntry {
     /// Provider this row belongs to.
     pub provider: ProviderKind,
@@ -18,6 +19,7 @@ pub struct KnownModelEntry {
 /// Static model catalogue served by `models.catalogue`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "LegacyModelsCatalogue"))]
 pub struct ModelsCatalogue {
     /// Known model rows.
     pub models: Vec<KnownModelEntry>,

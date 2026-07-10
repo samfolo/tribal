@@ -4,10 +4,7 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use schemars::{schema::RootSchema, schema_for};
-use tribal_wire::management::{
-    ConfigFieldPath, LifecycleSnapshot, ManagerShutdownResult, RuntimeRestartResult,
-    RuntimeStartResult, RuntimeStopResult,
-};
+use tribal_wire::management as m;
 
 const UPDATE_ENV_VAR: &str = "UPDATE_SNAPSHOTS";
 const GOLDEN: &str = "tests/golden/management_contract.json";
@@ -15,12 +12,57 @@ const GOLDEN: &str = "tests/golden/management_contract.json";
 #[test]
 fn management_contract_matches_its_golden_schema() {
     let schemas: BTreeMap<&str, RootSchema> = BTreeMap::from([
-        ("ConfigFieldPath", schema_for!(ConfigFieldPath)),
-        ("LifecycleSnapshot", schema_for!(LifecycleSnapshot)),
-        ("RuntimeStartResult", schema_for!(RuntimeStartResult)),
-        ("RuntimeStopResult", schema_for!(RuntimeStopResult)),
-        ("RuntimeRestartResult", schema_for!(RuntimeRestartResult)),
-        ("ManagerShutdownResult", schema_for!(ManagerShutdownResult)),
+        ("ConfigFieldPath", schema_for!(m::ConfigFieldPath)),
+        ("LifecycleSnapshot", schema_for!(m::LifecycleSnapshot)),
+        ("RuntimeStartResult", schema_for!(m::RuntimeStartResult)),
+        ("RuntimeStopResult", schema_for!(m::RuntimeStopResult)),
+        ("RuntimeRestartResult", schema_for!(m::RuntimeRestartResult)),
+        (
+            "ManagerShutdownResult",
+            schema_for!(m::ManagerShutdownResult),
+        ),
+        ("ManagerLaunchRecord", schema_for!(m::ManagerLaunchRecord)),
+        (
+            "ManagementBootstrapRequest",
+            schema_for!(m::ManagementBootstrapRequest),
+        ),
+        (
+            "ManagementBootstrapResponse",
+            schema_for!(m::ManagementBootstrapResponse),
+        ),
+        ("ConfigDocument", schema_for!(m::ConfigDocument)),
+        ("ConfigValue", schema_for!(m::ConfigValue)),
+        ("ConfigSetRequest", schema_for!(m::ConfigSetRequest)),
+        ("ConfigPatchRequest", schema_for!(m::ConfigPatchRequest)),
+        ("ConfigPatchOutcome", schema_for!(m::ConfigPatchOutcome)),
+        ("ModelsCatalogue", schema_for!(m::ModelsCatalogue)),
+        (
+            "ModelSelectionRequest",
+            schema_for!(m::ModelSelectionRequest),
+        ),
+        (
+            "CredentialSourcesRequest",
+            schema_for!(m::CredentialSourcesRequest),
+        ),
+        ("CredentialSources", schema_for!(m::CredentialSources)),
+        ("GenesisOptions", schema_for!(m::GenesisOptions)),
+        (
+            "GenesisConfigurationRequest",
+            schema_for!(m::GenesisConfigurationRequest),
+        ),
+        (
+            "GenesisConvergenceRequest",
+            schema_for!(m::GenesisConvergenceRequest),
+        ),
+        (
+            "GraphEmbeddingProfile",
+            schema_for!(m::GraphEmbeddingProfile),
+        ),
+        ("ConfigChangeEvent", schema_for!(m::ConfigChangeEvent)),
+        (
+            "ManagementResponseError",
+            schema_for!(m::ManagementResponseError),
+        ),
     ]);
 
     let generated =
