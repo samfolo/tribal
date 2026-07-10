@@ -21,8 +21,8 @@ mod logs;
 mod models;
 mod probe;
 mod server;
-mod token;
 
+pub use crate::token::{TokenInfo, TokenList};
 pub use check::{CheckName, CheckReport, CheckReportRequest, CheckResult};
 pub use config::{
     AudienceTier, ConfigDocument, ConfigFieldMeta, ConfigGetRequest, ConfigPath, ConfigSchema,
@@ -41,7 +41,6 @@ pub use probe::{
     EmbeddingProfileSummary, GraphEmbeddingProfile,
 };
 pub use server::{ProjectSummary, RestartOutcome, ServerStatus, StopOutcome, WorkerStatus};
-pub use token::{TokenInfo, TokenList};
 
 /// The version of the control-bridge wire contract. A client presents it in its
 /// [`ClientHello`](envelope::ClientHello) at connect; a mismatch the server does

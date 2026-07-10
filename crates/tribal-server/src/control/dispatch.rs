@@ -18,16 +18,16 @@ use tribal_auth::AuthenticatedPrincipal;
 use tribal_config::{
     AudienceTier, CliShadow, DatabaseConfig, Persisted, ReloadClass, TribalConfig, is_secret_key,
 };
-use tribal_db::{
-    AuthTokenRepository, EmbeddingProfileRepository, PgAuthTokenRepository,
-    PgEmbeddingProfileRepository,
-};
-use tribal_domain::{AuthToken, ProviderKind, REDACTED, TaskType, normalise_endpoint_url};
+use tribal_db::{EmbeddingProfileRepository, PgEmbeddingProfileRepository};
+use tribal_domain::{ProviderKind, REDACTED, TaskType, normalise_endpoint_url};
 use tribal_inference::{InferenceGateway, LedgerSink, UsageAttribution};
 use tribal_telemetry::noop_recorder;
 use tribal_wire::control::{self as wire, CONTROL_CONTRACT_VERSION, ControlEvent, error_code};
 
-use super::{ControlContext, EmbeddingProfileSnapshot, listening_bind_address};
+use super::{
+    ControlContext, EmbeddingProfileSnapshot, list_token_metadata, listening_bind_address,
+    token_service::TokenMetadataError,
+};
 use crate::startup::{CatalogueCredentialResolver, build_command_registry, completion_stage_specs};
 
 /// JSON-RPC reserved code: the method name is not one this server dispatches.
@@ -488,51 +488,19 @@ async fn token_list(
     pool: &PgPool,
     principal: Option<&AuthenticatedPrincipal>,
 ) -> Result<Value, wire::ResponseError> {
-    let principal = principal.ok_or_else(|| {
-        error(
-            error_code::PRINCIPAL_UNAVAILABLE,
-            "the local principal is unavailable; run `tribal setup`".to_owned(),
-            None,
-        )
-    })?;
-    let mut connection = pool.acquire().await.map_err(|source| {
-        error(
-            INTERNAL_ERROR,
-            format!("control database unavailable: {source}"),
-            None,
-        )
-    })?;
-    let tokens = PgAuthTokenRepository
-        .find_by_principal_id(&mut connection, principal.principal_id())
+    list_token_metadata(pool, principal)
         .await
-        .map_err(|source| {
-            error(
-                INTERNAL_ERROR,
-                format!("could not list tokens: {source}"),
+        .map(result)
+        .map_err(|source| match source {
+            TokenMetadataError::PrincipalUnavailable => error(
+                error_code::PRINCIPAL_UNAVAILABLE,
+                "the local principal is unavailable; run `tribal setup`".to_owned(),
                 None,
-            )
-        })?;
-    let list = wire::TokenList {
-        tokens: tokens
-            .iter()
-            .map(|token| token_info(principal.principal_key(), token))
-            .collect(),
-    };
-    Ok(result(list))
-}
-
-/// Maps one stored token to its non-secret metadata.
-fn token_info(principal_key: &str, token: &AuthToken) -> wire::TokenInfo {
-    wire::TokenInfo {
-        principal: principal_key.to_owned(),
-        scopes: token
-            .scopes()
-            .iter()
-            .map(|scope| scope.as_str().to_owned())
-            .collect(),
-        created_at: token.created_at(),
-        expires_at: Some(token.expires_at()),
-    }
+            ),
+            source @ (TokenMetadataError::Acquire { .. } | TokenMetadataError::Read { .. }) => {
+                error(INTERNAL_ERROR, source.to_string(), None)
+            }
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -915,7 +883,7 @@ mod tests {
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::layer::SubscriberExt;
     use tribal_config::TransportKind;
-    use tribal_domain::{AuthTokenId, PrincipalId, ProviderKind, Scope};
+    use tribal_domain::{AuthToken, AuthTokenId, PrincipalId, ProviderKind, Scope};
     use tribal_telemetry::LogRing;
 
     use super::*;
@@ -2014,7 +1982,7 @@ mod tests {
             .expires_at(Utc::now() + Duration::hours(1))
             .created_at(Utc::now())
             .build();
-        let info = token_info("principal:local", &token);
+        let info = super::super::token_service::token_info("principal:local", &token);
         assert_eq!(info.principal, "principal:local");
         assert_eq!(info.scopes, vec![scope.as_str().to_owned()]);
         assert!(info.expires_at.is_some(), "every token expires");

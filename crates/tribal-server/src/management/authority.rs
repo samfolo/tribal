@@ -46,6 +46,7 @@ pub(crate) struct AuthorityPaths {
     pub(crate) lock_path: PathBuf,
     pub(crate) descriptor_path: PathBuf,
     pub(crate) socket_path: PathBuf,
+    pub(crate) runtime_control_socket_path: PathBuf,
     pub(crate) custody_socket_path: PathBuf,
     pub(crate) delegated_descriptor_path: PathBuf,
 }
@@ -263,6 +264,7 @@ impl Drop for AuthorityLease {
         if owns_descriptor {
             let _ = std::fs::remove_file(&self.paths.descriptor_path);
             let _ = std::fs::remove_file(&self.paths.socket_path);
+            let _ = std::fs::remove_file(&self.paths.runtime_control_socket_path);
         }
         let _ = fs2::FileExt::unlock(&self.file);
     }
@@ -322,6 +324,7 @@ fn derive_paths(
         lock_path: canonical_config_path.with_file_name(format!(".{file_name}.authority.lock")),
         descriptor_path: state_dir.join("authority.json"),
         socket_path: runtime_dir.join(format!("manager-{key}.sock")),
+        runtime_control_socket_path: runtime_dir.join(format!("runtime-{key}.sock")),
         custody_socket_path: runtime_dir.join(format!("custody-{key}.sock")),
         delegated_descriptor_path: state_dir.join("delegated-runtime.json"),
     })

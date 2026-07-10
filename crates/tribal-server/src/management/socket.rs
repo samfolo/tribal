@@ -355,6 +355,13 @@ async fn dispatch(
         "runtime.stop" => lifecycle_value(lifecycle.stop().await),
         "runtime.restart" => lifecycle_value(lifecycle.restart().await),
         "manager.shutdown" => lifecycle_value(lifecycle.shutdown().await),
+        "server.status" => lifecycle_value(lifecycle.runtime_status().await),
+        "logs.tail" => {
+            let request: tribal_wire::management::RuntimeLogsTailRequest =
+                parse_params(request.params)?;
+            lifecycle_value(lifecycle.runtime_logs_tail(request.lines).await)
+        }
+        "token.list" => lifecycle_value(lifecycle.runtime_token_list().await),
         "check.report" | "database.probe" => readiness_value(config, lifecycle, false).await,
         "credential.probe" => readiness_value(config, lifecycle, true).await,
         "config.getAll" => to_value(config.document().await),
@@ -380,26 +387,46 @@ async fn dispatch(
             }))
         }
         "config.set" => {
-            let mut outcome = config
-                .set(parse_params(request.params)?)
-                .await
-                .map_err(management_error)?;
-            project_runtime_effect(lifecycle, &mut outcome.effect).await;
+            let request: tribal_wire::management::ConfigSetRequest = parse_params(request.params)?;
+            let runtime_changes = vec![tribal_wire::runtime_control::RuntimeConfigChange {
+                key: request.key.clone(),
+                value: tribal_wire::management::ConfigLiteral::new(
+                    request.value.expose_sensitive().clone(),
+                ),
+            }];
+            let mut outcome = config.set(request).await.map_err(management_error)?;
+            project_runtime_effect(
+                lifecycle,
+                &mut outcome.effect,
+                outcome.revision.clone(),
+                runtime_changes,
+            )
+            .await;
             if !matches!(
                 outcome.effect,
                 tribal_wire::management::ConfigWriteEffect::Unchanged
+                    | tribal_wire::management::ConfigWriteEffect::AppliedLive
             ) {
                 lifecycle.config_changed().await;
             }
             product_value(Ok(outcome))
         }
         "config.patch" => {
-            let mut outcome = config
-                .patch(parse_params(request.params)?)
-                .await
-                .map_err(management_error)?;
-            project_patch_effects(lifecycle, &mut outcome).await;
-            if patch_changed(&outcome) {
+            let request: tribal_wire::management::ConfigPatchRequest =
+                parse_params(request.params)?;
+            let runtime_changes = request
+                .changes
+                .iter()
+                .map(|change| tribal_wire::runtime_control::RuntimeConfigChange {
+                    key: change.key.clone(),
+                    value: tribal_wire::management::ConfigLiteral::new(
+                        change.value.expose_sensitive().clone(),
+                    ),
+                })
+                .collect();
+            let mut outcome = config.patch(request).await.map_err(management_error)?;
+            project_patch_effects(lifecycle, &mut outcome, runtime_changes).await;
+            if patch_requires_lifecycle_update(&outcome) {
                 lifecycle.config_changed().await;
             }
             product_value(Ok(outcome))
@@ -407,8 +434,8 @@ async fn dispatch(
         "models.catalogue" => product_value(product.models_catalogue().await),
         "models.select" => {
             let mut outcome = product.select_model(parse_params(request.params)?).await?;
-            project_patch_effects(lifecycle, &mut outcome).await;
-            if patch_changed(&outcome) {
+            project_patch_effects(lifecycle, &mut outcome, Vec::new()).await;
+            if patch_requires_lifecycle_update(&outcome) {
                 lifecycle.config_changed().await;
             }
             product_value(Ok(outcome))
@@ -424,8 +451,8 @@ async fn dispatch(
             let mut outcome = product
                 .configure_genesis(parse_params(request.params)?)
                 .await?;
-            project_patch_effects(lifecycle, &mut outcome).await;
-            if patch_changed(&outcome) {
+            project_patch_effects(lifecycle, &mut outcome, Vec::new()).await;
+            if patch_requires_lifecycle_update(&outcome) {
                 lifecycle.config_changed().await;
             }
             product_value(Ok(outcome))
@@ -498,22 +525,44 @@ fn product_value<T: serde::Serialize>(
 async fn project_runtime_effect(
     lifecycle: &LifecycleController,
     effect: &mut tribal_wire::management::ConfigWriteEffect,
+    revision: tribal_wire::management::ConfigRevision,
+    changes: Vec<tribal_wire::runtime_control::RuntimeConfigChange>,
 ) {
     if matches!(
         effect,
         tribal_wire::management::ConfigWriteEffect::OnNextStart
-    ) && lifecycle
-        .snapshot()
-        .await
-        .is_some_and(|snapshot| lifecycle_has_runtime(&snapshot.phase))
-    {
-        *effect = tribal_wire::management::ConfigWriteEffect::AwaitingRestart;
+    ) {
+        let running = lifecycle
+            .snapshot()
+            .await
+            .is_some_and(|snapshot| lifecycle_has_runtime(&snapshot.phase));
+        if !running {
+            return;
+        }
+        let hot = !changes.is_empty()
+            && changes.iter().all(|change| {
+                tribal_config::reload_class(change.key.as_str()) == tribal_config::ReloadClass::Hot
+            });
+        let applied = if hot {
+            lifecycle.apply_config(revision, changes).await
+        } else {
+            None
+        };
+        *effect = if matches!(
+            applied,
+            Some(tribal_wire::runtime_control::RuntimeConfigApplyOutcome::Applied)
+        ) {
+            tribal_wire::management::ConfigWriteEffect::AppliedLive
+        } else {
+            tribal_wire::management::ConfigWriteEffect::AwaitingRestart
+        };
     }
 }
 
 async fn project_patch_effects(
     lifecycle: &LifecycleController,
     outcome: &mut tribal_wire::management::ConfigPatchOutcome,
+    changes: Vec<tribal_wire::runtime_control::RuntimeConfigChange>,
 ) {
     let running = lifecycle
         .snapshot()
@@ -522,12 +571,30 @@ async fn project_patch_effects(
     if !running {
         return;
     }
+    let hot = !changes.is_empty()
+        && changes.iter().all(|change| {
+            tribal_config::reload_class(change.key.as_str()) == tribal_config::ReloadClass::Hot
+        });
+    let applied = if hot {
+        lifecycle
+            .apply_config(outcome.revision.clone(), changes)
+            .await
+    } else {
+        None
+    };
     for field in &mut outcome.fields {
         if matches!(
             field.effect,
             tribal_wire::management::ConfigWriteEffect::OnNextStart
         ) {
-            field.effect = tribal_wire::management::ConfigWriteEffect::AwaitingRestart;
+            field.effect = if matches!(
+                applied,
+                Some(tribal_wire::runtime_control::RuntimeConfigApplyOutcome::Applied)
+            ) {
+                tribal_wire::management::ConfigWriteEffect::AppliedLive
+            } else {
+                tribal_wire::management::ConfigWriteEffect::AwaitingRestart
+            };
         }
     }
 }
@@ -543,11 +610,12 @@ fn lifecycle_has_runtime(phase: &tribal_wire::management::LifecyclePhase) -> boo
     )
 }
 
-fn patch_changed(outcome: &tribal_wire::management::ConfigPatchOutcome) -> bool {
+fn patch_requires_lifecycle_update(outcome: &tribal_wire::management::ConfigPatchOutcome) -> bool {
     outcome.fields.iter().any(|field| {
         !matches!(
             field.effect,
             tribal_wire::management::ConfigWriteEffect::Unchanged
+                | tribal_wire::management::ConfigWriteEffect::AppliedLive
         )
     })
 }
@@ -670,10 +738,13 @@ mod tests {
                 serde_yaml::to_string(&config).expect("config serialises"),
             )
             .expect("config writes");
-            let (config, _terminal) = super::super::worker::spawn(
+            let (config, mut worker_runtime) = super::super::worker::spawn(
                 super::super::configuration::ConfigAuthority::new(config_path.clone()),
             )
             .expect("config worker starts");
+            let config_terminal = worker_runtime
+                .take_terminal()
+                .expect("worker terminal has one owner");
             let authority = super::super::authority::AuthorityLease::acquire(&config_path)
                 .expect("authority acquisition succeeds");
             let super::super::authority::AuthorityAcquire::Acquired(authority) = authority else {
@@ -681,12 +752,13 @@ mod tests {
             };
             let listener = bind(&path).await.expect("management socket binds");
             let shutdown = CancellationToken::new();
-            let (lifecycle, _lifecycle_task) = super::super::lifecycle::LifecycleController::spawn(
+            let (lifecycle, lifecycle_task) = super::super::lifecycle::LifecycleController::spawn(
                 "manager".to_owned(),
                 config_path,
                 config.clone(),
                 Arc::new(authority),
                 shutdown.clone(),
+                config_terminal,
                 None,
             )
             .await
@@ -724,6 +796,8 @@ mod tests {
             );
             shutdown.cancel();
             task.await.expect("socket task joins");
+            lifecycle_task.await.expect("lifecycle task joins");
+            worker_runtime.join().expect("config worker joins");
         }
     }
 }

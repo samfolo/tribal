@@ -24,7 +24,7 @@ use crate::{
         },
         configuration::ConfigAuthority,
         custody::{CustodyError, PendingRecovery},
-        lifecycle::{LifecycleController, LifecycleStartError, RecoveredRuntime},
+        lifecycle::{LifecycleController, LifecycleExit, LifecycleStartError, RecoveredRuntime},
         product::ProductService,
         readiness,
         socket::{self, ManagerSocketError, ManagerSocketIdentity},
@@ -71,11 +71,10 @@ pub(crate) enum ManageError {
     },
     #[error("configuration worker terminated")]
     ConfigWorkerTerminated,
-    #[error("joining configuration worker: {source}")]
-    ConfigWorkerJoin {
-        #[source]
-        source: tokio::task::JoinError,
-    },
+    #[error("configuration worker terminal channel is unavailable")]
+    ConfigWorkerTerminalUnavailable,
+    #[error("configuration worker thread panicked while joining")]
+    ConfigWorkerJoin,
     #[error("lifecycle owner startup failed: {source}")]
     LifecycleStart {
         #[source]
@@ -189,12 +188,16 @@ async fn run_async(
         lease.paths().canonical_config_path.clone(),
     ))
     .map_err(|source| ManageError::ConfigWorkerStart { source })?;
-    let (lifecycle, lifecycle_task) = LifecycleController::spawn(
+    let config_terminal = worker_runtime
+        .take_terminal()
+        .ok_or(ManageError::ConfigWorkerTerminalUnavailable)?;
+    let (lifecycle, mut lifecycle_task) = LifecycleController::spawn(
         instance_id,
         lease.paths().canonical_config_path.clone(),
         config.clone(),
         Arc::clone(&lease),
         shutdown.clone(),
+        config_terminal,
         recovered,
     )
     .await
@@ -232,17 +235,15 @@ async fn run_async(
     if let Some(fd) = machine_stdout_fd {
         close_machine_stdout(fd);
     }
-    let worker_exit = tokio::select! {
-        biased;
-        terminal = &mut worker_runtime.terminal => terminal.ok(),
-        () = shutdown.cancelled() => None,
+    let mut lifecycle_exit = None;
+    tokio::select! {
+        () = shutdown.cancelled() => {}
         signal = tokio::signal::ctrl_c() => {
             signal.map_err(|source| ManageError::Signal { source })?;
-            None
         }
-    };
-    if let Some(ConfigWorkerExit::Panicked { correlation }) = &worker_exit {
-        lifecycle.config_worker_fatal(correlation.clone()).await;
+        joined = &mut lifecycle_task => {
+            lifecycle_exit = Some(joined.map_err(|source| ManageError::LifecycleJoin { source })?);
+        }
     }
     shutdown.cancel();
     if let Err(error) = socket_task.await {
@@ -255,14 +256,16 @@ async fn run_async(
         tracing::error!(%error, "readiness task failed");
     }
     drop(lifecycle);
-    lifecycle_task
-        .await
-        .map_err(|source| ManageError::LifecycleJoin { source })?;
+    let lifecycle_exit = match lifecycle_exit {
+        Some(exit) => exit,
+        None => lifecycle_task
+            .await
+            .map_err(|source| ManageError::LifecycleJoin { source })?,
+    };
     worker_runtime
         .join()
-        .await
-        .map_err(|source| ManageError::ConfigWorkerJoin { source })?;
-    if let Some(exit) = worker_exit {
+        .map_err(|_| ManageError::ConfigWorkerJoin)?;
+    if let LifecycleExit::ConfigWorkerTerminated(exit) = lifecycle_exit {
         match exit {
             ConfigWorkerExit::InputClosed => tracing::error!("configuration worker input closed"),
             ConfigWorkerExit::Panicked { correlation } => {
@@ -347,6 +350,7 @@ async fn watch_config_file(
     let mut last_revision = config.document().await.ok().and_then(document_revision);
     let mut managed_changes = config.subscribe();
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             () = shutdown.cancelled() => return,
@@ -380,7 +384,7 @@ async fn refresh_readiness(
 ) {
     let mut config_events = config.subscribe();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             () = shutdown.cancelled() => return,
@@ -502,6 +506,7 @@ async fn recover_or_report(
         Some(RecoveredRuntime {
             identity: recovered.runtime,
             custody: recovered.custody,
+            control_proof: recovered.control_proof,
         }),
     ))
 }

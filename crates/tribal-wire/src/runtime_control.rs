@@ -7,7 +7,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use tribal_domain::ConfigFieldPath;
 
-use crate::management::{ConfigLiteral, ConfigRevision, ReadinessReport, RuntimeIdentity};
+use crate::{
+    management::{ConfigLiteral, ConfigRevision, ReadinessReport, RuntimeIdentity},
+    token::TokenList,
+};
 
 /// Version of the private manager/runtime contract.
 pub const RUNTIME_CONTROL_CONTRACT_VERSION: u16 = 1;
@@ -158,6 +161,7 @@ pub enum RuntimeControlRequest {
     LogsTail {
         lines: u32,
     },
+    TokenList,
 }
 
 impl fmt::Debug for RuntimeControlRequest {
@@ -172,6 +176,7 @@ impl fmt::Debug for RuntimeControlRequest {
                 .finish(),
             Self::Stop { runtime } => formatter.debug_tuple("Stop").field(runtime).finish(),
             Self::LogsTail { lines } => formatter.debug_tuple("LogsTail").field(lines).finish(),
+            Self::TokenList => formatter.write_str("TokenList"),
         }
     }
 }
@@ -181,7 +186,6 @@ impl fmt::Debug for RuntimeControlRequest {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ManagedRuntimeStatus {
     pub runtime: RuntimeIdentity,
-    pub restart_pending: bool,
 }
 
 /// Result of offering a durable configuration revision for live adoption.
@@ -201,6 +205,7 @@ pub enum RuntimeConfigApplyOutcome {
 pub enum RuntimeConfigApplyRefusal {
     RevisionStale,
     UnsupportedField,
+    ConfigUnavailable,
     RuntimeTerminating,
 }
 
@@ -214,6 +219,7 @@ pub enum RuntimeControlResponse {
     ApplyConfig { outcome: RuntimeConfigApplyOutcome },
     StopAccepted,
     LogsTail { lines: Vec<String> },
+    TokenList { list: TokenList },
     Refused { reason: RuntimeControlRefusal },
 }
 

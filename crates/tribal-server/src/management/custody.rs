@@ -11,6 +11,7 @@ use std::{
     },
     path::{Path, PathBuf},
     ptr,
+    sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
 
@@ -35,6 +36,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub(crate) const MANAGED_RUNTIME_INSTANCE_ID: &str = "TRIBAL_MANAGED_RUNTIME_INSTANCE_ID";
 pub(crate) const MANAGED_MANAGER_INSTANCE_ID: &str = "TRIBAL_MANAGED_MANAGER_INSTANCE_ID";
 pub(crate) const MANAGED_CUSTODY_PROOF: &str = "TRIBAL_MANAGED_CUSTODY_PROOF";
+
+/// Process-local proof registry shared by custody rotation and runtime control.
+pub(crate) type RuntimeProofRegistry = Arc<RwLock<zeroize::Zeroizing<String>>>;
 
 /// Durable runtime-owned recovery record.
 #[derive(Serialize, Deserialize)]
@@ -68,6 +72,7 @@ pub(crate) struct RuntimeCustodyGuard {
     descriptor_path: PathBuf,
     cancellation: CancellationToken,
     thread: Option<std::thread::JoinHandle<()>>,
+    control_proof: RuntimeProofRegistry,
 }
 
 /// Manager-side lifetime custody connection.
@@ -92,6 +97,17 @@ pub(crate) struct RecoveredAuthority {
     pub(crate) custody: ManagerCustody,
     pub(crate) lease: AuthorityLease,
     pub(crate) runtime: RuntimeIdentity,
+    pub(crate) control_proof: RuntimeCustodyProof,
+}
+
+#[derive(Clone, Copy)]
+struct RecoveryContext<'a> {
+    listener: &'a UnixListener,
+    lease_file: &'a File,
+    cancellation: &'a CancellationToken,
+    descriptor_path: &'a Path,
+    socket_path: &'a Path,
+    control_proof: &'a RuntimeProofRegistry,
 }
 
 /// Custody or recovery failure.
@@ -307,6 +323,9 @@ impl RuntimeCustodyGuard {
             canonical_config_path: paths.canonical_config_path.clone(),
         };
         persist_descriptor(&paths.delegated_descriptor_path, &descriptor)?;
+        let control_proof = Arc::new(RwLock::new(zeroize::Zeroizing::new(
+            descriptor.proof.expose_secret().to_owned(),
+        )));
         write_frame(
             &mut stream,
             &CustodyResponse::Committed,
@@ -323,18 +342,19 @@ impl RuntimeCustodyGuard {
         let thread_descriptor_path = descriptor_path.clone();
         let thread_socket_path = socket_path.clone();
         let thread_cancellation = cancellation.clone();
+        let thread_control_proof = Arc::clone(&control_proof);
         let thread = std::thread::Builder::new()
             .name("tribal-runtime-custody".to_owned())
             .spawn(move || {
-                serve_recovery(
-                    &listener,
-                    stream,
-                    &lease_file,
-                    descriptor,
-                    &thread_cancellation,
-                    &thread_descriptor_path,
-                    &thread_socket_path,
-                );
+                let context = RecoveryContext {
+                    listener: &listener,
+                    lease_file: &lease_file,
+                    cancellation: &thread_cancellation,
+                    descriptor_path: &thread_descriptor_path,
+                    socket_path: &thread_socket_path,
+                    control_proof: &thread_control_proof,
+                };
+                serve_recovery(&context, stream, descriptor);
             })
             .map_err(|source| io_error(&socket_path, source))?;
         Ok(Some(Self {
@@ -342,7 +362,13 @@ impl RuntimeCustodyGuard {
             descriptor_path,
             cancellation,
             thread: Some(thread),
+            control_proof,
         }))
+    }
+
+    /// Shares the current proof with the private runtime-control listener.
+    pub(crate) fn control_proof(&self) -> RuntimeProofRegistry {
+        Arc::clone(&self.control_proof)
     }
 }
 
@@ -504,6 +530,7 @@ impl PendingRecovery {
     /// Commits the new proof after the successor's public socket is bound.
     pub(crate) fn commit(mut self) -> Result<RecoveredAuthority, CustodyError> {
         let socket_path = self.lease.paths().custody_socket_path.clone();
+        let control_proof = RuntimeCustodyProof::new(self.next_proof.expose_secret().to_owned());
         write_frame(
             &mut self.stream,
             &CustodyRequest::CommitRecovery {
@@ -523,6 +550,7 @@ impl PendingRecovery {
                     },
                     lease: self.lease,
                     runtime: self.runtime,
+                    control_proof,
                 })
             }
             CustodyResponse::Refused { reason } => Err(CustodyError::Refused { reason }),
@@ -543,14 +571,18 @@ pub(crate) fn generate_proof() -> Result<RuntimeCustodyProof, CustodyError> {
 }
 
 fn serve_recovery(
-    listener: &UnixListener,
+    context: &RecoveryContext<'_>,
     mut lifetime: UnixStream,
-    lease_file: &File,
     mut descriptor: DelegatedRuntimeDescriptor,
-    cancellation: &CancellationToken,
-    descriptor_path: &Path,
-    socket_path: &Path,
 ) {
+    let RecoveryContext {
+        listener,
+        lease_file,
+        cancellation,
+        descriptor_path,
+        socket_path,
+        control_proof,
+    } = *context;
     let mut blocked = false;
     loop {
         if cancellation.is_cancelled() {
@@ -646,7 +678,7 @@ fn serve_recovery(
                 descriptor.generation = descriptor.generation.saturating_add(1);
                 persist_descriptor(descriptor_path, &descriptor)
             }) {
-                Ok(()) => {}
+                Ok(()) => replace_runtime_proof(control_proof, &descriptor.proof),
                 Err(_) => blocked = true,
             }
             continue;
@@ -682,12 +714,20 @@ fn serve_recovery(
             );
             continue;
         }
+        replace_runtime_proof(control_proof, &descriptor.proof);
         if write_frame(&mut claimant, &CustodyResponse::Committed, socket_path).is_err() {
             continue;
         }
         claimant.set_read_timeout(None).ok();
         lifetime = claimant;
     }
+}
+
+fn replace_runtime_proof(registry: &RuntimeProofRegistry, proof: &RuntimeCustodyProof) {
+    let mut current = registry
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *current = zeroize::Zeroizing::new(proof.expose_secret().to_owned());
 }
 
 fn accept_claim(
@@ -1096,6 +1136,7 @@ mod tests {
         let first = ManagerCustody::attach_initial(&paths, "manager-one", proof)
             .expect("initial manager attaches");
         let guard = runtime.join().expect("runtime bootstrap joins");
+        let control_proof = guard.control_proof();
         drop(first);
 
         let first_recovery =
@@ -1104,10 +1145,15 @@ mod tests {
                 .commit()
                 .expect("first successor commits");
         assert_eq!(first_recovery.runtime.instance_id, "runtime-one");
+        assert_eq!(
+            control_proof.read().expect("control proof reads").as_str(),
+            first_recovery.control_proof.expose_secret(),
+        );
         let RecoveredAuthority {
             custody,
             lease,
             runtime: _,
+            control_proof: _,
         } = first_recovery;
         drop(custody);
         drop(lease);
@@ -1117,10 +1163,15 @@ mod tests {
             .commit()
             .expect("second successor commits");
         assert_eq!(second_recovery.runtime.instance_id, "runtime-one");
+        assert_eq!(
+            control_proof.read().expect("control proof reads").as_str(),
+            second_recovery.control_proof.expose_secret(),
+        );
         let RecoveredAuthority {
             mut custody,
             lease,
             runtime,
+            control_proof: _,
         } = second_recovery;
         custody.stop(&runtime).expect("recovered runtime stops");
         assert!(cancellation.is_cancelled());

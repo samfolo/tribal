@@ -14,13 +14,14 @@ use tribal_wire::management::{
     ConfigDiagnosticLocation, ConfigDocument, ConfigFilePath, CustodyLossTerminationRuntime,
     DegradedReason, FailedNoRuntimeLifecycleSnapshot, FailedNoRuntimePhase,
     HealthDegradedReadinessReport, HealthVerdict, LifecyclePhase, LifecycleSnapshot,
-    LifecycleSnapshotHeader, ManagerShutdownOperation, ManagerShutdownResult,
-    ManagerTerminatingLifecycleSnapshot, ManagerTerminatingPhase, ManagerTermination,
-    ManagerTerminationRuntime, NoRuntimeLifecycleSnapshot, NoRuntimePhase, ReadinessReport,
-    RestartOperationInProgress, RestartRuntimeOperation,
+    LifecycleSnapshotHeader, ManagedRuntimeStatusResult, ManagerShutdownOperation,
+    ManagerShutdownResult, ManagerTerminatingLifecycleSnapshot, ManagerTerminatingPhase,
+    ManagerTermination, ManagerTerminationRuntime, NoRuntimeLifecycleSnapshot, NoRuntimePhase,
+    ReadinessReport, RestartOperationInProgress, RestartRuntimeOperation,
     RestartRuntimeUnresponsiveLifecycleSnapshot, RestartRuntimeUnresponsivePhase,
-    RunningLifecycleSnapshot, RunningPhase, RuntimeExitFailure, RuntimeIdentity, RuntimeOperation,
-    RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult, RuntimeStopTimedOutFailure,
+    RunningLifecycleSnapshot, RunningPhase, RuntimeExitFailure, RuntimeIdentity,
+    RuntimeLogsTailResult, RuntimeOperation, RuntimeReadUnavailable, RuntimeRestartResult,
+    RuntimeStartResult, RuntimeStopResult, RuntimeStopTimedOutFailure, RuntimeTokenListResult,
     RuntimeUnresponsiveLifecycleSnapshot, RuntimeUnresponsivePhase,
     ShutdownInProgressLifecycleSnapshot, ShutdownInProgressPhase,
     ShutdownRuntimeUnresponsiveLifecycleSnapshot, ShutdownRuntimeUnresponsivePhase,
@@ -30,6 +31,7 @@ use tribal_wire::management::{
     StoppedState, StoppingLifecycleSnapshot, StoppingPhase,
 };
 use tribal_wire::runtime_control::RuntimeCustodyProof;
+use tribal_wire::runtime_control::{RuntimeConfigApplyOutcome, RuntimeConfigChange};
 
 use crate::commands::serve::MANAGED_AUTHORITY_FD;
 
@@ -40,7 +42,8 @@ use super::{
         ManagerCustody, generate_proof,
     },
     readiness,
-    worker::ConfigWorkerClient,
+    runtime_control::{RuntimeControlClient, RuntimeControlConnection, RuntimeControlError},
+    worker::{ConfigWorkerClient, ConfigWorkerExit},
 };
 
 const COMMAND_CAPACITY: usize = 16;
@@ -60,10 +63,20 @@ enum LifecycleCommand {
     Stop(oneshot::Sender<RuntimeStopResult>),
     Restart(oneshot::Sender<RuntimeRestartResult>),
     Shutdown(oneshot::Sender<ManagerShutdownResult>),
+    ApplyConfig {
+        revision: tribal_wire::management::ConfigRevision,
+        changes: Vec<RuntimeConfigChange>,
+        response: oneshot::Sender<RuntimeConfigApplyOutcome>,
+    },
+    RuntimeStatus(oneshot::Sender<ManagedRuntimeStatusResult>),
+    RuntimeLogsTail {
+        lines: u32,
+        response: oneshot::Sender<RuntimeLogsTailResult>,
+    },
+    RuntimeTokenList(oneshot::Sender<RuntimeTokenListResult>),
     Refresh,
     ConfigChanged,
     Readiness(ReadinessReport),
-    ConfigWorkerFatal(Option<tribal_wire::management::PanicCorrelationId>),
 }
 
 enum ManagedProcess {
@@ -75,20 +88,46 @@ struct ManagedChild {
     process: ManagedProcess,
     identity: RuntimeIdentity,
     custody: ManagerCustody,
+    control: RuntimeControlConnection,
 }
 
-struct PendingChild {
+struct PreparedChild {
     child: Child,
+    attachment: PendingAttachment,
+}
+
+struct PendingAttachment {
     identity: RuntimeIdentity,
     paths: AuthorityPaths,
     manager_instance_id: String,
-    proof: RuntimeCustodyProof,
+    custody_proof: RuntimeCustodyProof,
+    control_proof: RuntimeCustodyProof,
+}
+
+struct EarlyChild {
+    child: Child,
+    identity: RuntimeIdentity,
+    custody: Option<ManagerCustody>,
+    control: Option<RuntimeControlConnection>,
+    evidence: tribal_wire::management::EarlyChildTerminationEvidence,
+}
+
+struct LaunchAttachment {
+    custody: ManagerCustody,
+    control: RuntimeControlConnection,
+}
+
+struct LaunchFailure {
+    failure: StoppedProcessFailure,
+    evidence: tribal_wire::management::EarlyChildTerminationEvidence,
+    custody: Option<ManagerCustody>,
 }
 
 /// Runtime recovered through an authenticated lifetime-custody handoff.
 pub(crate) struct RecoveredRuntime {
     pub(crate) identity: RuntimeIdentity,
     pub(crate) custody: ManagerCustody,
+    pub(crate) control_proof: RuntimeCustodyProof,
 }
 
 enum LifecycleState {
@@ -106,6 +145,10 @@ enum LifecycleState {
         snapshot: ManagerTerminatingLifecycleSnapshot,
         operation: LifecycleOperation,
     },
+    TerminatingManaged {
+        snapshot: ManagerTerminatingLifecycleSnapshot,
+        child: ManagedChild,
+    },
     Terminating(ManagerTerminatingLifecycleSnapshot),
 }
 
@@ -119,9 +162,9 @@ struct LaunchingOperation {
     token: u64,
     snapshot: tribal_wire::management::StartingLifecycleSnapshot,
     origin: NoRuntimeLifecycleSnapshot,
-    evidence: tribal_wire::management::EarlyChildTerminationEvidence,
+    child: EarlyChild,
     intent: LaunchIntent,
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
 }
 
 enum LaunchIntent {
@@ -137,10 +180,12 @@ enum LaunchIntent {
 struct CancellingLaunchOperation {
     token: u64,
     header: LifecycleSnapshotHeader,
-    evidence: tribal_wire::management::EarlyChildTerminationEvidence,
+    child: EarlyChild,
     origin: NoRuntimeLifecycleSnapshot,
     intent: CancellationIntent,
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
+    deadline: tokio::time::Instant,
+    attachment_done: bool,
 }
 
 enum CancellationIntent {
@@ -156,7 +201,10 @@ struct StoppingOperation {
     token: u64,
     snapshot: StoppingLifecycleSnapshot,
     intent: StopIntent,
-    task: JoinHandle<()>,
+    child: Option<ManagedChild>,
+    task: Option<JoinHandle<()>>,
+    deadline: tokio::time::Instant,
+    forced: bool,
 }
 
 enum StopIntent {
@@ -175,7 +223,7 @@ enum StopIntent {
 enum LifecycleCompletion {
     Launched {
         token: u64,
-        result: Result<ManagedChild, StoppedProcessFailure>,
+        result: Result<LaunchAttachment, LaunchFailure>,
     },
     Stopped {
         token: u64,
@@ -188,13 +236,7 @@ enum LifecycleCompletion {
 }
 
 enum StopCompletion {
-    Stopped {
-        document: Option<ConfigDocument>,
-    },
-    Unresponsive {
-        child: Box<ManagedChild>,
-        failure: RuntimeStopTimedOutFailure,
-    },
+    Stopped { document: Option<ConfigDocument> },
 }
 
 struct LifecycleOwner {
@@ -210,6 +252,8 @@ struct LifecycleOwner {
     authority: Arc<AuthorityLease>,
     shutdown: CancellationToken,
     shutdown_seen: bool,
+    config_terminal: oneshot::Receiver<ConfigWorkerExit>,
+    worker_exit: Option<ConfigWorkerExit>,
 }
 
 /// Failure creating the lifecycle owner.
@@ -217,6 +261,18 @@ struct LifecycleOwner {
 pub(crate) enum LifecycleStartError {
     #[error("configuration worker is unavailable during lifecycle initialisation")]
     ConfigUnavailable,
+    #[error("managed runtime control is unavailable during lifecycle initialisation: {source}")]
+    RuntimeControl {
+        #[source]
+        source: RuntimeControlError,
+    },
+}
+
+/// Reason the lifecycle owner stopped.
+#[derive(Debug)]
+pub(crate) enum LifecycleExit {
+    Shutdown,
+    ConfigWorkerTerminated(ConfigWorkerExit),
 }
 
 impl LifecycleState {
@@ -226,9 +282,9 @@ impl LifecycleState {
             Self::Running { snapshot, .. } => snapshot.clone().into(),
             Self::Operating(operation) => operation.snapshot(),
             Self::Unresponsive { snapshot, .. } => snapshot.clone().into(),
-            Self::TerminatingOperation { snapshot, .. } | Self::Terminating(snapshot) => {
-                snapshot.clone().into()
-            }
+            Self::TerminatingOperation { snapshot, .. }
+            | Self::TerminatingManaged { snapshot, .. }
+            | Self::Terminating(snapshot) => snapshot.clone().into(),
         }
     }
 }
@@ -251,8 +307,9 @@ impl LifecycleController {
         config: ConfigWorkerClient,
         authority: Arc<AuthorityLease>,
         shutdown: CancellationToken,
+        config_terminal: oneshot::Receiver<ConfigWorkerExit>,
         recovered: Option<RecoveredRuntime>,
-    ) -> Result<(Self, JoinHandle<()>), LifecycleStartError> {
+    ) -> Result<(Self, JoinHandle<LifecycleExit>), LifecycleStartError> {
         let document = config
             .document()
             .await
@@ -263,20 +320,26 @@ impl LifecycleController {
             manager_version: env!("CARGO_PKG_VERSION").to_owned(),
         };
         let state = match recovered {
-            Some(recovered) => LifecycleState::Running {
-                snapshot: RunningLifecycleSnapshot {
-                    header,
-                    phase: RunningPhase::Healthy {
-                        runtime: recovered.identity.clone(),
-                        restart_pending: false,
+            Some(recovered) => {
+                let control = RuntimeControlClient::connect(
+                    &authority.paths().runtime_control_socket_path,
+                    &header.manager_instance_id,
+                    &recovered.identity,
+                    recovered.control_proof,
+                )
+                .await
+                .map_err(|source| LifecycleStartError::RuntimeControl { source })?;
+                let phase = running_phase(&recovered.identity, &control, false);
+                LifecycleState::Running {
+                    snapshot: RunningLifecycleSnapshot { header, phase },
+                    child: ManagedChild {
+                        process: ManagedProcess::Recovered,
+                        identity: recovered.identity,
+                        custody: recovered.custody,
+                        control,
                     },
-                },
-                child: ManagedChild {
-                    process: ManagedProcess::Recovered,
-                    identity: recovered.identity,
-                    custody: recovered.custody,
-                },
-            },
+                }
+            }
             None => LifecycleState::NoRuntime(no_runtime_snapshot(header, &document, None)),
         };
         let (publisher, snapshots) = watch::channel(state.snapshot());
@@ -295,6 +358,8 @@ impl LifecycleController {
             authority,
             shutdown,
             shutdown_seen: false,
+            config_terminal,
+            worker_exit: None,
         };
         let task = tokio::spawn(owner.run());
         Ok((Self { sender, snapshots }, task))
@@ -324,6 +389,40 @@ impl LifecycleController {
         request(&self.sender, LifecycleCommand::Shutdown).await
     }
 
+    pub(crate) async fn apply_config(
+        &self,
+        revision: tribal_wire::management::ConfigRevision,
+        changes: Vec<RuntimeConfigChange>,
+    ) -> Option<RuntimeConfigApplyOutcome> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(LifecycleCommand::ApplyConfig {
+                revision,
+                changes,
+                response,
+            })
+            .await
+            .ok()?;
+        receiver.await.ok()
+    }
+
+    pub(crate) async fn runtime_status(&self) -> Option<ManagedRuntimeStatusResult> {
+        request(&self.sender, LifecycleCommand::RuntimeStatus).await
+    }
+
+    pub(crate) async fn runtime_logs_tail(&self, lines: u32) -> Option<RuntimeLogsTailResult> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(LifecycleCommand::RuntimeLogsTail { lines, response })
+            .await
+            .ok()?;
+        receiver.await.ok()
+    }
+
+    pub(crate) async fn runtime_token_list(&self) -> Option<RuntimeTokenListResult> {
+        request(&self.sender, LifecycleCommand::RuntimeTokenList).await
+    }
+
     pub(crate) async fn refresh(&self) {
         let _ = self.sender.send(LifecycleCommand::Refresh).await;
     }
@@ -334,16 +433,6 @@ impl LifecycleController {
 
     pub(crate) async fn update_readiness(&self, report: ReadinessReport) {
         let _ = self.sender.send(LifecycleCommand::Readiness(report)).await;
-    }
-
-    pub(crate) async fn config_worker_fatal(
-        &self,
-        correlation: Option<tribal_wire::management::PanicCorrelationId>,
-    ) {
-        let _ = self
-            .sender
-            .send(LifecycleCommand::ConfigWorkerFatal(correlation))
-            .await;
     }
 }
 
@@ -357,15 +446,27 @@ async fn request<T>(
 }
 
 impl LifecycleOwner {
-    async fn run(mut self) {
+    async fn run(mut self) -> LifecycleExit {
         let mut process_poll = tokio::time::interval(Duration::from_millis(250));
         loop {
             tokio::select! {
                 biased;
+                terminal = &mut self.config_terminal, if self.worker_exit.is_none() => {
+                    let exit = terminal.unwrap_or(ConfigWorkerExit::InputClosed);
+                    let correlation = match &exit {
+                        ConfigWorkerExit::InputClosed => None,
+                        ConfigWorkerExit::Panicked { correlation } => correlation.clone(),
+                    };
+                    self.worker_exit = Some(exit);
+                    self.terminate_for_worker(correlation);
+                }
                 completion = self.completions.recv() => {
                     if let Some(completion) = completion {
                         self.handle_completion(completion).await;
                     }
+                }
+                _ = process_poll.tick(), if matches!(self.state, LifecycleState::Running { .. } | LifecycleState::Unresponsive { .. } | LifecycleState::Operating(LifecycleOperation::CancellingLaunch(_) | LifecycleOperation::Stopping(_))) => {
+                    self.observe_exit();
                 }
                 command = self.receiver.recv() => match command {
                     Some(command) => self.handle(command),
@@ -375,9 +476,6 @@ impl LifecycleOwner {
                     if let Some(Err(error)) = joined {
                         tracing::error!(%error, "lifecycle observation task failed");
                     }
-                }
-                _ = process_poll.tick(), if matches!(self.state, LifecycleState::Running { .. } | LifecycleState::Unresponsive { .. }) => {
-                    self.observe_exit();
                 }
                 () = self.shutdown.cancelled(), if !self.shutdown_seen => {
                     self.shutdown_seen = true;
@@ -389,7 +487,9 @@ impl LifecycleOwner {
             if self.shutdown_seen
                 && matches!(
                     self.state,
-                    LifecycleState::NoRuntime(_) | LifecycleState::Terminating(_)
+                    LifecycleState::NoRuntime(_)
+                        | LifecycleState::TerminatingManaged { .. }
+                        | LifecycleState::Terminating(_)
                 )
             {
                 break;
@@ -400,6 +500,10 @@ impl LifecycleOwner {
                 tracing::error!(%error, "lifecycle observation task failed during shutdown");
             }
         }
+        self.worker_exit.map_or(
+            LifecycleExit::Shutdown,
+            LifecycleExit::ConfigWorkerTerminated,
+        )
     }
 
     fn handle(&mut self, command: LifecycleCommand) {
@@ -411,12 +515,133 @@ impl LifecycleOwner {
             LifecycleCommand::Stop(response) => self.admit_stop(response),
             LifecycleCommand::Restart(response) => self.admit_restart(response),
             LifecycleCommand::Shutdown(response) => self.admit_shutdown(response),
+            LifecycleCommand::ApplyConfig {
+                revision,
+                changes,
+                response,
+            } => self.apply_runtime_config(revision, changes, response),
+            LifecycleCommand::RuntimeStatus(response) => self.runtime_status_read(response),
+            LifecycleCommand::RuntimeLogsTail { lines, response } => {
+                self.runtime_logs_read(lines, response);
+            }
+            LifecycleCommand::RuntimeTokenList(response) => self.runtime_tokens_read(response),
             LifecycleCommand::Refresh => self.request_document_refresh(),
             LifecycleCommand::ConfigChanged => self.apply_config_change(),
             LifecycleCommand::Readiness(report) => self.apply_readiness(report),
-            LifecycleCommand::ConfigWorkerFatal(correlation) => {
-                self.terminate_for_worker(correlation);
+        }
+    }
+
+    fn apply_runtime_config(
+        &mut self,
+        revision: tribal_wire::management::ConfigRevision,
+        changes: Vec<RuntimeConfigChange>,
+        response: oneshot::Sender<RuntimeConfigApplyOutcome>,
+    ) {
+        let client = match &self.state {
+            LifecycleState::Running { child, .. } => child.control.compatible(),
+            LifecycleState::NoRuntime(_)
+            | LifecycleState::Operating(_)
+            | LifecycleState::Unresponsive { .. }
+            | LifecycleState::TerminatingOperation { .. }
+            | LifecycleState::TerminatingManaged { .. }
+            | LifecycleState::Terminating(_) => None,
+        };
+        let Some(client) = client else {
+            let _ = response.send(RuntimeConfigApplyOutcome::RestartRequired);
+            return;
+        };
+        self.observations.spawn(async move {
+            let outcome = client
+                .apply_config(revision, changes)
+                .await
+                .unwrap_or(RuntimeConfigApplyOutcome::RestartRequired);
+            let _ = response.send(outcome);
+        });
+    }
+
+    fn runtime_status_read(&mut self, response: oneshot::Sender<ManagedRuntimeStatusResult>) {
+        let client = self.runtime_read_client();
+        let restart_pending = match &self.state {
+            LifecycleState::Running { snapshot, .. } => match &snapshot.phase {
+                RunningPhase::Healthy {
+                    restart_pending, ..
+                }
+                | RunningPhase::Degraded {
+                    restart_pending, ..
+                } => *restart_pending,
+                RunningPhase::VersionMismatch { .. } => false,
+            },
+            LifecycleState::NoRuntime(_)
+            | LifecycleState::Operating(_)
+            | LifecycleState::Unresponsive { .. }
+            | LifecycleState::TerminatingOperation { .. }
+            | LifecycleState::TerminatingManaged { .. }
+            | LifecycleState::Terminating(_) => false,
+        };
+        self.observations.spawn(async move {
+            let result = match client {
+                Ok(client) => match client.status().await {
+                    Ok(status) => ManagedRuntimeStatusResult::Available {
+                        status: tribal_wire::management::ManagedRuntimeStatus {
+                            runtime: status.runtime,
+                            restart_pending,
+                        },
+                    },
+                    Err(_) => ManagedRuntimeStatusResult::Unavailable {
+                        reason: RuntimeReadUnavailable::RuntimeControlUnavailable,
+                    },
+                },
+                Err(reason) => ManagedRuntimeStatusResult::Unavailable { reason },
+            };
+            let _ = response.send(result);
+        });
+    }
+
+    fn runtime_logs_read(&mut self, lines: u32, response: oneshot::Sender<RuntimeLogsTailResult>) {
+        let client = self.runtime_read_client();
+        self.observations.spawn(async move {
+            let result = match client {
+                Ok(client) => match client.logs_tail(lines).await {
+                    Ok(lines) => RuntimeLogsTailResult::Available { lines },
+                    Err(_) => RuntimeLogsTailResult::Unavailable {
+                        reason: RuntimeReadUnavailable::RuntimeControlUnavailable,
+                    },
+                },
+                Err(reason) => RuntimeLogsTailResult::Unavailable { reason },
+            };
+            let _ = response.send(result);
+        });
+    }
+
+    fn runtime_tokens_read(&mut self, response: oneshot::Sender<RuntimeTokenListResult>) {
+        let client = self.runtime_read_client();
+        self.observations.spawn(async move {
+            let result = match client {
+                Ok(client) => match client.token_list().await {
+                    Ok(list) => RuntimeTokenListResult::Available { list },
+                    Err(_) => RuntimeTokenListResult::Unavailable {
+                        reason: RuntimeReadUnavailable::RuntimeControlUnavailable,
+                    },
+                },
+                Err(reason) => RuntimeTokenListResult::Unavailable { reason },
+            };
+            let _ = response.send(result);
+        });
+    }
+
+    fn runtime_read_client(&self) -> Result<RuntimeControlClient, RuntimeReadUnavailable> {
+        match &self.state {
+            LifecycleState::Running { child, .. } | LifecycleState::Unresponsive { child, .. } => {
+                child
+                    .control
+                    .compatible()
+                    .ok_or(RuntimeReadUnavailable::VersionMismatch)
             }
+            LifecycleState::NoRuntime(_) => Err(RuntimeReadUnavailable::NoRuntime),
+            LifecycleState::Operating(_) => Err(RuntimeReadUnavailable::OperationInProgress),
+            LifecycleState::TerminatingOperation { .. }
+            | LifecycleState::TerminatingManaged { .. }
+            | LifecycleState::Terminating(_) => Err(RuntimeReadUnavailable::ManagerTerminating),
         }
     }
 
@@ -495,7 +720,8 @@ impl LifecycleOwner {
                 });
             }
             LifecycleState::Terminating(snapshot)
-            | LifecycleState::TerminatingOperation { snapshot, .. } => {
+            | LifecycleState::TerminatingOperation { snapshot, .. }
+            | LifecycleState::TerminatingManaged { snapshot, .. } => {
                 let _ = response.send(RuntimeStartResult::ManagerTerminating {
                     snapshot: snapshot.clone(),
                 });
@@ -521,16 +747,19 @@ impl LifecycleOwner {
             ),
             LifecycleState::Operating(LifecycleOperation::Launching(mut operation)) => {
                 supersede_launch(&mut operation.intent, StartSuperseder::Stop);
+                let _ = operation.child.child.start_kill();
                 LifecycleState::Operating(LifecycleOperation::CancellingLaunch(
                     CancellingLaunchOperation {
                         token: operation.token,
                         header: next_header(&operation.snapshot.header),
-                        evidence: operation.evidence,
+                        child: operation.child,
                         origin: operation.origin,
                         intent: CancellationIntent::Stop {
                             waiters: vec![response],
                         },
                         task: operation.task,
+                        deadline: tokio::time::Instant::now() + STOP_DEADLINE,
+                        attachment_done: false,
                     },
                 ))
             }
@@ -592,6 +821,12 @@ impl LifecycleOwner {
                     snapshot,
                     operation,
                 }
+            }
+            LifecycleState::TerminatingManaged { snapshot, child } => {
+                let _ = response.send(RuntimeStopResult::ManagerTerminating {
+                    snapshot: snapshot.clone(),
+                });
+                LifecycleState::TerminatingManaged { snapshot, child }
             }
         };
         self.publish_current();
@@ -691,6 +926,12 @@ impl LifecycleOwner {
                     operation,
                 }
             }
+            LifecycleState::TerminatingManaged { snapshot, child } => {
+                let _ = response.send(RuntimeRestartResult::ManagerTerminating {
+                    snapshot: snapshot.clone(),
+                });
+                LifecycleState::TerminatingManaged { snapshot, child }
+            }
         };
         self.publish_current();
     }
@@ -715,16 +956,19 @@ impl LifecycleOwner {
             ),
             LifecycleState::Operating(LifecycleOperation::Launching(mut operation)) => {
                 supersede_launch(&mut operation.intent, StartSuperseder::ManagerShutdown);
+                let _ = operation.child.child.start_kill();
                 LifecycleState::Operating(LifecycleOperation::CancellingLaunch(
                     CancellingLaunchOperation {
                         token: operation.token,
                         header: next_header(&operation.snapshot.header),
-                        evidence: operation.evidence,
+                        child: operation.child,
                         origin: operation.origin,
                         intent: CancellationIntent::Shutdown {
                             waiters: vec![response],
                         },
                         task: operation.task,
+                        deadline: tokio::time::Instant::now() + STOP_DEADLINE,
+                        attachment_done: false,
                     },
                 ))
             }
@@ -793,6 +1037,12 @@ impl LifecycleOwner {
                     operation,
                 }
             }
+            LifecycleState::TerminatingManaged { snapshot, child } => {
+                let _ = response.send(ManagerShutdownResult::ManagerTerminating {
+                    snapshot: snapshot.clone(),
+                });
+                LifecycleState::TerminatingManaged { snapshot, child }
+            }
         };
         self.publish_current();
     }
@@ -809,31 +1059,33 @@ impl LifecycleOwner {
             &self.authority,
             &snapshot.header.manager_instance_id,
         ) {
-            Ok(pending) => {
+            Ok(prepared) => {
+                let PreparedChild { child, attachment } = prepared;
                 let evidence = tribal_wire::management::EarlyChildTerminationEvidence::PreCommit {
-                    pid: pending.identity.pid,
-                    config_path: pending.identity.config_path.clone(),
+                    pid: attachment.identity.pid,
+                    config_path: attachment.identity.config_path.clone(),
+                };
+                let early_child = EarlyChild {
+                    child,
+                    identity: attachment.identity.clone(),
+                    custody: None,
+                    control: None,
+                    evidence,
                 };
                 let sender = self.completion_sender.clone();
                 let task = tokio::spawn(async move {
-                    let result = finish_launch(pending).await;
+                    let result = finish_launch(attachment).await;
                     let event = LifecycleCompletion::Launched { token, result };
-                    if let Err(error) = sender.send(event).await
-                        && let LifecycleCompletion::Launched {
-                            result: Ok(child), ..
-                        } = error.0
-                    {
-                        let _ = stop_managed_child(child).await;
-                    }
+                    let _ = sender.send(event).await;
                 });
                 self.state =
                     LifecycleState::Operating(LifecycleOperation::Launching(LaunchingOperation {
                         token,
                         snapshot,
                         origin,
-                        evidence,
+                        child: early_child,
                         intent,
-                        task,
+                        task: Some(task),
                     }));
                 self.publish_current();
             }
@@ -854,27 +1106,27 @@ impl LifecycleOwner {
                 runtime: child.identity.clone(),
             },
         };
-        let sender = self.completion_sender.clone();
-        let config = self.config.clone();
-        let task = tokio::spawn(async move {
-            let result = match stop_managed_child(child).await {
-                Ok(()) => StopCompletion::Stopped {
-                    document: config.document().await.ok(),
-                },
-                Err((child, failure)) => StopCompletion::Unresponsive {
-                    child: Box::new(child),
-                    failure,
-                },
-            };
-            let _ = sender
-                .send(LifecycleCompletion::Stopped { token, result })
-                .await;
+        let control = child.control.clone();
+        let runtime = child.identity.clone();
+        self.observations.spawn(async move {
+            match tokio::time::timeout(STOP_DEADLINE, control.stop(&runtime)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, pid = runtime.pid, "managed runtime stop was refused");
+                }
+                Err(_) => {
+                    tracing::warn!(pid = runtime.pid, "managed runtime stop request timed out");
+                }
+            }
         });
         LifecycleState::Operating(LifecycleOperation::Stopping(StoppingOperation {
             token,
             snapshot,
             intent,
-            task,
+            child: Some(child),
+            task: None,
+            deadline: tokio::time::Instant::now() + STOP_DEADLINE,
+            forced: false,
         }))
     }
 
@@ -908,63 +1160,98 @@ impl LifecycleOwner {
     async fn handle_launch_completion(
         &mut self,
         token: u64,
-        result: Result<ManagedChild, StoppedProcessFailure>,
+        result: Result<LaunchAttachment, LaunchFailure>,
     ) {
         let state = std::mem::replace(&mut self.state, placeholder_state());
         self.state = match state {
-            LifecycleState::Operating(LifecycleOperation::Launching(operation))
+            LifecycleState::Operating(LifecycleOperation::Launching(mut operation))
                 if operation.token == token =>
             {
-                let _ = operation.task.await;
+                if let Some(task) = operation.task.take() {
+                    let _ = task.await;
+                }
                 match result {
-                    Ok(child) => {
+                    Ok(attachment) => {
+                        if let Ok(Some(status)) = operation.child.child.try_wait() {
+                            let failure = StoppedProcessFailure::RuntimeAnnouncementFailed {
+                                presentation: failure_presentation(
+                                    "managed runtime exited during launch",
+                                    &status.to_string(),
+                                ),
+                            };
+                            let failed =
+                                failed_no_runtime_from_origin(&operation.origin, failure.clone());
+                            resolve_launch_failure(operation.intent, &failed);
+                            return self.finish_completion_state(LifecycleState::NoRuntime(
+                                with_failure(operation.origin, failure),
+                            ));
+                        }
+                        let child = ManagedChild {
+                            process: ManagedProcess::Owned(operation.child.child),
+                            identity: operation.child.identity,
+                            custody: attachment.custody,
+                            control: attachment.control,
+                        };
                         let snapshot = RunningLifecycleSnapshot {
                             header: next_header(&operation.snapshot.header),
-                            phase: RunningPhase::Healthy {
-                                runtime: child.identity.clone(),
-                                restart_pending: false,
-                            },
+                            phase: running_phase(&child.identity, &child.control, false),
                         };
                         resolve_launch_success(operation.intent, &snapshot);
                         LifecycleState::Running { snapshot, child }
                     }
                     Err(failure) => {
-                        let failed =
-                            failed_no_runtime_from_origin(&operation.origin, failure.clone());
+                        operation.child.evidence = failure.evidence;
+                        operation.child.custody = failure.custody;
+                        terminate_early_child(&mut operation.child).await;
+                        let failed = failed_no_runtime_from_origin(
+                            &operation.origin,
+                            failure.failure.clone(),
+                        );
                         resolve_launch_failure(operation.intent, &failed);
-                        LifecycleState::NoRuntime(with_failure(operation.origin, failure))
+                        LifecycleState::NoRuntime(with_failure(operation.origin, failure.failure))
                     }
                 }
             }
-            LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation))
+            LifecycleState::Operating(LifecycleOperation::CancellingLaunch(mut operation))
                 if operation.token == token =>
             {
-                let _ = operation.task.await;
-                if let Ok(child) = result {
-                    let running = RunningLifecycleSnapshot {
-                        header: next_header(&operation.header),
-                        phase: RunningPhase::Healthy {
-                            runtime: child.identity.clone(),
-                            restart_pending: false,
-                        },
-                    };
-                    let intent = match operation.intent {
-                        CancellationIntent::Stop { waiters } => StopIntent::Stop { waiters },
-                        CancellationIntent::Shutdown { waiters } => {
-                            StopIntent::Shutdown { waiters }
+                if let Some(task) = operation.task.take() {
+                    let _ = task.await;
+                }
+                operation.attachment_done = true;
+                match result {
+                    Ok(mut attachment) => {
+                        operation.child.evidence =
+                            tribal_wire::management::EarlyChildTerminationEvidence::Recoverable {
+                                runtime: operation.child.identity.clone(),
+                            };
+                        let _ = attachment.control.stop(&operation.child.identity).await;
+                        let _ = attachment.custody.stop(&operation.child.identity);
+                        operation.child.custody = Some(attachment.custody);
+                        operation.child.control = Some(attachment.control);
+                    }
+                    Err(failure) => {
+                        operation.child.evidence = failure.evidence;
+                        operation.child.custody = failure.custody;
+                        if let Some(custody) = &mut operation.child.custody {
+                            let _ = custody.stop(&operation.child.identity);
                         }
-                    };
-                    self.begin_stop_state(child, intent, &running)
-                } else {
+                    }
+                }
+                if early_child_exited(&mut operation.child) {
                     resolve_cancel_without_child(operation.intent, &operation.origin);
                     LifecycleState::NoRuntime(operation.origin)
+                } else {
+                    LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation))
                 }
             }
             LifecycleState::TerminatingOperation {
                 snapshot,
                 operation: LifecycleOperation::Launching(operation),
             } if operation.token == token => {
-                let _ = operation.task.await;
+                if let Some(task) = operation.task {
+                    let _ = task.await;
+                }
                 drop(result);
                 LifecycleState::Terminating(snapshot)
             }
@@ -972,17 +1259,22 @@ impl LifecycleOwner {
                 snapshot,
                 operation: LifecycleOperation::CancellingLaunch(operation),
             } if operation.token == token => {
-                let _ = operation.task.await;
+                if let Some(task) = operation.task {
+                    let _ = task.await;
+                }
                 drop(result);
                 LifecycleState::Terminating(snapshot)
             }
             other => {
-                if let Ok(child) = result {
-                    let _ = stop_managed_child(child).await;
-                }
+                drop(result);
                 other
             }
         };
+        self.publish_current();
+    }
+
+    fn finish_completion_state(&mut self, state: LifecycleState) {
+        self.state = state;
         self.publish_current();
     }
 
@@ -992,7 +1284,9 @@ impl LifecycleOwner {
             LifecycleState::Operating(LifecycleOperation::Stopping(operation))
                 if operation.token == token =>
             {
-                let _ = operation.task.await;
+                if let Some(task) = operation.task {
+                    let _ = task.await;
+                }
                 match result {
                     StopCompletion::Stopped { document } => {
                         let document = document.unwrap_or(ConfigDocument::Unreadable {
@@ -1055,28 +1349,15 @@ impl LifecycleOwner {
                             },
                         }
                     }
-                    StopCompletion::Unresponsive { child, failure } => {
-                        let snapshot = RuntimeUnresponsiveLifecycleSnapshot {
-                            header: next_header(&operation.snapshot.header),
-                            phase: RuntimeUnresponsivePhase::RuntimeUnresponsive {
-                                runtime: child.identity.clone(),
-                                operation: stop_intent_operation(&operation.intent),
-                                failure: failure.clone(),
-                            },
-                        };
-                        resolve_unresponsive(operation.intent, &snapshot);
-                        LifecycleState::Unresponsive {
-                            snapshot,
-                            child: *child,
-                        }
-                    }
                 }
             }
             LifecycleState::TerminatingOperation {
                 snapshot,
                 operation: LifecycleOperation::Stopping(operation),
             } if operation.token == token => {
-                let _ = operation.task.await;
+                if let Some(task) = operation.task {
+                    let _ = task.await;
+                }
                 drop(result);
                 LifecycleState::Terminating(snapshot)
             }
@@ -1098,60 +1379,235 @@ impl LifecycleOwner {
     }
 
     fn observe_exit(&mut self) {
-        let LifecycleState::Running { snapshot, child } = &mut self.state else {
+        if matches!(
+            self.state,
+            LifecycleState::Operating(LifecycleOperation::Stopping(_))
+        ) {
+            self.observe_stopping();
+            return;
+        }
+        if matches!(
+            self.state,
+            LifecycleState::Operating(LifecycleOperation::CancellingLaunch(_))
+        ) {
+            self.observe_early_cancellation();
+            return;
+        }
+        let state = std::mem::replace(&mut self.state, placeholder_state());
+        match state {
+            LifecycleState::Running { snapshot, child } => {
+                let header = snapshot.header.clone();
+                self.observe_managed_state(&header, child, |child| LifecycleState::Running {
+                    snapshot,
+                    child,
+                });
+            }
+            LifecycleState::Unresponsive { snapshot, child } => {
+                let header = snapshot.header.clone();
+                self.observe_managed_state(&header, child, |child| LifecycleState::Unresponsive {
+                    snapshot,
+                    child,
+                });
+            }
+            other => self.state = other,
+        }
+    }
+
+    fn observe_managed_state(
+        &mut self,
+        header: &LifecycleSnapshotHeader,
+        mut child: ManagedChild,
+        retain: impl FnOnce(ManagedChild) -> LifecycleState,
+    ) {
+        match managed_child_exit_detail(&mut child) {
+            Ok(Some(detail)) => {
+                let failure = StoppedProcessFailure::RuntimeExited {
+                    failure: RuntimeExitFailure {
+                        presentation: failure_presentation("managed runtime exited", &detail),
+                    },
+                };
+                let document = ConfigDocument::Unreadable {
+                    phase: tribal_wire::management::ConfigPersistencePhase::DurabilityUncertain,
+                };
+                self.state = LifecycleState::NoRuntime(no_runtime_snapshot(
+                    next_header(header),
+                    &document,
+                    Some(failure),
+                ));
+                self.publish_current();
+                self.request_document_refresh();
+            }
+            Ok(None) if child.custody.is_closed() => {
+                let snapshot = custody_loss_snapshot(header, &child.identity);
+                self.state = LifecycleState::TerminatingManaged { snapshot, child };
+                self.publish_current();
+                self.shutdown_seen = true;
+                self.shutdown.cancel();
+            }
+            Ok(None) => self.state = retain(child),
+            Err(error) => {
+                tracing::warn!(%error, "managed runtime status unavailable");
+                self.state = retain(child);
+            }
+        }
+    }
+
+    fn observe_stopping(&mut self) {
+        let LifecycleState::Operating(LifecycleOperation::Stopping(operation)) = &mut self.state
+        else {
             return;
         };
+        let Some(child) = &mut operation.child else {
+            return;
+        };
+        if managed_child_exited(child) {
+            drop(operation.child.take());
+            let token = operation.token;
+            let sender = self.completion_sender.clone();
+            let config = self.config.clone();
+            operation.task = Some(tokio::spawn(async move {
+                let result = StopCompletion::Stopped {
+                    document: config.document().await.ok(),
+                };
+                let _ = sender
+                    .send(LifecycleCompletion::Stopped { token, result })
+                    .await;
+            }));
+            return;
+        }
         if child.custody.is_closed() {
-            let terminating = ManagerTerminatingLifecycleSnapshot {
-                header: next_header(&snapshot.header),
-                phase: ManagerTerminatingPhase::ManagerTerminating {
-                    termination: ManagerTermination::CustodyLost {
-                        presentation: failure_presentation(
-                            "managed runtime custody was lost",
-                            "the manager will exit so a successor can recover the runtime",
-                        ),
-                        runtime: CustodyLossTerminationRuntime::Recoverable {
-                            runtime: child.identity.clone(),
-                        },
-                    },
-                },
+            let snapshot = custody_loss_snapshot(&operation.snapshot.header, &child.identity);
+            resolve_all_waiters_for_termination(&mut self.state, &snapshot);
+            let state = std::mem::replace(&mut self.state, placeholder_state());
+            let LifecycleState::Operating(LifecycleOperation::Stopping(mut operation)) = state
+            else {
+                self.state = state;
+                return;
             };
-            self.state = LifecycleState::Terminating(terminating);
+            let Some(child) = operation.child.take() else {
+                self.state = LifecycleState::Terminating(snapshot);
+                return;
+            };
+            self.state = LifecycleState::TerminatingManaged { snapshot, child };
             self.publish_current();
             self.shutdown_seen = true;
             self.shutdown.cancel();
             return;
         }
-        let exit = match &mut child.process {
-            ManagedProcess::Owned(process) => match process.try_wait() {
-                Ok(Some(status)) => Some(status.to_string()),
-                Ok(None) => None,
-                Err(error) => {
-                    tracing::warn!(%error, "managed runtime status unavailable");
-                    None
-                }
-            },
-            ManagedProcess::Recovered => {
-                (!process_exists(child.identity.pid)).then(|| "process exited".to_owned())
-            }
+        if tokio::time::Instant::now() < operation.deadline {
+            return;
+        }
+        if !operation.forced
+            && let ManagedProcess::Owned(process) = &mut child.process
+        {
+            let _ = process.start_kill();
+            operation.forced = true;
+            operation.deadline = tokio::time::Instant::now() + STOP_DEADLINE;
+            return;
+        }
+        let state = std::mem::replace(&mut self.state, placeholder_state());
+        let LifecycleState::Operating(LifecycleOperation::Stopping(mut operation)) = state else {
+            self.state = state;
+            return;
         };
-        if let Some(status) = exit {
-            let failure = StoppedProcessFailure::RuntimeExited {
-                failure: RuntimeExitFailure {
-                    presentation: failure_presentation(
-                        "managed runtime exited unexpectedly",
-                        &status,
-                    ),
+        let Some(child) = operation.child.take() else {
+            self.state = LifecycleState::Operating(LifecycleOperation::Stopping(operation));
+            return;
+        };
+        let failure = RuntimeStopTimedOutFailure {
+            presentation: failure_presentation(
+                "managed runtime did not stop before the deadline",
+                &format!("runtime pid {} remains active", child.identity.pid),
+            ),
+        };
+        let snapshot = RuntimeUnresponsiveLifecycleSnapshot {
+            header: next_header(&operation.snapshot.header),
+            phase: RuntimeUnresponsivePhase::RuntimeUnresponsive {
+                runtime: child.identity.clone(),
+                operation: stop_intent_operation(&operation.intent),
+                failure: failure.clone(),
+            },
+        };
+        resolve_unresponsive(operation.intent, &snapshot);
+        self.state = LifecycleState::Unresponsive { snapshot, child };
+        self.publish_current();
+    }
+
+    fn observe_early_cancellation(&mut self) {
+        let LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation)) =
+            &mut self.state
+        else {
+            return;
+        };
+        let exited = early_child_exited(&mut operation.child);
+        if exited && operation.attachment_done {
+            let state = std::mem::replace(&mut self.state, placeholder_state());
+            let LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation)) = state
+            else {
+                self.state = state;
+                return;
+            };
+            resolve_cancel_without_child(operation.intent, &operation.origin);
+            self.state = LifecycleState::NoRuntime(operation.origin);
+            self.publish_current();
+            return;
+        }
+        if operation
+            .child
+            .custody
+            .as_ref()
+            .is_some_and(ManagerCustody::is_closed)
+        {
+            let snapshot = custody_loss_snapshot(&operation.header, &operation.child.identity);
+            resolve_all_waiters_for_termination(&mut self.state, &snapshot);
+            let state = std::mem::replace(&mut self.state, placeholder_state());
+            let LifecycleState::Operating(operation) = state else {
+                self.state = state;
+                return;
+            };
+            self.state = LifecycleState::TerminatingOperation {
+                snapshot,
+                operation,
+            };
+            self.publish_current();
+            self.shutdown_seen = true;
+            self.shutdown.cancel();
+            return;
+        }
+        if !exited && tokio::time::Instant::now() >= operation.deadline {
+            let snapshot = ManagerTerminatingLifecycleSnapshot {
+                header: next_header(&operation.header),
+                phase: ManagerTerminatingPhase::ManagerTerminating {
+                    termination: ManagerTermination::ChildReapTimedOut {
+                        operation: match &operation.intent {
+                            CancellationIntent::Stop { .. } => {
+                                tribal_wire::management::EarlyChildTerminationOperation::Stop
+                            }
+                            CancellationIntent::Shutdown { .. } => {
+                                tribal_wire::management::EarlyChildTerminationOperation::ManagerShutdown
+                            }
+                        },
+                        evidence: operation.child.evidence.clone(),
+                        presentation: failure_presentation(
+                            "managed runtime could not be reaped",
+                            "the manager is terminating with the child resource retained",
+                        ),
+                    },
                 },
             };
-            let header = next_header(&snapshot.header);
-            let document = ConfigDocument::Unreadable {
-                phase: tribal_wire::management::ConfigPersistencePhase::DurabilityUncertain,
+            resolve_all_waiters_for_termination(&mut self.state, &snapshot);
+            let state = std::mem::replace(&mut self.state, placeholder_state());
+            let LifecycleState::Operating(operation) = state else {
+                self.state = state;
+                return;
             };
-            self.state =
-                LifecycleState::NoRuntime(no_runtime_snapshot(header, &document, Some(failure)));
+            self.state = LifecycleState::TerminatingOperation {
+                snapshot,
+                operation,
+            };
             self.publish_current();
-            self.request_document_refresh();
+            self.shutdown_seen = true;
+            self.shutdown.cancel();
         }
     }
 
@@ -1198,6 +1654,7 @@ impl LifecycleOwner {
             LifecycleState::Operating(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
+            | LifecycleState::TerminatingManaged { .. }
             | LifecycleState::Terminating(_) => {}
         }
     }
@@ -1262,6 +1719,7 @@ impl LifecycleOwner {
             LifecycleState::Operating(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
+            | LifecycleState::TerminatingManaged { .. }
             | LifecycleState::Terminating(_) => {}
         }
     }
@@ -1270,16 +1728,53 @@ impl LifecycleOwner {
         &mut self,
         correlation: Option<tribal_wire::management::PanicCorrelationId>,
     ) {
-        let runtime = match &self.state {
+        let exact_exit = match &mut self.state {
             LifecycleState::Running { child, .. } | LifecycleState::Unresponsive { child, .. } => {
-                ManagerTerminationRuntime::Recoverable {
-                    runtime: child.identity.clone(),
-                }
+                managed_child_exited(child)
+            }
+            LifecycleState::Operating(LifecycleOperation::Launching(operation)) => {
+                early_child_exited(&mut operation.child)
+            }
+            LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation)) => {
+                early_child_exited(&mut operation.child)
+            }
+            LifecycleState::Operating(LifecycleOperation::Stopping(operation)) => {
+                operation.child.as_mut().is_some_and(managed_child_exited)
             }
             LifecycleState::NoRuntime(_)
-            | LifecycleState::Operating(_)
             | LifecycleState::TerminatingOperation { .. }
-            | LifecycleState::Terminating(_) => ManagerTerminationRuntime::Absent,
+            | LifecycleState::TerminatingManaged { .. }
+            | LifecycleState::Terminating(_) => false,
+        };
+        let runtime = if exact_exit {
+            ManagerTerminationRuntime::Absent
+        } else {
+            match &self.state {
+                LifecycleState::Running { child, .. }
+                | LifecycleState::Unresponsive { child, .. } => {
+                    ManagerTerminationRuntime::Recoverable {
+                        runtime: child.identity.clone(),
+                    }
+                }
+                LifecycleState::Operating(LifecycleOperation::Launching(operation)) => {
+                    termination_runtime(&operation.child.evidence)
+                }
+                LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation)) => {
+                    termination_runtime(&operation.child.evidence)
+                }
+                LifecycleState::Operating(LifecycleOperation::Stopping(operation)) => operation
+                    .child
+                    .as_ref()
+                    .map_or(ManagerTerminationRuntime::Absent, |child| {
+                        ManagerTerminationRuntime::Recoverable {
+                            runtime: child.identity.clone(),
+                        }
+                    }),
+                LifecycleState::NoRuntime(_)
+                | LifecycleState::TerminatingOperation { .. }
+                | LifecycleState::TerminatingManaged { .. }
+                | LifecycleState::Terminating(_) => ManagerTerminationRuntime::Absent,
+            }
         };
         let snapshot = ManagerTerminatingLifecycleSnapshot {
             header: next_header(&self.state.snapshot().header),
@@ -1293,6 +1788,16 @@ impl LifecycleOwner {
         resolve_all_waiters_for_termination(&mut self.state, &snapshot);
         let state = std::mem::replace(&mut self.state, placeholder_state());
         self.state = match state {
+            LifecycleState::Operating(LifecycleOperation::Stopping(mut operation)) => {
+                if exact_exit {
+                    drop(operation.child.take());
+                    LifecycleState::Terminating(snapshot)
+                } else if let Some(child) = operation.child.take() {
+                    LifecycleState::TerminatingManaged { snapshot, child }
+                } else {
+                    LifecycleState::Terminating(snapshot)
+                }
+            }
             LifecycleState::Operating(operation) => LifecycleState::TerminatingOperation {
                 snapshot,
                 operation,
@@ -1304,10 +1809,20 @@ impl LifecycleOwner {
                 snapshot,
                 operation,
             },
-            LifecycleState::NoRuntime(_)
-            | LifecycleState::Running { .. }
-            | LifecycleState::Unresponsive { .. }
-            | LifecycleState::Terminating(_) => LifecycleState::Terminating(snapshot),
+            LifecycleState::Running { child, .. } | LifecycleState::Unresponsive { child, .. } => {
+                if exact_exit {
+                    drop(child);
+                    LifecycleState::Terminating(snapshot)
+                } else {
+                    LifecycleState::TerminatingManaged { snapshot, child }
+                }
+            }
+            LifecycleState::TerminatingManaged { snapshot, child } => {
+                LifecycleState::TerminatingManaged { snapshot, child }
+            }
+            LifecycleState::NoRuntime(_) | LifecycleState::Terminating(_) => {
+                LifecycleState::Terminating(snapshot)
+            }
         };
         self.publish_current();
         self.shutdown_seen = true;
@@ -1316,7 +1831,9 @@ impl LifecycleOwner {
 
     fn begin_external_shutdown(&mut self) -> bool {
         match &self.state {
-            LifecycleState::NoRuntime(_) | LifecycleState::Terminating(_) => true,
+            LifecycleState::NoRuntime(_)
+            | LifecycleState::TerminatingManaged { .. }
+            | LifecycleState::Terminating(_) => true,
             _ => {
                 let (sender, receiver) = oneshot::channel();
                 self.admit_shutdown(sender);
@@ -1341,7 +1858,7 @@ fn prepare_child(
     config_path: &PathBuf,
     authority: &AuthorityLease,
     manager_instance_id: &str,
-) -> Result<PendingChild, StoppedProcessFailure> {
+) -> Result<PreparedChild, StoppedProcessFailure> {
     let inherited = authority
         .inheritable_clone()
         .map_err(|error| spawn_failure("preparing delegated authority", &error.to_string()))?;
@@ -1349,6 +1866,7 @@ fn prepare_child(
     let runtime_instance_id = uuid::Uuid::new_v4().to_string();
     let proof = generate_proof()
         .map_err(|error| spawn_failure("generating custody proof", &error.to_string()))?;
+    let control_proof = RuntimeCustodyProof::new(proof.expose_secret().to_owned());
     let mut command = tokio::process::Command::new(
         std::env::current_exe()
             .map_err(|error| spawn_failure("resolving runtime binary", &error.to_string()))?,
@@ -1369,114 +1887,121 @@ fn prepare_child(
         .id()
         .ok_or_else(|| spawn_failure("spawning managed runtime", "child has no process id"))?;
     drop(inherited);
-    Ok(PendingChild {
+    Ok(PreparedChild {
         child,
-        identity: RuntimeIdentity {
-            instance_id: runtime_instance_id,
-            pid,
-            binary_version: env!("CARGO_PKG_VERSION").to_owned(),
-            config_path: ConfigFilePath {
-                path: config_path.to_string_lossy().into_owned(),
+        attachment: PendingAttachment {
+            identity: RuntimeIdentity {
+                instance_id: runtime_instance_id,
+                pid,
+                binary_version: env!("CARGO_PKG_VERSION").to_owned(),
+                config_path: ConfigFilePath {
+                    path: config_path.to_string_lossy().into_owned(),
+                },
             },
+            paths: authority.paths().clone(),
+            manager_instance_id: manager_instance_id.to_owned(),
+            custody_proof: proof,
+            control_proof,
         },
-        paths: authority.paths().clone(),
-        manager_instance_id: manager_instance_id.to_owned(),
-        proof,
     })
 }
 
-async fn finish_launch(mut pending: PendingChild) -> Result<ManagedChild, StoppedProcessFailure> {
+async fn finish_launch(pending: PendingAttachment) -> Result<LaunchAttachment, LaunchFailure> {
     let paths = pending.paths.clone();
     let manager_instance_id = pending.manager_instance_id.clone();
-    let proof = pending.proof;
+    let custody_proof = pending.custody_proof;
     let custody = match tokio::task::spawn_blocking(move || {
-        ManagerCustody::attach_initial(&paths, &manager_instance_id, proof)
+        ManagerCustody::attach_initial(&paths, &manager_instance_id, custody_proof)
     })
     .await
     {
         Ok(Ok(custody)) => custody,
         Ok(Err(error)) => {
-            let _ = pending.child.kill().await;
-            return Err(StoppedProcessFailure::RuntimeCustodyCommitFailed {
-                presentation: failure_presentation(
-                    "managed runtime custody could not be committed",
-                    &error.to_string(),
-                ),
+            return Err(LaunchFailure {
+                failure: StoppedProcessFailure::RuntimeCustodyCommitFailed {
+                    presentation: failure_presentation(
+                        "managed runtime custody could not be committed",
+                        &error.to_string(),
+                    ),
+                },
+                evidence:
+                    tribal_wire::management::EarlyChildTerminationEvidence::CommitOutcomeUnknown {
+                        runtime: pending.identity,
+                    },
+                custody: None,
             });
         }
         Err(error) => {
-            let _ = pending.child.kill().await;
-            return Err(StoppedProcessFailure::RuntimeCustodyCommitFailed {
-                presentation: failure_presentation(
-                    "managed runtime custody task failed",
-                    &error.to_string(),
-                ),
+            return Err(LaunchFailure {
+                failure: StoppedProcessFailure::RuntimeCustodyCommitFailed {
+                    presentation: failure_presentation(
+                        "managed runtime custody task failed",
+                        &error.to_string(),
+                    ),
+                },
+                evidence:
+                    tribal_wire::management::EarlyChildTerminationEvidence::CommitOutcomeUnknown {
+                        runtime: pending.identity,
+                    },
+                custody: None,
             });
         }
     };
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    match pending.child.try_wait() {
-        Ok(Some(status)) => Err(StoppedProcessFailure::RuntimeAnnouncementFailed {
-            presentation: failure_presentation(
-                "managed runtime exited during launch",
-                &status.to_string(),
-            ),
-        }),
-        Ok(None) => Ok(ManagedChild {
-            process: ManagedProcess::Owned(pending.child),
-            identity: pending.identity,
-            custody,
-        }),
-        Err(error) => Err(StoppedProcessFailure::RuntimeAnnouncementFailed {
-            presentation: failure_presentation(
-                "managed runtime launch status was unavailable",
-                &error.to_string(),
-            ),
-        }),
-    }
-}
-
-async fn stop_managed_child(
-    mut managed: ManagedChild,
-) -> Result<(), (ManagedChild, RuntimeStopTimedOutFailure)> {
-    if let Err(error) = managed.custody.stop(&managed.identity) {
-        tracing::warn!(%error, pid = managed.identity.pid, "managed runtime stop request failed");
-    }
-    let stopped = match &mut managed.process {
-        ManagedProcess::Owned(child) => {
-            match tokio::time::timeout(STOP_DEADLINE, child.wait()).await {
-                Ok(Ok(_)) => true,
-                Ok(Err(error)) => {
-                    tracing::warn!(%error, pid = managed.identity.pid, "managed runtime wait failed");
-                    false
-                }
-                Err(_) => matches!(
-                    tokio::time::timeout(STOP_DEADLINE, child.kill()).await,
-                    Ok(Ok(()))
-                ),
-            }
-        }
-        ManagedProcess::Recovered => {
-            let deadline = tokio::time::Instant::now() + STOP_DEADLINE;
-            while process_exists(managed.identity.pid) && tokio::time::Instant::now() < deadline {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            !process_exists(managed.identity.pid)
+    let control = match RuntimeControlClient::connect(
+        &pending.paths.runtime_control_socket_path,
+        &pending.manager_instance_id,
+        &pending.identity,
+        pending.control_proof,
+    )
+    .await
+    {
+        Ok(control) => control,
+        Err(error) => {
+            return Err(LaunchFailure {
+                failure: StoppedProcessFailure::RuntimeHandshakeFailed {
+                    presentation: failure_presentation(
+                        "managed runtime handshake failed",
+                        &error.to_string(),
+                    ),
+                },
+                evidence: tribal_wire::management::EarlyChildTerminationEvidence::Recoverable {
+                    runtime: pending.identity,
+                },
+                custody: Some(custody),
+            });
         }
     };
-    if stopped {
-        Ok(())
-    } else {
-        let pid = managed.identity.pid;
-        Err((
-            managed,
-            RuntimeStopTimedOutFailure {
-                presentation: failure_presentation(
-                    "managed runtime did not stop before the deadline",
-                    &format!("runtime pid {pid} remains active"),
-                ),
-            },
-        ))
+    Ok(LaunchAttachment { custody, control })
+}
+
+async fn terminate_early_child(child: &mut EarlyChild) {
+    if let Some(control) = &mut child.control {
+        let _ = control.stop(&child.identity).await;
+    }
+    if let Some(custody) = &mut child.custody {
+        let _ = custody.stop(&child.identity);
+    }
+    let _ = child.child.start_kill();
+    let _ = tokio::time::timeout(STOP_DEADLINE, child.child.wait()).await;
+}
+
+fn early_child_exited(child: &mut EarlyChild) -> bool {
+    matches!(child.child.try_wait(), Ok(Some(_)))
+}
+
+fn managed_child_exited(child: &mut ManagedChild) -> bool {
+    matches!(managed_child_exit_detail(child), Ok(Some(_)))
+}
+
+fn managed_child_exit_detail(child: &mut ManagedChild) -> std::io::Result<Option<String>> {
+    match &mut child.process {
+        ManagedProcess::Owned(process) => process
+            .try_wait()
+            .map(|status| status.map(|value| value.to_string())),
+        ManagedProcess::Recovered => Ok(child
+            .control
+            .is_closed()
+            .then(|| "authenticated runtime-control session closed".to_owned())),
     }
 }
 
@@ -1731,6 +2256,26 @@ fn stop_intent_operation(intent: &StopIntent) -> RuntimeOperation {
         StopIntent::Stop { .. } => RuntimeOperation::Stop,
         StopIntent::Restart { .. } => RuntimeOperation::Restart,
         StopIntent::Shutdown { .. } => RuntimeOperation::ManagerShutdown,
+    }
+}
+
+fn termination_runtime(
+    evidence: &tribal_wire::management::EarlyChildTerminationEvidence,
+) -> ManagerTerminationRuntime {
+    match evidence {
+        tribal_wire::management::EarlyChildTerminationEvidence::PreCommit { .. } => {
+            ManagerTerminationRuntime::Absent
+        }
+        tribal_wire::management::EarlyChildTerminationEvidence::CommitOutcomeUnknown {
+            runtime,
+        } => ManagerTerminationRuntime::CommitOutcomeUnknown {
+            runtime: runtime.clone(),
+        },
+        tribal_wire::management::EarlyChildTerminationEvidence::Recoverable { runtime } => {
+            ManagerTerminationRuntime::Recoverable {
+                runtime: runtime.clone(),
+            }
+        }
     }
 }
 
@@ -2027,6 +2572,25 @@ fn running_from_unresponsive(
     }
 }
 
+fn running_phase(
+    runtime: &RuntimeIdentity,
+    control: &RuntimeControlConnection,
+    restart_pending: bool,
+) -> RunningPhase {
+    if control.is_compatible() {
+        RunningPhase::Healthy {
+            runtime: runtime.clone(),
+            restart_pending,
+        }
+    } else {
+        RunningPhase::VersionMismatch {
+            runtime: runtime.clone(),
+            manager_version: env!("CARGO_PKG_VERSION").to_owned(),
+            runtime_version: runtime.binary_version.clone(),
+        }
+    }
+}
+
 fn shutdown_stopping(snapshot: &StoppingLifecycleSnapshot) -> ShutdownInProgressLifecycleSnapshot {
     let StoppingPhase::Stopping { runtime } = &snapshot.phase;
     ShutdownInProgressLifecycleSnapshot {
@@ -2044,7 +2608,7 @@ fn shutdown_cancelling(
         header: operation.header.clone(),
         phase: ShutdownInProgressPhase::CancellingEarlyChild {
             operation: ManagerShutdownOperation::ManagerShutdown,
-            evidence: operation.evidence.clone(),
+            evidence: operation.child.evidence.clone(),
         },
     }
 }
@@ -2062,7 +2626,7 @@ fn cancellation_snapshot(operation: &CancellingLaunchOperation) -> LifecycleSnap
         header: operation.header.clone(),
         phase: LifecyclePhase::CancellingEarlyChild {
             operation: intent,
-            evidence: operation.evidence.clone(),
+            evidence: operation.child.evidence.clone(),
         },
     }
 }
@@ -2171,23 +2735,33 @@ fn failure_presentation(
     }
 }
 
-fn process_exists(pid: u32) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return false;
-    };
-    // SAFETY: signal zero does not signal the process; it asks the kernel
-    // whether the exact PID remains observable to this user.
-    let result = unsafe { libc::kill(pid, 0) };
-    result == 0 || io_permission_denied()
-}
-
-fn io_permission_denied() -> bool {
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+fn custody_loss_snapshot(
+    header: &LifecycleSnapshotHeader,
+    runtime: &RuntimeIdentity,
+) -> ManagerTerminatingLifecycleSnapshot {
+    ManagerTerminatingLifecycleSnapshot {
+        header: next_header(header),
+        phase: ManagerTerminatingPhase::ManagerTerminating {
+            termination: ManagerTermination::CustodyLost {
+                presentation: failure_presentation(
+                    "managed runtime custody was lost",
+                    "the manager will exit so a successor can recover the runtime",
+                ),
+                runtime: CustodyLossTerminationRuntime::Recoverable {
+                    runtime: runtime.clone(),
+                },
+            },
+        },
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::management::{authority, configuration, worker};
+
+    /// A local thread panic crosses two in-process channels without I/O.
+    const TERMINAL_DEADLINE: Duration = Duration::from_secs(2);
 
     fn header() -> LifecycleSnapshotHeader {
         LifecycleSnapshotHeader {
@@ -2282,5 +2856,105 @@ mod tests {
                 RuntimeRestartResult::Restarted { snapshot: restart }
             ) if start.header.revision == restart.header.revision
         ));
+    }
+
+    #[tokio::test]
+    async fn test_early_child_termination_reaps_the_owned_process() {
+        let child = tokio::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .kill_on_drop(false)
+            .spawn()
+            .expect("test child starts");
+        let pid = child.id().expect("test child has a process id");
+        let mut child = EarlyChild {
+            child,
+            identity: RuntimeIdentity {
+                instance_id: "early-child".to_owned(),
+                pid,
+                binary_version: "test".to_owned(),
+                config_path: ConfigFilePath {
+                    path: "/tmp/tribal.yaml".to_owned(),
+                },
+            },
+            custody: None,
+            control: None,
+            evidence: tribal_wire::management::EarlyChildTerminationEvidence::PreCommit {
+                pid,
+                config_path: ConfigFilePath {
+                    path: "/tmp/tribal.yaml".to_owned(),
+                },
+            },
+        };
+
+        terminate_early_child(&mut child).await;
+
+        assert!(early_child_exited(&mut child), "the owned child is reaped");
+    }
+
+    #[tokio::test]
+    async fn test_config_worker_panic_publishes_the_terminal_snapshot_before_owner_exit() {
+        let temp = tempfile::tempdir().expect("temporary authority root");
+        let config_path = temp.path().join("tribal.yaml");
+        let config = tribal_config::TribalConfig::minimum_valid(
+            "postgres://user:pass@localhost:5432/tribal",
+        );
+        std::fs::write(
+            &config_path,
+            serde_yaml::to_string(&config).expect("configuration serialises"),
+        )
+        .expect("configuration writes");
+        let authority = authority::AuthorityLease::acquire(&config_path)
+            .expect("authority acquisition succeeds");
+        let authority::AuthorityAcquire::Acquired(authority) = authority else {
+            panic!("temporary config path has one authority");
+        };
+        let (config, mut worker_runtime) =
+            worker::spawn(configuration::ConfigAuthority::new(config_path.clone()))
+                .expect("configuration worker starts");
+        let terminal = worker_runtime
+            .take_terminal()
+            .expect("worker terminal has one owner");
+        let shutdown = CancellationToken::new();
+        let (lifecycle, lifecycle_task) = LifecycleController::spawn(
+            "manager".to_owned(),
+            config_path,
+            config.clone(),
+            Arc::new(authority),
+            shutdown,
+            terminal,
+            None,
+        )
+        .await
+        .expect("lifecycle owner starts");
+
+        assert!(
+            config.panic_for_test().await,
+            "the panic command is admitted"
+        );
+        let exit = tokio::time::timeout(TERMINAL_DEADLINE, lifecycle_task)
+            .await
+            .expect("lifecycle owner observes the terminal channel")
+            .expect("lifecycle task joins");
+        let snapshot = lifecycle.snapshots.borrow().clone();
+
+        assert!(matches!(
+            exit,
+            LifecycleExit::ConfigWorkerTerminated(ConfigWorkerExit::Panicked {
+                correlation: Some(_)
+            })
+        ));
+        assert!(matches!(
+            snapshot.phase,
+            LifecyclePhase::ManagerTerminating {
+                termination: ManagerTermination::ConfigWorkerPanicked {
+                    runtime: ManagerTerminationRuntime::Absent,
+                    ..
+                }
+            }
+        ));
+        drop(config);
+        drop(lifecycle);
+        worker_runtime.join().expect("worker thread joins");
     }
 }

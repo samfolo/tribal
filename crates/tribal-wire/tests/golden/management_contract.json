@@ -3767,6 +3767,133 @@
       }
     }
   },
+  "ManagedRuntimeStatusResult": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ManagedRuntimeStatusResult",
+    "description": "Result of `server.status` through the manager.",
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "outcome"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "$ref": "#/definitions/ManagedRuntimeStatus"
+              }
+            }
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "available"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "outcome"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "$ref": "#/definitions/RuntimeReadUnavailable"
+              }
+            }
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "unavailable"
+            ]
+          }
+        }
+      }
+    ],
+    "definitions": {
+      "ConfigFilePath": {
+        "description": "The active configuration file's location.",
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "description": "Filesystem path read by the authority.",
+            "type": "string"
+          }
+        }
+      },
+      "ManagedRuntimeStatus": {
+        "description": "Public status of the attached managed runtime.",
+        "type": "object",
+        "required": [
+          "restart_pending",
+          "runtime"
+        ],
+        "properties": {
+          "restart_pending": {
+            "type": "boolean"
+          },
+          "runtime": {
+            "$ref": "#/definitions/RuntimeIdentity"
+          }
+        }
+      },
+      "RuntimeIdentity": {
+        "description": "Stable identity for one managed runtime process.",
+        "type": "object",
+        "required": [
+          "binary_version",
+          "config_path",
+          "instance_id",
+          "pid"
+        ],
+        "properties": {
+          "binary_version": {
+            "type": "string"
+          },
+          "config_path": {
+            "$ref": "#/definitions/ConfigFilePath"
+          },
+          "instance_id": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          }
+        }
+      },
+      "RuntimeReadUnavailable": {
+        "description": "Why a runtime-owned read cannot currently be served.",
+        "type": "string",
+        "enum": [
+          "no_runtime",
+          "operation_in_progress",
+          "version_mismatch",
+          "runtime_control_unavailable",
+          "manager_terminating"
+        ]
+      }
+    }
+  },
   "ManagementBootstrapRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ManagementBootstrapRequest",
@@ -9310,6 +9437,97 @@
               "platform"
             ]
           }
+        ]
+      }
+    }
+  },
+  "RuntimeLogsTailRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "RuntimeLogsTailRequest",
+    "description": "Bounded request for recent runtime log lines.",
+    "type": "object",
+    "required": [
+      "lines"
+    ],
+    "properties": {
+      "lines": {
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0.0
+      }
+    }
+  },
+  "RuntimeLogsTailResult": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "RuntimeLogsTailResult",
+    "description": "Result of `logs.tail` through the manager.",
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "outcome"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "lines"
+            ],
+            "properties": {
+              "lines": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "available"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "outcome"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "$ref": "#/definitions/RuntimeReadUnavailable"
+              }
+            }
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "unavailable"
+            ]
+          }
+        }
+      }
+    ],
+    "definitions": {
+      "RuntimeReadUnavailable": {
+        "description": "Why a runtime-owned read cannot currently be served.",
+        "type": "string",
+        "enum": [
+          "no_runtime",
+          "operation_in_progress",
+          "version_mismatch",
+          "runtime_control_unavailable",
+          "manager_terminating"
         ]
       }
     }
@@ -17260,6 +17478,184 @@
             }
           }
         ]
+      }
+    }
+  },
+  "RuntimeTokenListResult": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "RuntimeTokenListResult",
+    "description": "Result of `token.list` through the manager.",
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "outcome"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "list"
+            ],
+            "properties": {
+              "list": {
+                "$ref": "#/definitions/TokenList"
+              }
+            }
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "available"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "data",
+          "outcome"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "$ref": "#/definitions/RuntimeReadUnavailable"
+              }
+            }
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "unavailable"
+            ]
+          }
+        }
+      }
+    ],
+    "definitions": {
+      "RuntimeReadUnavailable": {
+        "description": "Why a runtime-owned read cannot currently be served.",
+        "type": "string",
+        "enum": [
+          "no_runtime",
+          "operation_in_progress",
+          "version_mismatch",
+          "runtime_control_unavailable",
+          "manager_terminating"
+        ]
+      },
+      "TokenInfo": {
+        "description": "The non-secret metadata of one issued token.",
+        "type": "object",
+        "required": [
+          "created_at",
+          "principal",
+          "scopes"
+        ],
+        "properties": {
+          "created_at": {
+            "description": "When the token was issued.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "description": "When the token expires, absent for a non-expiring token.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "principal": {
+            "description": "The principal the token authenticates as.",
+            "type": "string"
+          },
+          "scopes": {
+            "description": "The scopes the token grants.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "TokenList": {
+        "description": "Every issued token's metadata, the result of `token.list`.",
+        "type": "object",
+        "required": [
+          "tokens"
+        ],
+        "properties": {
+          "tokens": {
+            "description": "The issued tokens, never their secret values.",
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/TokenInfo"
+            }
+          }
+        }
+      }
+    }
+  },
+  "TokenList": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "TokenList",
+    "description": "Every issued token's metadata, the result of `token.list`.",
+    "type": "object",
+    "required": [
+      "tokens"
+    ],
+    "properties": {
+      "tokens": {
+        "description": "The issued tokens, never their secret values.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/TokenInfo"
+        }
+      }
+    },
+    "definitions": {
+      "TokenInfo": {
+        "description": "The non-secret metadata of one issued token.",
+        "type": "object",
+        "required": [
+          "created_at",
+          "principal",
+          "scopes"
+        ],
+        "properties": {
+          "created_at": {
+            "description": "When the token was issued.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "description": "When the token expires, absent for a non-expiring token.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "principal": {
+            "description": "The principal the token authenticates as.",
+            "type": "string"
+          },
+          "scopes": {
+            "description": "The scopes the token grants.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
       }
     }
   }

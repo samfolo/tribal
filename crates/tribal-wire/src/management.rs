@@ -8,8 +8,10 @@ mod event;
 mod launch;
 mod lifecycle;
 mod readiness;
+mod runtime;
 mod wire_id;
 
+pub use crate::token::{TokenInfo, TokenList};
 pub use configuration::{
     ConfigChangeEvent, ConfigChangeSource, ConfigDocument, ConfigFieldOutcome, ConfigGetRequest,
     ConfigLiteral, ConfigPatchChange, ConfigPatchOutcome, ConfigPatchRefusal, ConfigPatchRequest,
@@ -67,6 +69,10 @@ pub use readiness::{
     CredentialEntryMember, HealthDegradedReadinessReport, HealthDegradedVerdict, HealthVerdict,
     ReadinessRefinementError, ReadinessReport, ReadinessScope, StartBlockedReadinessReport,
     StartBlockedVerdict, StartClearReadinessReport, StartClearVerdict, StartVerdict,
+};
+pub use runtime::{
+    ManagedRuntimeStatus, ManagedRuntimeStatusResult, RuntimeLogsTailRequest,
+    RuntimeLogsTailResult, RuntimeReadUnavailable, RuntimeTokenListResult,
 };
 pub use tribal_domain::{ConfigFieldPath, ProviderKind};
 pub use wire_id::{

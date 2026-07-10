@@ -59,6 +59,23 @@ fn management_contract_matches_its_golden_schema() {
             "GraphEmbeddingProfile",
             schema_for!(m::GraphEmbeddingProfile),
         ),
+        (
+            "ManagedRuntimeStatusResult",
+            schema_for!(m::ManagedRuntimeStatusResult),
+        ),
+        (
+            "RuntimeLogsTailRequest",
+            schema_for!(m::RuntimeLogsTailRequest),
+        ),
+        (
+            "RuntimeLogsTailResult",
+            schema_for!(m::RuntimeLogsTailResult),
+        ),
+        (
+            "RuntimeTokenListResult",
+            schema_for!(m::RuntimeTokenListResult),
+        ),
+        ("TokenList", schema_for!(m::TokenList)),
         ("ConfigChangeEvent", schema_for!(m::ConfigChangeEvent)),
         (
             "ManagementResponseError",

@@ -14,14 +14,12 @@ use std::{
     sync::Arc,
 };
 
-use sqlx::PgPool;
 use tokio::{
     io::{AsyncWriteExt as _, BufReader},
     net::{UnixListener, UnixStream, unix::OwnedWriteHalf},
-    sync::{Semaphore, broadcast, mpsc},
+    sync::{broadcast, mpsc},
+    task::{JoinHandle, JoinSet},
 };
-use tribal_auth::{AuthenticatedPrincipal, Authenticator};
-use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_wire::control::{
     CONTROL_CONTRACT_VERSION, ClientHello, ControlEvent, ControlRequest, ControlResponse,
     JsonRpcVersion, ResponseResult, ServerHello,
@@ -35,6 +33,7 @@ use super::{
     event::notification_for,
     framing::{encode_frame, read_typed_frame, write_frame},
     listening_bind_address,
+    token_service::resolve_local_principal,
 };
 
 /// The owner-only permission bits the socket is created with — defence in depth
@@ -140,31 +139,36 @@ impl ControlPlane {
             guard,
         } = self;
         let cancellation_token = context.cancellation_token.clone();
-        // Each connection is served by a best-effort task: it speaks to one
-        // operator client, and its exit or panic concerns only that client,
-        // never the plane. The permits bound how many run at once, so a
-        // connection flood cannot spawn handlers without limit; shutdown abandons
-        // them by construction, their in-flight work discardable.
-        let connections = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+        // Each connection is isolated but remains owned by this accept loop.
+        // The fixed cap refuses a flood, and shutdown aborts then joins every
+        // outstanding handler before the socket artifacts are removed.
+        let mut connections = JoinSet::new();
         loop {
             tokio::select! {
+                biased;
                 () = cancellation_token.cancelled() => break,
+                joined = connections.join_next(), if !connections.is_empty() => {
+                    if let Some(Err(error)) = joined {
+                        tracing::warn!(%error, "control: connection task failed");
+                    }
+                }
                 accepted = listener.accept() => match accepted {
                     Ok((stream, _address)) => {
-                        let Ok(permit) = Arc::clone(&connections).try_acquire_owned() else {
+                        if connections.len() >= MAX_CONCURRENT_CONNECTIONS {
                             tracing::warn!("control: connection cap reached; refusing peer");
                             continue;
-                        };
+                        }
                         let context = Arc::clone(&context);
-                        drop(tokio::spawn(async move {
-                            let _permit = permit;
+                        connections.spawn(async move {
                             handle_connection(stream, context, owner_uid).await;
-                        }));
+                        });
                     }
                     Err(error) => tracing::warn!(%error, "control: accept failed"),
                 }
             }
         }
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
         drop(guard);
     }
 }
@@ -194,13 +198,14 @@ impl Drop for DescriptorGuard {
     }
 }
 
-/// Binds the control plane and spawns its accept loop, logging and continuing
-/// without it on failure — the control plane never blocks the binary from
-/// serving MCP.
-pub(crate) async fn spawn_control_plane(context: ControlContext) {
+/// Binds best-effort and returns the tracked accept-loop task when available.
+pub(crate) async fn spawn_control_plane(context: ControlContext) -> Option<JoinHandle<()>> {
     match ControlPlane::bind(Arc::new(context)).await {
-        Ok(plane) => drop(tokio::spawn(plane.serve())),
-        Err(error) => tracing::warn!(%error, "control socket unavailable; serving without it"),
+        Ok(plane) => Some(tokio::spawn(plane.serve())),
+        Err(error) => {
+            tracing::warn!(%error, "control socket unavailable; serving without it");
+            None
+        }
     }
 }
 
@@ -267,7 +272,7 @@ async fn handle_connection(stream: UnixStream, context: Arc<ControlContext>, own
     // Resolve the local principal once for the connection. Config crossings need
     // none, so a failure here is not fatal — only the principal-scoped crossings
     // refuse when it is absent.
-    let principal = resolve_principal(&context.pool).await;
+    let principal = resolve_local_principal(&context.pool).await;
 
     loop {
         let request: ControlRequest = match read_typed_frame(&mut reader).await {
@@ -311,6 +316,7 @@ async fn handle_connection(stream: UnixStream, context: Arc<ControlContext>, own
     // the writer's channel, and it drains and exits.
     drop(outgoing);
     forwarder.abort();
+    let _ = forwarder.await;
     let _ = writer.await;
 }
 
@@ -351,21 +357,6 @@ async fn forward_events(
 /// Whether a peer's UID is the socket owner's — the whole peer-credential check.
 fn peer_is_owner(peer_uid: u32, owner_uid: u32) -> bool {
     peer_uid == owner_uid
-}
-
-/// Resolves the local principal for the connection, best-effort. Config reads
-/// need no principal, so a failure (no database, `tribal setup` not run) leaves
-/// it `None`, and only the principal-scoped crossings refuse.
-async fn resolve_principal(pool: &PgPool) -> Option<AuthenticatedPrincipal> {
-    let authenticator = Authenticator::new(
-        Arc::new(PgAuthTokenRepository),
-        Arc::new(PgPrincipalRepository),
-    );
-    let mut connection = pool.acquire().await.ok()?;
-    authenticator
-        .resolve_stdio_principal(&mut connection)
-        .await
-        .ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -431,7 +422,7 @@ mod tests {
 
     fn test_context_with(cancellation_token: CancellationToken) -> Arc<ControlContext> {
         // A lazy pool never connects unless a principal-scoped method is called,
-        // and `resolve_principal` treats its refusal as "no principal", so the
+        // and principal resolution treats its refusal as "no principal", so the
         // transport tests need no live database.
         let (events, _) = broadcast::channel(super::super::EVENT_BUS_CAPACITY);
         // The layer is leaked so the handle's subscriber never reads as gone;

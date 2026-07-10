@@ -42,13 +42,21 @@ pub(crate) enum ConfigWorkerExit {
 
 /// Tracked execution resources for the dedicated worker.
 pub(crate) struct ConfigWorkerRuntime {
-    pub(crate) terminal: oneshot::Receiver<ConfigWorkerExit>,
-    task: tokio::task::JoinHandle<()>,
+    terminal: Option<oneshot::Receiver<ConfigWorkerExit>>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ConfigWorkerRuntime {
-    pub(crate) async fn join(self) -> Result<(), tokio::task::JoinError> {
-        self.task.await
+    /// Transfers the fatal channel to the lifecycle reducer.
+    pub(crate) fn take_terminal(&mut self) -> Option<oneshot::Receiver<ConfigWorkerExit>> {
+        self.terminal.take()
+    }
+
+    /// Joins the worker after its terminal channel has resolved.
+    pub(crate) fn join(mut self) -> std::thread::Result<()> {
+        self.thread
+            .take()
+            .map_or(Ok(()), std::thread::JoinHandle::join)
     }
 }
 
@@ -59,6 +67,11 @@ pub(crate) enum ConfigWorkerStartError {
     Entropy {
         #[source]
         source: getrandom::Error,
+    },
+    #[error("starting the dedicated configuration thread: {source}")]
+    Thread {
+        #[source]
+        source: std::io::Error,
     },
 }
 
@@ -99,6 +112,8 @@ enum ConfigCommand {
     },
     CredentialMaterials(oneshot::Sender<Result<Vec<CredentialMaterial>, ConfigAuthorityError>>),
     DatabaseUrl(oneshot::Sender<Result<zeroize::Zeroizing<String>, ConfigAuthorityError>>),
+    #[cfg(test)]
+    Panic,
 }
 
 struct PanicReporter {
@@ -113,10 +128,9 @@ impl std::fmt::Debug for PanicReporter {
 }
 
 impl PanicReporter {
-    fn generate() -> Result<Self, ConfigWorkerStartError> {
+    fn generate() -> Result<Self, getrandom::Error> {
         let mut key = zeroize::Zeroizing::new([0_u8; 32]);
-        getrandom::fill(key.as_mut())
-            .map_err(|source| ConfigWorkerStartError::Entropy { source })?;
+        getrandom::fill(key.as_mut())?;
         Ok(Self {
             key,
             opaque_sequence: Cell::new(0),
@@ -159,31 +173,35 @@ impl PanicReporter {
 pub(crate) fn spawn(
     authority: ConfigAuthority,
 ) -> Result<(ConfigWorkerClient, ConfigWorkerRuntime), ConfigWorkerStartError> {
-    let reporter = PanicReporter::generate()?;
+    let reporter =
+        PanicReporter::generate().map_err(|source| ConfigWorkerStartError::Entropy { source })?;
     let (sender, mut receiver) = mpsc::channel(COMMAND_CAPACITY);
     let (changes, _) = broadcast::channel(16);
     let worker_changes = changes.clone();
     let (terminal_sender, terminal_receiver) = oneshot::channel();
-    let task = tokio::task::spawn_blocking(move || {
-        let terminal = loop {
-            let Some(command) = receiver.blocking_recv() else {
-                break ConfigWorkerExit::InputClosed;
-            };
-            if let Err(panic) = catch_sensitive(|| {
-                dispatch(&authority, command, &worker_changes);
-            }) {
-                break ConfigWorkerExit::Panicked {
-                    correlation: reporter.correlate(panic),
+    let thread = std::thread::Builder::new()
+        .name("tribal-config-authority".to_owned())
+        .spawn(move || {
+            let terminal = loop {
+                let Some(command) = receiver.blocking_recv() else {
+                    break ConfigWorkerExit::InputClosed;
                 };
-            }
-        };
-        let _ = terminal_sender.send(terminal);
-    });
+                if let Err(panic) = catch_sensitive(|| {
+                    dispatch(&authority, command, &worker_changes);
+                }) {
+                    break ConfigWorkerExit::Panicked {
+                        correlation: reporter.correlate(panic),
+                    };
+                }
+            };
+            let _ = terminal_sender.send(terminal);
+        })
+        .map_err(|source| ConfigWorkerStartError::Thread { source })?;
     Ok((
         ConfigWorkerClient { sender, changes },
         ConfigWorkerRuntime {
-            terminal: terminal_receiver,
-            task,
+            terminal: Some(terminal_receiver),
+            thread: Some(thread),
         },
     ))
 }
@@ -213,9 +231,8 @@ fn update_frame(mac: &mut hmac::Hmac<sha2::Sha256>, value: &[u8]) {
 }
 
 pub(crate) fn run_one_shot<T>(operation: impl FnOnce() -> T) -> Result<T, OneShotConfigError> {
-    let reporter = PanicReporter::generate().map_err(|error| match error {
-        ConfigWorkerStartError::Entropy { source } => OneShotConfigError::Entropy { source },
-    })?;
+    let reporter =
+        PanicReporter::generate().map_err(|source| OneShotConfigError::Entropy { source })?;
     catch_sensitive(operation).map_err(|panic| OneShotConfigError::Panicked {
         correlation: reporter.correlate(panic),
     })
@@ -282,6 +299,8 @@ fn dispatch(
         ConfigCommand::DatabaseUrl(response) => {
             let _ = response.send(authority.database_url());
         }
+        #[cfg(test)]
+        ConfigCommand::Panic => panic!("config-worker-test-panic"),
     }
 }
 
@@ -296,6 +315,11 @@ impl ConfigWorkerClient {
             source: ConfigChangeSource::RawFile,
             changed: Vec::new(),
         });
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn panic_for_test(&self) -> bool {
+        self.sender.send(ConfigCommand::Panic).await.is_ok()
     }
 
     pub(crate) async fn path(&self) -> Result<ConfigFilePath, ConfigAuthorityError> {
@@ -491,5 +515,32 @@ mod tests {
             .expect("opaque correlation succeeds");
         assert_eq!(drops.load(Ordering::SeqCst), 0);
         assert!(correlation.as_str().starts_with("pcorr_"));
+    }
+
+    #[test]
+    fn test_sensitive_scope_catches_a_panic_without_crossing_threads() {
+        let panic = catch_sensitive(|| panic!("sentinel-sensitive-panic"));
+        assert!(panic.is_err());
+
+        let child_scope = catch_sensitive(|| {
+            std::thread::spawn(|| SENSITIVE_PANIC_SCOPE.get())
+                .join()
+                .expect("child thread joins")
+        })
+        .expect("outer sensitive call returns");
+        assert!(!child_scope, "sensitive suppression remains thread-local");
+    }
+
+    #[test]
+    fn test_one_shot_panic_returns_only_an_opaque_correlation() {
+        let error = run_one_shot(|| panic!("one-shot-secret"))
+            .expect_err("one-shot panic is returned as a typed error");
+        assert!(matches!(
+            error,
+            OneShotConfigError::Panicked {
+                correlation: Some(ref correlation),
+            } if correlation.as_str().starts_with("pcorr_")
+                && !correlation.as_str().contains("one-shot-secret")
+        ));
     }
 }
