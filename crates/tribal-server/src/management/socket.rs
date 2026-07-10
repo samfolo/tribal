@@ -14,7 +14,8 @@ use tokio_util::sync::CancellationToken;
 use tribal_wire::management::{
     BootstrapShutdownRefusal, ConfigPersistenceObservation, ConfigPersistencePhase,
     MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest, ManagementBootstrapResponse,
-    ManagementError, ManagementEvent, ManagementResponseError, ManagementServerHello,
+    ManagementError, ManagementEvent, ManagementLogLoss, ManagementResponseError,
+    ManagementServerHello,
 };
 
 use super::{
@@ -214,6 +215,7 @@ async fn handle_connection(
 
     if compatible {
         let mut lifecycle_updates = services.lifecycle.subscribe();
+        let mut lifecycle_events = services.lifecycle.subscribe_events();
         let mut config_updates = services.config.subscribe();
         let product = services.product.session();
         let connection = ConnectionServices {
@@ -228,6 +230,7 @@ async fn handle_connection(
             &mut write,
             &connection,
             &mut lifecycle_updates,
+            &mut lifecycle_events,
             &mut config_updates,
         )
         .await;
@@ -273,6 +276,7 @@ async fn serve_full(
     lifecycle_updates: &mut tokio::sync::watch::Receiver<
         tribal_wire::management::LifecycleSnapshot,
     >,
+    lifecycle_events: &mut tokio::sync::broadcast::Receiver<ManagementEvent>,
     config_updates: &mut tokio::sync::broadcast::Receiver<
         tribal_wire::management::ConfigChangeEvent,
     >,
@@ -306,6 +310,20 @@ async fn serve_full(
                 }
                 let event = ManagementEvent::LifecycleChanged {
                     snapshot: Box::new(lifecycle_updates.borrow_and_update().clone()),
+                };
+                if write_frame(write, &event).await.is_err() {
+                    return;
+                }
+            }
+            event = lifecycle_events.recv() => {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
+                        ManagementEvent::LogsLost {
+                            loss: ManagementLogLoss::Lagged { dropped },
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 };
                 if write_frame(write, &event).await.is_err() {
                     return;
