@@ -414,7 +414,10 @@ async fn observe_readiness_once(
         .is_some_and(|snapshot| lifecycle_phase_has_runtime(&snapshot.phase));
     match readiness::automatic(config, probe, runtime_present).await {
         Ok(report) => lifecycle.update_readiness(report).await,
-        Err(error) => tracing::warn!(%error, "automatic readiness observation unavailable"),
+        Err(error) => {
+            tracing::warn!(%error, "automatic readiness observation unavailable");
+            lifecycle.readiness_unavailable().await;
+        }
     }
 }
 

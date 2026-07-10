@@ -74,6 +74,7 @@ fn invalid_config_manager_announces_repairs_and_shuts_down() {
 
     let snapshot: LifecycleSnapshot = call(&mut reader, 1, "manager.snapshot", None);
     assert_eq!(phase(&snapshot), "unconfigured");
+    let initial_revision = snapshot.header.revision;
     let document: ConfigDocument = call(&mut reader, 2, "config.getAll", None);
     let ConfigDocument::DurableInvalid { revision } = document else {
         panic!("invalid YAML must remain a durable-invalid document");
@@ -96,12 +97,12 @@ fn invalid_config_manager_announces_repairs_and_shuts_down() {
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     loop {
         let snapshot: LifecycleSnapshot = call(&mut reader, 4, "manager.snapshot", None);
-        if phase(&snapshot) == "stopped" {
+        if snapshot.header.revision > initial_revision && configuration_is_valid(&snapshot) {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "repaired lifecycle did not become stopped"
+            "repaired lifecycle did not adopt valid configuration evidence"
         );
         thread::sleep(Duration::from_millis(25));
     }
@@ -173,5 +174,26 @@ fn phase(snapshot: &LifecycleSnapshot) -> &'static str {
         tribal_wire::management::LifecyclePhase::Unconfigured { .. } => "unconfigured",
         tribal_wire::management::LifecyclePhase::Stopped { .. } => "stopped",
         _ => "runtime",
+    }
+}
+
+fn configuration_is_valid(snapshot: &LifecycleSnapshot) -> bool {
+    match &snapshot.phase {
+        tribal_wire::management::LifecyclePhase::Stopped { .. } => true,
+        tribal_wire::management::LifecyclePhase::Unconfigured { readiness, .. } => [
+            tribal_wire::management::CheckName::ConfigParse,
+            tribal_wire::management::CheckName::ConfigValidate,
+        ]
+        .into_iter()
+        .all(|expected| {
+            readiness.checks.iter().any(|observation| {
+                matches!(
+                    &observation.result,
+                    tribal_wire::management::CheckResult::Pass { name, .. }
+                        if *name == expected
+                )
+            })
+        }),
+        _ => false,
     }
 }

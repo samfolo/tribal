@@ -77,6 +77,7 @@ enum LifecycleCommand {
     Refresh,
     ConfigChanged,
     Readiness(ReadinessReport),
+    ReadinessUnavailable,
 }
 
 enum ManagedProcess {
@@ -267,6 +268,13 @@ enum StopCompletion {
     Stopped { document: Option<ConfigDocument> },
 }
 
+/// Sole readiness observation used when any operation returns to no runtime.
+#[derive(Clone)]
+enum LatestReadiness {
+    Report(ReadinessReport),
+    Unavailable { last_clear: Option<ReadinessReport> },
+}
+
 struct LifecycleOwner {
     receiver: mpsc::Receiver<LifecycleCommand>,
     completions: mpsc::Receiver<LifecycleCompletion>,
@@ -274,6 +282,7 @@ struct LifecycleOwner {
     observations: tokio::task::JoinSet<()>,
     publisher: watch::Sender<LifecycleSnapshot>,
     state: LifecycleState,
+    latest_readiness: LatestReadiness,
     next_token: u64,
     config_path: PathBuf,
     config: ConfigWorkerClient,
@@ -309,6 +318,30 @@ impl EarlyChild {
             tribal_wire::management::EarlyChildTerminationEvidence::CommitOutcomeUnknown {
                 runtime: self.identity.clone(),
             };
+    }
+}
+
+impl LatestReadiness {
+    fn from_document(document: &ConfigDocument) -> Self {
+        let report = match document {
+            ConfigDocument::DurableValid { .. } => start_clear_report(),
+            ConfigDocument::DurableInvalid { .. }
+            | ConfigDocument::UncertainValid { .. }
+            | ConfigDocument::UncertainInvalid { .. }
+            | ConfigDocument::Unreadable { .. } => start_blocked_report(),
+        };
+        Self::Report(report)
+    }
+
+    fn mark_unavailable(&mut self) {
+        let last_clear = match self {
+            Self::Report(report) if matches!(report.start, StartVerdict::Clear) => {
+                Some(no_runtime_report(report))
+            }
+            Self::Unavailable { last_clear } => last_clear.clone(),
+            Self::Report(_) => None,
+        };
+        *self = Self::Unavailable { last_clear };
     }
 }
 
@@ -356,6 +389,7 @@ impl LifecycleController {
             revision: 1,
             manager_version: env!("CARGO_PKG_VERSION").to_owned(),
         };
+        let latest_readiness = LatestReadiness::from_document(&document);
         let state = match recovered {
             Some(recovered) => {
                 let control = RuntimeControlClient::connect(
@@ -377,7 +411,12 @@ impl LifecycleController {
                     },
                 }
             }
-            None => LifecycleState::NoRuntime(no_runtime_snapshot(header, &document, None)),
+            None => LifecycleState::NoRuntime(no_runtime_snapshot(
+                header,
+                &document,
+                None,
+                &latest_readiness,
+            )),
         };
         let (publisher, snapshots) = watch::channel(state.snapshot());
         let (sender, receiver) = mpsc::channel(COMMAND_CAPACITY);
@@ -389,6 +428,7 @@ impl LifecycleController {
             observations: tokio::task::JoinSet::new(),
             publisher,
             state,
+            latest_readiness,
             next_token: 1,
             config_path,
             config,
@@ -470,6 +510,13 @@ impl LifecycleController {
 
     pub(crate) async fn update_readiness(&self, report: ReadinessReport) {
         let _ = self.sender.send(LifecycleCommand::Readiness(report)).await;
+    }
+
+    pub(crate) async fn readiness_unavailable(&self) {
+        let _ = self
+            .sender
+            .send(LifecycleCommand::ReadinessUnavailable)
+            .await;
     }
 }
 
@@ -566,6 +613,7 @@ impl LifecycleOwner {
             LifecycleCommand::Refresh => self.request_document_refresh(),
             LifecycleCommand::ConfigChanged => self.apply_config_change(),
             LifecycleCommand::Readiness(report) => self.apply_readiness(report),
+            LifecycleCommand::ReadinessUnavailable => self.apply_readiness_unavailable(),
         }
     }
 
@@ -806,13 +854,14 @@ impl LifecycleOwner {
                 match &mut operation.intent {
                     StopIntent::Stop { waiters } => waiters.push(response),
                     StopIntent::Restart {
-                        restart_waiters, ..
+                        start_waiters,
+                        restart_waiters,
                     } => {
-                        for waiter in restart_waiters.drain(..) {
-                            let _ = waiter.send(RuntimeRestartResult::Superseded {
-                                by: tribal_wire::management::RestartSuperseder::Stop,
-                            });
-                        }
+                        resolve_restart_supersession(
+                            start_waiters,
+                            restart_waiters,
+                            StartSuperseder::Stop,
+                        );
                         operation.intent = StopIntent::Stop {
                             waiters: vec![response],
                         };
@@ -1024,13 +1073,14 @@ impl LifecycleOwner {
                         };
                     }
                     StopIntent::Restart {
-                        restart_waiters, ..
+                        start_waiters,
+                        restart_waiters,
                     } => {
-                        for waiter in restart_waiters.drain(..) {
-                            let _ = waiter.send(RuntimeRestartResult::Superseded {
-                                by: tribal_wire::management::RestartSuperseder::ManagerShutdown,
-                            });
-                        }
+                        resolve_restart_supersession(
+                            start_waiters,
+                            restart_waiters,
+                            StartSuperseder::ManagerShutdown,
+                        );
                         operation.intent = StopIntent::Shutdown {
                             waiters: vec![response],
                         };
@@ -1129,7 +1179,7 @@ impl LifecycleOwner {
                     }));
                 self.publish_current();
             }
-            Err(failure) => self.finish_launch_failure(intent, origin, failure),
+            Err(failure) => self.finish_launch_failure(intent, &origin, failure),
         }
     }
 
@@ -1189,13 +1239,17 @@ impl LifecycleOwner {
                     && let LifecycleState::NoRuntime(current) = &self.state
                 {
                     let failure = no_runtime_failure(&current.phase);
-                    let document = document.unwrap_or(ConfigDocument::Unreadable {
-                        phase: tribal_wire::management::ConfigPersistencePhase::DurabilityUncertain,
+                    let document = document.unwrap_or_else(|| {
+                        self.latest_readiness.mark_unavailable();
+                        ConfigDocument::Unreadable {
+                            phase: tribal_wire::management::ConfigPersistencePhase::DurabilityUncertain,
+                        }
                     });
                     self.state = LifecycleState::NoRuntime(no_runtime_snapshot(
                         next_header(&current.header),
                         &document,
                         failure,
+                        &self.latest_readiness,
                     ));
                     self.publish_current();
                 }
@@ -1246,12 +1300,11 @@ impl LifecycleOwner {
                     Err(failure) => {
                         operation.child.evidence = failure.evidence;
                         terminate_early_child(&mut operation.child).await;
-                        let failed = failed_no_runtime_from_origin(
-                            &operation.origin,
-                            failure.failure.clone(),
-                        );
+                        let no_runtime = self
+                            .project_no_runtime_failure(&operation.origin, failure.failure.clone());
+                        let failed = failed_no_runtime_from_origin(&no_runtime, failure.failure);
                         resolve_launch_failure(operation.intent, &failed);
-                        LifecycleState::NoRuntime(with_failure(operation.origin, failure.failure))
+                        LifecycleState::NoRuntime(no_runtime)
                     }
                 }
             }
@@ -1355,12 +1408,12 @@ impl LifecycleOwner {
                                     &status.to_string(),
                                 ),
                             };
-                            let failed =
-                                failed_no_runtime_from_origin(&operation.origin, failure.clone());
+                            let no_runtime =
+                                self.project_no_runtime_failure(&operation.origin, failure.clone());
+                            let failed = failed_no_runtime_from_origin(&no_runtime, failure);
                             resolve_launch_failure(operation.intent, &failed);
-                            return self.finish_completion_state(LifecycleState::NoRuntime(
-                                with_failure(operation.origin, failure),
-                            ));
+                            return self
+                                .finish_completion_state(LifecycleState::NoRuntime(no_runtime));
                         }
                         let Some(custody) = operation.child.custody.take() else {
                             let failure = StoppedProcessFailure::RuntimeHandshakeFailed {
@@ -1370,12 +1423,12 @@ impl LifecycleOwner {
                                 ),
                             };
                             terminate_early_child(&mut operation.child).await;
-                            let failed =
-                                failed_no_runtime_from_origin(&operation.origin, failure.clone());
+                            let no_runtime =
+                                self.project_no_runtime_failure(&operation.origin, failure.clone());
+                            let failed = failed_no_runtime_from_origin(&no_runtime, failure);
                             resolve_launch_failure(operation.intent, &failed);
-                            return self.finish_completion_state(LifecycleState::NoRuntime(
-                                with_failure(operation.origin, failure),
-                            ));
+                            return self
+                                .finish_completion_state(LifecycleState::NoRuntime(no_runtime));
                         };
                         let child = ManagedChild {
                             process: ManagedProcess::Owned(operation.child.child),
@@ -1398,10 +1451,11 @@ impl LifecycleOwner {
                             ),
                         };
                         terminate_early_child(&mut operation.child).await;
-                        let failed =
-                            failed_no_runtime_from_origin(&operation.origin, failure.clone());
+                        let no_runtime =
+                            self.project_no_runtime_failure(&operation.origin, failure.clone());
+                        let failed = failed_no_runtime_from_origin(&no_runtime, failure);
                         resolve_launch_failure(operation.intent, &failed);
-                        LifecycleState::NoRuntime(with_failure(operation.origin, failure))
+                        LifecycleState::NoRuntime(no_runtime)
                     }
                 }
             }
@@ -1597,13 +1651,17 @@ impl LifecycleOwner {
                 }
                 match result {
                     StopCompletion::Stopped { document } => {
-                        let document = document.unwrap_or(ConfigDocument::Unreadable {
-                            phase: tribal_wire::management::ConfigPersistencePhase::DurabilityUncertain,
+                        let document = document.unwrap_or_else(|| {
+                            self.latest_readiness.mark_unavailable();
+                            ConfigDocument::Unreadable {
+                                phase: tribal_wire::management::ConfigPersistencePhase::DurabilityUncertain,
+                            }
                         });
                         let no_runtime = no_runtime_snapshot(
                             next_header(&operation.snapshot.header),
                             &document,
                             None,
+                            &self.latest_readiness,
                         );
                         match operation.intent {
                             StopIntent::Stop { waiters } => {
@@ -1643,7 +1701,29 @@ impl LifecycleOwner {
                                     }
                                     LifecycleState::NoRuntime(no_runtime)
                                 }
-                                NoRuntimePhase::Stopped { .. } => {
+                                NoRuntimePhase::Stopped {
+                                    state: StoppedState::ReadinessUnavailable { .. },
+                                } => {
+                                    let unavailable = clean_readiness_unavailable(&no_runtime);
+                                    for waiter in restart_waiters {
+                                        let _ = waiter.send(
+                                            RuntimeRestartResult::ReadinessUnavailable {
+                                                snapshot: unavailable.clone(),
+                                            },
+                                        );
+                                    }
+                                    let unavailable = readiness_unavailable(&no_runtime);
+                                    for waiter in start_waiters {
+                                        let _ =
+                                            waiter.send(RuntimeStartResult::ReadinessUnavailable {
+                                                snapshot: unavailable.clone(),
+                                            });
+                                    }
+                                    LifecycleState::NoRuntime(no_runtime)
+                                }
+                                NoRuntimePhase::Stopped {
+                                    state: StoppedState::Ready { .. },
+                                } => {
                                     self.state = LifecycleState::NoRuntime(no_runtime.clone());
                                     self.begin_launch(
                                         LaunchIntent::Restart {
@@ -1677,13 +1757,26 @@ impl LifecycleOwner {
     fn finish_launch_failure(
         &mut self,
         intent: LaunchIntent,
-        origin: NoRuntimeLifecycleSnapshot,
+        origin: &NoRuntimeLifecycleSnapshot,
         failure: StoppedProcessFailure,
     ) {
-        let failed = failed_no_runtime_from_origin(&origin, failure.clone());
+        let no_runtime = self.project_no_runtime_failure(origin, failure.clone());
+        let failed = failed_no_runtime_from_origin(&no_runtime, failure);
         resolve_launch_failure(intent, &failed);
-        self.state = LifecycleState::NoRuntime(with_failure(origin, failure));
+        self.state = LifecycleState::NoRuntime(no_runtime);
         self.publish_current();
+    }
+
+    fn project_no_runtime_failure(
+        &self,
+        origin: &NoRuntimeLifecycleSnapshot,
+        failure: StoppedProcessFailure,
+    ) -> NoRuntimeLifecycleSnapshot {
+        no_runtime_from_latest(
+            next_header(&origin.header),
+            Some(failure),
+            &self.latest_readiness,
+        )
     }
 
     async fn observe_exit(&mut self) {
@@ -1767,9 +1860,11 @@ impl LifecycleOwner {
                         &status.to_string(),
                     ),
                 };
-                let failed = failed_no_runtime_from_origin(&operation.origin, failure.clone());
+                let no_runtime =
+                    self.project_no_runtime_failure(&operation.origin, failure.clone());
+                let failed = failed_no_runtime_from_origin(&no_runtime, failure);
                 resolve_launch_failure(operation.intent, &failed);
-                self.state = LifecycleState::NoRuntime(with_failure(operation.origin, failure));
+                self.state = LifecycleState::NoRuntime(no_runtime);
                 self.publish_current();
             }
             None => {
@@ -1810,10 +1905,12 @@ impl LifecycleOwner {
                 let document = ConfigDocument::Unreadable {
                     phase: tribal_wire::management::ConfigPersistencePhase::DurabilityUncertain,
                 };
+                self.latest_readiness.mark_unavailable();
                 self.state = LifecycleState::NoRuntime(no_runtime_snapshot(
                     next_header(header),
                     &document,
                     Some(failure),
+                    &self.latest_readiness,
                 ));
                 self.publish_current();
                 self.request_document_refresh();
@@ -2087,6 +2184,7 @@ impl LifecycleOwner {
     }
 
     fn apply_readiness(&mut self, report: ReadinessReport) {
+        self.latest_readiness = LatestReadiness::Report(report.clone());
         match &mut self.state {
             LifecycleState::NoRuntime(snapshot) => {
                 let failure = no_runtime_failure(&snapshot.phase);
@@ -2149,6 +2247,23 @@ impl LifecycleOwner {
             | LifecycleState::TerminatingManaged { .. }
             | LifecycleState::Terminating(_) => {}
         }
+    }
+
+    fn apply_readiness_unavailable(&mut self) {
+        self.latest_readiness.mark_unavailable();
+        let LifecycleState::NoRuntime(snapshot) = &self.state else {
+            return;
+        };
+        if matches!(snapshot.phase, NoRuntimePhase::Unconfigured { .. }) {
+            return;
+        }
+        let failure = no_runtime_failure(&snapshot.phase);
+        self.state = LifecycleState::NoRuntime(no_runtime_from_latest(
+            next_header(&snapshot.header),
+            failure,
+            &self.latest_readiness,
+        ));
+        self.publish_current();
     }
 
     async fn fold_ready_terminal_completions(&mut self) {
@@ -2712,20 +2827,26 @@ fn supersede_launch(intent: &mut LaunchIntent, by: StartSuperseder) {
         LaunchIntent::Restart {
             start_waiters,
             restart_waiters,
-        } => {
-            for waiter in start_waiters.drain(..) {
-                let _ = waiter.send(RuntimeStartResult::Superseded { by });
-            }
-            let restart_by = match by {
-                StartSuperseder::Stop => tribal_wire::management::RestartSuperseder::Stop,
-                StartSuperseder::ManagerShutdown => {
-                    tribal_wire::management::RestartSuperseder::ManagerShutdown
-                }
-            };
-            for waiter in restart_waiters.drain(..) {
-                let _ = waiter.send(RuntimeRestartResult::Superseded { by: restart_by });
-            }
+        } => resolve_restart_supersession(start_waiters, restart_waiters, by),
+    }
+}
+
+fn resolve_restart_supersession(
+    start_waiters: &mut Vec<oneshot::Sender<RuntimeStartResult>>,
+    restart_waiters: &mut Vec<oneshot::Sender<RuntimeRestartResult>>,
+    by: StartSuperseder,
+) {
+    for waiter in start_waiters.drain(..) {
+        let _ = waiter.send(RuntimeStartResult::Superseded { by });
+    }
+    let restart_by = match by {
+        StartSuperseder::Stop => tribal_wire::management::RestartSuperseder::Stop,
+        StartSuperseder::ManagerShutdown => {
+            tribal_wire::management::RestartSuperseder::ManagerShutdown
         }
+    };
+    for waiter in restart_waiters.drain(..) {
+        let _ = waiter.send(RuntimeRestartResult::Superseded { by: restart_by });
     }
 }
 
@@ -2959,56 +3080,95 @@ fn no_runtime_snapshot(
     header: LifecycleSnapshotHeader,
     document: &ConfigDocument,
     failure: Option<StoppedProcessFailure>,
+    latest: &LatestReadiness,
 ) -> NoRuntimeLifecycleSnapshot {
     match document {
-        ConfigDocument::DurableValid { .. } => NoRuntimeLifecycleSnapshot {
-            header,
-            phase: NoRuntimePhase::Stopped {
-                state: StoppedState::Ready {
-                    readiness: start_clear(),
-                    failure,
-                },
-            },
-        },
+        ConfigDocument::DurableValid { .. } => no_runtime_from_latest(header, failure, latest),
+        ConfigDocument::Unreadable { .. } => {
+            let last_report = match latest {
+                LatestReadiness::Report(report) if matches!(report.start, StartVerdict::Clear) => {
+                    Some(no_runtime_report(report))
+                }
+                LatestReadiness::Unavailable { last_clear } => last_clear.clone(),
+                LatestReadiness::Report(_) => None,
+            };
+            readiness_unavailable_no_runtime(header, failure, last_report)
+        }
         ConfigDocument::DurableInvalid { .. }
         | ConfigDocument::UncertainValid { .. }
-        | ConfigDocument::UncertainInvalid { .. }
-        | ConfigDocument::Unreadable { .. } => {
-            let readiness = start_blocked();
-            NoRuntimeLifecycleSnapshot {
-                header,
-                phase: NoRuntimePhase::Unconfigured {
-                    focus: readiness_focus(&readiness.checks),
-                    readiness,
-                    failure,
-                },
-            }
+        | ConfigDocument::UncertainInvalid { .. } => {
+            no_runtime_from_report(header, failure, start_blocked_report())
         }
     }
 }
 
-fn with_failure(
-    mut snapshot: NoRuntimeLifecycleSnapshot,
-    failure: StoppedProcessFailure,
+fn no_runtime_from_latest(
+    header: LifecycleSnapshotHeader,
+    failure: Option<StoppedProcessFailure>,
+    latest: &LatestReadiness,
 ) -> NoRuntimeLifecycleSnapshot {
-    snapshot.header = next_header(&snapshot.header);
-    match &mut snapshot.phase {
-        NoRuntimePhase::Unconfigured {
-            failure: current, ..
+    match latest {
+        LatestReadiness::Report(report) => {
+            no_runtime_from_report(header, failure, no_runtime_report(report))
         }
-        | NoRuntimePhase::Stopped {
-            state: StoppedState::Ready {
-                failure: current, ..
-            },
-        } => *current = Some(failure),
-        NoRuntimePhase::Stopped {
-            state:
-                StoppedState::ReadinessUnavailable {
-                    process_failure, ..
-                },
-        } => *process_failure = Some(failure),
+        LatestReadiness::Unavailable { last_clear } => {
+            readiness_unavailable_no_runtime(header, failure, last_clear.clone())
+        }
     }
-    snapshot
+}
+
+fn no_runtime_from_report(
+    header: LifecycleSnapshotHeader,
+    failure: Option<StoppedProcessFailure>,
+    report: ReadinessReport,
+) -> NoRuntimeLifecycleSnapshot {
+    if matches!(report.start, StartVerdict::Blocked { .. }) {
+        let readiness =
+            StartBlockedReadinessReport::try_from(report).unwrap_or_else(|_| start_blocked());
+        NoRuntimeLifecycleSnapshot {
+            header,
+            phase: NoRuntimePhase::Unconfigured {
+                focus: readiness_focus(&readiness.checks),
+                readiness,
+                failure,
+            },
+        }
+    } else {
+        let readiness =
+            StartClearReadinessReport::try_from(report).unwrap_or_else(|_| start_clear());
+        NoRuntimeLifecycleSnapshot {
+            header,
+            phase: NoRuntimePhase::Stopped {
+                state: StoppedState::Ready { readiness, failure },
+            },
+        }
+    }
+}
+
+fn readiness_unavailable_no_runtime(
+    header: LifecycleSnapshotHeader,
+    process_failure: Option<StoppedProcessFailure>,
+    last_report: Option<ReadinessReport>,
+) -> NoRuntimeLifecycleSnapshot {
+    NoRuntimeLifecycleSnapshot {
+        header,
+        phase: NoRuntimePhase::Stopped {
+            state: StoppedState::ReadinessUnavailable {
+                last_report,
+                presentation: failure_presentation(
+                    "runtime readiness is unavailable",
+                    "retry the readiness check",
+                ),
+                process_failure,
+            },
+        },
+    }
+}
+
+fn no_runtime_report(report: &ReadinessReport) -> ReadinessReport {
+    let mut report = report.clone();
+    report.health = HealthVerdict::NotApplicable;
+    report
 }
 
 fn unconfigured(
@@ -3335,7 +3495,15 @@ fn readiness_focus(
 }
 
 fn start_clear() -> StartClearReadinessReport {
-    let report = readiness::derive(
+    StartClearReadinessReport::try_from(start_clear_report()).unwrap_or(StartClearReadinessReport {
+        start: StartClearVerdict::Clear,
+        health: HealthVerdict::NotApplicable,
+        checks: Vec::new(),
+    })
+}
+
+fn start_clear_report() -> ReadinessReport {
+    readiness::derive(
         vec![readiness::observation(
             CheckResult::Pass {
                 name: CheckName::ConfigValidate,
@@ -3345,16 +3513,24 @@ fn start_clear() -> StartClearReadinessReport {
         )],
         false,
         Vec::new(),
-    );
-    StartClearReadinessReport::try_from(report).unwrap_or(StartClearReadinessReport {
-        start: StartClearVerdict::Clear,
-        health: HealthVerdict::NotApplicable,
-        checks: Vec::new(),
-    })
+    )
 }
 
 fn start_blocked() -> StartBlockedReadinessReport {
-    let report = readiness::derive(
+    StartBlockedReadinessReport::try_from(start_blocked_report()).unwrap_or(
+        StartBlockedReadinessReport {
+            start: StartBlockedVerdict::Blocked {
+                first: CheckName::ConfigParse,
+                rest: Vec::new(),
+            },
+            health: HealthVerdict::NotApplicable,
+            checks: Vec::new(),
+        },
+    )
+}
+
+fn start_blocked_report() -> ReadinessReport {
+    readiness::derive(
         vec![readiness::observation(
             CheckResult::Fail {
                 name: CheckName::ConfigParse,
@@ -3371,15 +3547,7 @@ fn start_blocked() -> StartBlockedReadinessReport {
         )],
         false,
         Vec::new(),
-    );
-    StartBlockedReadinessReport::try_from(report).unwrap_or(StartBlockedReadinessReport {
-        start: StartBlockedVerdict::Blocked {
-            first: CheckName::ConfigParse,
-            rest: Vec::new(),
-        },
-        health: HealthVerdict::NotApplicable,
-        checks: Vec::new(),
-    })
+    )
 }
 
 fn spawn_failure(message: &str, detail: &str) -> StoppedProcessFailure {
@@ -3446,6 +3614,15 @@ mod tests {
             manager_instance_id: "manager".to_owned(),
             revision: 1,
             manager_version: "test".to_owned(),
+        }
+    }
+
+    fn durable_valid_document() -> ConfigDocument {
+        ConfigDocument::DurableValid {
+            values: tribal_wire::management::ConfigLiteral::new(serde_json::json!({})),
+            revision: tribal_wire::management::ConfigRevision::from_digest(
+                &tribal_wire::management::ConfigDigest::from_bytes(b"valid"),
+            ),
         }
     }
 
@@ -3674,8 +3851,12 @@ mod tests {
             serde_yaml::to_string(&config).expect("configuration serialises"),
         )
         .expect("configuration writes");
-        let authority = authority::AuthorityLease::acquire(&config_path)
-            .expect("authority acquisition succeeds");
+        let authority = authority::AuthorityLease::acquire_with_roots(
+            &config_path,
+            &temp.path().join("state"),
+            &temp.path().join("run"),
+        )
+        .expect("authority acquisition succeeds");
         let authority::AuthorityAcquire::Acquired(authority) = authority else {
             panic!("temporary config path has one authority");
         };
@@ -3696,6 +3877,7 @@ mod tests {
             observations: tokio::task::JoinSet::new(),
             publisher,
             state,
+            latest_readiness: LatestReadiness::Report(start_blocked_report()),
             next_token: 1,
             config_path,
             config,
@@ -3718,6 +3900,7 @@ mod tests {
                 ),
             },
             None,
+            &LatestReadiness::Report(start_blocked_report()),
         );
         assert!(matches!(
             snapshot.phase,
@@ -3793,6 +3976,159 @@ mod tests {
                 RuntimeRestartResult::Restarted { snapshot: restart }
             ) if start.header.revision == restart.header.revision
         ));
+    }
+
+    #[test]
+    fn test_stopping_restart_supersession_resolves_every_waiter() {
+        assert_stopping_restart_supersession(StartSuperseder::Stop);
+        assert_stopping_restart_supersession(StartSuperseder::ManagerShutdown);
+    }
+
+    fn assert_stopping_restart_supersession(by: StartSuperseder) {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (state, mut start_receiver, mut restart_receiver) = stopping_restart_state(9);
+        owner.state = state;
+
+        match by {
+            StartSuperseder::Stop => {
+                let (response, _receiver) = oneshot::channel();
+                owner.admit_stop(response);
+            }
+            StartSuperseder::ManagerShutdown => {
+                let (response, _receiver) = oneshot::channel();
+                owner.admit_shutdown(response);
+            }
+        }
+
+        assert!(matches!(
+            start_receiver.try_recv().expect("start waiter resolves"),
+            RuntimeStartResult::Superseded { by: observed } if observed == by
+        ));
+        let expected = match by {
+            StartSuperseder::Stop => tribal_wire::management::RestartSuperseder::Stop,
+            StartSuperseder::ManagerShutdown => {
+                tribal_wire::management::RestartSuperseder::ManagerShutdown
+            }
+        };
+        assert!(matches!(
+            restart_receiver
+                .try_recv()
+                .expect("restart waiter resolves"),
+            RuntimeRestartResult::Superseded { by: observed } if observed == expected
+        ));
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    fn stopping_restart_state(
+        token: u64,
+    ) -> (
+        LifecycleState,
+        oneshot::Receiver<RuntimeStartResult>,
+        oneshot::Receiver<RuntimeRestartResult>,
+    ) {
+        let (start_sender, start_receiver) = oneshot::channel();
+        let (restart_sender, restart_receiver) = oneshot::channel();
+        let runtime = RuntimeIdentity {
+            instance_id: "restarting-runtime".to_owned(),
+            pid: 7,
+            binary_version: "test".to_owned(),
+            config_path: ConfigFilePath {
+                path: "/tmp/tribal.yaml".to_owned(),
+            },
+        };
+        (
+            LifecycleState::Operating(LifecycleOperation::Stopping(StoppingOperation {
+                token,
+                snapshot: StoppingLifecycleSnapshot {
+                    header: header(),
+                    phase: StoppingPhase::Stopping { runtime },
+                },
+                intent: StopIntent::Restart {
+                    start_waiters: vec![start_sender],
+                    restart_waiters: vec![restart_sender],
+                },
+                child: None,
+                task: None,
+                deadline: tokio::time::Instant::now() + STOP_DEADLINE,
+                forced: false,
+            })),
+            start_receiver,
+            restart_receiver,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_restart_completion_refuses_a_readiness_unavailable_replacement() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (state, start_receiver, restart_receiver) = stopping_restart_state(10);
+        owner.state = state;
+        owner.latest_readiness = LatestReadiness::Report(start_clear_report());
+        owner.apply_readiness_unavailable();
+
+        owner
+            .handle_stop_completion(
+                10,
+                StopCompletion::Stopped {
+                    document: Some(durable_valid_document()),
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            start_receiver.await.expect("start waiter resolves"),
+            RuntimeStartResult::ReadinessUnavailable { .. }
+        ));
+        assert!(matches!(
+            restart_receiver.await.expect("restart waiter resolves"),
+            RuntimeRestartResult::ReadinessUnavailable { .. }
+        ));
+        assert!(matches!(
+            owner.state,
+            LifecycleState::NoRuntime(NoRuntimeLifecycleSnapshot {
+                phase: NoRuntimePhase::Stopped {
+                    state: StoppedState::ReadinessUnavailable { .. },
+                },
+                ..
+            })
+        ));
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_restart_completion_refuses_a_newly_blocked_replacement() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (state, start_receiver, restart_receiver) = stopping_restart_state(11);
+        owner.state = state;
+        owner.apply_readiness(start_blocked_report());
+
+        owner
+            .handle_stop_completion(
+                11,
+                StopCompletion::Stopped {
+                    document: Some(durable_valid_document()),
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            start_receiver.await.expect("start waiter resolves"),
+            RuntimeStartResult::Blocked { .. }
+        ));
+        assert!(matches!(
+            restart_receiver.await.expect("restart waiter resolves"),
+            RuntimeRestartResult::Blocked { .. }
+        ));
+        assert!(matches!(
+            owner.state,
+            LifecycleState::NoRuntime(NoRuntimeLifecycleSnapshot {
+                phase: NoRuntimePhase::Unconfigured { .. },
+                ..
+            })
+        ));
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
     }
 
     #[tokio::test]
@@ -4507,8 +4843,12 @@ mod tests {
             serde_yaml::to_string(&config).expect("configuration serialises"),
         )
         .expect("configuration writes");
-        let authority = authority::AuthorityLease::acquire(&config_path)
-            .expect("authority acquisition succeeds");
+        let authority = authority::AuthorityLease::acquire_with_roots(
+            &config_path,
+            &temp.path().join("state"),
+            &temp.path().join("run"),
+        )
+        .expect("authority acquisition succeeds");
         let authority::AuthorityAcquire::Acquired(authority) = authority else {
             panic!("temporary config path has one authority");
         };
