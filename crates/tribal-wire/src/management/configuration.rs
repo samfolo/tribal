@@ -617,6 +617,9 @@ pub struct ManagementResponseError {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "code", content = "data", rename_all = "snake_case")]
 pub enum ManagementError {
+    ConfigurationInvalid {
+        fields: Vec<ConfigFieldPath>,
+    },
     ConfigConflict {
         expected: ConfigRevision,
         actual: ConfigRevision,

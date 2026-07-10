@@ -14,6 +14,7 @@ fn management_contract_matches_its_golden_schema() {
     let schemas: BTreeMap<&str, RootSchema> = BTreeMap::from([
         ("ConfigFieldPath", schema_for!(m::ConfigFieldPath)),
         ("LifecycleSnapshot", schema_for!(m::LifecycleSnapshot)),
+        ("ManagementEvent", schema_for!(m::ManagementEvent)),
         ("RuntimeStartResult", schema_for!(m::RuntimeStartResult)),
         ("RuntimeStopResult", schema_for!(m::RuntimeStopResult)),
         ("RuntimeRestartResult", schema_for!(m::RuntimeRestartResult)),

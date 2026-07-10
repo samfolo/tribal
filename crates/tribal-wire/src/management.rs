@@ -4,6 +4,7 @@
 
 mod configuration;
 mod envelope;
+mod event;
 mod launch;
 mod lifecycle;
 mod panic_correlation;
@@ -30,6 +31,7 @@ pub use envelope::{
     BootstrapShutdownRefusal, ManagementBootstrapRequest, ManagementBootstrapResponse,
     ManagementClientHello, ManagementServerHello,
 };
+pub use event::ManagementEvent;
 pub use launch::{
     AuthorityUnavailableReason, ConflictingRuntimeIdentity, ManagerAnnouncement,
     ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord, ManagerStartupFailure,

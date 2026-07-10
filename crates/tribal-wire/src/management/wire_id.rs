@@ -175,14 +175,12 @@ impl ConfigRevision {
     /// Projects a proven digest onto its compare-token namespace.
     #[must_use]
     pub fn from_digest(digest: &ConfigDigest) -> Self {
-        Self(format!(
-            "{}{}",
-            Self::PREFIX,
-            digest
-                .as_str()
-                .strip_prefix(ConfigDigest::PREFIX)
-                .unwrap_or_default(),
-        ))
+        let payload = digest
+            .as_str()
+            .chars()
+            .skip(ConfigDigest::PREFIX.len())
+            .collect::<String>();
+        Self(format!("{}{}", Self::PREFIX, payload,))
     }
 }
 
