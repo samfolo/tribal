@@ -813,6 +813,133 @@
       }
     }
   },
+  "ConfigWriteOutcome": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigWriteOutcome",
+    "description": "Durable revision and runtime effect of one field write.",
+    "type": "object",
+    "required": [
+      "effect",
+      "revision"
+    ],
+    "properties": {
+      "effect": {
+        "$ref": "#/definitions/ConfigWriteEffect"
+      },
+      "revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "ConfigWriteEffect": {
+        "description": "Observable effect of a successful configuration write.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "effect"
+            ],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "unchanged"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "effect"
+            ],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "committed_no_runtime_effect"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "effect"
+            ],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "applied_live"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "effect"
+            ],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "on_next_start"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "effect"
+            ],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "awaiting_restart"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "effect"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "by"
+                ],
+                "properties": {
+                  "by": {
+                    "type": "string"
+                  }
+                }
+              },
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "shadowed"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
   "CredentialSources": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "CredentialSources",
