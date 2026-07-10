@@ -10,5 +10,6 @@ pub mod control;
 pub mod gateway;
 pub mod management;
 pub mod mcp;
+pub mod runtime_control;
 
 mod operator_check;
