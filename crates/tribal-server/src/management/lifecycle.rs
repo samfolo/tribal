@@ -303,6 +303,15 @@ pub(crate) enum LifecycleExit {
     ConfigWorkerTerminated(ConfigWorkerExit),
 }
 
+impl EarlyChild {
+    fn mark_commit_outcome_unknown(&mut self) {
+        self.evidence =
+            tribal_wire::management::EarlyChildTerminationEvidence::CommitOutcomeUnknown {
+                runtime: self.identity.clone(),
+            };
+    }
+}
+
 impl LifecycleState {
     fn snapshot(&self) -> LifecycleSnapshot {
         match self {
@@ -1277,7 +1286,8 @@ impl LifecycleOwner {
             }
             other => {
                 drop(result);
-                other
+                self.state = other;
+                return;
             }
         };
         self.publish_current();
@@ -1379,7 +1389,8 @@ impl LifecycleOwner {
             }
             other => {
                 drop(result);
-                other
+                self.state = other;
+                return;
             }
         };
         self.publish_current();
@@ -1799,6 +1810,7 @@ impl LifecycleOwner {
         let attachment_failed = attachment_task_finished(&operation.attachment);
         let stop_failed = graceful_stop_task_finished(&operation.termination);
         if attachment_failed {
+            let committing = matches!(operation.attachment, AttachmentStage::Committing(_));
             let joined = if let Some(task) = take_attachment_task(&mut operation.attachment) {
                 match task.await {
                     Ok(()) => true,
@@ -1816,6 +1828,9 @@ impl LifecycleOwner {
                     LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation));
                 self.handle_completion(completion).await;
                 return;
+            }
+            if committing {
+                operation.child.mark_commit_outcome_unknown();
             }
         }
         if attachment_failed || stop_failed {
@@ -2050,7 +2065,7 @@ impl LifecycleOwner {
             if let Err(error) = task.await {
                 tracing::error!(%error, "terminal lifecycle attachment task failed");
                 if committing {
-                    self.mark_terminal_commit_unknown();
+                    self.mark_active_commit_unknown();
                 }
             }
         }
@@ -2133,7 +2148,7 @@ impl LifecycleOwner {
         self.track_task(completed_task, "terminal lifecycle completion");
     }
 
-    fn mark_terminal_commit_unknown(&mut self) {
+    fn mark_active_commit_unknown(&mut self) {
         let child = match &mut self.state {
             LifecycleState::Operating(LifecycleOperation::Launching(operation)) => {
                 Some(&mut operation.child)
@@ -2144,10 +2159,7 @@ impl LifecycleOwner {
             _ => None,
         };
         if let Some(child) = child {
-            child.evidence =
-                tribal_wire::management::EarlyChildTerminationEvidence::CommitOutcomeUnknown {
-                    runtime: child.identity.clone(),
-                };
+            child.mark_commit_outcome_unknown();
         }
     }
 
@@ -3251,6 +3263,46 @@ mod tests {
         }
     }
 
+    fn a_launching_operation(token: u64, attachment: AttachmentStage) -> LaunchingOperation {
+        let (start, _start_result) = oneshot::channel();
+        LaunchingOperation {
+            token,
+            snapshot: tribal_wire::management::StartingLifecycleSnapshot {
+                header: header(),
+                phase: tribal_wire::management::StartingPhase::Starting,
+            },
+            origin: no_runtime_origin(),
+            child: early_child(),
+            intent: LaunchIntent::Start {
+                waiters: vec![start],
+            },
+            attachment,
+        }
+    }
+
+    async fn reap_launching_operation(owner: &mut LifecycleOwner) {
+        let state = std::mem::replace(&mut owner.state, placeholder_state());
+        let LifecycleState::Operating(LifecycleOperation::Launching(mut operation)) = state else {
+            panic!("test owner retains its launching operation");
+        };
+        if let Some(task) = take_attachment_task(&mut operation.attachment) {
+            task.abort();
+            assert!(
+                task.await.is_err(),
+                "the pending attachment task is aborted"
+            );
+        }
+        operation
+            .child
+            .child
+            .start_kill()
+            .expect("test child accepts forced termination");
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, operation.child.child.wait())
+            .await
+            .expect("test child is reaped")
+            .expect("test child status is available");
+    }
+
     fn test_owner() -> (
         tempfile::TempDir,
         LifecycleOwner,
@@ -3422,6 +3474,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_duplicate_custody_completion_does_not_publish() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        owner.state =
+            LifecycleState::Operating(LifecycleOperation::Launching(a_launching_operation(
+                39,
+                AttachmentStage::Handshaking(tokio::spawn(std::future::pending())),
+            )));
+        let snapshots = owner.publisher.subscribe();
+        let runtime = match &owner.state {
+            LifecycleState::Operating(LifecycleOperation::Launching(operation)) => {
+                operation.child.identity.clone()
+            }
+            _ => panic!("test owner has a launching operation"),
+        };
+
+        owner
+            .handle_custody_commit(
+                39,
+                Err(LaunchFailure {
+                    failure: StoppedProcessFailure::RuntimeCustodyCommitFailed {
+                        presentation: failure_presentation(
+                            "custody commit failed",
+                            "duplicate completion fixture",
+                        ),
+                    },
+                    evidence:
+                        tribal_wire::management::EarlyChildTerminationEvidence::CommitOutcomeUnknown {
+                            runtime,
+                        },
+                }),
+            )
+            .await;
+
+        assert!(matches!(
+            owner.state,
+            LifecycleState::Operating(LifecycleOperation::Launching(LaunchingOperation {
+                attachment: AttachmentStage::Handshaking(_),
+                ..
+            }))
+        ));
+        assert!(
+            !snapshots
+                .has_changed()
+                .expect("lifecycle publisher remains live"),
+            "a duplicate custody completion emits no lifecycle change"
+        );
+        reap_launching_operation(&mut owner).await;
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_runtime_completion_does_not_publish() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        owner.state =
+            LifecycleState::Operating(LifecycleOperation::Launching(a_launching_operation(
+                40,
+                AttachmentStage::Committing(tokio::spawn(std::future::pending())),
+            )));
+        let snapshots = owner.publisher.subscribe();
+
+        owner
+            .handle_runtime_connected(40, Err(RuntimeControlError::Closed))
+            .await;
+
+        assert!(matches!(
+            owner.state,
+            LifecycleState::Operating(LifecycleOperation::Launching(LaunchingOperation {
+                attachment: AttachmentStage::Committing(_),
+                ..
+            }))
+        ));
+        assert!(
+            !snapshots
+                .has_changed()
+                .expect("lifecycle publisher remains live"),
+            "a duplicate runtime completion emits no lifecycle change"
+        );
+        reap_launching_operation(&mut owner).await;
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
     async fn test_ready_custody_commit_is_folded_before_terminal_publication() {
         let (_temp, mut owner, worker_runtime) = test_owner();
         let child = early_child();
@@ -3547,11 +3683,13 @@ mod tests {
         let (_temp, mut owner, worker_runtime) = test_owner();
         let task = tokio::spawn(async { panic!("attachment task panic") });
         let (stop, _stop_result) = oneshot::channel();
+        let child = early_child();
+        let runtime = child.identity.clone();
         owner.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(
             CancellingLaunchOperation {
                 token: 43,
                 header: header(),
-                child: early_child(),
+                child,
                 origin: no_runtime_origin(),
                 intent: CancellationIntent::Stop {
                     waiters: vec![stop],
@@ -3579,6 +3717,16 @@ mod tests {
         owner.observe_early_cancellation().await;
 
         assert!(matches!(
+            owner.state.snapshot().phase,
+            LifecyclePhase::CancellingEarlyChild {
+                evidence:
+                    tribal_wire::management::EarlyChildTerminationEvidence::CommitOutcomeUnknown {
+                        runtime: observed,
+                    },
+                ..
+            } if observed == runtime
+        ));
+        assert!(matches!(
             owner.state,
             LifecycleState::Operating(LifecycleOperation::CancellingLaunch(
                 CancellingLaunchOperation {
@@ -3598,6 +3746,63 @@ mod tests {
         })
         .await
         .expect("forced child is reaped without waiting for the deadline");
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_commit_unknown_survives_forced_reap_timeout() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (stop, _stop_result) = oneshot::channel();
+        let mut child = early_child();
+        let runtime = child.identity.clone();
+        child.mark_commit_outcome_unknown();
+        owner.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(
+            CancellingLaunchOperation {
+                token: 44,
+                header: header(),
+                child,
+                origin: no_runtime_origin(),
+                intent: CancellationIntent::Stop {
+                    waiters: vec![stop],
+                },
+                attachment: AttachmentStage::Settled,
+                termination: EarlyTerminationStage::ForcedReap {
+                    deadline: tokio::time::Instant::now(),
+                },
+            },
+        ));
+
+        owner.observe_early_cancellation().await;
+
+        assert!(matches!(
+            owner.state.snapshot().phase,
+            LifecyclePhase::ManagerTerminating {
+                termination: ManagerTermination::ChildReapTimedOut {
+                    evidence:
+                        tribal_wire::management::EarlyChildTerminationEvidence::CommitOutcomeUnknown {
+                            runtime: observed,
+                        },
+                    ..
+                }
+            } if observed == runtime
+        ));
+        let LifecycleState::TerminatingOperation {
+            operation: LifecycleOperation::CancellingLaunch(operation),
+            ..
+        } = &mut owner.state
+        else {
+            panic!("timed-out cancellation retains its resources");
+        };
+        operation
+            .child
+            .child
+            .start_kill()
+            .expect("test child accepts forced termination");
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, operation.child.child.wait())
+            .await
+            .expect("test child is reaped")
+            .expect("test child status is available");
         drop(owner);
         worker_runtime.join().expect("worker thread joins");
     }
