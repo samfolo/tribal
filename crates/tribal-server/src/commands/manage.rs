@@ -22,6 +22,7 @@ use crate::{
             AuthorityAcquire, AuthorityConflict, AuthorityDescriptor, AuthorityError,
             AuthorityLease, AuthorityOwnerKind,
         },
+        client::{ManagementClient, ManagementClientError},
         configuration::ConfigAuthority,
         custody::{CustodyError, PendingRecovery},
         lifecycle::{LifecycleController, LifecycleExit, LifecycleStartError, RecoveredRuntime},
@@ -34,6 +35,8 @@ use crate::{
 };
 
 const MAX_LAUNCH_RECORD_BYTES: usize = 64 * 1024;
+const REPLACEMENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(12);
+const REPLACEMENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Failure running the local management authority.
 #[derive(Debug, thiserror::Error)]
@@ -95,6 +98,11 @@ pub(crate) enum ManageError {
     RecoveryTask {
         #[source]
         source: tokio::task::JoinError,
+    },
+    #[error("management bootstrap client failed: {source}")]
+    Client {
+        #[source]
+        source: ManagementClientError,
     },
 }
 
@@ -299,26 +307,47 @@ async fn prepare_authority(
                 recovered: None,
             }
         }
-        AuthorityAcquire::Occupied(AuthorityConflict::Manager(descriptor))
-            if manager_socket_is_live(&descriptor).await =>
-        {
-            let record = conflict_record(AuthorityConflict::Manager(descriptor));
-            emit_if_requested(writer, announce_json, &record)?;
-            return Ok(None);
-        }
         AuthorityAcquire::Occupied(AuthorityConflict::Manager(descriptor)) => {
-            let (lease, listener, recovered) = recover_or_report(
-                config_path,
-                instance_id,
-                descriptor.canonical_config_path,
-                writer,
-                announce_json,
-            )
-            .await?;
-            PreparedAuthority {
-                lease,
-                listener,
-                recovered,
+            match ManagementClient::connect(&descriptor).await {
+                Ok(_) => {
+                    let record = conflict_record(AuthorityConflict::Manager(descriptor));
+                    emit_if_requested(writer, announce_json, &record)?;
+                    return Ok(None);
+                }
+                Err(ManagementClientError::VersionMismatch) => {
+                    if let Err(source) = ManagementClient::request_shutdown(&descriptor).await {
+                        let record = authority_unavailable_record(
+                            &descriptor.canonical_config_path,
+                            AuthorityUnavailableReason::LeaseOwnerUnreachable,
+                        );
+                        emit_if_requested(writer, announce_json, &record)?;
+                        return Err(ManageError::Client { source });
+                    }
+                    return prepare_after_restricted_shutdown(
+                        config_path,
+                        instance_id,
+                        descriptor.canonical_config_path,
+                        writer,
+                        announce_json,
+                    )
+                    .await
+                    .map(Some);
+                }
+                Err(_) => {
+                    let (lease, listener, recovered) = recover_or_report(
+                        config_path,
+                        instance_id,
+                        descriptor.canonical_config_path,
+                        writer,
+                        announce_json,
+                    )
+                    .await?;
+                    PreparedAuthority {
+                        lease,
+                        listener,
+                        recovered,
+                    }
+                }
             }
         }
         AuthorityAcquire::Occupied(AuthorityConflict::Recovering {
@@ -460,11 +489,80 @@ async fn bind_or_report(
     }
 }
 
-async fn manager_socket_is_live(descriptor: &AuthorityDescriptor) -> bool {
-    let Some(socket_path) = descriptor.socket_path.as_ref() else {
-        return false;
-    };
-    tokio::net::UnixStream::connect(socket_path).await.is_ok()
+async fn prepare_after_restricted_shutdown(
+    config_path: &Path,
+    manager_instance_id: &str,
+    canonical_config_path: PathBuf,
+    writer: &mut impl Write,
+    announce_json: bool,
+) -> Result<PreparedAuthority, ManageError> {
+    let deadline = tokio::time::Instant::now() + REPLACEMENT_DEADLINE;
+    loop {
+        let acquire = AuthorityLease::acquire(config_path)
+            .map_err(|source| ManageError::Authority { source })?;
+        match acquire {
+            AuthorityAcquire::Acquired(lease) => {
+                let listener = bind_or_report(&lease, writer, announce_json).await?;
+                return Ok(PreparedAuthority {
+                    lease,
+                    listener,
+                    recovered: None,
+                });
+            }
+            AuthorityAcquire::Occupied(AuthorityConflict::Recovering {
+                canonical_config_path,
+            }) => {
+                let (lease, listener, recovered) = recover_or_report(
+                    config_path,
+                    manager_instance_id,
+                    canonical_config_path,
+                    writer,
+                    announce_json,
+                )
+                .await?;
+                return Ok(PreparedAuthority {
+                    lease,
+                    listener,
+                    recovered,
+                });
+            }
+            AuthorityAcquire::Occupied(AuthorityConflict::Manager(_))
+                if tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(REPLACEMENT_POLL_INTERVAL).await;
+            }
+            AuthorityAcquire::Occupied(AuthorityConflict::Manager(_)) => {
+                let paths = AuthorityLease::paths_for(config_path)
+                    .map_err(|source| ManageError::Authority { source })?;
+                if paths.delegated_descriptor_path.exists() {
+                    let (lease, listener, recovered) = recover_or_report(
+                        config_path,
+                        manager_instance_id,
+                        canonical_config_path,
+                        writer,
+                        announce_json,
+                    )
+                    .await?;
+                    return Ok(PreparedAuthority {
+                        lease,
+                        listener,
+                        recovered,
+                    });
+                }
+                let record = authority_unavailable_record(
+                    &canonical_config_path,
+                    AuthorityUnavailableReason::LeaseOwnerUnreachable,
+                );
+                emit_if_requested(writer, announce_json, &record)?;
+                return Err(ManageError::LaunchFailed);
+            }
+            AuthorityAcquire::Occupied(conflict) => {
+                let record = conflict_record(conflict);
+                emit_if_requested(writer, announce_json, &record)?;
+                return Err(ManageError::LaunchFailed);
+            }
+        }
+    }
 }
 
 async fn recover_or_report(
@@ -570,6 +668,18 @@ fn startup_failure_record(path: &Path, failure: ManagerStartupFailure) -> Manage
         failure: ManagerLaunchFailure::ManagerStartupFailed {
             config_path: config_path(path),
             failure,
+        },
+    }
+}
+
+fn authority_unavailable_record(
+    path: &Path,
+    reason: AuthorityUnavailableReason,
+) -> ManagerLaunchRecord {
+    ManagerLaunchRecord::Failed {
+        failure: ManagerLaunchFailure::AuthorityUnavailable {
+            config_path: config_path(path),
+            reason,
         },
     }
 }

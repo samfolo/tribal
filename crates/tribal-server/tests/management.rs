@@ -55,6 +55,27 @@ fn invalid_config_manager_announces_repairs_and_shuts_down() {
         .expect("announcement channel reaches EOF");
     assert!(trailing.is_empty());
 
+    let contender = Command::new(env!("CARGO_BIN_EXE_tribal"))
+        .arg("manage")
+        .arg("--announce-json")
+        .arg("--config")
+        .arg(&config_path)
+        .env("HOME", temp.path())
+        .env("XDG_RUNTIME_DIR", temp.path())
+        .env("XDG_STATE_HOME", temp.path())
+        .output()
+        .expect("manager contender runs");
+    assert!(contender.status.success());
+    let contender: ManagerLaunchRecord =
+        serde_json::from_slice(&contender.stdout).expect("contender record parses");
+    assert!(matches!(
+        contender,
+        ManagerLaunchRecord::Ready {
+            announcement: ref observed,
+            disposition: ManagerLaunchDisposition::ContenderExits,
+        } if observed.instance_id == announcement.instance_id
+    ));
+
     let stream = connect_with_retry(&announcement.socket_path);
     let mut reader = BufReader::new(stream);
     write_frame(

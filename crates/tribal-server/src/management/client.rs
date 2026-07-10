@@ -10,8 +10,8 @@ use tokio::{
     },
 };
 use tribal_wire::management::{
-    MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest, ManagementBootstrapResponse,
-    ManagementClientHello, ManagementEvent, ManagementResponseError,
+    BootstrapShutdownRefusal, MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest,
+    ManagementBootstrapResponse, ManagementClientHello, ManagementEvent, ManagementResponseError,
 };
 
 use super::authority::AuthorityDescriptor;
@@ -42,6 +42,8 @@ pub(crate) enum ManagementClientError {
     },
     #[error("management protocol version mismatch")]
     VersionMismatch,
+    #[error("manager refused restricted shutdown: {reason:?}")]
+    ShutdownRefused { reason: BootstrapShutdownRefusal },
     #[error("manager instance differs from its authority descriptor")]
     InstanceMismatch,
     #[error("management connection closed before a response")]
@@ -89,6 +91,40 @@ impl ManagementClient {
             ManagementBootstrapResponse::VersionMismatch { .. }
             | ManagementBootstrapResponse::ShutdownAccepted
             | ManagementBootstrapResponse::ShutdownRefused { .. } => {
+                Err(ManagementClientError::VersionMismatch)
+            }
+        }
+    }
+
+    /// Requests shutdown through the version-stable bootstrap envelope.
+    pub(crate) async fn request_shutdown(
+        descriptor: &AuthorityDescriptor,
+    ) -> Result<(), ManagementClientError> {
+        let socket = descriptor
+            .socket_path
+            .as_ref()
+            .ok_or(ManagementClientError::MissingSocket)?;
+        let stream = UnixStream::connect(socket)
+            .await
+            .map_err(|source| ManagementClientError::Connect { source })?;
+        let (read, write) = stream.into_split();
+        let mut client = Self {
+            reader: BufReader::new(read),
+            writer: write,
+            next_id: 1,
+        };
+        client.write(&ManagementBootstrapRequest::Shutdown).await?;
+        match client
+            .read::<ManagementBootstrapResponse>()
+            .await?
+            .ok_or(ManagementClientError::Closed)?
+        {
+            ManagementBootstrapResponse::ShutdownAccepted => Ok(()),
+            ManagementBootstrapResponse::ShutdownRefused { reason } => {
+                Err(ManagementClientError::ShutdownRefused { reason })
+            }
+            ManagementBootstrapResponse::Compatible { .. }
+            | ManagementBootstrapResponse::VersionMismatch { .. } => {
                 Err(ManagementClientError::VersionMismatch)
             }
         }

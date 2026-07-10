@@ -1105,6 +1105,35 @@ mod tests {
         assert_eq!(cli.global.config, "/tmp/tribal.yaml");
     }
 
+    #[test]
+    fn test_runtime_capability_group_parses_every_command() {
+        for (name, expected) in [
+            ("start", RuntimeCommand::Start),
+            ("stop", RuntimeCommand::Stop),
+            ("restart", RuntimeCommand::Restart),
+            ("status", RuntimeCommand::Status),
+        ] {
+            let cli =
+                Cli::try_parse_from(["tribal", "runtime", name]).expect("runtime command parses");
+            assert!(matches!(
+                (cli.command, expected),
+                (
+                    Some(Command::Runtime(RuntimeCommand::Start)),
+                    RuntimeCommand::Start
+                ) | (
+                    Some(Command::Runtime(RuntimeCommand::Stop)),
+                    RuntimeCommand::Stop
+                ) | (
+                    Some(Command::Runtime(RuntimeCommand::Restart)),
+                    RuntimeCommand::Restart
+                ) | (
+                    Some(Command::Runtime(RuntimeCommand::Status)),
+                    RuntimeCommand::Status
+                )
+            ));
+        }
+    }
+
     // -- Serve transport/bind parsing ---------------------------------------
 
     #[test]

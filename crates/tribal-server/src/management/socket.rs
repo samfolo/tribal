@@ -845,7 +845,24 @@ mod tests {
                 matches!(response, ManagementBootstrapResponse::Compatible { .. }),
                 expected_compatible,
             );
-            shutdown.cancel();
+            if expected_compatible {
+                shutdown.cancel();
+            } else {
+                super::super::client::ManagementClient::request_shutdown(
+                    &super::super::authority::AuthorityDescriptor {
+                        kind: super::super::authority::AuthorityOwnerKind::Manager,
+                        instance_id: "manager".to_owned(),
+                        pid: std::process::id(),
+                        binary_version: "test".to_owned(),
+                        canonical_config_path: temp.path().join(format!("tribal-{version}.yaml")),
+                        socket_path: Some(path.clone()),
+                        protocol_version: Some(version),
+                    },
+                )
+                .await
+                .expect("restricted replacement requests shutdown");
+                assert!(shutdown.is_cancelled());
+            }
             task.await.expect("socket task joins");
             lifecycle_task.await.expect("lifecycle task joins");
             worker_runtime.join().expect("config worker joins");
