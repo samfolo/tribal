@@ -953,10 +953,7 @@ fn send_fd(stream: &UnixStream, descriptor: RawFd, path: &Path) -> Result<(), Cu
     let control_len = usize::try_from(unsafe { libc::CMSG_SPACE(descriptor_size) })
         .map_err(|_| invalid_control_size(path))?;
     let mut control = vec![0_u8; control_len];
-    let message_control_len = control
-        .len()
-        .try_into()
-        .map_err(|_| invalid_control_size(path))?;
+    let message_control_len = convert_control_len(control.len(), path)?;
     // SAFETY: `CMSG_LEN` computes the header length for one `RawFd` payload.
     let descriptor_control_len: usize =
         convert_control_len(unsafe { libc::CMSG_LEN(descriptor_size) }, path)?;
@@ -1009,10 +1006,7 @@ fn receive_fd(stream: &UnixStream, path: &Path) -> Result<OwnedFd, CustodyError>
     let control_len = usize::try_from(unsafe { libc::CMSG_SPACE(descriptor_size) })
         .map_err(|_| invalid_control_size(path))?;
     let mut control = vec![0_u8; control_len];
-    let message_control_len = control
-        .len()
-        .try_into()
-        .map_err(|_| invalid_control_size(path))?;
+    let message_control_len = convert_control_len(control.len(), path)?;
     // SAFETY: `CMSG_LEN` computes the header length for one `RawFd` payload.
     let descriptor_control_len: usize =
         convert_control_len(unsafe { libc::CMSG_LEN(descriptor_size) }, path)?;
@@ -1128,17 +1122,22 @@ fn peer_uid(stream: &UnixStream) -> Result<libc::uid_t, io::Error> {
 
 #[cfg(target_os = "linux")]
 fn peer_uid(stream: &UnixStream) -> Result<libc::uid_t, io::Error> {
+    let mut length = libc::socklen_t::try_from(mem::size_of::<libc::ucred>()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "peer credential size exceeds socket length",
+        )
+    })?;
     // SAFETY: `credentials` and `length` are valid outputs for SO_PEERCRED on
     // a connected Unix stream.
     unsafe {
         let mut credentials: libc::ucred = mem::zeroed();
-        let mut length = mem::size_of::<libc::ucred>() as libc::socklen_t;
         if libc::getsockopt(
             stream.as_raw_fd(),
             libc::SOL_SOCKET,
             libc::SO_PEERCRED,
             ptr::from_mut(&mut credentials).cast(),
-            &mut length,
+            ptr::from_mut(&mut length),
         ) == 0
         {
             Ok(credentials.uid)
