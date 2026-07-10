@@ -2431,11 +2431,11 @@ impl LifecycleOwner {
             | LifecycleState::TerminatingManaged { .. }
             | LifecycleState::Terminating(_) => false,
         };
-        let custody_termination_runtime = match &self.state {
+        let custody_closed = match &self.state {
             LifecycleState::Running { child, .. } | LifecycleState::Unresponsive { child, .. }
                 if child.custody.is_closed() =>
             {
-                Some(custody_loss_runtime(&child.identity, exact_exit))
+                true
             }
             LifecycleState::Operating(LifecycleOperation::Launching(operation))
                 if operation
@@ -2444,7 +2444,7 @@ impl LifecycleOwner {
                     .as_ref()
                     .is_some_and(ManagerCustody::is_closed) =>
             {
-                Some(custody_loss_runtime(&operation.child.identity, exact_exit))
+                true
             }
             LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation))
                 if operation
@@ -2453,20 +2453,19 @@ impl LifecycleOwner {
                     .as_ref()
                     .is_some_and(ManagerCustody::is_closed) =>
             {
-                Some(custody_loss_runtime(&operation.child.identity, exact_exit))
+                true
             }
             LifecycleState::Operating(LifecycleOperation::Stopping(operation)) => operation
                 .child
                 .as_ref()
-                .filter(|child| child.custody.is_closed())
-                .map(|child| custody_loss_runtime(&child.identity, exact_exit)),
+                .is_some_and(|child| child.custody.is_closed()),
             LifecycleState::NoRuntime(_)
             | LifecycleState::Running { .. }
             | LifecycleState::Operating(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
-            | LifecycleState::Terminating(_) => None,
+            | LifecycleState::Terminating(_) => false,
         };
         let runtime = if exact_exit {
             ManagerTerminationRuntime::Absent
@@ -2498,14 +2497,11 @@ impl LifecycleOwner {
                 | LifecycleState::Terminating(_) => ManagerTerminationRuntime::Absent,
             }
         };
-        let retain_exact_child = custody_termination_runtime.is_some();
-        let termination = custody_termination_runtime.map_or_else(
-            || ManagerTermination::ConfigWorkerPanicked {
-                correlation,
-                runtime,
-            },
-            custody_loss_termination,
-        );
+        let retain_exact_child = custody_closed;
+        let termination = ManagerTermination::ConfigWorkerPanicked {
+            correlation,
+            runtime,
+        };
         let snapshot = ManagerTerminatingLifecycleSnapshot {
             header: next_header(&self.state.snapshot().header),
             phase: ManagerTerminatingPhase::ManagerTerminating { termination },
@@ -4555,7 +4551,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_worker_panic_custody_loss_and_exact_exit_project_custody_absent() {
+    async fn test_worker_panic_custody_loss_and_exact_exit_preserve_worker_cause() {
         let (_temp, mut owner, worker_runtime) = test_owner();
         let (mut child, runtime_custody, runtime_control) = a_managed_child();
         let runtime = child.identity.clone();
@@ -4573,10 +4569,57 @@ mod tests {
 
         owner.terminate_for_worker(None).await;
 
-        assert_custody_loss_absent(&owner.state);
+        assert!(matches!(
+            owner.state.snapshot().phase,
+            LifecyclePhase::ManagerTerminating {
+                termination: ManagerTermination::ConfigWorkerPanicked {
+                    correlation: None,
+                    runtime: ManagerTerminationRuntime::Absent,
+                }
+            }
+        ));
         assert!(matches!(
             owner.state,
             LifecycleState::TerminatingManaged { .. }
+        ));
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_worker_panic_custody_loss_preserves_recoverable_worker_cause() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, runtime_custody, runtime_control) = a_managed_child();
+        let runtime = child.identity.clone();
+        drop(runtime_custody);
+        drop(runtime_control);
+        await_custody_closed(&child.custody).await;
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: running_phase(&runtime, &child.control, false),
+            },
+            child,
+        };
+        let correlation = tribal_wire::management::PanicCorrelationId::parse(
+            "pcorr_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .expect("test correlation is canonical");
+
+        owner.terminate_for_worker(Some(correlation.clone())).await;
+
+        assert!(matches!(
+            owner.state.snapshot().phase,
+            LifecyclePhase::ManagerTerminating {
+                termination: ManagerTermination::ConfigWorkerPanicked {
+                    correlation: Some(observed),
+                    runtime: ManagerTerminationRuntime::Recoverable { runtime: observed_runtime },
+                }
+            } if observed == correlation && observed_runtime == runtime
+        ));
+        assert!(matches!(
+            &owner.state,
+            LifecycleState::TerminatingManaged { child, .. } if child.custody.is_closed()
         ));
         drop(owner);
         worker_runtime.join().expect("worker thread joins");
