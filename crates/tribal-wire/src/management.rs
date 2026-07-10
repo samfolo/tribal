@@ -11,7 +11,6 @@ mod readiness;
 mod runtime;
 mod wire_id;
 
-pub use crate::token::{TokenInfo, TokenList};
 pub use configuration::{
     ConfigChangeEvent, ConfigChangeSource, ConfigDocument, ConfigFieldOutcome, ConfigGetRequest,
     ConfigLiteral, ConfigPatchChange, ConfigPatchOutcome, ConfigPatchRefusal, ConfigPatchRequest,
@@ -81,7 +80,10 @@ pub use wire_id::{
     PanicCorrelationId, PanicCorrelationIdParseError, WireIdError,
 };
 
-pub use crate::operator_check::{CheckName, CheckResult};
+pub use crate::{
+    operator_check::{CheckName, CheckResult},
+    token::{TokenInfo, TokenList},
+};
 
 /// The version of the public local-management contract.
 pub const MANAGEMENT_CONTRACT_VERSION: u16 = 1;

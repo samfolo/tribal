@@ -241,8 +241,9 @@ fn canonical_token(raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tribal_wire::control::{CheckName, CheckResult};
+
+    use super::*;
 
     #[tokio::test]
     async fn test_proven_bytes_win_over_the_live_path() {

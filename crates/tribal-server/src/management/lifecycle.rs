@@ -8,32 +8,32 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
-use tribal_wire::management::{
-    CheckName, CheckResult, CheckSubject, CleanNoRuntimeLifecycleSnapshot, CleanNoRuntimePhase,
-    CleanStoppedState, CleanUnconfiguredLifecycleSnapshot, CleanUnconfiguredPhase,
-    ConfigDiagnosticLocation, ConfigDocument, ConfigFilePath, CustodyLossTerminationRuntime,
-    DegradedReason, FailedNoRuntimeLifecycleSnapshot, FailedNoRuntimePhase,
-    HealthDegradedReadinessReport, HealthVerdict, LifecyclePhase, LifecycleSnapshot,
-    LifecycleSnapshotHeader, ManagedRuntimeStatusResult, ManagerShutdownOperation,
-    ManagerShutdownResult, ManagerTerminatingLifecycleSnapshot, ManagerTerminatingPhase,
-    ManagerTermination, ManagerTerminationRuntime, NoRuntimeLifecycleSnapshot, NoRuntimePhase,
-    ReadinessReport, RestartOperationInProgress, RestartRuntimeOperation,
-    RestartRuntimeUnresponsiveLifecycleSnapshot, RestartRuntimeUnresponsivePhase,
-    RunningLifecycleSnapshot, RunningPhase, RuntimeExitFailure, RuntimeIdentity,
-    RuntimeLogsTailResult, RuntimeOperation, RuntimeReadUnavailable, RuntimeRestartResult,
-    RuntimeStartResult, RuntimeStopResult, RuntimeStopTimedOutFailure, RuntimeTokenListResult,
-    RuntimeUnresponsiveLifecycleSnapshot, RuntimeUnresponsivePhase,
-    ShutdownInProgressLifecycleSnapshot, ShutdownInProgressPhase,
-    ShutdownRuntimeUnresponsiveLifecycleSnapshot, ShutdownRuntimeUnresponsivePhase,
-    StartBlockedReadinessReport, StartBlockedVerdict, StartClearReadinessReport, StartClearVerdict,
-    StartOperationInProgress, StartSuperseder, StartVerdict, StopRuntimeOperation,
-    StopRuntimeUnresponsiveLifecycleSnapshot, StopRuntimeUnresponsivePhase, StoppedProcessFailure,
-    StoppedState, StoppingLifecycleSnapshot, StoppingPhase,
+use tribal_wire::{
+    management::{
+        CheckName, CheckResult, CheckSubject, CleanNoRuntimeLifecycleSnapshot, CleanNoRuntimePhase,
+        CleanStoppedState, CleanUnconfiguredLifecycleSnapshot, CleanUnconfiguredPhase,
+        ConfigDiagnosticLocation, ConfigDocument, ConfigFilePath, CustodyLossTerminationRuntime,
+        DegradedReason, FailedNoRuntimeLifecycleSnapshot, FailedNoRuntimePhase,
+        HealthDegradedReadinessReport, HealthVerdict, LifecyclePhase, LifecycleSnapshot,
+        LifecycleSnapshotHeader, ManagedRuntimeStatusResult, ManagerShutdownOperation,
+        ManagerShutdownResult, ManagerTerminatingLifecycleSnapshot, ManagerTerminatingPhase,
+        ManagerTermination, ManagerTerminationRuntime, NoRuntimeLifecycleSnapshot, NoRuntimePhase,
+        ReadinessReport, RestartOperationInProgress, RestartRuntimeOperation,
+        RestartRuntimeUnresponsiveLifecycleSnapshot, RestartRuntimeUnresponsivePhase,
+        RunningLifecycleSnapshot, RunningPhase, RuntimeExitFailure, RuntimeIdentity,
+        RuntimeLogsTailResult, RuntimeOperation, RuntimeReadUnavailable, RuntimeRestartResult,
+        RuntimeStartResult, RuntimeStopResult, RuntimeStopTimedOutFailure, RuntimeTokenListResult,
+        RuntimeUnresponsiveLifecycleSnapshot, RuntimeUnresponsivePhase,
+        ShutdownInProgressLifecycleSnapshot, ShutdownInProgressPhase,
+        ShutdownRuntimeUnresponsiveLifecycleSnapshot, ShutdownRuntimeUnresponsivePhase,
+        StartBlockedReadinessReport, StartBlockedVerdict, StartClearReadinessReport,
+        StartClearVerdict, StartOperationInProgress, StartSuperseder, StartVerdict,
+        StopRuntimeOperation, StopRuntimeUnresponsiveLifecycleSnapshot,
+        StopRuntimeUnresponsivePhase, StoppedProcessFailure, StoppedState,
+        StoppingLifecycleSnapshot, StoppingPhase,
+    },
+    runtime_control::{RuntimeConfigApplyOutcome, RuntimeConfigChange, RuntimeCustodyProof},
 };
-use tribal_wire::runtime_control::RuntimeCustodyProof;
-use tribal_wire::runtime_control::{RuntimeConfigApplyOutcome, RuntimeConfigChange};
-
-use crate::commands::serve::MANAGED_AUTHORITY_FD;
 
 use super::{
     authority::{AuthorityLease, AuthorityPaths},
@@ -45,6 +45,7 @@ use super::{
     runtime_control::{RuntimeControlClient, RuntimeControlConnection, RuntimeControlError},
     worker::{ConfigWorkerClient, ConfigWorkerExit},
 };
+use crate::commands::serve::MANAGED_AUTHORITY_FD;
 
 const COMMAND_CAPACITY: usize = 16;
 const COMPLETION_CAPACITY: usize = 1;

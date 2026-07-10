@@ -332,8 +332,9 @@ fn subject_order(subject: &ProbeSubject) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tribal_wire::management::{ConfigLiteral, ConfigSetRequest};
+
+    use super::*;
 
     #[test]
     fn test_relevant_input_digest_ignores_unrelated_changes() {

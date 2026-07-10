@@ -2,8 +2,7 @@
 
 use std::{
     io,
-    os::fd::AsRawFd as _,
-    os::unix::fs::PermissionsExt as _,
+    os::{fd::AsRawFd as _, unix::fs::PermissionsExt as _},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -746,9 +745,9 @@ fn io_error(path: &Path, source: io::Error) -> RuntimeControlError {
 #[cfg(test)]
 mod tests {
     use tracing_subscriber::{Registry, layer::SubscriberExt as _};
+    use tribal_wire::management::ConfigFilePath;
 
     use super::*;
-    use tribal_wire::management::ConfigFilePath;
 
     #[tokio::test]
     async fn test_compatible_client_authenticates_and_stops_exact_runtime() {

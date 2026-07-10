@@ -296,11 +296,12 @@ fn subject(kind: CheckSubjectKind) -> CheckSubject {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tribal_wire::management::{
         ConfigDigest, ConfigRevision, ProbeOutcome, ProbeReceiptFreshness, ProbeSubject,
         ProviderProbeCapability,
     };
+
+    use super::*;
 
     const ALL_CHECKS: [CheckName; 13] = [
         CheckName::ConfigParse,

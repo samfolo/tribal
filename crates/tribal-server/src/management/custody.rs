@@ -4,10 +4,12 @@ use std::{
     fs::File,
     io::{self, Read as _, Write as _},
     mem,
-    os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd},
-    os::unix::{
-        fs::PermissionsExt as _,
-        net::{UnixListener, UnixStream},
+    os::{
+        fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd},
+        unix::{
+            fs::PermissionsExt as _,
+            net::{UnixListener, UnixStream},
+        },
     },
     path::{Path, PathBuf},
     ptr,
@@ -1140,8 +1142,9 @@ fn io_error(path: &Path, source: io::Error) -> CustodyError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::os::unix::fs::MetadataExt as _;
+
+    use super::*;
 
     #[derive(Clone, Copy)]
     enum InjectedRecoveryFailure {

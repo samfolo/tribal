@@ -766,8 +766,9 @@ fn socket_error(path: &Path, source: io::Error) -> ManagerSocketError {
 mod tests {
     use std::sync::Arc;
 
-    use super::*;
     use tribal_wire::management::ManagementClientHello;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_compatible_and_mismatched_clients_get_restricted_handshakes() {

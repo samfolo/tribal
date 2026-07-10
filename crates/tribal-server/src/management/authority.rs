@@ -3,8 +3,10 @@
 use std::{
     fs::{File, OpenOptions},
     io,
-    os::fd::{AsRawFd as _, OwnedFd},
-    os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _},
+    os::{
+        fd::{AsRawFd as _, OwnedFd},
+        unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _},
+    },
     path::{Path, PathBuf},
 };
 

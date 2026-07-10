@@ -1184,9 +1184,11 @@ fn public_error(message: &str, error: ManagementError) -> ManagementResponseErro
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::{Path, PathBuf};
+
     use tribal_wire::management::{CredentialUse, GenesisProviderAvailability};
+
+    use super::*;
 
     fn write_config(path: &Path, config: &tribal_config::TribalConfig) {
         std::fs::write(

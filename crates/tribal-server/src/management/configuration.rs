@@ -654,8 +654,9 @@ fn managed_effect(effect: WriteEffect, runtime_attached: bool) -> ConfigWriteEff
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tribal_wire::management::{ConfigFieldPath, ConfigPatchChange};
+
+    use super::*;
 
     fn valid_config(path: &Path) -> ConfigAuthority {
         let config = TribalConfig::minimum_valid("postgres://user:pass@localhost:5432/tribal");

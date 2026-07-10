@@ -25,12 +25,14 @@ use crate::{
     cli::ServeArgs,
     control,
     error::AppError,
-    management::authority::{
-        AuthorityAcquire, AuthorityDescriptor, AuthorityError, AuthorityLease, AuthorityOwnerKind,
+    management::{
+        authority::{
+            AuthorityAcquire, AuthorityDescriptor, AuthorityError, AuthorityLease,
+            AuthorityOwnerKind,
+        },
+        custody::{MANAGED_RUNTIME_INSTANCE_ID, RuntimeCustodyGuard},
+        runtime_control::{self, RuntimeControlService},
     },
-    management::custody::MANAGED_RUNTIME_INSTANCE_ID,
-    management::custody::RuntimeCustodyGuard,
-    management::runtime_control::{self, RuntimeControlService},
     orchestration,
     startup::{POOL_NAME_MCP, SelfWriteSentinel, init_config_watcher},
     transport,
