@@ -108,6 +108,33 @@ struct RecoveryContext<'a> {
     descriptor_path: &'a Path,
     socket_path: &'a Path,
     control_proof: &'a RuntimeProofRegistry,
+    effects: &'a dyn RecoveryEffects,
+}
+
+trait RecoveryEffects: Send + Sync {
+    fn generate_proof(&self) -> Result<RuntimeCustodyProof, CustodyError>;
+
+    fn persist(
+        &self,
+        path: &Path,
+        descriptor: &DelegatedRuntimeDescriptor,
+    ) -> Result<(), CustodyError>;
+}
+
+struct SystemRecoveryEffects;
+
+impl RecoveryEffects for SystemRecoveryEffects {
+    fn generate_proof(&self) -> Result<RuntimeCustodyProof, CustodyError> {
+        generate_proof()
+    }
+
+    fn persist(
+        &self,
+        path: &Path,
+        descriptor: &DelegatedRuntimeDescriptor,
+    ) -> Result<(), CustodyError> {
+        persist_descriptor(path, descriptor)
+    }
 }
 
 /// Custody or recovery failure.
@@ -346,6 +373,7 @@ impl RuntimeCustodyGuard {
         let thread = std::thread::Builder::new()
             .name("tribal-runtime-custody".to_owned())
             .spawn(move || {
+                let effects = SystemRecoveryEffects;
                 let context = RecoveryContext {
                     listener: &listener,
                     lease_file: &lease_file,
@@ -353,6 +381,7 @@ impl RuntimeCustodyGuard {
                     descriptor_path: &thread_descriptor_path,
                     socket_path: &thread_socket_path,
                     control_proof: &thread_control_proof,
+                    effects: &effects,
                 };
                 serve_recovery(&context, stream, descriptor);
             })
@@ -588,6 +617,7 @@ fn serve_recovery(
         descriptor_path,
         socket_path,
         control_proof,
+        effects,
     } = *context;
     let mut blocked = false;
     loop {
@@ -638,13 +668,15 @@ fn serve_recovery(
             continue;
         };
         if blocked {
-            let _ = write_frame(
+            if respond_while_blocked(
                 &mut claimant,
-                &CustodyResponse::Refused {
-                    reason: CustodyRefusal::RecoveryBlocked,
-                },
+                request,
+                &descriptor.runtime,
+                cancellation,
                 socket_path,
-            );
+            ) {
+                return;
+            }
             continue;
         }
         let CustodyRequest::Recover {
@@ -679,10 +711,10 @@ fn serve_recovery(
         claimant.set_read_timeout(Some(CLAIM_DEADLINE)).ok();
         let commit = read_frame::<CustodyRequest>(&mut claimant, socket_path);
         let Ok(request) = commit else {
-            match generate_proof().and_then(|proof| {
+            match effects.generate_proof().and_then(|proof| {
                 descriptor.proof = proof;
                 descriptor.generation = descriptor.generation.saturating_add(1);
-                persist_descriptor(descriptor_path, &descriptor)
+                effects.persist(descriptor_path, &descriptor)
             }) {
                 Ok(()) => replace_runtime_proof(control_proof, &descriptor.proof),
                 Err(_) => blocked = true,
@@ -709,7 +741,7 @@ fn serve_recovery(
         descriptor.manager_instance_id = committed_manager;
         descriptor.proof = next_proof;
         descriptor.generation = descriptor.generation.saturating_add(1);
-        if persist_descriptor(descriptor_path, &descriptor).is_err() {
+        if effects.persist(descriptor_path, &descriptor).is_err() {
             blocked = true;
             let _ = write_frame(
                 &mut claimant,
@@ -727,6 +759,33 @@ fn serve_recovery(
         claimant.set_read_timeout(None).ok();
         lifetime = claimant;
     }
+}
+
+fn respond_while_blocked(
+    claimant: &mut UnixStream,
+    request: CustodyRequest,
+    runtime: &RuntimeIdentity,
+    cancellation: &CancellationToken,
+    socket_path: &Path,
+) -> bool {
+    let response = match request {
+        CustodyRequest::Stop {
+            runtime_instance_id,
+        } if runtime_instance_id == runtime.instance_id => {
+            cancellation.cancel();
+            CustodyResponse::StopAccepted
+        }
+        CustodyRequest::Stop { .. } => CustodyResponse::Refused {
+            reason: CustodyRefusal::RuntimeIdentityMismatch,
+        },
+        CustodyRequest::InitialCommit { .. }
+        | CustodyRequest::Recover { .. }
+        | CustodyRequest::CommitRecovery { .. } => CustodyResponse::Refused {
+            reason: CustodyRefusal::RecoveryBlocked,
+        },
+    };
+    let _ = write_frame(claimant, &response, socket_path);
+    cancellation.is_cancelled()
 }
 
 fn replace_runtime_proof(registry: &RuntimeProofRegistry, proof: &RuntimeCustodyProof) {
@@ -1084,6 +1143,172 @@ mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt as _;
 
+    #[derive(Clone, Copy)]
+    enum InjectedRecoveryFailure {
+        GenerateProof,
+        PersistDescriptor,
+    }
+
+    struct FailingRecoveryEffects {
+        failure: InjectedRecoveryFailure,
+    }
+
+    impl RecoveryEffects for FailingRecoveryEffects {
+        fn generate_proof(&self) -> Result<RuntimeCustodyProof, CustodyError> {
+            if matches!(self.failure, InjectedRecoveryFailure::GenerateProof) {
+                return Err(injected_failure(Path::new("<proof-rotation>")));
+            }
+            super::generate_proof()
+        }
+
+        fn persist(
+            &self,
+            path: &Path,
+            descriptor: &DelegatedRuntimeDescriptor,
+        ) -> Result<(), CustodyError> {
+            if matches!(self.failure, InjectedRecoveryFailure::PersistDescriptor) {
+                return Err(injected_failure(path));
+            }
+            persist_descriptor(path, descriptor)
+        }
+    }
+
+    struct FaultedRecovery {
+        _temp: tempfile::TempDir,
+        config_path: PathBuf,
+        state_base: PathBuf,
+        runtime_base: PathBuf,
+        paths: AuthorityPaths,
+        cancellation: CancellationToken,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for FaultedRecovery {
+        fn drop(&mut self) {
+            self.cancellation.cancel();
+            if let Some(thread) = self.thread.take() {
+                thread.join().expect("faulted recovery thread joins");
+            }
+        }
+    }
+
+    impl FaultedRecovery {
+        fn start(failure: InjectedRecoveryFailure) -> Self {
+            let temp = tempfile::tempdir_in("/tmp").expect("temporary recovery root");
+            let config_path = temp.path().join("tribal.yaml");
+            let state_base = temp.path().join("state");
+            let runtime_base = temp.path().join("run");
+            let acquired =
+                AuthorityLease::acquire_with_roots(&config_path, &state_base, &runtime_base)
+                    .expect("authority prepares");
+            let super::super::authority::AuthorityAcquire::Acquired(lease) = acquired else {
+                panic!("unique fixture path must acquire authority");
+            };
+            let paths = lease.paths().clone();
+            prepare_socket_path(&paths.custody_socket_path).expect("custody path prepares");
+            let listener =
+                UnixListener::bind(&paths.custody_socket_path).expect("custody listener binds");
+            listener
+                .set_nonblocking(true)
+                .expect("custody listener becomes nonblocking");
+            let lease_file = lease.inheritable_clone().expect("lease duplicates");
+
+            let proof = generate_proof().expect("fixture proof generates");
+            let proof_text = proof.expose_secret().to_owned();
+            let runtime = RuntimeIdentity {
+                instance_id: "runtime-fault-fixture".to_owned(),
+                pid: std::process::id(),
+                binary_version: env!("CARGO_PKG_VERSION").to_owned(),
+                config_path: ConfigFilePath {
+                    path: paths.canonical_config_path.to_string_lossy().into_owned(),
+                },
+            };
+            let descriptor = DelegatedRuntimeDescriptor {
+                runtime,
+                manager_instance_id: "manager-original".to_owned(),
+                generation: 1,
+                proof,
+                custody_socket_path: paths.custody_socket_path.clone(),
+                canonical_config_path: paths.canonical_config_path.clone(),
+            };
+            persist_descriptor(&paths.delegated_descriptor_path, &descriptor)
+                .expect("initial descriptor persists");
+            let control_proof = Arc::new(RwLock::new(zeroize::Zeroizing::new(proof_text)));
+            let cancellation = CancellationToken::new();
+            let (manager, lifetime) = UnixStream::pair().expect("lifetime pair creates");
+            drop(manager);
+
+            let thread_cancellation = cancellation.clone();
+            let thread_paths = paths.clone();
+            let thread_control_proof = Arc::clone(&control_proof);
+            let thread = std::thread::spawn(move || {
+                let _retained_lease = lease;
+                let effects = FailingRecoveryEffects { failure };
+                let context = RecoveryContext {
+                    listener: &listener,
+                    lease_file: &lease_file,
+                    cancellation: &thread_cancellation,
+                    descriptor_path: &thread_paths.delegated_descriptor_path,
+                    socket_path: &thread_paths.custody_socket_path,
+                    control_proof: &thread_control_proof,
+                    effects: &effects,
+                };
+                serve_recovery(&context, lifetime, descriptor);
+            });
+
+            Self {
+                _temp: temp,
+                config_path,
+                state_base,
+                runtime_base,
+                paths,
+                cancellation,
+                thread: Some(thread),
+            }
+        }
+
+        fn assert_fenced_and_stop(&self) {
+            let retry =
+                PendingRecovery::begin_with_paths("manager-retry".to_owned(), self.paths.clone());
+            assert!(matches!(
+                retry,
+                Err(CustodyError::Refused {
+                    reason: CustodyRefusal::RecoveryBlocked,
+                })
+            ));
+            assert!(matches!(
+                AuthorityLease::acquire_with_roots(
+                    &self.config_path,
+                    &self.state_base,
+                    &self.runtime_base,
+                )
+                .expect("authority conflict classifies"),
+                super::super::authority::AuthorityAcquire::Occupied(_)
+            ));
+
+            let mut claimant = UnixStream::connect(&self.paths.custody_socket_path)
+                .expect("restricted stop connects");
+            write_frame(
+                &mut claimant,
+                &CustodyRequest::Stop {
+                    runtime_instance_id: "runtime-fault-fixture".to_owned(),
+                },
+                &self.paths.custody_socket_path,
+            )
+            .expect("restricted stop writes");
+            assert!(matches!(
+                read_frame::<CustodyResponse>(&mut claimant, &self.paths.custody_socket_path)
+                    .expect("restricted stop reads"),
+                CustodyResponse::StopAccepted
+            ));
+            assert!(self.cancellation.is_cancelled());
+        }
+    }
+
+    fn injected_failure(path: &Path) -> CustodyError {
+        io_error(path, io::Error::other("injected recovery failure"))
+    }
+
     #[test]
     fn test_scm_rights_transfers_the_same_open_file_description() {
         let temp = tempfile::tempdir_in("/tmp").expect("temporary custody root");
@@ -1184,5 +1409,36 @@ mod tests {
         drop(custody);
         drop(lease);
         drop(guard);
+    }
+
+    #[test]
+    fn test_proof_persistence_failure_fences_recovery_but_admits_stop() {
+        let fixture = FaultedRecovery::start(InjectedRecoveryFailure::PersistDescriptor);
+        let pending = PendingRecovery::begin_with_paths(
+            "manager-successor".to_owned(),
+            fixture.paths.clone(),
+        )
+        .expect("successor receives the held lease");
+
+        assert!(matches!(
+            pending.commit(),
+            Err(CustodyError::Refused {
+                reason: CustodyRefusal::RecoveryBlocked,
+            })
+        ));
+        fixture.assert_fenced_and_stop();
+    }
+
+    #[test]
+    fn test_proof_rotation_failure_fences_recovery_but_admits_stop() {
+        let fixture = FaultedRecovery::start(InjectedRecoveryFailure::GenerateProof);
+        let abandoned = PendingRecovery::begin_with_paths(
+            "manager-abandoned".to_owned(),
+            fixture.paths.clone(),
+        )
+        .expect("abandoned claimant receives the held lease");
+        drop(abandoned);
+
+        fixture.assert_fenced_and_stop();
     }
 }

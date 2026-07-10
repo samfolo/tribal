@@ -266,7 +266,6 @@ impl Drop for AuthorityLease {
             let _ = std::fs::remove_file(&self.paths.socket_path);
             let _ = std::fs::remove_file(&self.paths.runtime_control_socket_path);
         }
-        let _ = fs2::FileExt::unlock(&self.file);
     }
 }
 
