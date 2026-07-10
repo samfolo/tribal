@@ -3,9 +3,9 @@
 use std::{
     cell::Cell,
     collections::BTreeSet,
-    fs::File,
+    fs::{File, OpenOptions},
     io::{self, Read as _},
-    os::unix::fs::MetadataExt as _,
+    os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -134,6 +134,7 @@ impl ConfigAuthority {
 
     /// Current proven revision for one-shot optimistic operations.
     pub(crate) fn revision(&self) -> Result<ConfigRevision, ConfigAuthorityError> {
+        self.reconcile_if_needed()?;
         Ok(self.stable_winner()?.revision)
     }
 
@@ -143,7 +144,8 @@ impl ConfigAuthority {
         key: &str,
         value: serde_json::Value,
     ) -> Result<Vec<tribal_config::ConfigViolation>, ConfigAuthorityError> {
-        let config = self.load_valid()?;
+        let proven = self.stable_winner()?;
+        let config = Self::load_valid(&proven)?;
         Ok(tribal_config::validate_write(&config, key, value))
     }
 
@@ -151,7 +153,8 @@ impl ConfigAuthority {
     pub(crate) fn credential_materials(
         &self,
     ) -> Result<Vec<CredentialMaterial>, ConfigAuthorityError> {
-        let config = self.load_valid()?;
+        let proven = self.stable_winner()?;
+        let config = Self::load_valid(&proven)?;
         let value =
             serde_json::to_value(&config).map_err(|source| ConfigAuthorityError::Invalid {
                 message: source.to_string(),
@@ -219,14 +222,17 @@ impl ConfigAuthority {
     }
 
     pub(crate) fn database_url(&self) -> Result<zeroize::Zeroizing<String>, ConfigAuthorityError> {
-        Ok(zeroize::Zeroizing::new(self.load_valid()?.database.url))
+        let proven = self.stable_winner()?;
+        Ok(zeroize::Zeroizing::new(
+            Self::load_valid(&proven)?.database.url,
+        ))
     }
 
     /// Current durable document, preserving invalid and unreadable states.
     pub(crate) fn document(&self) -> Result<ConfigDocument, ConfigAuthorityError> {
         let proven = self.stable_winner()?;
         let uncertain = self.durability_uncertain.get();
-        match self.load_valid() {
+        match Self::load_valid(&proven) {
             Ok(config) if uncertain => Ok(ConfigDocument::UncertainValid {
                 values: ConfigLiteral::new(tribal_config::get_all(&config)),
                 observed_digest: proven.digest,
@@ -252,7 +258,7 @@ impl ConfigAuthority {
         request: ConfigGetRequest,
     ) -> Result<ConfigValue, ConfigAuthorityError> {
         let proven = self.stable_winner()?;
-        let config = match self.load_valid() {
+        let config = match Self::load_valid(&proven) {
             Ok(config) => config,
             Err(ConfigAuthorityError::Invalid { .. }) if self.durability_uncertain.get() => {
                 return Ok(ConfigValue::UncertainInvalid {
@@ -292,18 +298,20 @@ impl ConfigAuthority {
         &self,
         request: ConfigSetRequest,
     ) -> Result<ConfigWriteOutcome, ConfigAuthorityError> {
+        let ConfigSetRequest {
+            key,
+            value,
+            expected_revision,
+        } = request;
         self.reconcile_if_needed()?;
         let current = self.stable_winner()?;
-        check_revision(&request.expected_revision, &current.revision)?;
-        let config = match self.load_valid() {
+        check_revision(&expected_revision, &current.revision)?;
+        let config = match Self::load_valid(&current) {
             Ok(config) => config,
             Err(ConfigAuthorityError::Invalid { .. }) => {
                 let repaired = tribal_config::repair_patch(
                     &self.path,
-                    &[(
-                        request.key.as_str().to_owned(),
-                        request.value.expose_sensitive().clone(),
-                    )],
+                    &[(key.as_str().to_owned(), value.expose_sensitive().clone())],
                     &CliShadow::default(),
                 )
                 .map_err(|source| self.write_error(&current, source))?;
@@ -322,11 +330,12 @@ impl ConfigAuthority {
             }
             Err(error) => return Err(error),
         };
-        let persisted = tribal_config::set(
+        let persisted = tribal_config::set_from_yaml(
             &config,
             &self.path,
-            request.key.as_str(),
-            request.value.expose_sensitive().clone(),
+            &current.bytes,
+            key.as_str(),
+            value.expose_sensitive().clone(),
             &CliShadow::default(),
         )
         .map_err(|source| self.write_error(&current, source))?;
@@ -360,8 +369,14 @@ impl ConfigAuthority {
                 )
             })
             .collect::<Vec<_>>();
-        let persisted = match self.load_valid() {
-            Ok(config) => tribal_config::patch(&config, &self.path, &native, &CliShadow::default()),
+        let persisted = match Self::load_valid(&current) {
+            Ok(config) => tribal_config::patch_from_yaml(
+                &config,
+                &self.path,
+                &current.bytes,
+                &native,
+                &CliShadow::default(),
+            ),
             Err(ConfigAuthorityError::Invalid { .. }) => {
                 tribal_config::repair_patch(&self.path, &native, &CliShadow::default())
             }
@@ -400,21 +415,6 @@ impl ConfigAuthority {
         if !self.durability_uncertain.get() {
             return Ok(());
         }
-        let file = File::open(&self.path).map_err(|source| ConfigAuthorityError::Io {
-            path: self.path.clone(),
-            source,
-        })?;
-        file.sync_all().map_err(|source| ConfigAuthorityError::Io {
-            path: self.path.clone(),
-            source,
-        })?;
-        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|source| ConfigAuthorityError::Io {
-                path: parent.to_owned(),
-                source,
-            })?;
         let _ = self.stable_winner()?;
         self.durability_uncertain.set(false);
         Ok(())
@@ -439,9 +439,12 @@ impl ConfigAuthority {
         }
     }
 
-    fn load_valid(&self) -> Result<TribalConfig, ConfigAuthorityError> {
-        let path = self.path.to_string_lossy();
-        let config = tribal_config::load_config(&path, None, None).map_err(|error| {
+    fn load_valid(proven: &ProvenConfigBytes) -> Result<TribalConfig, ConfigAuthorityError> {
+        let yaml =
+            std::str::from_utf8(&proven.bytes).map_err(|error| ConfigAuthorityError::Invalid {
+                message: error.to_string(),
+            })?;
+        let config = tribal_config::load_config_from_yaml(yaml, None, None).map_err(|error| {
             ConfigAuthorityError::Invalid {
                 message: error.to_string(),
             }
@@ -454,20 +457,39 @@ impl ConfigAuthority {
 }
 
 fn read_stable_once(path: &Path) -> Result<Option<ProvenConfigBytes>, io::Error> {
-    let mut file = File::open(path)?;
-    let before = FileIdentity::from_metadata(&file.metadata()?);
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    let after_read = FileIdentity::from_metadata(&file.metadata()?);
-    let path_winner = FileIdentity::from_metadata(&std::fs::metadata(path)?);
-    if before != after_read || after_read != path_winner || path_winner.length != bytes.len() as u64
+    let parent_path = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = File::open(parent_path)?;
+    let mut first = open_no_follow(path)?;
+    let first_before = FileIdentity::from_metadata(&first.metadata()?);
+    let mut first_bytes = Vec::new();
+    first.read_to_end(&mut first_bytes)?;
+    let first_after = FileIdentity::from_metadata(&first.metadata()?);
+    if first_before != first_after || first_after.length != first_bytes.len() as u64 {
+        return Ok(None);
+    }
+    let first_digest = ConfigDigest::from_bytes(&first_bytes);
+    first.sync_all()?;
+    parent.sync_all()?;
+
+    let mut second = open_no_follow(path)?;
+    let second_before = FileIdentity::from_metadata(&second.metadata()?);
+    let mut second_bytes = Vec::new();
+    second.read_to_end(&mut second_bytes)?;
+    let second_after = FileIdentity::from_metadata(&second.metadata()?);
+    let second_digest = ConfigDigest::from_bytes(&second_bytes);
+    if first_after != second_before
+        || second_before != second_after
+        || second_after.length != second_bytes.len() as u64
+        || first_digest != second_digest
+        || first_bytes != second_bytes
     {
         return Ok(None);
     }
-    let digest = ConfigDigest::from_bytes(&bytes);
+
+    let digest = first_digest;
     let revision = ConfigRevision::from_digest(&digest);
     let proven = ProvenConfigBytes {
-        bytes,
+        bytes: first_bytes,
         digest,
         revision,
     };
@@ -476,6 +498,13 @@ fn read_stable_once(path: &Path) -> Result<Option<ProvenConfigBytes>, io::Error>
     } else {
         Ok(None)
     }
+}
+
+fn open_no_follow(path: &Path) -> Result<File, io::Error> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
 }
 
 fn revision_for(bytes: &[u8]) -> ConfigRevision {

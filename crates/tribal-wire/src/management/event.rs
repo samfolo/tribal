@@ -10,7 +10,7 @@ use super::{ConfigChangeEvent, LifecycleSnapshot};
 #[serde(tag = "event", content = "data")]
 pub enum ManagementEvent {
     #[serde(rename = "lifecycle.changed")]
-    LifecycleChanged { snapshot: LifecycleSnapshot },
+    LifecycleChanged { snapshot: Box<LifecycleSnapshot> },
     #[serde(rename = "config.changed")]
     ConfigChanged { change: ConfigChangeEvent },
     #[serde(rename = "logs.line")]

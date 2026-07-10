@@ -268,9 +268,38 @@ pub fn set(
     value: Value,
     cli: &CliShadow,
 ) -> Result<Persisted, SetError> {
+    let document = read_document(config_file)?;
+    set_in_document(config, config_file, key, value, cli, document)
+}
+
+/// Persists one field against an exact already-observed YAML document.
+///
+/// # Errors
+///
+/// Returns [`SetError::Rejected`] when the write is invalid, and the file
+/// variants when the supplied YAML cannot be parsed or persistence fails.
+pub fn set_from_yaml(
+    config: &TribalConfig,
+    config_file: &Path,
+    yaml: &[u8],
+    key: &str,
+    value: Value,
+    cli: &CliShadow,
+) -> Result<Persisted, SetError> {
+    let document = parse_document(config_file, yaml)?;
+    set_in_document(config, config_file, key, value, cli, document)
+}
+
+fn set_in_document(
+    config: &TribalConfig,
+    config_file: &Path,
+    key: &str,
+    value: Value,
+    cli: &CliShadow,
+    document: Value,
+) -> Result<Persisted, SetError> {
     let candidate = validated_candidate(config, key, value.clone())
         .map_err(|violations| SetError::Rejected { violations })?;
-    let document = read_document(config_file)?;
     if lookup(&document, key) == Some(&value) {
         return Ok(Persisted {
             effect: WriteEffect::Unchanged,
@@ -292,11 +321,44 @@ pub fn set(
 /// Structural patch rules such as duplicate and overlapping paths belong to
 /// the application service. This function owns config-native type and semantic
 /// validation plus the single atomic file replacement.
+///
+/// # Errors
+///
+/// Returns [`SetError::Rejected`] when the complete candidate is invalid, and
+/// the file variants when reading or atomically replacing the document fails.
 pub fn patch(
     config: &TribalConfig,
     config_file: &Path,
     changes: &[(String, Value)],
     cli: &CliShadow,
+) -> Result<PersistedPatch, SetError> {
+    let document = read_document(config_file)?;
+    patch_in_document(config, config_file, changes, cli, document)
+}
+
+/// Persists a patch against an exact already-observed YAML document.
+///
+/// # Errors
+///
+/// Returns [`SetError::Rejected`] when the complete candidate is invalid, and
+/// the file variants when the supplied YAML cannot be parsed or persistence fails.
+pub fn patch_from_yaml(
+    config: &TribalConfig,
+    config_file: &Path,
+    yaml: &[u8],
+    changes: &[(String, Value)],
+    cli: &CliShadow,
+) -> Result<PersistedPatch, SetError> {
+    let document = parse_document(config_file, yaml)?;
+    patch_in_document(config, config_file, changes, cli, document)
+}
+
+fn patch_in_document(
+    config: &TribalConfig,
+    config_file: &Path,
+    changes: &[(String, Value)],
+    cli: &CliShadow,
+    mut document: Value,
 ) -> Result<PersistedPatch, SetError> {
     let mut candidate_tree = serde_json::to_value(config).map_err(|source| SetError::Rejected {
         violations: vec![ConfigViolation {
@@ -330,8 +392,7 @@ pub fn patch(
         });
     }
 
-    let mut document = read_document(config_file)?;
-    let mut changed = false;
+    let mut document_changed = false;
     let mut effects = Vec::with_capacity(changes.len());
     for (key, value) in changes {
         if lookup(&document, key) == Some(value) {
@@ -344,10 +405,10 @@ pub fn patch(
                 message,
             }],
         })?;
-        changed = true;
+        document_changed = true;
         effects.push(write_effect(key, cli));
     }
-    if !changed {
+    if !document_changed {
         return Ok(PersistedPatch {
             effects,
             document: None,
@@ -375,6 +436,11 @@ pub fn patch(
 /// This is the repair path: the invalid bytes remain untouched unless the
 /// complete candidate validates, then one atomic replacement establishes the
 /// new durable document.
+///
+/// # Errors
+///
+/// Returns [`SetError::Rejected`] when the repair candidate is invalid, and
+/// the file variants when serialisation or atomic persistence fails.
 pub fn repair_patch(
     config_file: &Path,
     changes: &[(String, Value)],
@@ -504,6 +570,18 @@ fn read_document(config_file: &Path) -> Result<Value, SetError> {
             source,
         }),
     }
+}
+
+fn parse_document(config_file: &Path, yaml: &[u8]) -> Result<Value, SetError> {
+    let parsed: Value = serde_yaml::from_slice(yaml).map_err(|source| SetError::Unparseable {
+        path: config_file.to_owned(),
+        source,
+    })?;
+    Ok(if parsed.is_null() {
+        empty_object()
+    } else {
+        parsed
+    })
 }
 
 /// Sets a dotted key to a value in a JSON document, creating intermediate

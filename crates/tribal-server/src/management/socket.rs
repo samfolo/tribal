@@ -28,12 +28,20 @@ use super::{
 const SOCKET_MODE: u32 = 0o600;
 const SOCKET_DIRECTORY_MODE: u32 = 0o700;
 const MAX_FRAME_BYTES: usize = 64 * 1024;
+const MAX_CONNECTIONS: usize = 32;
 
 /// Identity a bound management socket presents during handshake.
 #[derive(Debug, Clone)]
 pub(crate) struct ManagerSocketIdentity {
     pub(crate) instance_id: String,
     pub(crate) binary_version: String,
+}
+
+struct ConnectionServices<'a> {
+    config: &'a ConfigWorkerClient,
+    product: &'a ProductSession,
+    lifecycle: &'a LifecycleController,
+    shutdown: &'a CancellationToken,
 }
 
 /// Failure binding or serving the local management socket.
@@ -88,35 +96,28 @@ pub(crate) async fn serve(
     lifecycle: LifecycleController,
     shutdown: CancellationToken,
 ) {
-    let owner_uid = match listener
-        .local_addr()
-        .ok()
-        .and_then(|address| address.as_pathname().map(std::path::Path::to_owned))
-    {
-        Some(path) => match std::fs::metadata(&path) {
-            Ok(metadata) => metadata.uid(),
-            Err(error) => {
-                tracing::error!(%error, path = %path.display(), "management socket metadata unavailable");
-                return;
-            }
-        },
-        None => {
-            tracing::error!("management socket has no filesystem pathname");
-            return;
-        }
+    let Some(owner_uid) = listener_owner_uid(&listener) else {
+        return;
     };
 
+    let mut connections = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
+            biased;
             () = shutdown.cancelled() => break,
-            accepted = listener.accept() => match accepted {
+            joined = connections.join_next(), if !connections.is_empty() => {
+                if let Some(Err(error)) = joined {
+                    tracing::error!(%error, "management connection task failed");
+                }
+            }
+            accepted = listener.accept(), if connections.len() < MAX_CONNECTIONS => match accepted {
                 Ok((stream, _)) => {
                     let identity = identity.clone();
                     let config = config.clone();
                     let product = product.clone();
                     let lifecycle = lifecycle.clone();
                     let shutdown = shutdown.clone();
-                    drop(tokio::spawn(async move {
+                    connections.spawn(async move {
                         handle_connection(
                             stream,
                             owner_uid,
@@ -127,10 +128,15 @@ pub(crate) async fn serve(
                             shutdown,
                         )
                         .await;
-                    }));
+                    });
                 }
                 Err(error) => tracing::warn!(%error, "management socket accept failed"),
             }
+        }
+    }
+    while let Some(result) = connections.join_next().await {
+        if let Err(error) = result {
+            tracing::error!(%error, "management connection task failed during shutdown");
         }
     }
 }
@@ -191,12 +197,16 @@ async fn handle_connection(
         let mut lifecycle_updates = lifecycle.subscribe();
         let mut config_updates = config.subscribe();
         let product = product.session();
+        let services = ConnectionServices {
+            config: &config,
+            product: &product,
+            lifecycle: &lifecycle,
+            shutdown: &shutdown,
+        };
         serve_full(
             &mut reader,
             &mut write,
-            &config,
-            &product,
-            &lifecycle,
+            &services,
             &mut lifecycle_updates,
             &mut config_updates,
         )
@@ -211,7 +221,14 @@ async fn serve_restricted(
     write: &mut tokio::net::unix::OwnedWriteHalf,
     shutdown: &CancellationToken,
 ) {
-    while let Some(request) = read_frame::<ManagementBootstrapRequest>(reader).await {
+    loop {
+        let request = tokio::select! {
+            () = shutdown.cancelled() => return,
+            request = read_frame::<ManagementBootstrapRequest>(reader) => request,
+        };
+        let Some(request) = request else {
+            return;
+        };
         let response = match request {
             ManagementBootstrapRequest::Shutdown => {
                 shutdown.cancel();
@@ -232,9 +249,7 @@ async fn serve_restricted(
 async fn serve_full(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     write: &mut tokio::net::unix::OwnedWriteHalf,
-    config: &ConfigWorkerClient,
-    product: &ProductSession,
-    lifecycle: &LifecycleController,
+    services: &ConnectionServices<'_>,
     lifecycle_updates: &mut tokio::sync::watch::Receiver<
         tribal_wire::management::LifecycleSnapshot,
     >,
@@ -244,12 +259,19 @@ async fn serve_full(
 ) {
     loop {
         tokio::select! {
+            biased;
+            () = services.shutdown.cancelled() => return,
             request = read_frame::<ManagementRequest>(reader) => {
                 let Some(request) = request else {
                     return;
                 };
                 let id = request.id;
-                let response = match dispatch(config, product, lifecycle, request).await {
+                let response = match dispatch(
+                    services.config,
+                    services.product,
+                    services.lifecycle,
+                    request,
+                ).await {
                     Ok(result) => ManagementResponse::Success { id, result },
                     Err(error) => ManagementResponse::Failure { id, error },
                 };
@@ -262,7 +284,7 @@ async fn serve_full(
                     return;
                 }
                 let event = ManagementEvent::LifecycleChanged {
-                    snapshot: lifecycle_updates.borrow_and_update().clone(),
+                    snapshot: Box::new(lifecycle_updates.borrow_and_update().clone()),
                 };
                 if write_frame(write, &event).await.is_err() {
                     return;
@@ -275,9 +297,27 @@ async fn serve_full(
                         return;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
+        }
+    }
+}
+
+fn listener_owner_uid(listener: &UnixListener) -> Option<u32> {
+    let Some(path) = listener
+        .local_addr()
+        .ok()
+        .and_then(|address| address.as_pathname().map(std::path::Path::to_owned))
+    else {
+        tracing::error!("management socket has no filesystem pathname");
+        return None;
+    };
+    match std::fs::metadata(&path) {
+        Ok(metadata) => Some(metadata.uid()),
+        Err(error) => {
+            tracing::error!(%error, path = %path.display(), "management socket metadata unavailable");
+            None
         }
     }
 }
@@ -641,7 +681,7 @@ mod tests {
             };
             let listener = bind(&path).await.expect("management socket binds");
             let shutdown = CancellationToken::new();
-            let lifecycle = super::super::lifecycle::LifecycleController::spawn(
+            let (lifecycle, _lifecycle_task) = super::super::lifecycle::LifecycleController::spawn(
                 "manager".to_owned(),
                 config_path,
                 config.clone(),

@@ -82,6 +82,51 @@ pub fn load_config(
 ) -> Result<TribalConfig, ConfigError> {
     let expanded_path = shellexpand::tilde(config_path);
 
+    if let Some(detected) = detect_removed_embedding_shape(expanded_path.as_ref()) {
+        return Err(ConfigError::RemovedEmbeddingShape { detected });
+    }
+
+    let figment = base_figment(command_defaults).merge(Yaml::file(expanded_path.as_ref()));
+    extract_config(figment, cli_overrides)
+}
+
+/// Loads the same configuration cascade from already-observed YAML bytes.
+///
+/// This entry point lets a filesystem authority parse the exact bytes whose
+/// identity and digest it proved without reopening the pathname.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Load`] if deserialisation or merging fails, or
+/// [`ConfigError::RemovedEmbeddingShape`] for the retired top-level shape.
+pub fn load_config_from_yaml(
+    yaml: &str,
+    cli_overrides: Option<CliOverrides>,
+    command_defaults: Option<&[(&str, &str)]>,
+) -> Result<TribalConfig, ConfigError> {
+    if let Some(detected) =
+        detect_removed_embedding_env().or_else(|| detect_removed_embedding_shape_in(yaml))
+    {
+        return Err(ConfigError::RemovedEmbeddingShape { detected });
+    }
+
+    let figment = base_figment(command_defaults).merge(Yaml::string(yaml));
+    extract_config(figment, cli_overrides)
+}
+
+fn base_figment(command_defaults: Option<&[(&str, &str)]>) -> Figment {
+    let mut figment = Figment::from(Serialized::defaults(TribalConfig::default()));
+    if let Some(defaults) = command_defaults {
+        let value = build_nested_json(defaults);
+        figment = figment.merge(Serialized::defaults(value));
+    }
+    figment
+}
+
+fn extract_config(
+    mut figment: Figment,
+    cli_overrides: Option<CliOverrides>,
+) -> Result<TribalConfig, ConfigError> {
     let nested_env = Env::prefixed(ENV_PREFIX)
         .split(ENV_NESTED_SEPARATOR)
         .filter(|key| {
@@ -97,25 +142,7 @@ pub fn load_config(
             .map_or_else(|| key.into(), |&(path, _)| path.into())
     });
 
-    let mut figment = Figment::from(Serialized::defaults(TribalConfig::default()));
-
-    if let Some(defaults) = command_defaults {
-        let value = build_nested_json(defaults);
-        figment = figment.merge(Serialized::defaults(value));
-    }
-
-    // Detect the removed `embedding.*` shape before extraction so the operator
-    // sees a legible migration message naming `init.embedding` and the
-    // `credentials` catalogue, rather than the bare figment "unknown field"
-    // parse error `deny_unknown_fields` would otherwise surface.
-    if let Some(detected) = detect_removed_embedding_shape(expanded_path.as_ref()) {
-        return Err(ConfigError::RemovedEmbeddingShape { detected });
-    }
-
-    figment = figment
-        .merge(Yaml::file(expanded_path.as_ref()))
-        .merge(nested_env)
-        .merge(alias_env);
+    figment = figment.merge(nested_env).merge(alias_env);
 
     if let Some(overrides) = cli_overrides {
         figment = figment.merge(Serialized::globals(overrides));
@@ -190,16 +217,26 @@ const REMOVED_EMBEDDING_YAML_KEY: &str = "embedding";
 /// unreadable or malformed YAML file is left for the figment loader to report
 /// as a parse error; this check only fires on an unambiguous removed shape.
 fn detect_removed_embedding_shape(yaml_path: &str) -> Option<RemovedEmbeddingSource> {
-    if let Some(name) = std::env::vars_os().find_map(|(key, _)| {
-        let key = key.to_string_lossy();
-        key.starts_with(REMOVED_EMBEDDING_ENV_PREFIX)
-            .then(|| key.into_owned())
-    }) {
-        return Some(RemovedEmbeddingSource::EnvVar { name });
+    if let Some(detected) = detect_removed_embedding_env() {
+        return Some(detected);
     }
 
     let contents = std::fs::read_to_string(yaml_path).ok()?;
-    let mapping: serde_yaml::Mapping = serde_yaml::from_str(&contents).ok()?;
+    detect_removed_embedding_shape_in(&contents)
+}
+
+fn detect_removed_embedding_env() -> Option<RemovedEmbeddingSource> {
+    std::env::vars_os().find_map(|(key, _)| {
+        let key = key.to_string_lossy();
+        key.starts_with(REMOVED_EMBEDDING_ENV_PREFIX)
+            .then(|| RemovedEmbeddingSource::EnvVar {
+                name: key.into_owned(),
+            })
+    })
+}
+
+fn detect_removed_embedding_shape_in(yaml: &str) -> Option<RemovedEmbeddingSource> {
+    let mapping: serde_yaml::Mapping = serde_yaml::from_str(yaml).ok()?;
     mapping
         .contains_key(serde_yaml::Value::from(REMOVED_EMBEDDING_YAML_KEY))
         .then_some(RemovedEmbeddingSource::YamlSection)

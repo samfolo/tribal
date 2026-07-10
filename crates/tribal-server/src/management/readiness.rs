@@ -98,10 +98,10 @@ pub(crate) fn derive(checks: Vec<CheckObservation>, runtime_present: bool) -> Re
     }
     ReadinessReport {
         start: verdict(start_failures),
-        health: if !runtime_present {
-            HealthVerdict::NotApplicable
-        } else {
+        health: if runtime_present {
             health_verdict(health_failures)
+        } else {
+            HealthVerdict::NotApplicable
         },
         checks,
     }

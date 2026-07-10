@@ -66,6 +66,8 @@ impl std::fmt::Debug for DelegatedRuntimeDescriptor {
 pub(crate) struct RuntimeCustodyGuard {
     socket_path: PathBuf,
     descriptor_path: PathBuf,
+    cancellation: CancellationToken,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 /// Manager-side lifetime custody connection.
@@ -320,31 +322,38 @@ impl RuntimeCustodyGuard {
             .map_err(|source| CustodyError::Authority { source })?;
         let thread_descriptor_path = descriptor_path.clone();
         let thread_socket_path = socket_path.clone();
-        drop(
-            std::thread::Builder::new()
-                .name("tribal-runtime-custody".to_owned())
-                .spawn(move || {
-                    serve_recovery(
-                        listener,
-                        stream,
-                        lease_file,
-                        descriptor,
-                        cancellation,
-                        &thread_descriptor_path,
-                        &thread_socket_path,
-                    );
-                })
-                .map_err(|source| io_error(&socket_path, source))?,
-        );
+        let thread_cancellation = cancellation.clone();
+        let thread = std::thread::Builder::new()
+            .name("tribal-runtime-custody".to_owned())
+            .spawn(move || {
+                serve_recovery(
+                    &listener,
+                    stream,
+                    &lease_file,
+                    descriptor,
+                    &thread_cancellation,
+                    &thread_descriptor_path,
+                    &thread_socket_path,
+                );
+            })
+            .map_err(|source| io_error(&socket_path, source))?;
         Ok(Some(Self {
             socket_path,
             descriptor_path,
+            cancellation,
+            thread: Some(thread),
         }))
     }
 }
 
 impl Drop for RuntimeCustodyGuard {
     fn drop(&mut self) {
+        self.cancellation.cancel();
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            tracing::error!("runtime custody thread panicked");
+        }
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = std::fs::remove_file(&self.descriptor_path);
     }
@@ -534,11 +543,11 @@ pub(crate) fn generate_proof() -> Result<RuntimeCustodyProof, CustodyError> {
 }
 
 fn serve_recovery(
-    listener: UnixListener,
+    listener: &UnixListener,
     mut lifetime: UnixStream,
-    lease_file: File,
+    lease_file: &File,
     mut descriptor: DelegatedRuntimeDescriptor,
-    cancellation: CancellationToken,
+    cancellation: &CancellationToken,
     descriptor_path: &Path,
     socket_path: &Path,
 ) {
@@ -581,16 +590,14 @@ fn serve_recovery(
                 std::thread::sleep(POLL_INTERVAL);
                 continue;
             }
-            Ok(StreamState::Closed) => {}
-            Err(_) => {}
+            Ok(StreamState::Closed) | Err(_) => {}
         }
-        let claim = accept_claim(&listener, &cancellation, socket_path);
+        let claim = accept_claim(listener, cancellation, socket_path);
         let Some(mut claimant) = claim else {
             return;
         };
-        let request = match read_frame::<CustodyRequest>(&mut claimant, socket_path) {
-            Ok(request) => request,
-            Err(_) => continue,
+        let Ok(request) = read_frame::<CustodyRequest>(&mut claimant, socket_path) else {
+            continue;
         };
         if blocked {
             let _ = write_frame(
@@ -633,23 +640,21 @@ fn serve_recovery(
         }
         claimant.set_read_timeout(Some(CLAIM_DEADLINE)).ok();
         let commit = read_frame::<CustodyRequest>(&mut claimant, socket_path);
+        let Ok(request) = commit else {
+            match generate_proof().and_then(|proof| {
+                descriptor.proof = proof;
+                descriptor.generation = descriptor.generation.saturating_add(1);
+                persist_descriptor(descriptor_path, &descriptor)
+            }) {
+                Ok(()) => {}
+                Err(_) => blocked = true,
+            }
+            continue;
+        };
         let CustodyRequest::CommitRecovery {
             manager_instance_id: committed_manager,
             proof: next_proof,
-        } = (match commit {
-            Ok(request) => request,
-            Err(_) => {
-                match generate_proof().and_then(|proof| {
-                    descriptor.proof = proof;
-                    descriptor.generation = descriptor.generation.saturating_add(1);
-                    persist_descriptor(descriptor_path, &descriptor)
-                }) {
-                    Ok(()) => {}
-                    Err(_) => blocked = true,
-                }
-                continue;
-            }
-        })
+        } = request
         else {
             continue;
         };
@@ -834,9 +839,19 @@ fn send_fd(stream: &UnixStream, descriptor: RawFd, path: &Path) -> Result<(), Cu
         iov_base: byte.as_mut_ptr().cast(),
         iov_len: byte.len(),
     };
+    let descriptor_size = mem::size_of::<RawFd>()
+        .try_into()
+        .map_err(|_| invalid_control_size(path))?;
     // SAFETY: `CMSG_SPACE` computes storage for one `RawFd` control payload.
-    let control_len = unsafe { libc::CMSG_SPACE(mem::size_of::<RawFd>() as _) } as usize;
+    let control_len = usize::try_from(unsafe { libc::CMSG_SPACE(descriptor_size) })
+        .map_err(|_| invalid_control_size(path))?;
     let mut control = vec![0_u8; control_len];
+    let message_control_len = control
+        .len()
+        .try_into()
+        .map_err(|_| invalid_control_size(path))?;
+    // SAFETY: `CMSG_LEN` computes the header length for one `RawFd` payload.
+    let descriptor_control_len = unsafe { libc::CMSG_LEN(descriptor_size) };
     // SAFETY: every pointer in `message` refers to live stack/vector storage
     // for the duration of `sendmsg`; the control header and payload fit the
     // `CMSG_SPACE` allocation above.
@@ -845,8 +860,8 @@ fn send_fd(stream: &UnixStream, descriptor: RawFd, path: &Path) -> Result<(), Cu
         message.msg_iov = ptr::from_mut(&mut iov);
         message.msg_iovlen = 1;
         message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = control.len() as _;
-        let header = libc::CMSG_FIRSTHDR(&message);
+        message.msg_controllen = message_control_len;
+        let header = libc::CMSG_FIRSTHDR(&raw const message);
         if header.is_null() {
             return Err(io_error(
                 path,
@@ -858,13 +873,13 @@ fn send_fd(stream: &UnixStream, descriptor: RawFd, path: &Path) -> Result<(), Cu
         }
         (*header).cmsg_level = libc::SOL_SOCKET;
         (*header).cmsg_type = libc::SCM_RIGHTS;
-        (*header).cmsg_len = libc::CMSG_LEN(mem::size_of::<RawFd>() as _) as _;
+        (*header).cmsg_len = descriptor_control_len;
         ptr::copy_nonoverlapping(
             ptr::from_ref(&descriptor).cast::<u8>(),
             libc::CMSG_DATA(header),
             mem::size_of::<RawFd>(),
         );
-        libc::sendmsg(stream.as_raw_fd(), &message, 0)
+        libc::sendmsg(stream.as_raw_fd(), &raw const message, 0)
     };
     if sent == 1 {
         Ok(())
@@ -879,9 +894,19 @@ fn receive_fd(stream: &UnixStream, path: &Path) -> Result<OwnedFd, CustodyError>
         iov_base: byte.as_mut_ptr().cast(),
         iov_len: byte.len(),
     };
+    let descriptor_size = mem::size_of::<RawFd>()
+        .try_into()
+        .map_err(|_| invalid_control_size(path))?;
     // SAFETY: `CMSG_SPACE` computes storage for one `RawFd` control payload.
-    let control_len = unsafe { libc::CMSG_SPACE(mem::size_of::<RawFd>() as _) } as usize;
+    let control_len = usize::try_from(unsafe { libc::CMSG_SPACE(descriptor_size) })
+        .map_err(|_| invalid_control_size(path))?;
     let mut control = vec![0_u8; control_len];
+    let message_control_len = control
+        .len()
+        .try_into()
+        .map_err(|_| invalid_control_size(path))?;
+    // SAFETY: `CMSG_LEN` computes the header length for one `RawFd` payload.
+    let descriptor_control_len = unsafe { libc::CMSG_LEN(descriptor_size) };
     // SAFETY: `recvmsg` writes only into the live iovec/control allocations;
     // the returned control header is validated before the descriptor is read.
     let descriptor = unsafe {
@@ -889,16 +914,16 @@ fn receive_fd(stream: &UnixStream, path: &Path) -> Result<OwnedFd, CustodyError>
         message.msg_iov = ptr::from_mut(&mut iov);
         message.msg_iovlen = 1;
         message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = control.len() as _;
-        let received = libc::recvmsg(stream.as_raw_fd(), &mut message, 0);
+        message.msg_controllen = message_control_len;
+        let received = libc::recvmsg(stream.as_raw_fd(), &raw mut message, 0);
         if received != 1 || message.msg_flags & libc::MSG_CTRUNC != 0 {
             return Err(io_error(path, io::Error::last_os_error()));
         }
-        let header = libc::CMSG_FIRSTHDR(&message);
+        let header = libc::CMSG_FIRSTHDR(&raw const message);
         if header.is_null()
             || (*header).cmsg_level != libc::SOL_SOCKET
             || (*header).cmsg_type != libc::SCM_RIGHTS
-            || (*header).cmsg_len < libc::CMSG_LEN(mem::size_of::<RawFd>() as _) as _
+            || (*header).cmsg_len < descriptor_control_len
         {
             return Err(io_error(
                 path,
@@ -918,6 +943,16 @@ fn receive_fd(stream: &UnixStream, path: &Path) -> Result<OwnedFd, CustodyError>
     let owned = unsafe { OwnedFd::from_raw_fd(descriptor) };
     set_close_on_exec(&owned, path)?;
     Ok(owned)
+}
+
+fn invalid_control_size(path: &Path) -> CustodyError {
+    io_error(
+        path,
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "custody control payload does not fit the platform ABI",
+        ),
+    )
 }
 
 fn set_close_on_exec(descriptor: &OwnedFd, path: &Path) -> Result<(), CustodyError> {
@@ -962,7 +997,7 @@ fn peer_uid(stream: &UnixStream) -> Result<libc::uid_t, io::Error> {
     let mut gid = 0;
     // SAFETY: the descriptor is a connected Unix stream and both output
     // pointers name live credential values.
-    if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } == 0 {
+    if unsafe { libc::getpeereid(stream.as_raw_fd(), &raw mut uid, &raw mut gid) } == 0 {
         Ok(uid)
     } else {
         Err(io::Error::last_os_error())
@@ -1010,9 +1045,11 @@ mod tests {
         let file = File::create(&path).expect("lease file creates");
         let (sender, receiver) = UnixStream::pair().expect("socket pair creates");
         send_fd(&sender, file.as_raw_fd(), &path).expect("descriptor sends");
-        let received = receive_fd(&receiver, &path).expect("descriptor receives");
+        let transferred = receive_fd(&receiver, &path).expect("descriptor receives");
         let expected = file.metadata().expect("source metadata");
-        let actual = File::from(received).metadata().expect("received metadata");
+        let actual = File::from(transferred)
+            .metadata()
+            .expect("received metadata");
         assert_eq!(
             (actual.dev(), actual.ino()),
             (expected.dev(), expected.ino())

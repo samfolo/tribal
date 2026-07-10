@@ -123,7 +123,7 @@ impl ManagementClient {
                 }) if response_id == id => {
                     return Err(ManagementClientError::Request { error });
                 }
-                ClientIncoming::Event(_event) => continue,
+                ClientIncoming::Event(_event) => {}
                 ClientIncoming::Response(_) => {
                     return Err(ManagementClientError::Frame {
                         source: io::Error::new(io::ErrorKind::InvalidData, "response id mismatch"),

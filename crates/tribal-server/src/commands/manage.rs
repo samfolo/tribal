@@ -71,10 +71,20 @@ pub(crate) enum ManageError {
     },
     #[error("configuration worker terminated")]
     ConfigWorkerTerminated,
+    #[error("joining configuration worker: {source}")]
+    ConfigWorkerJoin {
+        #[source]
+        source: tokio::task::JoinError,
+    },
     #[error("lifecycle owner startup failed: {source}")]
     LifecycleStart {
         #[source]
         source: LifecycleStartError,
+    },
+    #[error("joining lifecycle owner: {source}")]
+    LifecycleJoin {
+        #[source]
+        source: tokio::task::JoinError,
     },
     #[error("managed runtime recovery failed: {source}")]
     Custody {
@@ -89,7 +99,7 @@ pub(crate) enum ManageError {
 }
 
 /// Acquires or attaches to the authority and blocks while a winning manager serves.
-pub(crate) fn run(config_path: &str, args: ManageArgs) -> Result<(), AppError> {
+pub(crate) fn run(config_path: &str, args: &ManageArgs) -> Result<(), AppError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -114,6 +124,12 @@ enum ManageOutcome {
     Attached,
 }
 
+struct PreparedAuthority {
+    lease: AuthorityLease,
+    listener: tokio::net::UnixListener,
+    recovered: Option<RecoveredRuntime>,
+}
+
 async fn run_async(
     config_path: &Path,
     announce_json: bool,
@@ -122,48 +138,17 @@ async fn run_async(
     shutdown: CancellationToken,
 ) -> Result<ManageOutcome, ManageError> {
     let instance_id = uuid::Uuid::new_v4().to_string();
-    let acquire =
-        AuthorityLease::acquire(config_path).map_err(|source| ManageError::Authority { source })?;
-    let (mut lease, listener, recovered) = match acquire {
-        AuthorityAcquire::Acquired(lease) => {
-            let listener = bind_or_report(&lease, writer, announce_json).await?;
-            (lease, listener, None)
-        }
-        AuthorityAcquire::Occupied(AuthorityConflict::Manager(descriptor))
-            if manager_socket_is_live(&descriptor).await =>
-        {
-            let record = conflict_record(AuthorityConflict::Manager(descriptor));
-            emit_if_requested(writer, announce_json, &record)?;
-            return Ok(ManageOutcome::Attached);
-        }
-        AuthorityAcquire::Occupied(AuthorityConflict::Manager(descriptor)) => {
-            recover_or_report(
-                config_path,
-                &instance_id,
-                descriptor.canonical_config_path,
-                writer,
-                announce_json,
-            )
-            .await?
-        }
-        AuthorityAcquire::Occupied(AuthorityConflict::Recovering {
-            canonical_config_path,
-        }) => {
-            recover_or_report(
-                config_path,
-                &instance_id,
-                canonical_config_path,
-                writer,
-                announce_json,
-            )
-            .await?
-        }
-        AuthorityAcquire::Occupied(conflict) => {
-            let record = conflict_record(conflict);
-            emit_if_requested(writer, announce_json, &record)?;
-            return Err(ManageError::LaunchFailed);
-        }
+    let Some(prepared) =
+        prepare_authority(config_path, &instance_id, writer, announce_json).await?
+    else {
+        return Ok(ManageOutcome::Attached);
     };
+    let PreparedAuthority {
+        mut lease,
+        listener,
+        recovered,
+    } = prepared;
+
     let announcement = ManagerAnnouncement {
         instance_id: instance_id.clone(),
         socket_path: lease.paths().socket_path.to_string_lossy().into_owned(),
@@ -200,11 +185,11 @@ async fn run_async(
         binary_version: env!("CARGO_PKG_VERSION").to_owned(),
     };
     let lease = Arc::new(lease);
-    let (config, mut worker_terminal) = worker::spawn(ConfigAuthority::new(
+    let (config, mut worker_runtime) = worker::spawn(ConfigAuthority::new(
         lease.paths().canonical_config_path.clone(),
     ))
     .map_err(|source| ManageError::ConfigWorkerStart { source })?;
-    let lifecycle = LifecycleController::spawn(
+    let (lifecycle, lifecycle_task) = LifecycleController::spawn(
         instance_id,
         lease.paths().canonical_config_path.clone(),
         config.clone(),
@@ -249,7 +234,7 @@ async fn run_async(
     }
     let worker_exit = tokio::select! {
         biased;
-        terminal = &mut worker_terminal => terminal.ok(),
+        terminal = &mut worker_runtime.terminal => terminal.ok(),
         () = shutdown.cancelled() => None,
         signal = tokio::signal::ctrl_c() => {
             signal.map_err(|source| ManageError::Signal { source })?;
@@ -269,16 +254,89 @@ async fn run_async(
     if let Err(error) = readiness_task.await {
         tracing::error!(%error, "readiness task failed");
     }
+    drop(lifecycle);
+    lifecycle_task
+        .await
+        .map_err(|source| ManageError::LifecycleJoin { source })?;
+    worker_runtime
+        .join()
+        .await
+        .map_err(|source| ManageError::ConfigWorkerJoin { source })?;
     if let Some(exit) = worker_exit {
         match exit {
             ConfigWorkerExit::InputClosed => tracing::error!("configuration worker input closed"),
             ConfigWorkerExit::Panicked { correlation } => {
-                tracing::error!(?correlation, "configuration worker panicked")
+                tracing::error!(?correlation, "configuration worker panicked");
             }
         }
         return Err(ManageError::ConfigWorkerTerminated);
     }
     Ok(ManageOutcome::Serving)
+}
+
+async fn prepare_authority(
+    config_path: &Path,
+    instance_id: &str,
+    writer: &mut impl Write,
+    announce_json: bool,
+) -> Result<Option<PreparedAuthority>, ManageError> {
+    let acquire =
+        AuthorityLease::acquire(config_path).map_err(|source| ManageError::Authority { source })?;
+    let prepared = match acquire {
+        AuthorityAcquire::Acquired(lease) => {
+            let listener = bind_or_report(&lease, writer, announce_json).await?;
+            PreparedAuthority {
+                lease,
+                listener,
+                recovered: None,
+            }
+        }
+        AuthorityAcquire::Occupied(AuthorityConflict::Manager(descriptor))
+            if manager_socket_is_live(&descriptor).await =>
+        {
+            let record = conflict_record(AuthorityConflict::Manager(descriptor));
+            emit_if_requested(writer, announce_json, &record)?;
+            return Ok(None);
+        }
+        AuthorityAcquire::Occupied(AuthorityConflict::Manager(descriptor)) => {
+            let (lease, listener, recovered) = recover_or_report(
+                config_path,
+                instance_id,
+                descriptor.canonical_config_path,
+                writer,
+                announce_json,
+            )
+            .await?;
+            PreparedAuthority {
+                lease,
+                listener,
+                recovered,
+            }
+        }
+        AuthorityAcquire::Occupied(AuthorityConflict::Recovering {
+            canonical_config_path,
+        }) => {
+            let (lease, listener, recovered) = recover_or_report(
+                config_path,
+                instance_id,
+                canonical_config_path,
+                writer,
+                announce_json,
+            )
+            .await?;
+            PreparedAuthority {
+                lease,
+                listener,
+                recovered,
+            }
+        }
+        AuthorityAcquire::Occupied(conflict) => {
+            let record = conflict_record(conflict);
+            emit_if_requested(writer, announce_json, &record)?;
+            return Err(ManageError::LaunchFailed);
+        }
+    };
+    Ok(Some(prepared))
 }
 
 async fn watch_config_file(
@@ -320,14 +378,14 @@ async fn refresh_readiness(
     lifecycle: LifecycleController,
     shutdown: CancellationToken,
 ) {
-    let mut changes = config.subscribe();
+    let mut config_events = config.subscribe();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             () = shutdown.cancelled() => return,
             _ = interval.tick() => {}
-            changed = changes.recv() => match changed {
+            event = config_events.recv() => match event {
                 Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
@@ -489,7 +547,7 @@ fn announcement_from_descriptor(descriptor: AuthorityDescriptor) -> ManagerAnnou
         instance_id: descriptor.instance_id,
         socket_path: descriptor
             .socket_path
-            .unwrap_or_else(PathBuf::new)
+            .unwrap_or_default()
             .to_string_lossy()
             .into_owned(),
         protocol_version: descriptor.protocol_version.unwrap_or_default(),
@@ -562,7 +620,11 @@ mod tests {
         };
         let mut output = Vec::new();
         emit_if_requested(&mut output, true, &record).expect("record writes");
-        assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
+        let newline = output
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .expect("record is newline terminated");
+        assert!(!output[newline + 1..].contains(&b'\n'));
         assert!(output.len() <= MAX_LAUNCH_RECORD_BYTES);
         assert_eq!(
             serde_json::from_slice::<ManagerLaunchRecord>(&output).expect("record parses"),

@@ -3,7 +3,7 @@
 use std::{
     cell::Cell,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::Mutex,
+    sync::OnceLock,
 };
 
 use base64::Engine as _;
@@ -18,7 +18,11 @@ use tribal_wire::management::{
 use super::configuration::{ConfigAuthority, ConfigAuthorityError, CredentialMaterial};
 
 const COMMAND_CAPACITY: usize = 1;
-static PANIC_HOOK_SCOPE: Mutex<()> = Mutex::new(());
+static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
+
+thread_local! {
+    static SENSITIVE_PANIC_SCOPE: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Cloneable async handle to the synchronous configuration authority.
 #[derive(Debug, Clone)]
@@ -34,6 +38,18 @@ pub(crate) enum ConfigWorkerExit {
     Panicked {
         correlation: Option<PanicCorrelationId>,
     },
+}
+
+/// Tracked execution resources for the dedicated worker.
+pub(crate) struct ConfigWorkerRuntime {
+    pub(crate) terminal: oneshot::Receiver<ConfigWorkerExit>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl ConfigWorkerRuntime {
+    pub(crate) async fn join(self) -> Result<(), tokio::task::JoinError> {
+        self.task.await
+    }
 }
 
 /// Failure initialising panic-safe worker supervision.
@@ -142,13 +158,13 @@ impl PanicReporter {
 /// Starts the sole blocking configuration worker and terminal signal.
 pub(crate) fn spawn(
     authority: ConfigAuthority,
-) -> Result<(ConfigWorkerClient, oneshot::Receiver<ConfigWorkerExit>), ConfigWorkerStartError> {
+) -> Result<(ConfigWorkerClient, ConfigWorkerRuntime), ConfigWorkerStartError> {
     let reporter = PanicReporter::generate()?;
     let (sender, mut receiver) = mpsc::channel(COMMAND_CAPACITY);
     let (changes, _) = broadcast::channel(16);
     let worker_changes = changes.clone();
     let (terminal_sender, terminal_receiver) = oneshot::channel();
-    drop(tokio::task::spawn_blocking(move || {
+    let task = tokio::task::spawn_blocking(move || {
         let terminal = loop {
             let Some(command) = receiver.blocking_recv() else {
                 break ConfigWorkerExit::InputClosed;
@@ -162,20 +178,33 @@ pub(crate) fn spawn(
             }
         };
         let _ = terminal_sender.send(terminal);
-    }));
-    Ok((ConfigWorkerClient { sender, changes }, terminal_receiver))
+    });
+    Ok((
+        ConfigWorkerClient { sender, changes },
+        ConfigWorkerRuntime {
+            terminal: terminal_receiver,
+            task,
+        },
+    ))
 }
 
 fn catch_sensitive<T>(operation: impl FnOnce() -> T) -> Result<T, Box<dyn std::any::Any + Send>> {
-    let scope = PANIC_HOOK_SCOPE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    install_sensitive_panic_hook();
+    let previous = SENSITIVE_PANIC_SCOPE.replace(true);
     let outcome = catch_unwind(AssertUnwindSafe(operation));
-    std::panic::set_hook(previous);
-    drop(scope);
+    SENSITIVE_PANIC_SCOPE.set(previous);
     outcome
+}
+
+fn install_sensitive_panic_hook() {
+    PANIC_HOOK_INSTALLED.get_or_init(|| {
+        let inherited = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic| {
+            if !SENSITIVE_PANIC_SCOPE.get() {
+                inherited(panic);
+            }
+        }));
+    });
 }
 
 fn update_frame(mac: &mut hmac::Hmac<sha2::Sha256>, value: &[u8]) {
@@ -224,17 +253,17 @@ fn dispatch(
         ConfigCommand::Patch { request, response } => {
             let result = authority.patch(request);
             if let Ok(outcome) = &result {
-                let changed = outcome
+                let changed_fields = outcome
                     .fields
                     .iter()
                     .filter(|field| !matches!(field.effect, ConfigWriteEffect::Unchanged))
                     .map(|field| field.key.clone())
                     .collect::<Vec<_>>();
-                if !changed.is_empty() {
+                if !changed_fields.is_empty() {
                     let _ = changes.send(ConfigChangeEvent {
                         revision: outcome.revision.clone(),
                         source: ConfigChangeSource::Managed,
-                        changed,
+                        changed: changed_fields,
                     });
                 }
             }

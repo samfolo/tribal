@@ -219,9 +219,7 @@ impl ProductSession {
                 },
             ));
         }
-        let mut credential = self
-            .resolve_credential(request.credential, &use_case, &actual)
-            .await?;
+        let mut credential = self.resolve_credential(request.credential, &use_case, &actual)?;
         let mut changes = Vec::new();
         for (stage, endpoint) in request.stages.iter().zip(&endpoints) {
             let root = stage_root(stage);
@@ -307,9 +305,7 @@ impl ProductSession {
         let use_case = CredentialUse::Genesis {
             embedding: request.embedding.clone(),
         };
-        let mut credential = self
-            .resolve_credential(request.credential, &use_case, &actual)
-            .await?;
+        let mut credential = self.resolve_credential(request.credential, &use_case, &actual)?;
         if request.embedding.provider.requires_api_key() && credential.is_none() {
             return Err(public_error(
                 "genesis provider requires a credential",
@@ -387,8 +383,11 @@ impl ProductSession {
         let database_url = self.config.database_url().await.map_err(management_error)?;
         let mut connection = sqlx::PgConnection::connect(database_url.as_str())
             .await
-            .map_err(profile_sql_error)?;
-        let mut transaction = connection.begin().await.map_err(profile_sql_error)?;
+            .map_err(|error| profile_sql_error(&error))?;
+        let mut transaction = connection
+            .begin()
+            .await
+            .map_err(|error| profile_sql_error(&error))?;
         set_profile_lock_timeout(&mut transaction).await?;
         PgAdvisoryLockRepository
             .acquire_shared_xact(
@@ -396,12 +395,15 @@ impl ProductSession {
                 advisory_locks::EMBEDDING_PROFILE_AUTHORITY,
             )
             .await
-            .map_err(profile_db_error)?;
+            .map_err(|error| profile_db_error(&error))?;
         let profile = PgEmbeddingProfileRepository
             .find_active(&mut transaction)
             .await
-            .map_err(profile_db_error)?;
-        transaction.commit().await.map_err(profile_sql_error)?;
+            .map_err(|error| profile_db_error(&error))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| profile_sql_error(&error))?;
         let Some(profile) = profile else {
             return Ok(GraphEmbeddingProfile::NoProfile);
         };
@@ -423,8 +425,11 @@ impl ProductSession {
         let database_url = self.config.database_url().await.map_err(management_error)?;
         let mut connection = sqlx::PgConnection::connect(database_url.as_str())
             .await
-            .map_err(profile_sql_error)?;
-        let mut transaction = connection.begin().await.map_err(profile_sql_error)?;
+            .map_err(|error| profile_sql_error(&error))?;
+        let mut transaction = connection
+            .begin()
+            .await
+            .map_err(|error| profile_sql_error(&error))?;
         set_profile_lock_timeout(&mut transaction).await?;
         if let Err(error) = PgAdvisoryLockRepository
             .acquire_shared_xact(
@@ -434,7 +439,7 @@ impl ProductSession {
             .await
         {
             let _ = transaction.rollback().await;
-            return Err(profile_db_error(error));
+            return Err(profile_db_error(&error));
         }
         let profile = match PgEmbeddingProfileRepository
             .find_active(&mut transaction)
@@ -452,7 +457,7 @@ impl ProductSession {
             }
             Err(error) => {
                 let _ = transaction.rollback().await;
-                return Err(profile_db_error(error));
+                return Err(profile_db_error(&error));
             }
         };
         let actual_profile_revision = profile_revision(&profile)?;
@@ -499,7 +504,10 @@ impl ProductSession {
                 return Err(management_error(error));
             }
         };
-        transaction.commit().await.map_err(profile_sql_error)?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| profile_sql_error(&error))?;
         for field in &mut outcome.fields {
             if !matches!(field.effect, ConfigWriteEffect::Unchanged) {
                 field.effect = ConfigWriteEffect::CommittedNoRuntimeEffect;
@@ -508,7 +516,7 @@ impl ProductSession {
         Ok(outcome)
     }
 
-    async fn resolve_credential(
+    fn resolve_credential(
         &self,
         credential: Option<CredentialInput>,
         use_case: &CredentialUse,
@@ -601,7 +609,7 @@ async fn set_profile_lock_timeout(
         .execute(&mut **transaction)
         .await
         .map(|_| ())
-        .map_err(profile_sql_error)
+        .map_err(|error| profile_sql_error(&error))
 }
 
 fn profile_summary(profile: &tribal_domain::EmbeddingProfile) -> EmbeddingProfileSummary {
@@ -655,7 +663,7 @@ fn genesis_differs(values: &serde_json::Value, profile: &EmbeddingProfileSummary
         || dimensions != Some(profile.dimensions)
 }
 
-fn profile_db_error(error: tribal_db::DbError) -> ManagementResponseError {
+fn profile_db_error(error: &tribal_db::DbError) -> ManagementResponseError {
     if error.is_lock_not_available() {
         public_error(
             "embedding profile authority is busy",
@@ -673,7 +681,7 @@ fn profile_db_error(error: tribal_db::DbError) -> ManagementResponseError {
     }
 }
 
-fn profile_sql_error(error: sqlx::Error) -> ManagementResponseError {
+fn profile_sql_error(error: &sqlx::Error) -> ManagementResponseError {
     let busy = error
         .as_database_error()
         .and_then(sqlx::error::DatabaseError::code)
@@ -884,11 +892,7 @@ fn capabilities(
             model, endpoint, ..
         } => {
             let descriptor = descriptor(model)?;
-            let embedding_reuse = if descriptor.provider != ProviderKind::OpenAi {
-                EmbeddingReuseAvailability::Unavailable {
-                    reason: EmbeddingReuseUnavailableReason::ProviderUnsupported,
-                }
-            } else {
+            let embedding_reuse = if descriptor.provider == ProviderKind::OpenAi {
                 let endpoint = match endpoint {
                     EndpointSelection::Custom { value } => value.clone(),
                     EndpointSelection::ProviderDefault => descriptor
@@ -909,6 +913,10 @@ fn capabilities(
                     EmbeddingReuseAvailability::AvailableExisting { connection }
                 } else {
                     EmbeddingReuseAvailability::AvailableCreate { connection }
+                }
+            } else {
+                EmbeddingReuseAvailability::Unavailable {
+                    reason: EmbeddingReuseUnavailableReason::ProviderUnsupported,
                 }
             };
             Ok(CredentialUseCapabilities::ModelSelection { embedding_reuse })
@@ -1203,7 +1211,7 @@ mod tests {
         config
     }
 
-    async fn session(path: PathBuf) -> ProductSession {
+    fn session(path: PathBuf) -> ProductSession {
         let (worker, _terminal) =
             super::super::worker::spawn(super::super::configuration::ConfigAuthority::new(path))
                 .expect("config worker starts");
@@ -1226,7 +1234,7 @@ mod tests {
                 "postgres://user:pass@localhost:5432/tribal",
             ),
         );
-        let session = session(path).await;
+        let session = session(path);
         let catalogue = session.models_catalogue().await.expect("catalogue returns");
         assert_eq!(catalogue.models.len(), 4);
         assert!(catalogue.models.iter().any(|entry| {
@@ -1252,7 +1260,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary product root");
         let path = temp.path().join("tribal.yaml");
         write_config(&path, &openai_config());
-        let session = session(path.clone()).await;
+        let session = session(path.clone());
         let expected_revision = revision(&session).await;
         let model = KnownModelId::parse("openai.gpt-4o-mini").expect("model id parses");
         let use_case = CredentialUse::ModelSelection {

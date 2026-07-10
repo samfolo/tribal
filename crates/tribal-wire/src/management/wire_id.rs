@@ -65,6 +65,11 @@ macro_rules! define_canonical_id {
             pub const PATTERN: &'static str = $pattern;
 
             /// Parses the canonical wire spelling.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`WireIdError`] when the prefix, payload, length, or
+            /// canonical spelling is invalid.
             pub fn parse(raw: &str) -> Result<Self, WireIdError> {
                 parse_canonical(raw, Self::PREFIX).map(Self)
             }
@@ -157,6 +162,16 @@ define_canonical_id!(
     r"^credsrc_[A-Za-z0-9_-]{43}$",
     "redacted-canonical-base64url-32"
 );
+define_canonical_id!(
+    visible,
+    PanicCorrelationId,
+    "pcorr_",
+    r"^pcorr_[A-Za-z0-9_-]{43}$",
+    "canonical-base64url-32"
+);
+
+/// Compatibility name for the shared canonical wire-id parser failure.
+pub type PanicCorrelationIdParseError = WireIdError;
 
 impl ConfigDigest {
     /// Derives the digest identity for exact configuration bytes.
@@ -180,7 +195,7 @@ impl ConfigRevision {
             .chars()
             .skip(ConfigDigest::PREFIX.len())
             .collect::<String>();
-        Self(format!("{}{}", Self::PREFIX, payload,))
+        Self(format!("{}{}", Self::PREFIX, payload))
     }
 }
 
@@ -194,6 +209,11 @@ impl KnownModelId {
     pub const PATTERN: &'static str = r"^[a-z][a-z0-9_.-]{0,127}$";
 
     /// Parses a catalogue identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WireIdError::InvalidModelId`] when the value is outside the
+    /// catalogue grammar.
     pub fn parse(raw: &str) -> Result<Self, WireIdError> {
         let mut bytes = raw.bytes();
         let valid = matches!(bytes.next(), Some(b'a'..=b'z'))
@@ -322,5 +342,19 @@ mod tests {
         assert!(KnownModelId::parse("openai.gpt-4_1").is_ok());
         assert!(KnownModelId::parse("OpenAI.gpt").is_err());
         assert!(KnownModelId::parse("").is_err());
+    }
+
+    #[test]
+    fn test_panic_correlation_uses_the_shared_canonical_parser() {
+        let raw = format!(
+            "{}{}",
+            PanicCorrelationId::PREFIX,
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7_u8; DECODED_LENGTH]),
+        );
+        let id = PanicCorrelationId::parse(&raw).expect("correlation is canonical");
+        let encoded = serde_json::to_string(&id).expect("correlation serialises");
+        let decoded: PanicCorrelationId =
+            serde_json::from_str(&encoded).expect("correlation deserialises");
+        assert_eq!(decoded, id);
     }
 }

@@ -78,7 +78,7 @@ impl App {
                 commands::serve(&self.cli.global.config, args)?;
             }
             Command::Manage { args } => {
-                commands::manage(&self.cli.global.config, args)?;
+                commands::manage(&self.cli.global.config, &args)?;
             }
             Command::Runtime(command) => {
                 let method = match command {
@@ -102,13 +102,13 @@ impl App {
                     commands::config::show(&self.cli.global.config, args)?;
                 }
                 ConfigCommand::Get { args } => {
-                    commands::config::get(&self.cli.global.config, args)?;
+                    commands::config::get(&self.cli.global.config, &args)?;
                 }
                 ConfigCommand::Set { args } => {
-                    commands::config::set(&self.cli.global.config, args)?;
+                    commands::config::set(&self.cli.global.config, &args)?;
                 }
                 ConfigCommand::Validate { args } => {
-                    commands::config::validate(&self.cli.global.config, args)?;
+                    commands::config::validate(&self.cli.global.config, &args)?;
                 }
                 ConfigCommand::Path => {
                     commands::config::path(&self.cli.global.config)?;

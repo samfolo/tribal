@@ -15,6 +15,7 @@ use tribal_config::{TRIBAL_DIRECTORY_NAME, write_atomically};
 
 const OWNER_FILE_MODE: u32 = 0o600;
 const OWNER_DIRECTORY_MODE: u32 = 0o700;
+const HEX: &[u8; 16] = b"0123456789abcdef";
 
 /// Process role holding a configuration authority lease.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +40,7 @@ pub(crate) struct AuthorityDescriptor {
 
 /// Artifact paths derived from one canonical configuration path.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_field_names)] // each field names a distinct filesystem path artifact
 pub(crate) struct AuthorityPaths {
     pub(crate) canonical_config_path: PathBuf,
     pub(crate) lock_path: PathBuf,
@@ -305,10 +307,11 @@ fn derive_paths(
         .ok_or_else(|| fs_error(canonical_config_path, io::ErrorKind::InvalidInput))?
         .to_string_lossy();
     let digest = sha2::Sha256::digest(canonical_config_path.as_os_str().as_encoded_bytes());
-    let key = digest[..12]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let mut key = String::with_capacity(24);
+    for byte in &digest[..12] {
+        key.push(char::from(HEX[usize::from(byte >> 4)]));
+        key.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
     let state_dir = state_base
         .join(TRIBAL_DIRECTORY_NAME)
         .join("management")

@@ -75,9 +75,8 @@ fn invalid_config_manager_announces_repairs_and_shuts_down() {
     let snapshot: LifecycleSnapshot = call(&mut reader, 1, "manager.snapshot", None);
     assert_eq!(phase(&snapshot), "unconfigured");
     let document: ConfigDocument = call(&mut reader, 2, "config.getAll", None);
-    let revision = match document {
-        ConfigDocument::DurableInvalid { revision } => revision,
-        _ => panic!("invalid YAML must remain a durable-invalid document"),
+    let ConfigDocument::DurableInvalid { revision } = document else {
+        panic!("invalid YAML must remain a durable-invalid document");
     };
     let request = ConfigSetRequest {
         key: ConfigFieldPath::parse("database.url").expect("field path is valid"),
@@ -90,7 +89,7 @@ fn invalid_config_manager_announces_repairs_and_shuts_down() {
         &mut reader,
         3,
         "config.set",
-        Some(serde_json::to_value(request).expect("request serialises")),
+        Some(&serde_json::to_value(request).expect("request serialises")),
     );
     assert!(!outcome.revision.as_str().is_empty());
 
@@ -141,7 +140,7 @@ fn call<T: serde::de::DeserializeOwned>(
     reader: &mut BufReader<UnixStream>,
     id: u64,
     method: &str,
-    params: Option<serde_json::Value>,
+    params: Option<&serde_json::Value>,
 ) -> T {
     write_frame(
         reader.get_mut(),

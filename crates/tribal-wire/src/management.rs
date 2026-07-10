@@ -7,7 +7,6 @@ mod envelope;
 mod event;
 mod launch;
 mod lifecycle;
-mod panic_correlation;
 mod readiness;
 mod wire_id;
 
@@ -38,9 +37,10 @@ pub use launch::{
 };
 pub use lifecycle::{
     CleanNoRuntimeLifecycleSnapshot, CleanNoRuntimePhase,
-    CleanReadinessUnavailableLifecycleSnapshot, CleanReadinessUnavailablePhase, CleanStoppedState,
-    CleanUnconfiguredLifecycleSnapshot, CleanUnconfiguredPhase, CustodyLossTerminationRuntime,
-    DegradedReason, EarlyChildTerminationEvidence, EarlyChildTerminationOperation,
+    CleanReadinessUnavailableLifecycleSnapshot, CleanReadinessUnavailablePhase,
+    CleanReadinessUnavailableStoppedState, CleanStoppedState, CleanUnconfiguredLifecycleSnapshot,
+    CleanUnconfiguredPhase, CustodyLossTerminationRuntime, DegradedReason,
+    EarlyChildTerminationEvidence, EarlyChildTerminationOperation,
     FailedNoRuntimeLifecycleSnapshot, FailedNoRuntimePhase, FailedStoppedState,
     FailurePresentation, LifecyclePhase, LifecycleSnapshot, LifecycleSnapshotHeader,
     ManagerShutdownOperation, ManagerShutdownResult, ManagerTerminatingLifecycleSnapshot,
@@ -62,7 +62,6 @@ pub use lifecycle::{
     StoppedProcessFailure, StoppedState, StoppingLifecycleSnapshot, StoppingPhase,
     UnconfiguredLifecycleSnapshot, UnconfiguredPhase,
 };
-pub use panic_correlation::{PanicCorrelationId, PanicCorrelationIdParseError};
 pub use readiness::{
     CheckObservation, CheckSubject, ConfigDiagnosticLocation, ConfigFilePath,
     CredentialEntryMember, HealthDegradedReadinessReport, HealthDegradedVerdict, HealthVerdict,
@@ -72,7 +71,7 @@ pub use readiness::{
 pub use tribal_domain::{ConfigFieldPath, ProviderKind};
 pub use wire_id::{
     ConfigDigest, ConfigRevision, CredentialSourceId, EmbeddingProfileRevision, KnownModelId,
-    WireIdError,
+    PanicCorrelationId, PanicCorrelationIdParseError, WireIdError,
 };
 
 pub use crate::operator_check::{CheckName, CheckResult};

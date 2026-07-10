@@ -22,7 +22,7 @@ use crate::{
 };
 
 struct OneShotContext {
-    _lease: AuthorityLease,
+    lease: AuthorityLease,
     config: ConfigAuthority,
 }
 
@@ -31,7 +31,7 @@ enum ConfigTarget {
     OneShot(OneShotContext),
 }
 
-pub(crate) fn get(config_path: &str, args: ConfigGetArgs) -> Result<(), AppError> {
+pub(crate) fn get(config_path: &str, args: &ConfigGetArgs) -> Result<(), AppError> {
     let key = parse_key(&args.key)?;
     let request = ConfigGetRequest { key };
     let value = match acquire(config_path)? {
@@ -45,7 +45,7 @@ pub(crate) fn get(config_path: &str, args: ConfigGetArgs) -> Result<(), AppError
     write_json(&value)
 }
 
-pub(crate) fn set(config_path: &str, args: ConfigSetArgs) -> Result<(), AppError> {
+pub(crate) fn set(config_path: &str, args: &ConfigSetArgs) -> Result<(), AppError> {
     let key = parse_key(&args.key)?;
     let value = parse_value(&args.value);
     let outcome = match acquire(config_path)? {
@@ -76,7 +76,7 @@ pub(crate) fn set(config_path: &str, args: ConfigSetArgs) -> Result<(), AppError
     write_json(&outcome)
 }
 
-pub(crate) fn validate(config_path: &str, args: ConfigValidateArgs) -> Result<(), AppError> {
+pub(crate) fn validate(config_path: &str, args: &ConfigValidateArgs) -> Result<(), AppError> {
     let key = parse_key(&args.key)?;
     let candidate = parse_value(&args.value);
     let value = match acquire(config_path)? {
@@ -98,7 +98,7 @@ pub(crate) fn validate(config_path: &str, args: ConfigValidateArgs) -> Result<()
 
 pub(crate) fn path(config_path: &str) -> Result<(), AppError> {
     let canonical_config_path = match acquire(config_path)? {
-        ConfigTarget::OneShot(context) => context._lease.paths().canonical_config_path.clone(),
+        ConfigTarget::OneShot(context) => context.lease.paths().canonical_config_path.clone(),
         ConfigTarget::Manager(descriptor) => descriptor.canonical_config_path,
     };
     write_json(&tribal_wire::management::ConfigFilePath {
@@ -134,10 +134,7 @@ fn acquire(config_path: &str) -> Result<ConfigTarget, AppError> {
     };
     lease.publish(&descriptor).map_err(authority_error)?;
     let config = ConfigAuthority::new(lease.paths().canonical_config_path.clone());
-    Ok(ConfigTarget::OneShot(OneShotContext {
-        _lease: lease,
-        config,
-    }))
+    Ok(ConfigTarget::OneShot(OneShotContext { lease, config }))
 }
 
 fn manager_call<T: serde::de::DeserializeOwned>(
