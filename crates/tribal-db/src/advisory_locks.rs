@@ -19,8 +19,17 @@ pub const REINDEX_SINGLE_FLIGHT: i64 = 0x7472_6962_616C_7278;
 /// cutover takes it exclusively to drain them (`"tribalco"`).
 pub const CUTOVER: i64 = 0x7472_6962_616C_636F;
 
+/// Serialises mutations and reads of the active embedding profile (`"tribalep"`).
+pub const EMBEDDING_PROFILE_AUTHORITY: i64 = 0x7472_6962_616C_6570;
+
 /// Every advisory-lock id, the input to the compile-time uniqueness check.
-const ALL: [i64; 4] = [MIGRATION, PROVISIONING, REINDEX_SINGLE_FLIGHT, CUTOVER];
+pub const ALL: [i64; 5] = [
+    MIGRATION,
+    PROVISIONING,
+    REINDEX_SINGLE_FLIGHT,
+    CUTOVER,
+    EMBEDDING_PROFILE_AUTHORITY,
+];
 
 const fn all_distinct(ids: &[i64]) -> bool {
     let mut i = 0;
@@ -38,3 +47,14 @@ const fn all_distinct(ids: &[i64]) -> bool {
 }
 
 const _: () = assert!(all_distinct(&ALL), "advisory lock ids must be distinct");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_all_advisory_lock_ids_are_declared_once() {
+        assert_eq!(ALL.len(), 5);
+        assert!(ALL.contains(&EMBEDDING_PROFILE_AUTHORITY));
+    }
+}

@@ -33,5 +33,7 @@ pub fn write_atomically(path: &Path, bytes: &[u8], mode: Option<u32>) -> std::io
     }
 
     tempfile.persist(path).map_err(|error| error.error)?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all()?;
     Ok(())
 }

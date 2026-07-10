@@ -94,6 +94,18 @@ impl DbError {
             .and_then(sqlx::error::DatabaseError::code)
             .is_some_and(|code| code == "40001" || code == "40P01")
     }
+
+    /// Whether PostgreSQL refused an advisory lock within the configured timeout.
+    #[must_use]
+    pub fn is_lock_not_available(&self) -> bool {
+        let Self::QueryFailed { source, .. } = self else {
+            return false;
+        };
+        source
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .is_some_and(|code| code == "55P03")
+    }
 }
 
 #[cfg(test)]
