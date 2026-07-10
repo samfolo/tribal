@@ -11,18 +11,22 @@ mod bootstrap;
 mod check;
 pub(crate) mod common;
 pub(crate) mod config;
+pub(crate) mod manage;
 mod mcp_config;
 pub(crate) mod project;
 pub(crate) mod reindex;
-mod serve;
+mod runtime;
+pub(crate) mod serve;
 pub(crate) mod setup;
 pub(crate) mod threads;
 pub(crate) mod token;
 
 pub(crate) use self::{
     bootstrap::run as bootstrap,
-    check::{CheckReportOptions, run as check, run_report_async},
+    check::{CheckConfigSource, CheckReportOptions, run as check, run_report_async},
+    manage::run as manage,
     mcp_config::run as mcp_config,
+    runtime::run as runtime,
     serve::run as serve,
     setup::run as setup,
 };

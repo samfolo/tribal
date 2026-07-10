@@ -36,10 +36,11 @@ pub use env::{
     public_mcp_url_override, standard_env_var_name,
 };
 pub use error::{ConfigError, RemovedEmbeddingSource};
-pub use loader::load_config;
+pub use loader::{load_config, load_config_from_yaml};
 pub use operations::{
-    CliShadow, ConfigViolation, Persisted, SetError, UnknownConfigKey, WriteEffect, get, get_all,
-    set, shadowed_by, validate_write,
+    CliShadow, ConfigViolation, Persisted, PersistedPatch, SetError, UnknownConfigKey, WriteEffect,
+    get, get_all, patch, patch_from_yaml, repair_patch, set, set_from_yaml, shadowed_by,
+    validate_write,
 };
 pub use paths::{
     CREDENTIALS_FILENAME, ConfigDirError, TRIBAL_DIRECTORY_NAME, default_config_file_path,

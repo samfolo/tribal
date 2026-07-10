@@ -72,6 +72,17 @@ pub struct Persisted {
     pub config: TribalConfig,
 }
 
+/// A completed atomic multi-field configuration write.
+#[derive(Debug, Clone)]
+pub struct PersistedPatch {
+    /// Per-input write effects in the same order as the requested changes.
+    pub effects: Vec<WriteEffect>,
+    /// Exact bytes written, absent when every requested value was unchanged.
+    pub document: Option<Vec<u8>>,
+    /// Resolved configuration with the complete patch applied.
+    pub config: TribalConfig,
+}
+
 /// One reason a proposed configuration write is unacceptable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigViolation {
@@ -128,6 +139,17 @@ pub enum SetError {
         #[source]
         source: serde_yaml::Error,
     },
+}
+
+impl SetError {
+    /// Validation details when the candidate was rejected before persistence.
+    #[must_use]
+    pub fn violations(&self) -> Option<&[ConfigViolation]> {
+        match self {
+            Self::Rejected { violations } => Some(violations),
+            Self::Unparseable { .. } | Self::Io { .. } | Self::Serialise { .. } => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -246,9 +268,38 @@ pub fn set(
     value: Value,
     cli: &CliShadow,
 ) -> Result<Persisted, SetError> {
+    let document = read_document(config_file)?;
+    set_in_document(config, config_file, key, value, cli, document)
+}
+
+/// Persists one field against an exact already-observed YAML document.
+///
+/// # Errors
+///
+/// Returns [`SetError::Rejected`] when the write is invalid, and the file
+/// variants when the supplied YAML cannot be parsed or persistence fails.
+pub fn set_from_yaml(
+    config: &TribalConfig,
+    config_file: &Path,
+    yaml: &[u8],
+    key: &str,
+    value: Value,
+    cli: &CliShadow,
+) -> Result<Persisted, SetError> {
+    let document = parse_document(config_file, yaml)?;
+    set_in_document(config, config_file, key, value, cli, document)
+}
+
+fn set_in_document(
+    config: &TribalConfig,
+    config_file: &Path,
+    key: &str,
+    value: Value,
+    cli: &CliShadow,
+    document: Value,
+) -> Result<Persisted, SetError> {
     let candidate = validated_candidate(config, key, value.clone())
         .map_err(|violations| SetError::Rejected { violations })?;
-    let document = read_document(config_file)?;
     if lookup(&document, key) == Some(&value) {
         return Ok(Persisted {
             effect: WriteEffect::Unchanged,
@@ -261,6 +312,194 @@ pub fn set(
     Ok(Persisted {
         effect: write_effect(key, cli),
         document: Some(document),
+        config: candidate,
+    })
+}
+
+/// Validates and persists multiple configuration values as one atomic candidate.
+///
+/// Structural patch rules such as duplicate and overlapping paths belong to
+/// the application service. This function owns config-native type and semantic
+/// validation plus the single atomic file replacement.
+///
+/// # Errors
+///
+/// Returns [`SetError::Rejected`] when the complete candidate is invalid, and
+/// the file variants when reading or atomically replacing the document fails.
+pub fn patch(
+    config: &TribalConfig,
+    config_file: &Path,
+    changes: &[(String, Value)],
+    cli: &CliShadow,
+) -> Result<PersistedPatch, SetError> {
+    let document = read_document(config_file)?;
+    patch_in_document(config, config_file, changes, cli, document)
+}
+
+/// Persists a patch against an exact already-observed YAML document.
+///
+/// # Errors
+///
+/// Returns [`SetError::Rejected`] when the complete candidate is invalid, and
+/// the file variants when the supplied YAML cannot be parsed or persistence fails.
+pub fn patch_from_yaml(
+    config: &TribalConfig,
+    config_file: &Path,
+    yaml: &[u8],
+    changes: &[(String, Value)],
+    cli: &CliShadow,
+) -> Result<PersistedPatch, SetError> {
+    let document = parse_document(config_file, yaml)?;
+    patch_in_document(config, config_file, changes, cli, document)
+}
+
+fn patch_in_document(
+    config: &TribalConfig,
+    config_file: &Path,
+    changes: &[(String, Value)],
+    cli: &CliShadow,
+    mut document: Value,
+) -> Result<PersistedPatch, SetError> {
+    let mut candidate_tree = serde_json::to_value(config).map_err(|source| SetError::Rejected {
+        violations: vec![ConfigViolation {
+            key: String::new(),
+            message: source.to_string(),
+        }],
+    })?;
+    for (key, value) in changes {
+        apply_value(&mut candidate_tree, key, value.clone()).map_err(|message| {
+            SetError::Rejected {
+                violations: vec![ConfigViolation {
+                    key: key.clone(),
+                    message,
+                }],
+            }
+        })?;
+    }
+    let candidate: TribalConfig =
+        serde_json::from_value(candidate_tree).map_err(|source| SetError::Rejected {
+            violations: vec![ConfigViolation {
+                key: String::new(),
+                message: source.to_string(),
+            }],
+        })?;
+    if let Err(error) = validate(&candidate) {
+        return Err(SetError::Rejected {
+            violations: vec![ConfigViolation {
+                key: String::new(),
+                message: error.to_string(),
+            }],
+        });
+    }
+
+    let mut document_changed = false;
+    let mut effects = Vec::with_capacity(changes.len());
+    for (key, value) in changes {
+        if lookup(&document, key) == Some(value) {
+            effects.push(WriteEffect::Unchanged);
+            continue;
+        }
+        apply_value(&mut document, key, value.clone()).map_err(|message| SetError::Rejected {
+            violations: vec![ConfigViolation {
+                key: key.clone(),
+                message,
+            }],
+        })?;
+        document_changed = true;
+        effects.push(write_effect(key, cli));
+    }
+    if !document_changed {
+        return Ok(PersistedPatch {
+            effects,
+            document: None,
+            config: candidate,
+        });
+    }
+    let bytes = serde_yaml::to_string(&document)
+        .map_err(|source| SetError::Serialise { source })?
+        .into_bytes();
+    write_atomically(config_file, &bytes, Some(CONFIG_FILE_MODE)).map_err(|source| {
+        SetError::Io {
+            path: config_file.to_owned(),
+            source,
+        }
+    })?;
+    Ok(PersistedPatch {
+        effects,
+        document: Some(bytes),
+        config: candidate,
+    })
+}
+
+/// Replaces an invalid document with a validated patch over compiled defaults.
+///
+/// This is the repair path: the invalid bytes remain untouched unless the
+/// complete candidate validates, then one atomic replacement establishes the
+/// new durable document.
+///
+/// # Errors
+///
+/// Returns [`SetError::Rejected`] when the repair candidate is invalid, and
+/// the file variants when serialisation or atomic persistence fails.
+pub fn repair_patch(
+    config_file: &Path,
+    changes: &[(String, Value)],
+    cli: &CliShadow,
+) -> Result<PersistedPatch, SetError> {
+    let base = TribalConfig::default();
+    let mut candidate_tree = serde_json::to_value(&base).map_err(|source| SetError::Rejected {
+        violations: vec![ConfigViolation {
+            key: String::new(),
+            message: source.to_string(),
+        }],
+    })?;
+    let mut document = empty_object();
+    for (key, value) in changes {
+        apply_value(&mut candidate_tree, key, value.clone()).map_err(|message| {
+            SetError::Rejected {
+                violations: vec![ConfigViolation {
+                    key: key.clone(),
+                    message,
+                }],
+            }
+        })?;
+        apply_value(&mut document, key, value.clone()).map_err(|message| SetError::Rejected {
+            violations: vec![ConfigViolation {
+                key: key.clone(),
+                message,
+            }],
+        })?;
+    }
+    let candidate: TribalConfig =
+        serde_json::from_value(candidate_tree).map_err(|source| SetError::Rejected {
+            violations: vec![ConfigViolation {
+                key: String::new(),
+                message: source.to_string(),
+            }],
+        })?;
+    if let Err(error) = validate(&candidate) {
+        return Err(SetError::Rejected {
+            violations: vec![ConfigViolation {
+                key: String::new(),
+                message: error.to_string(),
+            }],
+        });
+    }
+    let bytes = serde_yaml::to_string(&document)
+        .map_err(|source| SetError::Serialise { source })?
+        .into_bytes();
+    write_atomically(config_file, &bytes, Some(CONFIG_FILE_MODE)).map_err(|source| {
+        SetError::Io {
+            path: config_file.to_owned(),
+            source,
+        }
+    })?;
+    Ok(PersistedPatch {
+        effects: changes
+            .iter()
+            .map(|(key, _)| write_effect(key, cli))
+            .collect(),
+        document: Some(bytes),
         config: candidate,
     })
 }
@@ -331,6 +570,18 @@ fn read_document(config_file: &Path) -> Result<Value, SetError> {
             source,
         }),
     }
+}
+
+fn parse_document(config_file: &Path, yaml: &[u8]) -> Result<Value, SetError> {
+    let parsed: Value = serde_yaml::from_slice(yaml).map_err(|source| SetError::Unparseable {
+        path: config_file.to_owned(),
+        source,
+    })?;
+    Ok(if parsed.is_null() {
+        empty_object()
+    } else {
+        parsed
+    })
 }
 
 /// Sets a dotted key to a value in a JSON document, creating intermediate

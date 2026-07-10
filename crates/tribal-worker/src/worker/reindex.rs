@@ -1200,6 +1200,9 @@ async fn catch_up_and_cutover(
                     source: e,
                 })?;
         PgAdvisoryLockRepository
+            .acquire_exclusive_xact(&mut txn, advisory_locks::EMBEDDING_PROFILE_AUTHORITY)
+            .await?;
+        PgAdvisoryLockRepository
             .acquire_exclusive_xact(&mut txn, advisory_locks::CUTOVER)
             .await?;
         let remaining_locked = count_remaining(&mut txn, ctx.building).await?;

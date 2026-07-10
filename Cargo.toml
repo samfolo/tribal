@@ -81,7 +81,12 @@ strum = { version = "0.28", features = ["derive"] }
 
 # Hashing
 fnv = "1"
+hmac = "0.12"
 sha2 = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+
+# Operating-system entropy
+getrandom = "0.3"
 
 # Constant-time cryptographic comparisons
 subtle = "2"
@@ -106,6 +111,8 @@ tokio-util = "0.7"
 
 # Concurrent maps
 dashmap = "6"
+fs2 = "0.4"
+libc = "0.2"
 
 # Async traits
 async-trait = "0.1"

@@ -39,6 +39,13 @@ pub const FIRST_RUN_REQUIRED: &str = "database is uninitialised; run `tribal set
 /// the error chain for debugging.
 #[derive(Debug, Error)]
 pub enum AppError {
+    /// The local management authority failed.
+    #[error("{source}")]
+    Management {
+        /// The management-process failure.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// A CLI argument combination was invalid.
     #[error("{source}")]
     Cli {
@@ -436,6 +443,14 @@ impl From<TelemetryError> for AppError {
 impl From<ProviderRegistryError> for AppError {
     fn from(source: ProviderRegistryError) -> Self {
         Self::ProviderRegistry { source }
+    }
+}
+
+impl From<crate::commands::manage::ManageError> for AppError {
+    fn from(source: crate::commands::manage::ManageError) -> Self {
+        Self::Management {
+            source: Box::new(source),
+        }
     }
 }
 

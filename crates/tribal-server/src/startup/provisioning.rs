@@ -3,7 +3,7 @@
 //! Run after migrations, this seeds the corpus's first embedding profile from
 //! the `init.embedding` genesis seed and builds its per-profile partial HNSW
 //! indexes. It is
-//! serialised across processes by its own advisory lock, idempotent, and
+//! serialised by the provisioning and embedding-profile authority locks, idempotent, and
 //! crash-safe: a crash before the profile is marked `complete` leaves it
 //! `building` (never active), so a restart re-adopts and completes it rather
 //! than minting a second genesis. It never registers a later configuration
@@ -65,7 +65,34 @@ pub(crate) async fn provision_genesis(
             .map_err(database_error)?;
 
         if acquired {
+            let profile_authority = migration_repo
+                .try_advisory_lock(&mut conn, advisory_locks::EMBEDDING_PROFILE_AUTHORITY)
+                .await
+                .map_err(database_error)?;
+            if !profile_authority {
+                if let Err(error) = migration_repo
+                    .release_advisory_lock(&mut conn, advisory_locks::PROVISIONING)
+                    .await
+                {
+                    tracing::warn!(%error, "failed to release provisioning advisory lock");
+                }
+                if attempt < MIGRATION_MAX_ATTEMPTS {
+                    tokio::time::sleep(random_duration_in_range(
+                        MIGRATION_RETRY_SLEEP_MIN,
+                        MIGRATION_RETRY_SLEEP_MAX,
+                    ))
+                    .await;
+                    continue;
+                }
+                break;
+            }
             let result = provision_under_lock(&mut conn, config).await;
+            if let Err(error) = migration_repo
+                .release_advisory_lock(&mut conn, advisory_locks::EMBEDDING_PROFILE_AUTHORITY)
+                .await
+            {
+                tracing::warn!(%error, "failed to release embedding-profile authority");
+            }
             if let Err(e) = migration_repo
                 .release_advisory_lock(&mut conn, advisory_locks::PROVISIONING)
                 .await

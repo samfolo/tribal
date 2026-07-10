@@ -5,7 +5,12 @@
 //! bootstrap and worker startup, then blocks on OS signal handling until
 //! shutdown.
 
-use std::{io, sync::Arc};
+use std::{
+    io,
+    os::fd::{FromRawFd as _, OwnedFd, RawFd},
+    path::Path,
+    sync::Arc,
+};
 
 #[cfg(not(unix))]
 use tokio::signal;
@@ -20,6 +25,14 @@ use crate::{
     cli::ServeArgs,
     control,
     error::AppError,
+    management::{
+        authority::{
+            AuthorityAcquire, AuthorityDescriptor, AuthorityError, AuthorityLease,
+            AuthorityOwnerKind,
+        },
+        custody::{MANAGED_RUNTIME_INSTANCE_ID, RuntimeCustodyGuard},
+        runtime_control::{self, RuntimeControlService},
+    },
     orchestration,
     startup::{POOL_NAME_MCP, SelfWriteSentinel, init_config_watcher},
     transport,
@@ -29,6 +42,9 @@ use crate::{
 /// it spawns the binary, declaring that it owns the process's lifecycle. It
 /// governs `server.restart`: mediated when set, refused otherwise.
 const SUPERVISED_MARKER: &str = "TRIBAL_SUPERVISED";
+
+/// Inherited locked authority description for a manager-spawned runtime.
+pub(crate) const MANAGED_AUTHORITY_FD: &str = "TRIBAL_MANAGED_AUTHORITY_FD";
 
 /// Whether a supervisor owns this process, read from [`SUPERVISED_MARKER`].
 fn is_supervised() -> bool {
@@ -60,6 +76,16 @@ fn supervised_from(value: Option<&str>) -> bool {
 /// Returns an [`AppError`] if any startup phase fails or if the worker
 /// dies unexpectedly during operation.
 pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
+    let authority_lease = acquire_runtime_authority(Path::new(config_path))?;
+    let cancellation_token = CancellationToken::new();
+    let runtime_custody = RuntimeCustodyGuard::bootstrap_from_environment(
+        &authority_lease,
+        cancellation_token.clone(),
+    )
+    .map_err(|source| AppError::Management {
+        source: Box::new(source),
+    })?;
+    let mut managed_control = managed_runtime_control(&authority_lease, runtime_custody.as_ref())?;
     let (cli_overrides, cli_project) = args.into_cli_overrides();
     let cli_shadow = CliShadow::from_overrides(&cli_overrides);
 
@@ -94,8 +120,6 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     for warning in config_warnings(&config) {
         tracing::warn!("{warning}");
     }
-
-    let cancellation_token = CancellationToken::new();
 
     let transport = config.server.transport;
 
@@ -155,23 +179,51 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
             instance_id: Arc::clone(handle.state().instance_id()),
             supervised: is_supervised(),
         };
-        control::spawn_control_plane(control_context).await;
+        let runtime_control_task = match managed_control.take() {
+            Some((runtime, proof)) => match runtime_control::spawn_server(
+                authority_lease.paths().runtime_control_socket_path.clone(),
+                proof,
+                RuntimeControlService {
+                    runtime,
+                    config_path: expanded_config_path.clone(),
+                    config: control_context.config.clone(),
+                    log_filter: control_context.log_filter.clone(),
+                    log_ring: control_context.log_ring.clone(),
+                    pool: control_context.pool.clone(),
+                    shutdown: cancellation_token.clone(),
+                },
+            )
+            .await
+            {
+                Ok(task) => Some(task),
+                Err(source) => {
+                    return Some(AppError::Management {
+                        source: Box::new(source),
+                    });
+                }
+            },
+            None => None,
+        };
+        let control_task = control::spawn_control_plane(control_context).await;
 
         // The config-file watcher announces an external edit to the file as
         // `config.changed`; best-effort like the control plane, a failed init
         // never blocks MCP from serving.
-        match init_config_watcher(
+        let config_watcher_task = match init_config_watcher(
             &expanded_config_path,
             control_events.clone(),
             self_write,
             cancellation_token.clone(),
         ) {
-            Ok(watcher) => drop(tokio::spawn(watcher)),
-            Err(error) => tracing::warn!(
-                %error,
-                "config-file watcher init failed; external edits will not notify",
-            ),
-        }
+            Ok(watcher) => Some(tokio::spawn(watcher)),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "config-file watcher init failed; external edits will not notify",
+                );
+                None
+            }
+        };
 
         let mut transport_handle = tokio::spawn(run_transport(
             transport,
@@ -186,22 +238,22 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         // When the signal branch wins, the transport task continues
         // running — it observes the cancellation token and shuts down
         // gracefully rather than being dropped mid-flight.
-        let signal_fired = tokio::select! {
+        let transport_result = tokio::select! {
             result = &mut transport_handle => {
                 cancellation_token.cancel();
-                return resolve_transport_result(result, transport, "transport failed");
+                resolve_transport_result(result, transport, "transport failed")
             }
-            trigger = await_shutdown_trigger(&cancellation_token) => trigger,
+            trigger = await_shutdown_trigger(&cancellation_token) => {
+                handle_shutdown_trigger(trigger, &cancellation_token);
+                resolve_transport_result(
+                    transport_handle.await,
+                    transport,
+                    "transport failed during shutdown",
+                )
+            },
         };
-
-        handle_shutdown_trigger(signal_fired, &cancellation_token);
-
-        // Let the transport drain active connections.
-        resolve_transport_result(
-            transport_handle.await,
-            transport,
-            "transport failed during shutdown",
-        )
+        join_companion_tasks(runtime_control_task, control_task, config_watcher_task).await;
+        transport_result
     });
 
     // Prefer the transport error over the shutdown result — a bind
@@ -210,6 +262,105 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     match transport_error {
         Some(err) => Err(err),
         None => shutdown_result,
+    }
+}
+
+async fn join_companion_tasks(
+    runtime_control: Option<tokio::task::JoinHandle<()>>,
+    control: Option<tokio::task::JoinHandle<()>>,
+    config_watcher: Option<tokio::task::JoinHandle<()>>,
+) {
+    for (name, task) in [
+        ("runtime-control", runtime_control),
+        ("control", control),
+        ("config-file watcher", config_watcher),
+    ] {
+        if let Some(task) = task
+            && let Err(error) = task.await
+        {
+            tracing::error!(%error, task = name, "runtime companion task failed during shutdown");
+        }
+    }
+}
+
+fn managed_runtime_control(
+    lease: &AuthorityLease,
+    custody: Option<&RuntimeCustodyGuard>,
+) -> Result<
+    Option<(
+        tribal_wire::management::RuntimeIdentity,
+        crate::management::custody::RuntimeProofRegistry,
+    )>,
+    AppError,
+> {
+    let Some(custody) = custody else {
+        return Ok(None);
+    };
+    let Ok(runtime_instance_id) = std::env::var(MANAGED_RUNTIME_INSTANCE_ID) else {
+        return Err(AppError::Management {
+            source: Box::new(crate::management::custody::CustodyError::EnvironmentIncomplete),
+        });
+    };
+    Ok(Some((
+        tribal_wire::management::RuntimeIdentity {
+            instance_id: runtime_instance_id,
+            pid: std::process::id(),
+            binary_version: env!("CARGO_PKG_VERSION").to_owned(),
+            config_path: tribal_wire::management::ConfigFilePath {
+                path: lease
+                    .paths()
+                    .canonical_config_path
+                    .to_string_lossy()
+                    .into_owned(),
+            },
+        },
+        custody.control_proof(),
+    )))
+}
+
+fn acquire_runtime_authority(config_path: &Path) -> Result<AuthorityLease, AppError> {
+    if let Some(raw) = std::env::var_os(MANAGED_AUTHORITY_FD) {
+        let fd = raw
+            .to_string_lossy()
+            .parse::<RawFd>()
+            .map_err(|_| AppError::Management {
+                source: Box::new(AuthorityError::Filesystem {
+                    path: config_path.to_owned(),
+                    source: io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "managed authority descriptor is invalid",
+                    ),
+                }),
+            })?;
+        // SAFETY: the manager passes one owned inherited descriptor number;
+        // this process adopts it exactly once at serve entry.
+        let descriptor = unsafe { OwnedFd::from_raw_fd(fd) };
+        return AuthorityLease::from_inherited(config_path, descriptor).map_err(management_error);
+    }
+
+    match AuthorityLease::acquire(config_path).map_err(management_error)? {
+        AuthorityAcquire::Acquired(mut lease) => {
+            let descriptor = AuthorityDescriptor {
+                kind: AuthorityOwnerKind::StandaloneRuntime,
+                instance_id: uuid::Uuid::new_v4().to_string(),
+                pid: std::process::id(),
+                binary_version: env!("CARGO_PKG_VERSION").to_owned(),
+                canonical_config_path: lease.paths().canonical_config_path.clone(),
+                socket_path: None,
+                protocol_version: None,
+            };
+            lease.publish(&descriptor).map_err(management_error)?;
+            Ok(lease)
+        }
+        AuthorityAcquire::Occupied(_) => Err(management_error(AuthorityError::Occupied {
+            path: config_path.to_owned(),
+        })),
+    }
+}
+
+fn management_error(source: AuthorityError) -> AppError {
+    AppError::Management {
+        source: Box::new(source),
     }
 }
 

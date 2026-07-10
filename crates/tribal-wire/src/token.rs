@@ -1,15 +1,10 @@
-//! The `token.list` crossing: the metadata of issued tokens.
+//! Non-secret token metadata shared by local operator contracts.
 //!
-//! Only a token's hash is stored and the raw value is discarded at issuance, so
-//! neither a prefix nor the value is recoverable — the bridge reports principal,
-//! scopes, and expiry, and offers no minting or revocation.
+//! Only a token's hash is stored and the raw value is discarded at issuance,
+//! so neither a prefix nor the value is recoverable from these projections.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-
-// ---------------------------------------------------------------------------
-// token.list
-// ---------------------------------------------------------------------------
 
 /// The non-secret metadata of one issued token.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

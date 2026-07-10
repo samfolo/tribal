@@ -122,8 +122,20 @@ pub enum Command {
         args: ServeArgs,
     },
 
-    /// Run first-time database setup and migrations.
+    /// Run the runtime-independent local management authority.
     #[command(display_order = 3)]
+    Manage {
+        /// Arguments for the management authority.
+        #[command(flatten)]
+        args: ManageArgs,
+    },
+
+    /// Control the runtime owned by the current management authority.
+    #[command(subcommand, display_order = 4)]
+    Runtime(RuntimeCommand),
+
+    /// Run first-time database setup and migrations.
+    #[command(display_order = 5)]
     Setup {
         /// Arguments for the setup subcommand.
         #[command(flatten)]
@@ -158,6 +170,27 @@ pub enum Command {
     /// Manage durable agent threads.
     #[command(subcommand, display_order = 9)]
     Threads(ThreadsCommand),
+}
+
+/// Arguments for `tribal manage`.
+#[derive(Debug, Args)]
+pub struct ManageArgs {
+    /// Emit one bounded machine-readable launch record to stdout.
+    #[arg(long)]
+    pub announce_json: bool,
+}
+
+/// Runtime lifecycle subcommands.
+#[derive(Debug, Subcommand)]
+pub enum RuntimeCommand {
+    /// Start the managed runtime.
+    Start,
+    /// Stop the managed runtime.
+    Stop,
+    /// Restart the managed runtime.
+    Restart,
+    /// Print the latest lifecycle snapshot.
+    Status,
 }
 
 // ---------------------------------------------------------------------------
@@ -881,6 +914,23 @@ pub enum ConfigCommand {
         #[command(flatten)]
         args: ConfigShowArgs,
     },
+    /// Read one effective configuration value.
+    Get {
+        #[command(flatten)]
+        args: ConfigGetArgs,
+    },
+    /// Validate and persist one configuration value.
+    Set {
+        #[command(flatten)]
+        args: ConfigSetArgs,
+    },
+    /// Validate one proposed value without persistence.
+    Validate {
+        #[command(flatten)]
+        args: ConfigValidateArgs,
+    },
+    /// Print the canonical configuration path.
+    Path,
 }
 
 /// Arguments for `config show`.
@@ -890,6 +940,31 @@ pub struct ConfigShowArgs {
     /// redacting them.
     #[arg(long)]
     pub show_secrets: bool,
+}
+
+/// Arguments for `config get`.
+#[derive(Debug, Args)]
+pub struct ConfigGetArgs {
+    /// Validated dotted configuration field path.
+    pub key: String,
+}
+
+/// Arguments for `config set`.
+#[derive(Debug, Args)]
+pub struct ConfigSetArgs {
+    /// Validated dotted configuration field path.
+    pub key: String,
+    /// JSON value, or a bare string when JSON parsing fails.
+    pub value: String,
+}
+
+/// Arguments for `config validate`.
+#[derive(Debug, Args)]
+pub struct ConfigValidateArgs {
+    /// Validated dotted configuration field path.
+    pub key: String,
+    /// JSON value, or a bare string when JSON parsing fails.
+    pub value: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -1007,6 +1082,56 @@ mod tests {
             && args.project.is_none()
             && args.bind.is_none()
         ));
+    }
+
+    #[test]
+    fn test_manage_parses_the_bounded_announcement_mode() {
+        let cli = Cli::try_parse_from([
+            "tribal",
+            "manage",
+            "--announce-json",
+            "--config",
+            "/tmp/tribal.yaml",
+        ])
+        .expect("manage arguments parse");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Manage {
+                args: ManageArgs {
+                    announce_json: true
+                }
+            })
+        ));
+        assert_eq!(cli.global.config, "/tmp/tribal.yaml");
+    }
+
+    #[test]
+    fn test_runtime_capability_group_parses_every_command() {
+        for (name, expected) in [
+            ("start", RuntimeCommand::Start),
+            ("stop", RuntimeCommand::Stop),
+            ("restart", RuntimeCommand::Restart),
+            ("status", RuntimeCommand::Status),
+        ] {
+            let cli =
+                Cli::try_parse_from(["tribal", "runtime", name]).expect("runtime command parses");
+            assert!(matches!(
+                (cli.command, expected),
+                (
+                    Some(Command::Runtime(RuntimeCommand::Start)),
+                    RuntimeCommand::Start
+                ) | (
+                    Some(Command::Runtime(RuntimeCommand::Stop)),
+                    RuntimeCommand::Stop
+                ) | (
+                    Some(Command::Runtime(RuntimeCommand::Restart)),
+                    RuntimeCommand::Restart
+                ) | (
+                    Some(Command::Runtime(RuntimeCommand::Status)),
+                    RuntimeCommand::Status
+                )
+            ));
+        }
     }
 
     // -- Serve transport/bind parsing ---------------------------------------
@@ -1680,6 +1805,45 @@ mod tests {
             cli.command,
             Some(Command::Config(ConfigCommand::Show { args }))
             if args.show_secrets
+        ));
+    }
+
+    #[test]
+    fn test_revisioned_config_commands_parse() {
+        let get = Cli::try_parse_from(["tribal", "config", "get", "logging.level"])
+            .expect("config get parses");
+        assert!(matches!(
+            get.command,
+            Some(Command::Config(ConfigCommand::Get { args }))
+                if args.key == "logging.level"
+        ));
+
+        let set = Cli::try_parse_from(["tribal", "config", "set", "logging.level", "debug"])
+            .expect("config set parses");
+        assert!(matches!(
+            set.command,
+            Some(Command::Config(ConfigCommand::Set { args }))
+                if args.key == "logging.level" && args.value == "debug"
+        ));
+
+        let validate = Cli::try_parse_from([
+            "tribal",
+            "config",
+            "validate",
+            "worker.max_concurrent_tasks",
+            "4",
+        ])
+        .expect("config validate parses");
+        assert!(matches!(
+            validate.command,
+            Some(Command::Config(ConfigCommand::Validate { args }))
+                if args.key == "worker.max_concurrent_tasks" && args.value == "4"
+        ));
+
+        let path = Cli::try_parse_from(["tribal", "config", "path"]).expect("config path parses");
+        assert!(matches!(
+            path.command,
+            Some(Command::Config(ConfigCommand::Path))
         ));
     }
 

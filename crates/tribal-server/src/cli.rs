@@ -8,9 +8,10 @@ mod flags;
 mod styles;
 
 pub use command::{
-    BootstrapArgs, CheckArgs, Cli, Command, ConfigCommand, ConfigShowArgs, DatabaseArgs,
-    McpConfigArgs, ProjectCommand, ProjectListArgs, ProjectRegisterArgs, ReindexCommand,
-    ReindexRunArgs, ServeArgs, SetupArgs, ThreadsCommand, ThreadsPruneArgs, TokenCommand,
-    TokenCreateArgs, TokenListArgs, TokenRevokeAllArgs, TokenRevokeArgs,
+    BootstrapArgs, CheckArgs, Cli, Command, ConfigCommand, ConfigGetArgs, ConfigSetArgs,
+    ConfigShowArgs, ConfigValidateArgs, DatabaseArgs, ManageArgs, McpConfigArgs, ProjectCommand,
+    ProjectListArgs, ProjectRegisterArgs, ReindexCommand, ReindexRunArgs, RuntimeCommand,
+    ServeArgs, SetupArgs, ThreadsCommand, ThreadsPruneArgs, TokenCommand, TokenCreateArgs,
+    TokenListArgs, TokenRevokeAllArgs, TokenRevokeArgs,
 };
 pub(crate) use flags::PersistableFlag;

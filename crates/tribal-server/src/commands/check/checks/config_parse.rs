@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use tribal_config::{ConfigError, load_config};
+use tribal_config::{ConfigError, load_config, load_config_from_yaml};
 
 use super::{
     state::CheckState,
@@ -41,6 +41,33 @@ impl CheckOutcome {
 // to share the `async fn act` signature.
 #[allow(clippy::unused_async)]
 pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutcome {
+    if state.config.is_some() {
+        return CheckOutcome::config_parse_loaded(state.config_path.clone());
+    }
+    if let Some(bytes) = &state.config_bytes {
+        let yaml = match std::str::from_utf8(bytes) {
+            Ok(yaml) => yaml,
+            Err(error) => {
+                return CheckOutcome::Fail {
+                    detail: CheckDetail::ConfigParseFailed {
+                        error: error.to_string(),
+                        path: state.config_path.clone(),
+                    },
+                    remediation: CheckRemediation::InspectConfigFile {
+                        path: state.config_path.clone(),
+                    },
+                };
+            }
+        };
+        return match load_config_from_yaml(yaml, None, Some(&DATABASE_COMMAND_DEFAULTS)) {
+            Ok(config) => {
+                let path = state.config_path.clone();
+                state.config = Some(config);
+                CheckOutcome::config_parse_loaded(path)
+            }
+            Err(error) => CheckOutcome::config_parse_failed(&error, &state.config_path),
+        };
+    }
     // `canonicalize` can resolve symlinks into non-UTF-8 byte sequences;
     // when that happens the parse never gets a chance to run.
     let Some(path_str) = state.config_path.to_str() else {

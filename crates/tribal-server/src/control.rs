@@ -31,8 +31,10 @@ mod error;
 mod event;
 mod framing;
 mod socket;
+mod token_service;
 
 pub(crate) use socket::spawn_control_plane;
+pub(crate) use token_service::{list_local_token_metadata, list_token_metadata};
 
 /// The address a listening transport is bound to; `None` for stdio, which binds
 /// nothing. Shared by `server.status` and the runtime descriptor so both report
