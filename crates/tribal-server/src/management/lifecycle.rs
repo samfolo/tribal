@@ -1223,6 +1223,18 @@ impl LifecycleOwner {
                                 runtime: operation.child.identity.clone(),
                             };
                         operation.child.custody = Some(committed.custody);
+                        let exact_exit = early_child_exited(&mut operation.child);
+                        if operation
+                            .child
+                            .custody
+                            .as_ref()
+                            .is_some_and(ManagerCustody::is_closed)
+                        {
+                            operation.attachment = AttachmentStage::Settled;
+                            let runtime =
+                                custody_loss_runtime(&operation.child.identity, exact_exit);
+                            return self.terminate_launch_for_custody_loss(operation, runtime);
+                        }
                         operation.attachment = self.spawn_runtime_handshake(
                             token,
                             operation.child.identity.clone(),
@@ -1276,7 +1288,17 @@ impl LifecycleOwner {
                         self.force_early_reap(&mut operation);
                     }
                 }
-                if early_child_exited(&mut operation.child) {
+                let exact_exit = early_child_exited(&mut operation.child);
+                if operation
+                    .child
+                    .custody
+                    .as_ref()
+                    .is_some_and(ManagerCustody::is_closed)
+                {
+                    let runtime = custody_loss_runtime(&operation.child.identity, exact_exit);
+                    return self.terminate_cancellation_for_custody_loss(operation, runtime);
+                }
+                if exact_exit {
                     self.abort_early_tasks(&mut operation);
                     resolve_cancel_without_child(operation.intent, &operation.origin);
                     LifecycleState::NoRuntime(operation.origin)
@@ -1306,9 +1328,27 @@ impl LifecycleOwner {
             {
                 let task = take_attachment_task(&mut operation.attachment);
                 self.track_task(task, "runtime handshake");
+                let exact_exit = match operation.child.child.try_wait() {
+                    Ok(status) => status,
+                    Err(error) => {
+                        tracing::warn!(%error, "managed runtime launch status unavailable");
+                        None
+                    }
+                };
+                if operation
+                    .child
+                    .custody
+                    .as_ref()
+                    .is_some_and(ManagerCustody::is_closed)
+                {
+                    drop(result);
+                    let runtime =
+                        custody_loss_runtime(&operation.child.identity, exact_exit.is_some());
+                    return self.terminate_launch_for_custody_loss(operation, runtime);
+                }
                 match result {
                     Ok(control) => {
-                        if let Ok(Some(status)) = operation.child.child.try_wait() {
+                        if let Some(status) = exact_exit {
                             let failure = StoppedProcessFailure::RuntimeAnnouncementFailed {
                                 presentation: failure_presentation(
                                     "managed runtime exited during launch",
@@ -1321,14 +1361,6 @@ impl LifecycleOwner {
                             return self.finish_completion_state(LifecycleState::NoRuntime(
                                 with_failure(operation.origin, failure),
                             ));
-                        }
-                        if operation
-                            .child
-                            .custody
-                            .as_ref()
-                            .is_some_and(ManagerCustody::is_closed)
-                        {
-                            return self.terminate_launch_for_custody_loss(operation);
                         }
                         let Some(custody) = operation.child.custody.take() else {
                             let failure = StoppedProcessFailure::RuntimeHandshakeFailed {
@@ -1517,12 +1549,32 @@ impl LifecycleOwner {
         };
     }
 
-    fn terminate_launch_for_custody_loss(&mut self, mut operation: LaunchingOperation) {
-        let snapshot = custody_loss_snapshot(&operation.snapshot.header, &operation.child.identity);
+    fn terminate_launch_for_custody_loss(
+        &mut self,
+        mut operation: LaunchingOperation,
+        runtime: CustodyLossTerminationRuntime,
+    ) {
+        let snapshot = custody_loss_snapshot(&operation.snapshot.header, runtime);
         resolve_launch_waiters_for_termination(&mut operation.intent, &snapshot);
         self.state = LifecycleState::TerminatingOperation {
             snapshot,
             operation: LifecycleOperation::Launching(operation),
+        };
+        self.publish_current();
+        self.shutdown_seen = true;
+        self.shutdown.cancel();
+    }
+
+    fn terminate_cancellation_for_custody_loss(
+        &mut self,
+        mut operation: CancellingLaunchOperation,
+        runtime: CustodyLossTerminationRuntime,
+    ) {
+        let snapshot = custody_loss_snapshot(&operation.header, runtime);
+        resolve_cancellation_waiters_for_termination(&mut operation.intent, &snapshot);
+        self.state = LifecycleState::TerminatingOperation {
+            snapshot,
+            operation: LifecycleOperation::CancellingLaunch(operation),
         };
         self.publish_current();
         self.shutdown_seen = true;
@@ -1685,8 +1737,25 @@ impl LifecycleOwner {
             self.state = state;
             return;
         };
-        match operation.child.child.try_wait() {
-            Ok(Some(status)) => {
+        let exact_exit = match operation.child.child.try_wait() {
+            Ok(status) => status,
+            Err(error) => {
+                tracing::warn!(%error, "managed runtime launch status unavailable");
+                None
+            }
+        };
+        if operation
+            .child
+            .custody
+            .as_ref()
+            .is_some_and(ManagerCustody::is_closed)
+        {
+            let runtime = custody_loss_runtime(&operation.child.identity, exact_exit.is_some());
+            self.terminate_launch_for_custody_loss(operation, runtime);
+            return;
+        }
+        match exact_exit {
+            Some(status) => {
                 let task = take_attachment_task(&mut operation.attachment);
                 if let Some(task) = &task {
                     task.abort();
@@ -1703,20 +1772,7 @@ impl LifecycleOwner {
                 self.state = LifecycleState::NoRuntime(with_failure(operation.origin, failure));
                 self.publish_current();
             }
-            Ok(None)
-                if operation
-                    .child
-                    .custody
-                    .as_ref()
-                    .is_some_and(ManagerCustody::is_closed) =>
-            {
-                self.terminate_launch_for_custody_loss(operation);
-            }
-            Ok(None) => {
-                self.state = LifecycleState::Operating(LifecycleOperation::Launching(operation));
-            }
-            Err(error) => {
-                tracing::warn!(%error, "managed runtime launch status unavailable");
+            None => {
                 self.state = LifecycleState::Operating(LifecycleOperation::Launching(operation));
             }
         }
@@ -1728,8 +1784,24 @@ impl LifecycleOwner {
         mut child: ManagedChild,
         retain: impl FnOnce(ManagedChild) -> LifecycleState,
     ) {
-        match managed_child_exit_detail(&mut child) {
-            Ok(Some(detail)) => {
+        let exact_exit = match managed_child_exit_detail(&mut child) {
+            Ok(detail) => detail,
+            Err(error) => {
+                tracing::warn!(%error, "managed runtime status unavailable");
+                None
+            }
+        };
+        if child.custody.is_closed() {
+            let runtime = custody_loss_runtime(&child.identity, exact_exit.is_some());
+            let snapshot = custody_loss_snapshot(header, runtime);
+            self.state = LifecycleState::TerminatingManaged { snapshot, child };
+            self.publish_current();
+            self.shutdown_seen = true;
+            self.shutdown.cancel();
+            return;
+        }
+        match exact_exit {
+            Some(detail) => {
                 let failure = StoppedProcessFailure::RuntimeExited {
                     failure: RuntimeExitFailure {
                         presentation: failure_presentation("managed runtime exited", &detail),
@@ -1746,18 +1818,7 @@ impl LifecycleOwner {
                 self.publish_current();
                 self.request_document_refresh();
             }
-            Ok(None) if child.custody.is_closed() => {
-                let snapshot = custody_loss_snapshot(header, &child.identity);
-                self.state = LifecycleState::TerminatingManaged { snapshot, child };
-                self.publish_current();
-                self.shutdown_seen = true;
-                self.shutdown.cancel();
-            }
-            Ok(None) => self.state = retain(child),
-            Err(error) => {
-                tracing::warn!(%error, "managed runtime status unavailable");
-                self.state = retain(child);
-            }
+            None => self.state = retain(child),
         }
     }
 
@@ -1769,23 +1830,16 @@ impl LifecycleOwner {
         let Some(child) = &mut operation.child else {
             return;
         };
-        if managed_child_exited(child) {
-            drop(operation.child.take());
-            let token = operation.token;
-            let sender = self.completion_sender.clone();
-            let config = self.config.clone();
-            operation.task = Some(tokio::spawn(async move {
-                let result = StopCompletion::Stopped {
-                    document: config.document().await.ok(),
-                };
-                let _ = sender
-                    .send(LifecycleCompletion::Stopped { token, result })
-                    .await;
-            }));
-            return;
-        }
+        let exact_exit = match managed_child_exit_detail(child) {
+            Ok(detail) => detail.is_some(),
+            Err(error) => {
+                tracing::warn!(%error, "managed runtime status unavailable");
+                false
+            }
+        };
         if child.custody.is_closed() {
-            let snapshot = custody_loss_snapshot(&operation.snapshot.header, &child.identity);
+            let runtime = custody_loss_runtime(&child.identity, exact_exit);
+            let snapshot = custody_loss_snapshot(&operation.snapshot.header, runtime);
             resolve_all_waiters_for_termination(&mut self.state, &snapshot);
             let state = std::mem::replace(&mut self.state, placeholder_state());
             let LifecycleState::Operating(LifecycleOperation::Stopping(mut operation)) = state
@@ -1801,6 +1855,21 @@ impl LifecycleOwner {
             self.publish_current();
             self.shutdown_seen = true;
             self.shutdown.cancel();
+            return;
+        }
+        if exact_exit {
+            drop(operation.child.take());
+            let token = operation.token;
+            let sender = self.completion_sender.clone();
+            let config = self.config.clone();
+            operation.task = Some(tokio::spawn(async move {
+                let result = StopCompletion::Stopped {
+                    document: config.document().await.ok(),
+                };
+                let _ = sender
+                    .send(LifecycleCompletion::Stopped { token, result })
+                    .await;
+            }));
             return;
         }
         if tokio::time::Instant::now() < operation.deadline {
@@ -1849,35 +1918,22 @@ impl LifecycleOwner {
             self.state = state;
             return;
         };
-        if early_child_exited(&mut operation.child) {
-            self.abort_early_tasks(&mut operation);
-            resolve_cancel_without_child(operation.intent, &operation.origin);
-            self.state = LifecycleState::NoRuntime(operation.origin);
-            self.publish_current();
-            return;
-        }
+        let exact_exit = early_child_exited(&mut operation.child);
         if operation
             .child
             .custody
             .as_ref()
             .is_some_and(ManagerCustody::is_closed)
         {
-            let snapshot = custody_loss_snapshot(&operation.header, &operation.child.identity);
-            self.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation));
-            resolve_all_waiters_for_termination(&mut self.state, &snapshot);
-            let state = std::mem::replace(&mut self.state, placeholder_state());
-            let LifecycleState::Operating(operation) = state else {
-                tracing::error!("restored cancellation operation changed before custody loss");
-                self.state = state;
-                return;
-            };
-            self.state = LifecycleState::TerminatingOperation {
-                snapshot,
-                operation,
-            };
+            let runtime = custody_loss_runtime(&operation.child.identity, exact_exit);
+            self.terminate_cancellation_for_custody_loss(operation, runtime);
+            return;
+        }
+        if exact_exit {
+            self.abort_early_tasks(&mut operation);
+            resolve_cancel_without_child(operation.intent, &operation.origin);
+            self.state = LifecycleState::NoRuntime(operation.origin);
             self.publish_current();
-            self.shutdown_seen = true;
-            self.shutdown.cancel();
             return;
         }
         let attachment_failed = attachment_task_finished(&operation.attachment);
@@ -2259,6 +2315,43 @@ impl LifecycleOwner {
             | LifecycleState::TerminatingManaged { .. }
             | LifecycleState::Terminating(_) => false,
         };
+        let custody_termination_runtime = match &self.state {
+            LifecycleState::Running { child, .. } | LifecycleState::Unresponsive { child, .. }
+                if child.custody.is_closed() =>
+            {
+                Some(custody_loss_runtime(&child.identity, exact_exit))
+            }
+            LifecycleState::Operating(LifecycleOperation::Launching(operation))
+                if operation
+                    .child
+                    .custody
+                    .as_ref()
+                    .is_some_and(ManagerCustody::is_closed) =>
+            {
+                Some(custody_loss_runtime(&operation.child.identity, exact_exit))
+            }
+            LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation))
+                if operation
+                    .child
+                    .custody
+                    .as_ref()
+                    .is_some_and(ManagerCustody::is_closed) =>
+            {
+                Some(custody_loss_runtime(&operation.child.identity, exact_exit))
+            }
+            LifecycleState::Operating(LifecycleOperation::Stopping(operation)) => operation
+                .child
+                .as_ref()
+                .filter(|child| child.custody.is_closed())
+                .map(|child| custody_loss_runtime(&child.identity, exact_exit)),
+            LifecycleState::NoRuntime(_)
+            | LifecycleState::Running { .. }
+            | LifecycleState::Operating(_)
+            | LifecycleState::Unresponsive { .. }
+            | LifecycleState::TerminatingOperation { .. }
+            | LifecycleState::TerminatingManaged { .. }
+            | LifecycleState::Terminating(_) => None,
+        };
         let runtime = if exact_exit {
             ManagerTerminationRuntime::Absent
         } else {
@@ -2289,20 +2382,23 @@ impl LifecycleOwner {
                 | LifecycleState::Terminating(_) => ManagerTerminationRuntime::Absent,
             }
         };
+        let retain_exact_child = custody_termination_runtime.is_some();
+        let termination = custody_termination_runtime.map_or_else(
+            || ManagerTermination::ConfigWorkerPanicked {
+                correlation,
+                runtime,
+            },
+            custody_loss_termination,
+        );
         let snapshot = ManagerTerminatingLifecycleSnapshot {
             header: next_header(&self.state.snapshot().header),
-            phase: ManagerTerminatingPhase::ManagerTerminating {
-                termination: ManagerTermination::ConfigWorkerPanicked {
-                    correlation,
-                    runtime,
-                },
-            },
+            phase: ManagerTerminatingPhase::ManagerTerminating { termination },
         };
         resolve_all_waiters_for_termination(&mut self.state, &snapshot);
         let state = std::mem::replace(&mut self.state, placeholder_state());
         self.state = match state {
             LifecycleState::Operating(LifecycleOperation::Stopping(mut operation)) => {
-                if exact_exit {
+                if exact_exit && !retain_exact_child {
                     drop(operation.child.take());
                     LifecycleState::Terminating(snapshot)
                 } else if let Some(child) = operation.child.take() {
@@ -2323,7 +2419,7 @@ impl LifecycleOwner {
                 operation,
             },
             LifecycleState::Running { child, .. } | LifecycleState::Unresponsive { child, .. } => {
-                if exact_exit {
+                if exact_exit && !retain_exact_child {
                     drop(child);
                     LifecycleState::Terminating(snapshot)
                 } else {
@@ -2758,22 +2854,31 @@ fn resolve_all_waiters_for_termination(
                 }
             }
         },
-        LifecycleOperation::CancellingLaunch(operation) => match &mut operation.intent {
-            CancellationIntent::Stop { waiters } => {
-                for waiter in waiters.drain(..) {
-                    let _ = waiter.send(RuntimeStopResult::ManagerTerminating {
-                        snapshot: snapshot.clone(),
-                    });
-                }
+        LifecycleOperation::CancellingLaunch(operation) => {
+            resolve_cancellation_waiters_for_termination(&mut operation.intent, snapshot);
+        }
+    }
+}
+
+fn resolve_cancellation_waiters_for_termination(
+    intent: &mut CancellationIntent,
+    snapshot: &ManagerTerminatingLifecycleSnapshot,
+) {
+    match intent {
+        CancellationIntent::Stop { waiters } => {
+            for waiter in waiters.drain(..) {
+                let _ = waiter.send(RuntimeStopResult::ManagerTerminating {
+                    snapshot: snapshot.clone(),
+                });
             }
-            CancellationIntent::Shutdown { waiters } => {
-                for waiter in waiters.drain(..) {
-                    let _ = waiter.send(ManagerShutdownResult::ManagerTerminating {
-                        snapshot: snapshot.clone(),
-                    });
-                }
+        }
+        CancellationIntent::Shutdown { waiters } => {
+            for waiter in waiters.drain(..) {
+                let _ = waiter.send(ManagerShutdownResult::ManagerTerminating {
+                    snapshot: snapshot.clone(),
+                });
             }
-        },
+        }
     }
 }
 
@@ -3291,23 +3396,38 @@ fn failure_presentation(
     }
 }
 
+fn custody_loss_runtime(
+    identity: &RuntimeIdentity,
+    exact_exit: bool,
+) -> CustodyLossTerminationRuntime {
+    if exact_exit {
+        CustodyLossTerminationRuntime::Absent
+    } else {
+        CustodyLossTerminationRuntime::Recoverable {
+            runtime: identity.clone(),
+        }
+    }
+}
+
 fn custody_loss_snapshot(
     header: &LifecycleSnapshotHeader,
-    runtime: &RuntimeIdentity,
+    runtime: CustodyLossTerminationRuntime,
 ) -> ManagerTerminatingLifecycleSnapshot {
     ManagerTerminatingLifecycleSnapshot {
         header: next_header(header),
         phase: ManagerTerminatingPhase::ManagerTerminating {
-            termination: ManagerTermination::CustodyLost {
-                presentation: failure_presentation(
-                    "managed runtime custody was lost",
-                    "the manager will exit so a successor can recover the runtime",
-                ),
-                runtime: CustodyLossTerminationRuntime::Recoverable {
-                    runtime: runtime.clone(),
-                },
-            },
+            termination: custody_loss_termination(runtime),
         },
+    }
+}
+
+fn custody_loss_termination(runtime: CustodyLossTerminationRuntime) -> ManagerTermination {
+    ManagerTermination::CustodyLost {
+        presentation: failure_presentation(
+            "managed runtime custody was lost",
+            "the manager will exit so a successor can recover the runtime",
+        ),
+        runtime,
     }
 }
 
@@ -3411,6 +3531,95 @@ mod tests {
             start_result,
             runtime_custody,
         )
+    }
+
+    fn a_managed_child() -> (
+        ManagedChild,
+        std::os::unix::net::UnixStream,
+        tokio::net::UnixStream,
+    ) {
+        let (control, runtime_control) =
+            RuntimeControlConnection::pair_for_test().expect("runtime-control pair creates");
+        managed_child_with_control(control, runtime_control)
+    }
+
+    fn a_version_mismatched_managed_child() -> (
+        ManagedChild,
+        std::os::unix::net::UnixStream,
+        tokio::net::UnixStream,
+    ) {
+        let (control, runtime_control) = RuntimeControlConnection::version_mismatch_pair_for_test()
+            .expect("runtime-control pair creates");
+        managed_child_with_control(control, runtime_control)
+    }
+
+    fn managed_child_with_control(
+        control: RuntimeControlConnection,
+        runtime_control: tokio::net::UnixStream,
+    ) -> (
+        ManagedChild,
+        std::os::unix::net::UnixStream,
+        tokio::net::UnixStream,
+    ) {
+        let child = early_child();
+        let EarlyChild {
+            child,
+            identity,
+            custody: _,
+            control: _,
+            evidence: _,
+        } = child;
+        let (custody, runtime_custody) =
+            ManagerCustody::pair_for_test().expect("custody pair creates");
+        (
+            ManagedChild {
+                process: ManagedProcess::Owned(child),
+                identity,
+                custody,
+                control,
+            },
+            runtime_custody,
+            runtime_control,
+        )
+    }
+
+    async fn make_managed_exact_exit(child: &mut ManagedChild) {
+        let ManagedProcess::Owned(process) = &mut child.process else {
+            panic!("test runtime is an owned child");
+        };
+        process
+            .start_kill()
+            .expect("test child accepts forced termination");
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, process.wait())
+            .await
+            .expect("test child is reaped")
+            .expect("test child status is available");
+    }
+
+    async fn await_custody_closed(custody: &ManagerCustody) {
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
+            while !custody.is_closed() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("custody closure becomes observable");
+    }
+
+    fn assert_custody_loss_absent(state: &LifecycleState) {
+        let phase = state.snapshot().phase;
+        assert!(
+            matches!(
+                &phase,
+                LifecyclePhase::ManagerTerminating {
+                    termination: ManagerTermination::CustodyLost {
+                        runtime: CustodyLossTerminationRuntime::Absent,
+                        ..
+                    }
+                }
+            ),
+            "unexpected lifecycle phase: {phase:?}"
+        );
     }
 
     async fn reap_launching_operation(owner: &mut LifecycleOwner) {
@@ -3707,9 +3916,17 @@ mod tests {
         let (_temp, mut owner, worker_runtime) = test_owner();
         let (operation, start_result, runtime_custody) = a_handshaking_operation(41);
         let runtime = operation.child.identity.clone();
+        drop(runtime_custody);
+        await_custody_closed(
+            operation
+                .child
+                .custody
+                .as_ref()
+                .expect("handshaking child owns custody"),
+        )
+        .await;
         owner.state = LifecycleState::Operating(LifecycleOperation::Launching(operation));
         assert!(polls_process_resources(&owner.state));
-        drop(runtime_custody);
         let (control, _runtime_control) =
             RuntimeControlConnection::pair_for_test().expect("runtime-control pair creates");
 
@@ -3750,7 +3967,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handshake_exact_exit_preempts_custody_loss() {
+    async fn test_handshake_custody_loss_with_exact_exit_projects_absent() {
         let (_temp, mut owner, worker_runtime) = test_owner();
         let (mut operation, start_result, runtime_custody) = a_handshaking_operation(42);
         operation
@@ -3763,16 +3980,264 @@ mod tests {
             .expect("test child is reaped")
             .expect("test child status is available");
         drop(runtime_custody);
+        await_custody_closed(
+            operation
+                .child
+                .custody
+                .as_ref()
+                .expect("handshaking child owns custody"),
+        )
+        .await;
         owner.state = LifecycleState::Operating(LifecycleOperation::Launching(operation));
         let (control, _runtime_control) =
             RuntimeControlConnection::pair_for_test().expect("runtime-control pair creates");
 
         owner.handle_runtime_connected(42, Ok(control)).await;
 
-        assert!(matches!(owner.state, LifecycleState::NoRuntime(_)));
+        assert_custody_loss_absent(&owner.state);
+        assert!(matches!(
+            owner.state,
+            LifecycleState::TerminatingOperation {
+                operation: LifecycleOperation::Launching(_),
+                ..
+            }
+        ));
         assert!(matches!(
             start_result.await.expect("start waiter resolves"),
-            RuntimeStartResult::Failed { .. }
+            RuntimeStartResult::ManagerTerminating { snapshot }
+                if matches!(
+                    snapshot.phase,
+                    ManagerTerminatingPhase::ManagerTerminating {
+                        termination: ManagerTermination::CustodyLost {
+                            runtime: CustodyLossTerminationRuntime::Absent,
+                            ..
+                        }
+                    }
+                )
+        ));
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_serving_and_unresponsive_custody_loss_with_exact_exit_project_absent() {
+        for unresponsive in [false, true] {
+            let (_temp, mut owner, worker_runtime) = test_owner();
+            let (mut child, runtime_custody, runtime_control) = a_managed_child();
+            let runtime = child.identity.clone();
+            make_managed_exact_exit(&mut child).await;
+            drop(runtime_custody);
+            drop(runtime_control);
+            await_custody_closed(&child.custody).await;
+            owner.state = if unresponsive {
+                LifecycleState::Unresponsive {
+                    snapshot: RuntimeUnresponsiveLifecycleSnapshot {
+                        header: header(),
+                        phase: RuntimeUnresponsivePhase::RuntimeUnresponsive {
+                            runtime,
+                            operation: RuntimeOperation::Stop,
+                            failure: RuntimeStopTimedOutFailure {
+                                presentation: failure_presentation(
+                                    "runtime did not stop",
+                                    "test fixture",
+                                ),
+                            },
+                        },
+                    },
+                    child,
+                }
+            } else {
+                LifecycleState::Running {
+                    snapshot: RunningLifecycleSnapshot {
+                        header: header(),
+                        phase: running_phase(&runtime, &child.control, false),
+                    },
+                    child,
+                }
+            };
+
+            owner.observe_exit().await;
+
+            assert_custody_loss_absent(&owner.state);
+            assert!(matches!(
+                owner.state,
+                LifecycleState::TerminatingManaged { .. }
+            ));
+            drop(owner);
+            worker_runtime.join().expect("worker thread joins");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_version_mismatch_custody_loss_with_exact_exit_projects_absent() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (mut child, runtime_custody, runtime_control) = a_version_mismatched_managed_child();
+        let runtime = child.identity.clone();
+        make_managed_exact_exit(&mut child).await;
+        drop(runtime_custody);
+        drop(runtime_control);
+        await_custody_closed(&child.custody).await;
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: RunningPhase::VersionMismatch {
+                    runtime,
+                    manager_version: "manager".to_owned(),
+                    runtime_version: "runtime".to_owned(),
+                },
+            },
+            child,
+        };
+
+        owner.observe_exit().await;
+
+        assert_custody_loss_absent(&owner.state);
+        assert!(matches!(
+            owner.state,
+            LifecycleState::TerminatingManaged { .. }
+        ));
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_stopping_custody_loss_with_exact_exit_projects_absent() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (mut child, runtime_custody, runtime_control) = a_managed_child();
+        let runtime = child.identity.clone();
+        make_managed_exact_exit(&mut child).await;
+        drop(runtime_custody);
+        drop(runtime_control);
+        await_custody_closed(&child.custody).await;
+        let (stop, stop_result) = oneshot::channel();
+        owner.state = LifecycleState::Operating(LifecycleOperation::Stopping(StoppingOperation {
+            token: 43,
+            snapshot: StoppingLifecycleSnapshot {
+                header: header(),
+                phase: StoppingPhase::Stopping { runtime },
+            },
+            intent: StopIntent::Stop {
+                waiters: vec![stop],
+            },
+            child: Some(child),
+            task: None,
+            deadline: tokio::time::Instant::now() + STOP_DEADLINE,
+            forced: false,
+        }));
+
+        owner.observe_stopping();
+
+        assert_custody_loss_absent(&owner.state);
+        assert!(matches!(
+            owner.state,
+            LifecycleState::TerminatingManaged { .. }
+        ));
+        assert!(matches!(
+            stop_result.await.expect("stop waiter resolves"),
+            RuntimeStopResult::ManagerTerminating { snapshot }
+                if matches!(
+                    snapshot.phase,
+                    ManagerTerminatingPhase::ManagerTerminating {
+                        termination: ManagerTermination::CustodyLost {
+                            runtime: CustodyLossTerminationRuntime::Absent,
+                            ..
+                        }
+                    }
+                )
+        ));
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_custody_loss_with_exact_exit_projects_absent() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (mut launching, _start_result, runtime_custody) = a_handshaking_operation(44);
+        launching
+            .child
+            .child
+            .start_kill()
+            .expect("test child accepts forced termination");
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, launching.child.child.wait())
+            .await
+            .expect("test child is reaped")
+            .expect("test child status is available");
+        drop(runtime_custody);
+        await_custody_closed(
+            launching
+                .child
+                .custody
+                .as_ref()
+                .expect("cancelling child owns custody"),
+        )
+        .await;
+        let (stop, stop_result) = oneshot::channel();
+        owner.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(
+            CancellingLaunchOperation {
+                token: launching.token,
+                header: launching.snapshot.header,
+                child: launching.child,
+                origin: launching.origin,
+                intent: CancellationIntent::Stop {
+                    waiters: vec![stop],
+                },
+                attachment: launching.attachment,
+                termination: EarlyTerminationStage::ForcedReap {
+                    deadline: tokio::time::Instant::now() + STOP_DEADLINE,
+                },
+            },
+        ));
+
+        owner.observe_early_cancellation().await;
+
+        assert_custody_loss_absent(&owner.state);
+        assert!(matches!(
+            owner.state,
+            LifecycleState::TerminatingOperation {
+                operation: LifecycleOperation::CancellingLaunch(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            stop_result.await.expect("stop waiter resolves"),
+            RuntimeStopResult::ManagerTerminating { snapshot }
+                if matches!(
+                    snapshot.phase,
+                    ManagerTerminatingPhase::ManagerTerminating {
+                        termination: ManagerTermination::CustodyLost {
+                            runtime: CustodyLossTerminationRuntime::Absent,
+                            ..
+                        }
+                    }
+                )
+        ));
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_worker_panic_custody_loss_and_exact_exit_project_custody_absent() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (mut child, runtime_custody, runtime_control) = a_managed_child();
+        let runtime = child.identity.clone();
+        make_managed_exact_exit(&mut child).await;
+        drop(runtime_custody);
+        drop(runtime_control);
+        await_custody_closed(&child.custody).await;
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: running_phase(&runtime, &child.control, false),
+            },
+            child,
+        };
+
+        owner.terminate_for_worker(None).await;
+
+        assert_custody_loss_absent(&owner.state);
+        assert!(matches!(
+            owner.state,
+            LifecycleState::TerminatingManaged { .. }
         ));
         drop(owner);
         worker_runtime.join().expect("worker thread joins");

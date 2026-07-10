@@ -117,6 +117,16 @@ impl RuntimeControlConnection {
         Ok((Self::Compatible(client), runtime))
     }
 
+    #[cfg(test)]
+    pub(crate) fn version_mismatch_pair_for_test() -> io::Result<(Self, UnixStream)> {
+        let (manager, runtime) = UnixStream::pair()?;
+        let client = BootstrapStopClient {
+            stream: Arc::new(Mutex::new(BufReader::new(manager))),
+            proof: Arc::new(zeroize::Zeroizing::new("test-proof".to_owned())),
+        };
+        Ok((Self::VersionMismatch(client), runtime))
+    }
+
     pub(crate) fn is_compatible(&self) -> bool {
         matches!(self, Self::Compatible(_))
     }
