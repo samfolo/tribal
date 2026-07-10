@@ -502,7 +502,7 @@ impl LifecycleOwner {
                         self.handle_completion(completion).await;
                     }
                 }
-                _ = process_poll.tick(), if matches!(self.state, LifecycleState::Running { .. } | LifecycleState::Unresponsive { .. } | LifecycleState::Operating(LifecycleOperation::CancellingLaunch(_) | LifecycleOperation::Stopping(_))) => {
+                _ = process_poll.tick(), if polls_process_resources(&self.state) => {
                     self.observe_exit().await;
                 }
                 command = self.receiver.recv() => match command {
@@ -1322,6 +1322,14 @@ impl LifecycleOwner {
                                 with_failure(operation.origin, failure),
                             ));
                         }
+                        if operation
+                            .child
+                            .custody
+                            .as_ref()
+                            .is_some_and(ManagerCustody::is_closed)
+                        {
+                            return self.terminate_launch_for_custody_loss(operation);
+                        }
                         let Some(custody) = operation.child.custody.take() else {
                             let failure = StoppedProcessFailure::RuntimeHandshakeFailed {
                                 presentation: failure_presentation(
@@ -1509,6 +1517,18 @@ impl LifecycleOwner {
         };
     }
 
+    fn terminate_launch_for_custody_loss(&mut self, mut operation: LaunchingOperation) {
+        let snapshot = custody_loss_snapshot(&operation.snapshot.header, &operation.child.identity);
+        resolve_launch_waiters_for_termination(&mut operation.intent, &snapshot);
+        self.state = LifecycleState::TerminatingOperation {
+            snapshot,
+            operation: LifecycleOperation::Launching(operation),
+        };
+        self.publish_current();
+        self.shutdown_seen = true;
+        self.shutdown.cancel();
+    }
+
     fn finish_completion_state(&mut self, state: LifecycleState) {
         self.state = state;
         self.publish_current();
@@ -1617,6 +1637,16 @@ impl LifecycleOwner {
     async fn observe_exit(&mut self) {
         if matches!(
             self.state,
+            LifecycleState::Operating(LifecycleOperation::Launching(LaunchingOperation {
+                attachment: AttachmentStage::Handshaking(_),
+                ..
+            }))
+        ) {
+            self.observe_launching_handshake();
+            return;
+        }
+        if matches!(
+            self.state,
             LifecycleState::Operating(LifecycleOperation::Stopping(_))
         ) {
             self.observe_stopping();
@@ -1646,6 +1676,49 @@ impl LifecycleOwner {
                 });
             }
             other => self.state = other,
+        }
+    }
+
+    fn observe_launching_handshake(&mut self) {
+        let state = std::mem::replace(&mut self.state, placeholder_state());
+        let LifecycleState::Operating(LifecycleOperation::Launching(mut operation)) = state else {
+            self.state = state;
+            return;
+        };
+        match operation.child.child.try_wait() {
+            Ok(Some(status)) => {
+                let task = take_attachment_task(&mut operation.attachment);
+                if let Some(task) = &task {
+                    task.abort();
+                }
+                self.track_task(task, "exited runtime handshake");
+                let failure = StoppedProcessFailure::RuntimeAnnouncementFailed {
+                    presentation: failure_presentation(
+                        "managed runtime exited during launch",
+                        &status.to_string(),
+                    ),
+                };
+                let failed = failed_no_runtime_from_origin(&operation.origin, failure.clone());
+                resolve_launch_failure(operation.intent, &failed);
+                self.state = LifecycleState::NoRuntime(with_failure(operation.origin, failure));
+                self.publish_current();
+            }
+            Ok(None)
+                if operation
+                    .child
+                    .custody
+                    .as_ref()
+                    .is_some_and(ManagerCustody::is_closed) =>
+            {
+                self.terminate_launch_for_custody_loss(operation);
+            }
+            Ok(None) => {
+                self.state = LifecycleState::Operating(LifecycleOperation::Launching(operation));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "managed runtime launch status unavailable");
+                self.state = LifecycleState::Operating(LifecycleOperation::Launching(operation));
+            }
         }
     }
 
@@ -2410,6 +2483,23 @@ fn early_child_exited(child: &mut EarlyChild) -> bool {
     matches!(child.child.try_wait(), Ok(Some(_)))
 }
 
+fn polls_process_resources(state: &LifecycleState) -> bool {
+    match state {
+        LifecycleState::Operating(LifecycleOperation::Launching(operation)) => {
+            matches!(operation.attachment, AttachmentStage::Handshaking(_))
+        }
+        LifecycleState::Running { .. }
+        | LifecycleState::Unresponsive { .. }
+        | LifecycleState::Operating(
+            LifecycleOperation::CancellingLaunch(_) | LifecycleOperation::Stopping(_),
+        ) => true,
+        LifecycleState::NoRuntime(_)
+        | LifecycleState::TerminatingOperation { .. }
+        | LifecycleState::TerminatingManaged { .. }
+        | LifecycleState::Terminating(_) => false,
+    }
+}
+
 fn take_attachment_task(stage: &mut AttachmentStage) -> Option<JoinHandle<()>> {
     match std::mem::replace(stage, AttachmentStage::Settled) {
         AttachmentStage::Committing(task) | AttachmentStage::Handshaking(task) => Some(task),
@@ -2634,30 +2724,9 @@ fn resolve_all_waiters_for_termination(
         return;
     };
     match operation {
-        LifecycleOperation::Launching(operation) => match &mut operation.intent {
-            LaunchIntent::Start { waiters } => {
-                for waiter in waiters.drain(..) {
-                    let _ = waiter.send(RuntimeStartResult::ManagerTerminating {
-                        snapshot: snapshot.clone(),
-                    });
-                }
-            }
-            LaunchIntent::Restart {
-                start_waiters,
-                restart_waiters,
-            } => {
-                for waiter in start_waiters.drain(..) {
-                    let _ = waiter.send(RuntimeStartResult::ManagerTerminating {
-                        snapshot: snapshot.clone(),
-                    });
-                }
-                for waiter in restart_waiters.drain(..) {
-                    let _ = waiter.send(RuntimeRestartResult::ManagerTerminating {
-                        snapshot: snapshot.clone(),
-                    });
-                }
-            }
-        },
+        LifecycleOperation::Launching(operation) => {
+            resolve_launch_waiters_for_termination(&mut operation.intent, snapshot);
+        }
         LifecycleOperation::Stopping(operation) => match &mut operation.intent {
             StopIntent::Stop { waiters } => {
                 for waiter in waiters.drain(..) {
@@ -2705,6 +2774,36 @@ fn resolve_all_waiters_for_termination(
                 }
             }
         },
+    }
+}
+
+fn resolve_launch_waiters_for_termination(
+    intent: &mut LaunchIntent,
+    snapshot: &ManagerTerminatingLifecycleSnapshot,
+) {
+    match intent {
+        LaunchIntent::Start { waiters } => {
+            for waiter in waiters.drain(..) {
+                let _ = waiter.send(RuntimeStartResult::ManagerTerminating {
+                    snapshot: snapshot.clone(),
+                });
+            }
+        }
+        LaunchIntent::Restart {
+            start_waiters,
+            restart_waiters,
+        } => {
+            for waiter in start_waiters.drain(..) {
+                let _ = waiter.send(RuntimeStartResult::ManagerTerminating {
+                    snapshot: snapshot.clone(),
+                });
+            }
+            for waiter in restart_waiters.drain(..) {
+                let _ = waiter.send(RuntimeRestartResult::ManagerTerminating {
+                    snapshot: snapshot.clone(),
+                });
+            }
+        }
     }
 }
 
@@ -3280,6 +3379,40 @@ mod tests {
         }
     }
 
+    fn a_handshaking_operation(
+        token: u64,
+    ) -> (
+        LaunchingOperation,
+        oneshot::Receiver<RuntimeStartResult>,
+        std::os::unix::net::UnixStream,
+    ) {
+        let (start, start_result) = oneshot::channel();
+        let mut child = early_child();
+        let runtime = child.identity.clone();
+        let (custody, runtime_custody) =
+            ManagerCustody::pair_for_test().expect("custody pair creates");
+        child.custody = Some(custody);
+        child.evidence =
+            tribal_wire::management::EarlyChildTerminationEvidence::Recoverable { runtime };
+        (
+            LaunchingOperation {
+                token,
+                snapshot: tribal_wire::management::StartingLifecycleSnapshot {
+                    header: header(),
+                    phase: tribal_wire::management::StartingPhase::Starting,
+                },
+                origin: no_runtime_origin(),
+                child,
+                intent: LaunchIntent::Start {
+                    waiters: vec![start],
+                },
+                attachment: AttachmentStage::Handshaking(tokio::spawn(async {})),
+            },
+            start_result,
+            runtime_custody,
+        )
+    }
+
     async fn reap_launching_operation(owner: &mut LifecycleOwner) {
         let state = std::mem::replace(&mut owner.state, placeholder_state());
         let LifecycleState::Operating(LifecycleOperation::Launching(mut operation)) = state else {
@@ -3298,6 +3431,18 @@ mod tests {
             .start_kill()
             .expect("test child accepts forced termination");
         tokio::time::timeout(TEST_OBSERVATION_DEADLINE, operation.child.child.wait())
+            .await
+            .expect("test child is reaped")
+            .expect("test child status is available");
+    }
+
+    async fn reap_test_child(child: &mut EarlyChild) {
+        drop(child.custody.take());
+        child
+            .child
+            .start_kill()
+            .expect("test child accepts forced termination");
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, child.child.wait())
             .await
             .expect("test child is reaped")
             .expect("test child status is available");
@@ -3553,6 +3698,82 @@ mod tests {
             "a duplicate runtime completion emits no lifecycle change"
         );
         reap_launching_operation(&mut owner).await;
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_handshake_custody_loss_preempts_runtime_connection() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (operation, start_result, runtime_custody) = a_handshaking_operation(41);
+        let runtime = operation.child.identity.clone();
+        owner.state = LifecycleState::Operating(LifecycleOperation::Launching(operation));
+        assert!(polls_process_resources(&owner.state));
+        drop(runtime_custody);
+        let (control, _runtime_control) =
+            RuntimeControlConnection::pair_for_test().expect("runtime-control pair creates");
+
+        owner.handle_runtime_connected(41, Ok(control)).await;
+
+        assert!(matches!(
+            owner.state.snapshot().phase,
+            LifecyclePhase::ManagerTerminating {
+                termination: ManagerTermination::CustodyLost {
+                    runtime: CustodyLossTerminationRuntime::Recoverable {
+                        runtime: observed,
+                    },
+                    ..
+                }
+            } if observed == runtime
+        ));
+        assert!(matches!(
+            start_result.await.expect("start waiter resolves"),
+            RuntimeStartResult::ManagerTerminating { snapshot }
+                if matches!(
+                    snapshot.phase,
+                    ManagerTerminatingPhase::ManagerTerminating {
+                        termination: ManagerTermination::CustodyLost { .. }
+                    }
+                )
+        ));
+        let LifecycleState::TerminatingOperation {
+            operation: LifecycleOperation::Launching(operation),
+            ..
+        } = &mut owner.state
+        else {
+            panic!("custody loss retains the handshaking resources");
+        };
+        assert!(operation.child.custody.is_some());
+        reap_test_child(&mut operation.child).await;
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_handshake_exact_exit_preempts_custody_loss() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (mut operation, start_result, runtime_custody) = a_handshaking_operation(42);
+        operation
+            .child
+            .child
+            .start_kill()
+            .expect("test child accepts forced termination");
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, operation.child.child.wait())
+            .await
+            .expect("test child is reaped")
+            .expect("test child status is available");
+        drop(runtime_custody);
+        owner.state = LifecycleState::Operating(LifecycleOperation::Launching(operation));
+        let (control, _runtime_control) =
+            RuntimeControlConnection::pair_for_test().expect("runtime-control pair creates");
+
+        owner.handle_runtime_connected(42, Ok(control)).await;
+
+        assert!(matches!(owner.state, LifecycleState::NoRuntime(_)));
+        assert!(matches!(
+            start_result.await.expect("start waiter resolves"),
+            RuntimeStartResult::Failed { .. }
+        ));
         drop(owner);
         worker_runtime.join().expect("worker thread joins");
     }

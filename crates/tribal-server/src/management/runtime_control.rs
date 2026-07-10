@@ -108,6 +108,15 @@ impl std::fmt::Debug for RuntimeControlConnection {
 }
 
 impl RuntimeControlConnection {
+    #[cfg(test)]
+    pub(crate) fn pair_for_test() -> io::Result<(Self, UnixStream)> {
+        let (manager, runtime) = UnixStream::pair()?;
+        let client = RuntimeControlClient {
+            stream: Arc::new(Mutex::new(BufReader::new(manager))),
+        };
+        Ok((Self::Compatible(client), runtime))
+    }
+
     pub(crate) fn is_compatible(&self) -> bool {
         matches!(self, Self::Compatible(_))
     }
