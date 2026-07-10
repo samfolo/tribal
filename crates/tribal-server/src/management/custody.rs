@@ -958,7 +958,8 @@ fn send_fd(stream: &UnixStream, descriptor: RawFd, path: &Path) -> Result<(), Cu
         .try_into()
         .map_err(|_| invalid_control_size(path))?;
     // SAFETY: `CMSG_LEN` computes the header length for one `RawFd` payload.
-    let descriptor_control_len = unsafe { libc::CMSG_LEN(descriptor_size) };
+    let descriptor_control_len: usize =
+        convert_control_len(unsafe { libc::CMSG_LEN(descriptor_size) }, path)?;
     // SAFETY: every pointer in `message` refers to live stack/vector storage
     // for the duration of `sendmsg`; the control header and payload fit the
     // `CMSG_SPACE` allocation above.
@@ -980,7 +981,7 @@ fn send_fd(stream: &UnixStream, descriptor: RawFd, path: &Path) -> Result<(), Cu
         }
         (*header).cmsg_level = libc::SOL_SOCKET;
         (*header).cmsg_type = libc::SCM_RIGHTS;
-        (*header).cmsg_len = descriptor_control_len;
+        (*header).cmsg_len = convert_control_len(descriptor_control_len, path)?;
         ptr::copy_nonoverlapping(
             ptr::from_ref(&descriptor).cast::<u8>(),
             libc::CMSG_DATA(header),
@@ -1013,7 +1014,8 @@ fn receive_fd(stream: &UnixStream, path: &Path) -> Result<OwnedFd, CustodyError>
         .try_into()
         .map_err(|_| invalid_control_size(path))?;
     // SAFETY: `CMSG_LEN` computes the header length for one `RawFd` payload.
-    let descriptor_control_len = unsafe { libc::CMSG_LEN(descriptor_size) };
+    let descriptor_control_len: usize =
+        convert_control_len(unsafe { libc::CMSG_LEN(descriptor_size) }, path)?;
     // SAFETY: `recvmsg` writes only into the live iovec/control allocations;
     // the returned control header is validated before the descriptor is read.
     let descriptor = unsafe {
@@ -1030,8 +1032,14 @@ fn receive_fd(stream: &UnixStream, path: &Path) -> Result<OwnedFd, CustodyError>
         if header.is_null()
             || (*header).cmsg_level != libc::SOL_SOCKET
             || (*header).cmsg_type != libc::SCM_RIGHTS
-            || (*header).cmsg_len < descriptor_control_len
         {
+            return Err(io_error(
+                path,
+                io::Error::new(io::ErrorKind::InvalidData, "custody descriptor was absent"),
+            ));
+        }
+        let header_control_len: usize = convert_control_len((*header).cmsg_len, path)?;
+        if header_control_len < descriptor_control_len {
             return Err(io_error(
                 path,
                 io::Error::new(io::ErrorKind::InvalidData, "custody descriptor was absent"),
@@ -1060,6 +1068,13 @@ fn invalid_control_size(path: &Path) -> CustodyError {
             "custody control payload does not fit the platform ABI",
         ),
     )
+}
+
+fn convert_control_len<T, U>(value: T, path: &Path) -> Result<U, CustodyError>
+where
+    T: TryInto<U>,
+{
+    value.try_into().map_err(|_| invalid_control_size(path))
 }
 
 fn set_close_on_exec(descriptor: &OwnedFd, path: &Path) -> Result<(), CustodyError> {
