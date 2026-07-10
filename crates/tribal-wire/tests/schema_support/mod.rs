@@ -10,8 +10,8 @@ use tribal_wire::control::{
     ServerStatus, StopOutcome, TokenList,
 };
 
-/// Legacy operator crossings retained in the public management contract.
-pub fn legacy_control_schemas() -> BTreeMap<&'static str, RootSchema> {
+/// Operator crossings in the control contract.
+pub fn control_schemas() -> BTreeMap<&'static str, RootSchema> {
     BTreeMap::from([
         ("ControlRequest", schema_for!(ControlRequest)),
         ("ControlResponse", schema_for!(ControlResponse)),
@@ -19,11 +19,11 @@ pub fn legacy_control_schemas() -> BTreeMap<&'static str, RootSchema> {
         ("ClientHello", schema_for!(ClientHello)),
         ("ServerHello", schema_for!(ServerHello)),
         ("ConfigSchema", schema_for!(ConfigSchema)),
-        ("LegacyConfigGetRequest", schema_for!(ConfigGetRequest)),
-        ("LegacyConfigValue", schema_for!(ConfigValue)),
-        ("LegacyConfigDocument", schema_for!(ConfigDocument)),
-        ("LegacyConfigSetRequest", schema_for!(ConfigSetRequest)),
-        ("LegacyConfigWriteOutcome", schema_for!(ConfigWriteOutcome)),
+        ("ConfigGetRequest", schema_for!(ConfigGetRequest)),
+        ("ConfigValue", schema_for!(ConfigValue)),
+        ("ConfigDocument", schema_for!(ConfigDocument)),
+        ("ConfigSetRequest", schema_for!(ConfigSetRequest)),
+        ("ConfigWriteOutcome", schema_for!(ConfigWriteOutcome)),
         ("ConfigValidateRequest", schema_for!(ConfigValidateRequest)),
         ("ConfigValidation", schema_for!(ConfigValidation)),
         ("ConfigPath", schema_for!(ConfigPath)),
@@ -36,11 +36,8 @@ pub fn legacy_control_schemas() -> BTreeMap<&'static str, RootSchema> {
             schema_for!(CredentialProbeRequest),
         ),
         ("CredentialProbe", schema_for!(CredentialProbe)),
-        (
-            "LegacyGraphEmbeddingProfile",
-            schema_for!(GraphEmbeddingProfile),
-        ),
-        ("LegacyModelsCatalogue", schema_for!(ModelsCatalogue)),
+        ("GraphEmbeddingProfile", schema_for!(GraphEmbeddingProfile)),
+        ("ModelsCatalogue", schema_for!(ModelsCatalogue)),
         ("ServerStatus", schema_for!(ServerStatus)),
         ("RestartOutcome", schema_for!(RestartOutcome)),
         ("StopOutcome", schema_for!(StopOutcome)),

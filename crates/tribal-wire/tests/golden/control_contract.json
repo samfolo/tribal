@@ -281,6 +281,35 @@
       }
     }
   },
+  "ConfigDocument": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigDocument",
+    "description": "The whole configuration as one redacted document, the result of `config.getAll`.",
+    "type": "object",
+    "required": [
+      "values"
+    ],
+    "properties": {
+      "values": {
+        "description": "The effective configuration tree, every secret leaf redacted."
+      }
+    }
+  },
+  "ConfigGetRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigGetRequest",
+    "description": "Parameters for `config.get`.",
+    "type": "object",
+    "required": [
+      "key"
+    ],
+    "properties": {
+      "key": {
+        "description": "The dotted key to read.",
+        "type": "string"
+      }
+    }
+  },
   "ConfigPath": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ConfigPath",
@@ -443,6 +472,25 @@
       }
     }
   },
+  "ConfigSetRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigSetRequest",
+    "description": "Parameters for `config.set`: the key and its new value.",
+    "type": "object",
+    "required": [
+      "key",
+      "value"
+    ],
+    "properties": {
+      "key": {
+        "description": "The dotted key to write.",
+        "type": "string"
+      },
+      "value": {
+        "description": "The value to persist to the YAML file."
+      }
+    }
+  },
   "ConfigValidateRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ConfigValidateRequest",
@@ -502,6 +550,93 @@
             "type": "string"
           }
         }
+      }
+    }
+  },
+  "ConfigValue": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigValue",
+    "description": "One key's effective value, redacted when the key is a secret.",
+    "type": "object",
+    "required": [
+      "key",
+      "value"
+    ],
+    "properties": {
+      "key": {
+        "description": "The dotted key read.",
+        "type": "string"
+      },
+      "value": {
+        "description": "Its effective value; a secret renders as its redaction mask, never plaintext."
+      }
+    }
+  },
+  "ConfigWriteOutcome": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigWriteOutcome",
+    "description": "The outcome of a `config.set`: whether the persisted write took effect, and the layer shadowing it when it did not.",
+    "type": "object",
+    "required": [
+      "effect"
+    ],
+    "properties": {
+      "effect": {
+        "description": "Whether the write is live, awaiting restart, or shadowed.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/WriteEffect"
+          }
+        ]
+      },
+      "shadowed_by": {
+        "description": "The higher-precedence source overriding the write, named only when the effect is [`WriteEffect::Shadowed`] — e.g. the environment variable that wins.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "definitions": {
+      "WriteEffect": {
+        "description": "What a write to a key achieved. The honest outcomes of writing layer four of the cascade.",
+        "oneOf": [
+          {
+            "description": "The write took effect immediately.",
+            "type": "string",
+            "enum": [
+              "live"
+            ]
+          },
+          {
+            "description": "The file already held the requested value, so nothing was written.",
+            "type": "string",
+            "enum": [
+              "unchanged"
+            ]
+          },
+          {
+            "description": "The write updated the served snapshot without marking a restart pending.",
+            "type": "string",
+            "enum": [
+              "no_restart"
+            ]
+          },
+          {
+            "description": "The write is persisted but applies only after a restart.",
+            "type": "string",
+            "enum": [
+              "needs_restart"
+            ]
+          },
+          {
+            "description": "A higher-precedence layer overrides the write, so it is persisted but never effective until that layer is cleared.",
+            "type": "string",
+            "enum": [
+              "shadowed"
+            ]
+          }
+        ]
       }
     }
   },
@@ -1088,144 +1223,9 @@
       }
     }
   },
-  "LegacyConfigDocument": {
+  "GraphEmbeddingProfile": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "LegacyConfigDocument",
-    "description": "The whole configuration as one redacted document, the result of `config.getAll`.",
-    "type": "object",
-    "required": [
-      "values"
-    ],
-    "properties": {
-      "values": {
-        "description": "The effective configuration tree, every secret leaf redacted."
-      }
-    }
-  },
-  "LegacyConfigGetRequest": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "LegacyConfigGetRequest",
-    "description": "Parameters for `config.get`.",
-    "type": "object",
-    "required": [
-      "key"
-    ],
-    "properties": {
-      "key": {
-        "description": "The dotted key to read.",
-        "type": "string"
-      }
-    }
-  },
-  "LegacyConfigSetRequest": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "LegacyConfigSetRequest",
-    "description": "Parameters for `config.set`: the key and its new value.",
-    "type": "object",
-    "required": [
-      "key",
-      "value"
-    ],
-    "properties": {
-      "key": {
-        "description": "The dotted key to write.",
-        "type": "string"
-      },
-      "value": {
-        "description": "The value to persist to the YAML file."
-      }
-    }
-  },
-  "LegacyConfigValue": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "LegacyConfigValue",
-    "description": "One key's effective value, redacted when the key is a secret.",
-    "type": "object",
-    "required": [
-      "key",
-      "value"
-    ],
-    "properties": {
-      "key": {
-        "description": "The dotted key read.",
-        "type": "string"
-      },
-      "value": {
-        "description": "Its effective value; a secret renders as its redaction mask, never plaintext."
-      }
-    }
-  },
-  "LegacyConfigWriteOutcome": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "LegacyConfigWriteOutcome",
-    "description": "The outcome of a `config.set`: whether the persisted write took effect, and the layer shadowing it when it did not.",
-    "type": "object",
-    "required": [
-      "effect"
-    ],
-    "properties": {
-      "effect": {
-        "description": "Whether the write is live, awaiting restart, or shadowed.",
-        "allOf": [
-          {
-            "$ref": "#/definitions/WriteEffect"
-          }
-        ]
-      },
-      "shadowed_by": {
-        "description": "The higher-precedence source overriding the write, named only when the effect is [`WriteEffect::Shadowed`] — e.g. the environment variable that wins.",
-        "type": [
-          "string",
-          "null"
-        ]
-      }
-    },
-    "definitions": {
-      "WriteEffect": {
-        "description": "What a write to a key achieved. The honest outcomes of writing layer four of the cascade.",
-        "oneOf": [
-          {
-            "description": "The write took effect immediately.",
-            "type": "string",
-            "enum": [
-              "live"
-            ]
-          },
-          {
-            "description": "The file already held the requested value, so nothing was written.",
-            "type": "string",
-            "enum": [
-              "unchanged"
-            ]
-          },
-          {
-            "description": "The write updated the served snapshot without marking a restart pending.",
-            "type": "string",
-            "enum": [
-              "no_restart"
-            ]
-          },
-          {
-            "description": "The write is persisted but applies only after a restart.",
-            "type": "string",
-            "enum": [
-              "needs_restart"
-            ]
-          },
-          {
-            "description": "A higher-precedence layer overrides the write, so it is persisted but never effective until that layer is cleared.",
-            "type": "string",
-            "enum": [
-              "shadowed"
-            ]
-          }
-        ]
-      }
-    }
-  },
-  "LegacyGraphEmbeddingProfile": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "LegacyGraphEmbeddingProfile",
+    "title": "GraphEmbeddingProfile",
     "description": "Result of reading the active embedding profile.",
     "oneOf": [
       {
@@ -1262,7 +1262,7 @@
             "description": "The active profile identity.",
             "allOf": [
               {
-                "$ref": "#/definitions/LegacyEmbeddingProfileSummary"
+                "$ref": "#/definitions/EmbeddingProfileSummary"
               }
             ]
           },
@@ -1296,7 +1296,7 @@
       }
     ],
     "definitions": {
-      "LegacyEmbeddingProfileSummary": {
+      "EmbeddingProfileSummary": {
         "description": "Stable summary of an active embedding profile.",
         "type": "object",
         "required": [
@@ -1322,86 +1322,6 @@
           },
           "provider": {
             "description": "Provider used by the profile.",
-            "allOf": [
-              {
-                "$ref": "#/definitions/ProviderKind"
-              }
-            ]
-          }
-        }
-      },
-      "ProviderKind": {
-        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
-        "oneOf": [
-          {
-            "description": "Local `Ollama` instance.",
-            "type": "string",
-            "enum": [
-              "ollama"
-            ]
-          },
-          {
-            "description": "`Anthropic` cloud API.",
-            "type": "string",
-            "enum": [
-              "anthropic"
-            ]
-          },
-          {
-            "description": "`OpenAI` cloud API.",
-            "type": "string",
-            "enum": [
-              "openai"
-            ]
-          },
-          {
-            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
-            "type": "string",
-            "enum": [
-              "platform"
-            ]
-          }
-        ]
-      }
-    }
-  },
-  "LegacyModelsCatalogue": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "LegacyModelsCatalogue",
-    "description": "Static model catalogue served by `models.catalogue`.",
-    "type": "object",
-    "required": [
-      "models"
-    ],
-    "properties": {
-      "models": {
-        "description": "Known model rows.",
-        "type": "array",
-        "items": {
-          "$ref": "#/definitions/LegacyKnownModelEntry"
-        }
-      }
-    },
-    "definitions": {
-      "LegacyKnownModelEntry": {
-        "description": "One known model option.",
-        "type": "object",
-        "required": [
-          "display_name",
-          "model",
-          "provider"
-        ],
-        "properties": {
-          "display_name": {
-            "description": "Operator-facing display name.",
-            "type": "string"
-          },
-          "model": {
-            "description": "Provider-native model identifier.",
-            "type": "string"
-          },
-          "provider": {
-            "description": "Provider this row belongs to.",
             "allOf": [
               {
                 "$ref": "#/definitions/ProviderKind"
@@ -1552,6 +1472,86 @@
         "type": "integer",
         "format": "uint32",
         "minimum": 0.0
+      }
+    }
+  },
+  "ModelsCatalogue": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ModelsCatalogue",
+    "description": "Static model catalogue served by `models.catalogue`.",
+    "type": "object",
+    "required": [
+      "models"
+    ],
+    "properties": {
+      "models": {
+        "description": "Known model rows.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/KnownModelEntry"
+        }
+      }
+    },
+    "definitions": {
+      "KnownModelEntry": {
+        "description": "One known model option.",
+        "type": "object",
+        "required": [
+          "display_name",
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "display_name": {
+            "description": "Operator-facing display name.",
+            "type": "string"
+          },
+          "model": {
+            "description": "Provider-native model identifier.",
+            "type": "string"
+          },
+          "provider": {
+            "description": "Provider this row belongs to.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProviderKind"
+              }
+            ]
+          }
+        }
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
       }
     }
   },

@@ -116,7 +116,6 @@ pub struct ConfigSchema {
 /// Parameters for `config.get`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schema", schemars(rename = "LegacyConfigGetRequest"))]
 pub struct ConfigGetRequest {
     /// The dotted key to read.
     pub key: String,
@@ -125,7 +124,6 @@ pub struct ConfigGetRequest {
 /// One key's effective value, redacted when the key is a secret.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schema", schemars(rename = "LegacyConfigValue"))]
 pub struct ConfigValue {
     /// The dotted key read.
     pub key: String,
@@ -138,7 +136,6 @@ pub struct ConfigValue {
 /// `config.getAll`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schema", schemars(rename = "LegacyConfigDocument"))]
 pub struct ConfigDocument {
     /// The effective configuration tree, every secret leaf redacted.
     pub values: serde_json::Value,
@@ -151,7 +148,6 @@ pub struct ConfigDocument {
 /// Parameters for `config.set`: the key and its new value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schema", schemars(rename = "LegacyConfigSetRequest"))]
 pub struct ConfigSetRequest {
     /// The dotted key to write.
     pub key: String,
@@ -163,7 +159,6 @@ pub struct ConfigSetRequest {
 /// the layer shadowing it when it did not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schema", schemars(rename = "LegacyConfigWriteOutcome"))]
 pub struct ConfigWriteOutcome {
     /// Whether the write is live, awaiting restart, or shadowed.
     pub effect: WriteEffect,

@@ -12,7 +12,7 @@ mod schema_support;
 
 use std::{fs, path::Path};
 
-use schema_support::legacy_control_schemas;
+use schema_support::control_schemas;
 
 /// The environment variable that regenerates the golden file instead of
 /// comparing against it.
@@ -23,7 +23,7 @@ const GOLDEN: &str = "tests/golden/control_contract.json";
 
 #[test]
 fn control_contract_matches_its_golden_schema() {
-    let generated = serde_json::to_string_pretty(&legacy_control_schemas())
+    let generated = serde_json::to_string_pretty(&control_schemas())
         .expect("control schemas serialise to JSON");
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(GOLDEN);
 
