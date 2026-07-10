@@ -1283,6 +1283,26 @@ mod tests {
             .clone();
         assert!(!format!("{source:?}").contains(source.as_str()));
 
+        let mismatched_use = session
+            .select_model(ModelSelectionRequest {
+                model: model.clone(),
+                stages: vec![InferenceStage::Triage],
+                endpoint: EndpointSelection::ProviderDefault,
+                credential: Some(CredentialInput::Source {
+                    source: source.clone(),
+                }),
+                reuse_api_key_for_embedding: false,
+                expected_revision: expected_revision.clone(),
+            })
+            .await
+            .expect_err("source cannot cross its issued use");
+        assert!(matches!(
+            mismatched_use.error,
+            ManagementError::CredentialCapabilityInvalid {
+                reason: CredentialCapabilityInvalidReason::UseMismatch,
+            }
+        ));
+
         let outcome = session
             .select_model(ModelSelectionRequest {
                 model: model.clone(),
@@ -1319,6 +1339,43 @@ mod tests {
         assert!(matches!(
             replay.error,
             ManagementError::CredentialCapabilityInvalid { .. }
+        ));
+    }
+
+    #[test]
+    fn test_credential_connection_reuse_is_endpoint_exact_and_non_destructive() {
+        let matching = serde_json::json!({
+            "credentials": {
+                "shared_openai": {
+                    "provider_kind": "openai",
+                    "base_url": "https://api.openai.com/v1/"
+                }
+            }
+        });
+        assert_eq!(
+            reusable_connection(&matching, ProviderKind::OpenAi, "https://api.openai.com/v1",)
+                .expect("normalised endpoint reuses its connection"),
+            "shared_openai",
+        );
+
+        let occupied_default = serde_json::json!({
+            "credentials": {
+                "openai_default": {
+                    "provider_kind": "openai",
+                    "base_url": "https://gateway.example/v1"
+                }
+            }
+        });
+        let refusal = reusable_connection(
+            &occupied_default,
+            ProviderKind::OpenAi,
+            "https://api.openai.com/v1",
+        )
+        .expect_err("an occupied default name is never overwritten");
+        assert!(matches!(
+            refusal.error,
+            ManagementError::CredentialConnectionConflict { connection }
+                if connection == "openai_default"
         ));
     }
 }
