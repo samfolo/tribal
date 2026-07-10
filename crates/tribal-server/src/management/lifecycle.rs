@@ -897,8 +897,8 @@ impl LifecycleOwner {
             {
                 let event = match event {
                     RuntimeControlEvent::LogLine { line } => ManagementEvent::LogLine { line },
-                    RuntimeControlEvent::LogsLost { dropped } => ManagementEvent::LogsLost {
-                        loss: ManagementLogLoss::Lagged { dropped },
+                    RuntimeControlEvent::LogsLost => ManagementEvent::LogsLost {
+                        loss: ManagementLogLoss::ObservationInterrupted,
                     },
                 };
                 let _ = self.events.send(event);

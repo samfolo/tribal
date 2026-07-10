@@ -8,6 +8,7 @@ mod envelope;
 mod event;
 mod launch;
 mod lifecycle;
+mod method;
 mod readiness;
 mod runtime;
 mod wire_id;
@@ -65,6 +66,7 @@ pub use lifecycle::{
     StoppedProcessFailure, StoppedState, StoppingLifecycleSnapshot, StoppingPhase,
     UnconfiguredLifecycleSnapshot, UnconfiguredPhase,
 };
+pub use method::ManagementMethod;
 pub use readiness::{
     CheckObservation, CheckSubject, ConfigDiagnosticLocation, ConfigFilePath,
     CredentialEntryMember, HealthDegradedReadinessReport, HealthDegradedVerdict, HealthVerdict,

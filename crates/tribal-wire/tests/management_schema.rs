@@ -16,6 +16,7 @@ fn management_contract_matches_its_golden_schema() {
         ("ConfigSchema", schema_for!(m::ConfigSchema)),
         ("LifecycleSnapshot", schema_for!(m::LifecycleSnapshot)),
         ("ManagementEvent", schema_for!(m::ManagementEvent)),
+        ("ManagementMethod", schema_for!(m::ManagementMethod)),
         ("RuntimeStartResult", schema_for!(m::RuntimeStartResult)),
         ("RuntimeStopResult", schema_for!(m::RuntimeStopResult)),
         ("RuntimeRestartResult", schema_for!(m::RuntimeRestartResult)),

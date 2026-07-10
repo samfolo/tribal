@@ -7111,6 +7111,39 @@
       }
     }
   },
+  "ManagementMethod": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ManagementMethod",
+    "description": "Method identity for a compatible management session.",
+    "type": "string",
+    "enum": [
+      "manager.snapshot",
+      "runtime.start",
+      "runtime.stop",
+      "runtime.restart",
+      "manager.shutdown",
+      "server.status",
+      "logs.tail",
+      "token.list",
+      "check.report",
+      "database.probe",
+      "credential.probe",
+      "config.getAll",
+      "config.path",
+      "config.schema",
+      "config.get",
+      "config.validate",
+      "config.set",
+      "config.patch",
+      "models.catalogue",
+      "models.select",
+      "credential.sources",
+      "graph.genesisOptions",
+      "graph.embedding_profile",
+      "graph.configureGenesis",
+      "graph.convergeGenesis"
+    ]
+  },
   "ManagementResponseError": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ManagementResponseError",

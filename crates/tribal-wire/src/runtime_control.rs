@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Version of the private manager/runtime contract.
-pub const RUNTIME_CONTROL_CONTRACT_VERSION: u16 = 2;
+pub const RUNTIME_CONTROL_CONTRACT_VERSION: u16 = 3;
 
 /// First frame sent by a manager on a runtime-control connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,9 +191,9 @@ pub enum RuntimeControlEvent {
     /// One live runtime log line.
     #[serde(rename = "logs.line")]
     LogLine { line: String },
-    /// A bounded runtime channel dropped a known number of events.
+    /// The mixed runtime event channel lost position, so the line count is unknown.
     #[serde(rename = "logs.lost")]
-    LogsLost { dropped: u64 },
+    LogsLost,
 }
 
 /// Runtime-side status needed by the manager reducer.
