@@ -61,6 +61,14 @@ test-cargo:
 test-unit:
     cargo test --workspace --lib --features tribal/test-helpers
 
+# Run one package's tests, forwarding optional Cargo arguments after the package.
+test-package package *args:
+    SQLX_OFFLINE=true cargo test -p {{quote(package)}} {{args}}
+
+# Lint one package, forwarding optional Cargo arguments before the lint floor.
+check-package package *args:
+    SQLX_OFFLINE=true cargo clippy -p {{quote(package)}} --all-targets {{args}} -- -D warnings
+
 # Format and lint check (no live database required)
 check:
     cargo +nightly fmt --all -- --check

@@ -8,17 +8,11 @@
 //! `UPDATE_SNAPSHOTS=1 cargo test -p tribal-wire --features schema`.
 #![cfg(feature = "schema")]
 
-use std::{collections::BTreeMap, fs, path::Path};
+mod schema_support;
 
-use schemars::{schema::RootSchema, schema_for};
-use tribal_wire::control::{
-    CheckReport, CheckReportRequest, ClientHello, ConfigDocument, ConfigGetRequest, ConfigPath,
-    ConfigSchema, ConfigSetRequest, ConfigValidateRequest, ConfigValidation, ConfigValue,
-    ConfigWriteOutcome, ControlEvent, ControlNotification, ControlRequest, ControlResponse,
-    CredentialProbe, CredentialProbeRequest, DatabaseProbe, DatabaseProbeRequest,
-    GraphEmbeddingProfile, LogLines, LogsTailRequest, ModelsCatalogue, RestartOutcome, ServerHello,
-    ServerStatus, StopOutcome, TokenList,
-};
+use std::{fs, path::Path};
+
+use schema_support::legacy_control_schemas;
 
 /// The environment variable that regenerates the golden file instead of
 /// comparing against it.
@@ -27,50 +21,9 @@ const UPDATE_ENV_VAR: &str = "UPDATE_SNAPSHOTS";
 /// The committed golden schema, relative to the crate manifest.
 const GOLDEN: &str = "tests/golden/control_contract.json";
 
-/// The top-level messages that cross the control socket — the JSON-RPC frames,
-/// each method's parameters and result, and the server-initiated events. Each
-/// key's schema carries its nested types inline, so this map is the whole
-/// contract's committed shape.
-fn contract_schemas() -> BTreeMap<&'static str, RootSchema> {
-    BTreeMap::from([
-        ("ControlRequest", schema_for!(ControlRequest)),
-        ("ControlResponse", schema_for!(ControlResponse)),
-        ("ControlNotification", schema_for!(ControlNotification)),
-        ("ClientHello", schema_for!(ClientHello)),
-        ("ServerHello", schema_for!(ServerHello)),
-        ("ConfigSchema", schema_for!(ConfigSchema)),
-        ("ConfigGetRequest", schema_for!(ConfigGetRequest)),
-        ("ConfigValue", schema_for!(ConfigValue)),
-        ("ConfigDocument", schema_for!(ConfigDocument)),
-        ("ConfigSetRequest", schema_for!(ConfigSetRequest)),
-        ("ConfigWriteOutcome", schema_for!(ConfigWriteOutcome)),
-        ("ConfigValidateRequest", schema_for!(ConfigValidateRequest)),
-        ("ConfigValidation", schema_for!(ConfigValidation)),
-        ("ConfigPath", schema_for!(ConfigPath)),
-        ("CheckReportRequest", schema_for!(CheckReportRequest)),
-        ("CheckReport", schema_for!(CheckReport)),
-        ("DatabaseProbeRequest", schema_for!(DatabaseProbeRequest)),
-        ("DatabaseProbe", schema_for!(DatabaseProbe)),
-        (
-            "CredentialProbeRequest",
-            schema_for!(CredentialProbeRequest),
-        ),
-        ("CredentialProbe", schema_for!(CredentialProbe)),
-        ("GraphEmbeddingProfile", schema_for!(GraphEmbeddingProfile)),
-        ("ModelsCatalogue", schema_for!(ModelsCatalogue)),
-        ("ServerStatus", schema_for!(ServerStatus)),
-        ("RestartOutcome", schema_for!(RestartOutcome)),
-        ("StopOutcome", schema_for!(StopOutcome)),
-        ("LogsTailRequest", schema_for!(LogsTailRequest)),
-        ("LogLines", schema_for!(LogLines)),
-        ("TokenList", schema_for!(TokenList)),
-        ("ControlEvent", schema_for!(ControlEvent)),
-    ])
-}
-
 #[test]
 fn control_contract_matches_its_golden_schema() {
-    let generated = serde_json::to_string_pretty(&contract_schemas())
+    let generated = serde_json::to_string_pretty(&legacy_control_schemas())
         .expect("control schemas serialise to JSON");
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(GOLDEN);
 

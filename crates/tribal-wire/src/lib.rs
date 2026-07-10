@@ -8,4 +8,5 @@
 
 pub mod control;
 pub mod gateway;
+pub mod management;
 pub mod mcp;

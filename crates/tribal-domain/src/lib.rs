@@ -53,6 +53,7 @@ mod auth_token;
 mod bearer_token;
 mod candidate;
 mod completion_response;
+mod config_field_path;
 mod discovery;
 mod disposition;
 mod embedding;
@@ -120,6 +121,7 @@ pub use auth_token::{AuthToken, AuthTokenBuilder};
 pub use bearer_token::{BearerToken, BearerTokenParseError};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
 pub use completion_response::{CompletionResponse, ToolCall};
+pub use config_field_path::{CONFIG_FIELD_PATH_PATTERN, ConfigFieldPath, ConfigFieldPathError};
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use disposition::{
     Disposition, DispositionCounters, RETRY_COUNT_AFTER_PROGRESS, TurnOutcome, decide_disposition,
