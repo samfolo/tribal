@@ -386,6 +386,12 @@ impl Drop for RuntimeCustodyGuard {
 }
 
 impl ManagerCustody {
+    #[cfg(test)]
+    pub(crate) fn pair_for_test() -> io::Result<(Self, UnixStream)> {
+        let (manager, runtime) = UnixStream::pair()?;
+        Ok((Self { stream: manager }, runtime))
+    }
+
     /// Completes the initial runtime attachment and retains its lifetime stream.
     pub(crate) fn attach_initial(
         paths: &AuthorityPaths,

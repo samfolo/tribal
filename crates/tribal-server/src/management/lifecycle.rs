@@ -112,15 +112,14 @@ struct EarlyChild {
     evidence: tribal_wire::management::EarlyChildTerminationEvidence,
 }
 
-struct LaunchAttachment {
+struct CommittedCustody {
     custody: ManagerCustody,
-    control: RuntimeControlConnection,
+    control_proof: RuntimeCustodyProof,
 }
 
 struct LaunchFailure {
     failure: StoppedProcessFailure,
     evidence: tribal_wire::management::EarlyChildTerminationEvidence,
-    custody: Option<ManagerCustody>,
 }
 
 /// Runtime recovered through an authenticated lifetime-custody handoff.
@@ -164,7 +163,13 @@ struct LaunchingOperation {
     origin: NoRuntimeLifecycleSnapshot,
     child: EarlyChild,
     intent: LaunchIntent,
-    task: Option<JoinHandle<()>>,
+    attachment: AttachmentStage,
+}
+
+enum AttachmentStage {
+    Committing(JoinHandle<()>),
+    Handshaking(JoinHandle<()>),
+    Settled,
 }
 
 enum LaunchIntent {
@@ -183,9 +188,24 @@ struct CancellingLaunchOperation {
     child: EarlyChild,
     origin: NoRuntimeLifecycleSnapshot,
     intent: CancellationIntent,
-    task: Option<JoinHandle<()>>,
-    deadline: tokio::time::Instant,
-    attachment_done: bool,
+    attachment: AttachmentStage,
+    termination: EarlyTerminationStage,
+}
+
+enum EarlyTerminationStage {
+    Graceful {
+        task: GracefulStopTask,
+        deadline: tokio::time::Instant,
+    },
+    ForcedReap {
+        deadline: tokio::time::Instant,
+    },
+}
+
+enum GracefulStopTask {
+    AwaitingCapability,
+    Requesting(JoinHandle<()>),
+    Accepted,
 }
 
 enum CancellationIntent {
@@ -221,9 +241,17 @@ enum StopIntent {
 }
 
 enum LifecycleCompletion {
-    Launched {
+    CustodyCommitted {
         token: u64,
-        result: Result<LaunchAttachment, LaunchFailure>,
+        result: Result<CommittedCustody, LaunchFailure>,
+    },
+    RuntimeConnected {
+        token: u64,
+        result: Result<RuntimeControlConnection, RuntimeControlError>,
+    },
+    EarlyStopRequested {
+        token: u64,
+        accepted: bool,
     },
     Stopped {
         token: u64,
@@ -458,7 +486,7 @@ impl LifecycleOwner {
                         ConfigWorkerExit::Panicked { correlation } => correlation.clone(),
                     };
                     self.worker_exit = Some(exit);
-                    self.terminate_for_worker(correlation);
+                    self.terminate_for_worker(correlation).await;
                 }
                 completion = self.completions.recv() => {
                     if let Some(completion) = completion {
@@ -466,7 +494,7 @@ impl LifecycleOwner {
                     }
                 }
                 _ = process_poll.tick(), if matches!(self.state, LifecycleState::Running { .. } | LifecycleState::Unresponsive { .. } | LifecycleState::Operating(LifecycleOperation::CancellingLaunch(_) | LifecycleOperation::Stopping(_))) => {
-                    self.observe_exit();
+                    self.observe_exit().await;
                 }
                 command = self.receiver.recv() => match command {
                     Some(command) => self.handle(command),
@@ -488,6 +516,7 @@ impl LifecycleOwner {
                 && matches!(
                     self.state,
                     LifecycleState::NoRuntime(_)
+                        | LifecycleState::TerminatingOperation { .. }
                         | LifecycleState::TerminatingManaged { .. }
                         | LifecycleState::Terminating(_)
                 )
@@ -747,7 +776,6 @@ impl LifecycleOwner {
             ),
             LifecycleState::Operating(LifecycleOperation::Launching(mut operation)) => {
                 supersede_launch(&mut operation.intent, StartSuperseder::Stop);
-                let _ = operation.child.child.start_kill();
                 LifecycleState::Operating(LifecycleOperation::CancellingLaunch(
                     CancellingLaunchOperation {
                         token: operation.token,
@@ -757,9 +785,11 @@ impl LifecycleOwner {
                         intent: CancellationIntent::Stop {
                             waiters: vec![response],
                         },
-                        task: operation.task,
-                        deadline: tokio::time::Instant::now() + STOP_DEADLINE,
-                        attachment_done: false,
+                        attachment: operation.attachment,
+                        termination: EarlyTerminationStage::Graceful {
+                            task: GracefulStopTask::AwaitingCapability,
+                            deadline: tokio::time::Instant::now() + STOP_DEADLINE,
+                        },
                     },
                 ))
             }
@@ -956,7 +986,6 @@ impl LifecycleOwner {
             ),
             LifecycleState::Operating(LifecycleOperation::Launching(mut operation)) => {
                 supersede_launch(&mut operation.intent, StartSuperseder::ManagerShutdown);
-                let _ = operation.child.child.start_kill();
                 LifecycleState::Operating(LifecycleOperation::CancellingLaunch(
                     CancellingLaunchOperation {
                         token: operation.token,
@@ -966,9 +995,11 @@ impl LifecycleOwner {
                         intent: CancellationIntent::Shutdown {
                             waiters: vec![response],
                         },
-                        task: operation.task,
-                        deadline: tokio::time::Instant::now() + STOP_DEADLINE,
-                        attachment_done: false,
+                        attachment: operation.attachment,
+                        termination: EarlyTerminationStage::Graceful {
+                            task: GracefulStopTask::AwaitingCapability,
+                            deadline: tokio::time::Instant::now() + STOP_DEADLINE,
+                        },
                     },
                 ))
             }
@@ -1074,8 +1105,8 @@ impl LifecycleOwner {
                 };
                 let sender = self.completion_sender.clone();
                 let task = tokio::spawn(async move {
-                    let result = finish_launch(attachment).await;
-                    let event = LifecycleCompletion::Launched { token, result };
+                    let result = commit_custody(attachment).await;
+                    let event = LifecycleCompletion::CustodyCommitted { token, result };
                     let _ = sender.send(event).await;
                 });
                 self.state =
@@ -1085,7 +1116,7 @@ impl LifecycleOwner {
                         origin,
                         child: early_child,
                         intent,
-                        task: Some(task),
+                        attachment: AttachmentStage::Committing(task),
                     }));
                 self.publish_current();
             }
@@ -1132,8 +1163,14 @@ impl LifecycleOwner {
 
     async fn handle_completion(&mut self, completion: LifecycleCompletion) {
         match completion {
-            LifecycleCompletion::Launched { token, result } => {
-                self.handle_launch_completion(token, result).await;
+            LifecycleCompletion::CustodyCommitted { token, result } => {
+                self.handle_custody_commit(token, result).await;
+            }
+            LifecycleCompletion::RuntimeConnected { token, result } => {
+                self.handle_runtime_connected(token, result).await;
+            }
+            LifecycleCompletion::EarlyStopRequested { token, accepted } => {
+                self.handle_early_stop_requested(token, accepted);
             }
             LifecycleCompletion::Stopped { token, result } => {
                 self.handle_stop_completion(token, result).await;
@@ -1157,21 +1194,110 @@ impl LifecycleOwner {
         }
     }
 
-    async fn handle_launch_completion(
+    async fn handle_custody_commit(
         &mut self,
         token: u64,
-        result: Result<LaunchAttachment, LaunchFailure>,
+        result: Result<CommittedCustody, LaunchFailure>,
     ) {
         let state = std::mem::replace(&mut self.state, placeholder_state());
         self.state = match state {
             LifecycleState::Operating(LifecycleOperation::Launching(mut operation))
-                if operation.token == token =>
+                if operation.token == token
+                    && matches!(operation.attachment, AttachmentStage::Committing(_)) =>
             {
-                if let Some(task) = operation.task.take() {
-                    let _ = task.await;
-                }
+                let task = take_attachment_task(&mut operation.attachment);
+                self.track_task(task, "custody commit");
                 match result {
-                    Ok(attachment) => {
+                    Ok(committed) => {
+                        operation.child.evidence =
+                            tribal_wire::management::EarlyChildTerminationEvidence::Recoverable {
+                                runtime: operation.child.identity.clone(),
+                            };
+                        operation.child.custody = Some(committed.custody);
+                        operation.attachment = self.spawn_runtime_handshake(
+                            token,
+                            operation.child.identity.clone(),
+                            operation.snapshot.header.manager_instance_id.clone(),
+                            committed.control_proof,
+                        );
+                        LifecycleState::Operating(LifecycleOperation::Launching(operation))
+                    }
+                    Err(failure) => {
+                        operation.child.evidence = failure.evidence;
+                        terminate_early_child(&mut operation.child).await;
+                        let failed = failed_no_runtime_from_origin(
+                            &operation.origin,
+                            failure.failure.clone(),
+                        );
+                        resolve_launch_failure(operation.intent, &failed);
+                        LifecycleState::NoRuntime(with_failure(operation.origin, failure.failure))
+                    }
+                }
+            }
+            LifecycleState::Operating(LifecycleOperation::CancellingLaunch(mut operation))
+                if operation.token == token
+                    && matches!(operation.attachment, AttachmentStage::Committing(_)) =>
+            {
+                let task = take_attachment_task(&mut operation.attachment);
+                self.track_task(task, "custody commit");
+                match result {
+                    Ok(committed) => {
+                        operation.child.evidence =
+                            tribal_wire::management::EarlyChildTerminationEvidence::Recoverable {
+                                runtime: operation.child.identity.clone(),
+                            };
+                        operation.child.custody = Some(committed.custody);
+                        if matches!(
+                            operation.termination,
+                            EarlyTerminationStage::Graceful { .. }
+                        ) {
+                            operation.attachment = self.spawn_runtime_handshake(
+                                token,
+                                operation.child.identity.clone(),
+                                operation.header.manager_instance_id.clone(),
+                                committed.control_proof,
+                            );
+                        } else {
+                            operation.attachment = AttachmentStage::Settled;
+                        }
+                    }
+                    Err(failure) => {
+                        operation.child.evidence = failure.evidence;
+                        operation.attachment = AttachmentStage::Settled;
+                        self.force_early_reap(&mut operation);
+                    }
+                }
+                if early_child_exited(&mut operation.child) {
+                    self.abort_early_tasks(&mut operation);
+                    resolve_cancel_without_child(operation.intent, &operation.origin);
+                    LifecycleState::NoRuntime(operation.origin)
+                } else {
+                    LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation))
+                }
+            }
+            other => {
+                drop(result);
+                other
+            }
+        };
+        self.publish_current();
+    }
+
+    async fn handle_runtime_connected(
+        &mut self,
+        token: u64,
+        result: Result<RuntimeControlConnection, RuntimeControlError>,
+    ) {
+        let state = std::mem::replace(&mut self.state, placeholder_state());
+        self.state = match state {
+            LifecycleState::Operating(LifecycleOperation::Launching(mut operation))
+                if operation.token == token
+                    && matches!(operation.attachment, AttachmentStage::Handshaking(_)) =>
+            {
+                let task = take_attachment_task(&mut operation.attachment);
+                self.track_task(task, "runtime handshake");
+                match result {
+                    Ok(control) => {
                         if let Ok(Some(status)) = operation.child.child.try_wait() {
                             let failure = StoppedProcessFailure::RuntimeAnnouncementFailed {
                                 presentation: failure_presentation(
@@ -1186,11 +1312,26 @@ impl LifecycleOwner {
                                 with_failure(operation.origin, failure),
                             ));
                         }
+                        let Some(custody) = operation.child.custody.take() else {
+                            let failure = StoppedProcessFailure::RuntimeHandshakeFailed {
+                                presentation: failure_presentation(
+                                    "managed runtime handshake lost custody",
+                                    "the committed custody resource is unavailable",
+                                ),
+                            };
+                            terminate_early_child(&mut operation.child).await;
+                            let failed =
+                                failed_no_runtime_from_origin(&operation.origin, failure.clone());
+                            resolve_launch_failure(operation.intent, &failed);
+                            return self.finish_completion_state(LifecycleState::NoRuntime(
+                                with_failure(operation.origin, failure),
+                            ));
+                        };
                         let child = ManagedChild {
                             process: ManagedProcess::Owned(operation.child.child),
                             identity: operation.child.identity,
-                            custody: attachment.custody,
-                            control: attachment.control,
+                            custody,
+                            control,
                         };
                         let snapshot = RunningLifecycleSnapshot {
                             header: next_header(&operation.snapshot.header),
@@ -1199,71 +1340,42 @@ impl LifecycleOwner {
                         resolve_launch_success(operation.intent, &snapshot);
                         LifecycleState::Running { snapshot, child }
                     }
-                    Err(failure) => {
-                        operation.child.evidence = failure.evidence;
-                        operation.child.custody = failure.custody;
+                    Err(error) => {
+                        let failure = StoppedProcessFailure::RuntimeHandshakeFailed {
+                            presentation: failure_presentation(
+                                "managed runtime handshake failed",
+                                &error.to_string(),
+                            ),
+                        };
                         terminate_early_child(&mut operation.child).await;
-                        let failed = failed_no_runtime_from_origin(
-                            &operation.origin,
-                            failure.failure.clone(),
-                        );
+                        let failed =
+                            failed_no_runtime_from_origin(&operation.origin, failure.clone());
                         resolve_launch_failure(operation.intent, &failed);
-                        LifecycleState::NoRuntime(with_failure(operation.origin, failure.failure))
+                        LifecycleState::NoRuntime(with_failure(operation.origin, failure))
                     }
                 }
             }
             LifecycleState::Operating(LifecycleOperation::CancellingLaunch(mut operation))
-                if operation.token == token =>
+                if operation.token == token
+                    && matches!(operation.attachment, AttachmentStage::Handshaking(_)) =>
             {
-                if let Some(task) = operation.task.take() {
-                    let _ = task.await;
-                }
-                operation.attachment_done = true;
+                let task = take_attachment_task(&mut operation.attachment);
+                self.track_task(task, "runtime handshake");
+                operation.attachment = AttachmentStage::Settled;
                 match result {
-                    Ok(mut attachment) => {
-                        operation.child.evidence =
-                            tribal_wire::management::EarlyChildTerminationEvidence::Recoverable {
-                                runtime: operation.child.identity.clone(),
-                            };
-                        let _ = attachment.control.stop(&operation.child.identity).await;
-                        let _ = attachment.custody.stop(&operation.child.identity);
-                        operation.child.custody = Some(attachment.custody);
-                        operation.child.control = Some(attachment.control);
+                    Ok(control) => {
+                        operation.child.control = Some(control);
+                        self.start_early_stop(&mut operation);
                     }
-                    Err(failure) => {
-                        operation.child.evidence = failure.evidence;
-                        operation.child.custody = failure.custody;
-                        if let Some(custody) = &mut operation.child.custody {
-                            let _ = custody.stop(&operation.child.identity);
-                        }
-                    }
+                    Err(_) => self.force_early_reap(&mut operation),
                 }
                 if early_child_exited(&mut operation.child) {
+                    self.abort_early_tasks(&mut operation);
                     resolve_cancel_without_child(operation.intent, &operation.origin);
                     LifecycleState::NoRuntime(operation.origin)
                 } else {
                     LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation))
                 }
-            }
-            LifecycleState::TerminatingOperation {
-                snapshot,
-                operation: LifecycleOperation::Launching(operation),
-            } if operation.token == token => {
-                if let Some(task) = operation.task {
-                    let _ = task.await;
-                }
-                drop(result);
-                LifecycleState::Terminating(snapshot)
-            }
-            LifecycleState::TerminatingOperation {
-                snapshot,
-                operation: LifecycleOperation::CancellingLaunch(operation),
-            } if operation.token == token => {
-                if let Some(task) = operation.task {
-                    let _ = task.await;
-                }
-                drop(result);
-                LifecycleState::Terminating(snapshot)
             }
             other => {
                 drop(result);
@@ -1271,6 +1383,119 @@ impl LifecycleOwner {
             }
         };
         self.publish_current();
+    }
+
+    fn handle_early_stop_requested(&mut self, token: u64, accepted: bool) {
+        let state = std::mem::replace(&mut self.state, placeholder_state());
+        let LifecycleState::Operating(LifecycleOperation::CancellingLaunch(mut operation)) = state
+        else {
+            self.state = state;
+            return;
+        };
+        if operation.token != token {
+            self.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation));
+            return;
+        }
+        let EarlyTerminationStage::Graceful { task, .. } = &mut operation.termination else {
+            self.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation));
+            return;
+        };
+        if !matches!(task, GracefulStopTask::Requesting(_)) {
+            self.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation));
+            return;
+        }
+        let completed = std::mem::replace(task, GracefulStopTask::Accepted);
+        let task = match completed {
+            GracefulStopTask::Requesting(task) => Some(task),
+            GracefulStopTask::AwaitingCapability | GracefulStopTask::Accepted => None,
+        };
+        if !accepted {
+            self.force_early_reap(&mut operation);
+        }
+        self.track_task(task, "early runtime stop");
+        self.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation));
+    }
+
+    fn spawn_runtime_handshake(
+        &self,
+        token: u64,
+        identity: RuntimeIdentity,
+        manager_instance_id: String,
+        proof: RuntimeCustodyProof,
+    ) -> AttachmentStage {
+        let path = self.authority.paths().runtime_control_socket_path.clone();
+        let sender = self.completion_sender.clone();
+        let task = tokio::spawn(async move {
+            let result =
+                RuntimeControlClient::connect(&path, &manager_instance_id, &identity, proof).await;
+            let _ = sender
+                .send(LifecycleCompletion::RuntimeConnected { token, result })
+                .await;
+        });
+        AttachmentStage::Handshaking(task)
+    }
+
+    fn start_early_stop(&self, operation: &mut CancellingLaunchOperation) {
+        let EarlyTerminationStage::Graceful { task, .. } = &mut operation.termination else {
+            return;
+        };
+        if !matches!(task, GracefulStopTask::AwaitingCapability) {
+            return;
+        }
+        let Some(control) = operation.child.control.clone() else {
+            return;
+        };
+        let runtime = operation.child.identity.clone();
+        let token = operation.token;
+        let sender = self.completion_sender.clone();
+        let stop_task = tokio::spawn(async move {
+            let accepted = control.stop(&runtime).await.is_ok();
+            let _ = sender
+                .send(LifecycleCompletion::EarlyStopRequested { token, accepted })
+                .await;
+        });
+        *task = GracefulStopTask::Requesting(stop_task);
+    }
+
+    fn track_task(&mut self, task: Option<JoinHandle<()>>, name: &'static str) {
+        if let Some(task) = task {
+            self.observations.spawn(async move {
+                if let Err(error) = task.await {
+                    tracing::error!(%error, task = name, "lifecycle task failed");
+                }
+            });
+        }
+    }
+
+    fn abort_early_tasks(&mut self, operation: &mut CancellingLaunchOperation) {
+        let attachment = take_attachment_task(&mut operation.attachment);
+        if let Some(task) = &attachment {
+            task.abort();
+        }
+        self.track_task(attachment, "cancelled attachment");
+        let stop = take_graceful_stop_task(&mut operation.termination);
+        if let Some(task) = &stop {
+            task.abort();
+        }
+        self.track_task(stop, "cancelled early stop");
+    }
+
+    fn force_early_reap(&mut self, operation: &mut CancellingLaunchOperation) {
+        if matches!(
+            operation.termination,
+            EarlyTerminationStage::ForcedReap { .. }
+        ) {
+            return;
+        }
+        let stop = take_graceful_stop_task(&mut operation.termination);
+        if let Some(task) = &stop {
+            task.abort();
+        }
+        self.track_task(stop, "superseded early stop");
+        let _ = operation.child.child.start_kill();
+        operation.termination = EarlyTerminationStage::ForcedReap {
+            deadline: tokio::time::Instant::now() + STOP_DEADLINE,
+        };
     }
 
     fn finish_completion_state(&mut self, state: LifecycleState) {
@@ -1378,7 +1603,7 @@ impl LifecycleOwner {
         self.publish_current();
     }
 
-    fn observe_exit(&mut self) {
+    async fn observe_exit(&mut self) {
         if matches!(
             self.state,
             LifecycleState::Operating(LifecycleOperation::Stopping(_))
@@ -1390,7 +1615,7 @@ impl LifecycleOwner {
             self.state,
             LifecycleState::Operating(LifecycleOperation::CancellingLaunch(_))
         ) {
-            self.observe_early_cancellation();
+            self.observe_early_cancellation().await;
             return;
         }
         let state = std::mem::replace(&mut self.state, placeholder_state());
@@ -1533,20 +1758,15 @@ impl LifecycleOwner {
         self.publish_current();
     }
 
-    fn observe_early_cancellation(&mut self) {
-        let LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation)) =
-            &mut self.state
+    async fn observe_early_cancellation(&mut self) {
+        let state = std::mem::replace(&mut self.state, placeholder_state());
+        let LifecycleState::Operating(LifecycleOperation::CancellingLaunch(mut operation)) = state
         else {
+            self.state = state;
             return;
         };
-        let exited = early_child_exited(&mut operation.child);
-        if exited && operation.attachment_done {
-            let state = std::mem::replace(&mut self.state, placeholder_state());
-            let LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation)) = state
-            else {
-                self.state = state;
-                return;
-            };
+        if early_child_exited(&mut operation.child) {
+            self.abort_early_tasks(&mut operation);
             resolve_cancel_without_child(operation.intent, &operation.origin);
             self.state = LifecycleState::NoRuntime(operation.origin);
             self.publish_current();
@@ -1559,9 +1779,11 @@ impl LifecycleOwner {
             .is_some_and(ManagerCustody::is_closed)
         {
             let snapshot = custody_loss_snapshot(&operation.header, &operation.child.identity);
+            self.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation));
             resolve_all_waiters_for_termination(&mut self.state, &snapshot);
             let state = std::mem::replace(&mut self.state, placeholder_state());
             let LifecycleState::Operating(operation) = state else {
+                tracing::error!("restored cancellation operation changed before custody loss");
                 self.state = state;
                 return;
             };
@@ -1574,7 +1796,64 @@ impl LifecycleOwner {
             self.shutdown.cancel();
             return;
         }
-        if !exited && tokio::time::Instant::now() >= operation.deadline {
+        let attachment_failed = attachment_task_finished(&operation.attachment);
+        let stop_failed = graceful_stop_task_finished(&operation.termination);
+        if attachment_failed {
+            let joined = if let Some(task) = take_attachment_task(&mut operation.attachment) {
+                match task.await {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::error!(%error, "early lifecycle attachment task failed");
+                        false
+                    }
+                }
+            } else {
+                tracing::error!("finished lifecycle attachment lost its task");
+                false
+            };
+            if joined && let Ok(completion) = self.completions.try_recv() {
+                self.state =
+                    LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation));
+                self.handle_completion(completion).await;
+                return;
+            }
+        }
+        if attachment_failed || stop_failed {
+            if stop_failed {
+                let joined = if let Some(task) = take_graceful_stop_task(&mut operation.termination)
+                {
+                    match task.await {
+                        Ok(()) => true,
+                        Err(error) => {
+                            tracing::error!(%error, "early runtime stop task failed");
+                            false
+                        }
+                    }
+                } else {
+                    tracing::error!("finished early runtime stop lost its task");
+                    false
+                };
+                if joined && let Ok(completion) = self.completions.try_recv() {
+                    self.state =
+                        LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation));
+                    self.handle_completion(completion).await;
+                    return;
+                }
+            }
+            self.force_early_reap(&mut operation);
+        }
+        let now = tokio::time::Instant::now();
+        if matches!(
+            operation.termination,
+            EarlyTerminationStage::Graceful { deadline, .. } if now >= deadline
+        ) {
+            self.force_early_reap(&mut operation);
+        }
+        let timed_out = matches!(
+            operation.termination,
+            EarlyTerminationStage::ForcedReap { deadline } if now >= deadline
+        );
+        if timed_out {
             let snapshot = ManagerTerminatingLifecycleSnapshot {
                 header: next_header(&operation.header),
                 phase: ManagerTerminatingPhase::ManagerTerminating {
@@ -1595,9 +1874,11 @@ impl LifecycleOwner {
                     },
                 },
             };
+            self.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation));
             resolve_all_waiters_for_termination(&mut self.state, &snapshot);
             let state = std::mem::replace(&mut self.state, placeholder_state());
             let LifecycleState::Operating(operation) = state else {
+                tracing::error!("restored cancellation operation changed before timeout");
                 self.state = state;
                 return;
             };
@@ -1608,7 +1889,9 @@ impl LifecycleOwner {
             self.publish_current();
             self.shutdown_seen = true;
             self.shutdown.cancel();
+            return;
         }
+        self.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation));
     }
 
     fn request_document_refresh(&mut self) {
@@ -1724,10 +2007,155 @@ impl LifecycleOwner {
         }
     }
 
-    fn terminate_for_worker(
+    async fn fold_ready_terminal_completions(&mut self) {
+        let mut yielded_after_drain = false;
+        loop {
+            let mut folded = false;
+            while let Ok(completion) = self.completions.try_recv() {
+                self.fold_terminal_completion(completion);
+                folded = true;
+            }
+            let ready = match &mut self.state {
+                LifecycleState::Operating(LifecycleOperation::Launching(operation)) => {
+                    attachment_task_finished(&operation.attachment).then(|| {
+                        let committing =
+                            matches!(operation.attachment, AttachmentStage::Committing(_));
+                        (take_attachment_task(&mut operation.attachment), committing)
+                    })
+                }
+                LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation)) => {
+                    attachment_task_finished(&operation.attachment).then(|| {
+                        let committing =
+                            matches!(operation.attachment, AttachmentStage::Committing(_));
+                        (take_attachment_task(&mut operation.attachment), committing)
+                    })
+                }
+                LifecycleState::NoRuntime(_)
+                | LifecycleState::Running { .. }
+                | LifecycleState::Operating(LifecycleOperation::Stopping(_))
+                | LifecycleState::Unresponsive { .. }
+                | LifecycleState::TerminatingOperation { .. }
+                | LifecycleState::TerminatingManaged { .. }
+                | LifecycleState::Terminating(_) => None,
+            };
+            let Some((Some(task), committing)) = ready else {
+                if folded && !yielded_after_drain {
+                    yielded_after_drain = true;
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                break;
+            };
+            yielded_after_drain = false;
+            if let Err(error) = task.await {
+                tracing::error!(%error, "terminal lifecycle attachment task failed");
+                if committing {
+                    self.mark_terminal_commit_unknown();
+                }
+            }
+        }
+    }
+
+    fn fold_terminal_completion(&mut self, completion: LifecycleCompletion) {
+        let mut completed_task = None;
+        match completion {
+            LifecycleCompletion::CustodyCommitted { token, result } => {
+                let operation = match &mut self.state {
+                    LifecycleState::Operating(LifecycleOperation::Launching(operation))
+                        if operation.token == token
+                            && matches!(operation.attachment, AttachmentStage::Committing(_)) =>
+                    {
+                        Some((&mut operation.child, &mut operation.attachment))
+                    }
+                    LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation))
+                        if operation.token == token
+                            && matches!(operation.attachment, AttachmentStage::Committing(_)) =>
+                    {
+                        Some((&mut operation.child, &mut operation.attachment))
+                    }
+                    _ => None,
+                };
+                if let Some((child, attachment)) = operation {
+                    completed_task = take_attachment_task(attachment);
+                    *attachment = AttachmentStage::Settled;
+                    match result {
+                        Ok(committed) => {
+                            child.evidence = tribal_wire::management::EarlyChildTerminationEvidence::Recoverable {
+                                runtime: child.identity.clone(),
+                            };
+                            child.custody = Some(committed.custody);
+                        }
+                        Err(failure) => child.evidence = failure.evidence,
+                    }
+                }
+            }
+            LifecycleCompletion::RuntimeConnected { token, result } => {
+                let operation = match &mut self.state {
+                    LifecycleState::Operating(LifecycleOperation::Launching(operation))
+                        if operation.token == token
+                            && matches!(operation.attachment, AttachmentStage::Handshaking(_)) =>
+                    {
+                        Some((&mut operation.child, &mut operation.attachment))
+                    }
+                    LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation))
+                        if operation.token == token
+                            && matches!(operation.attachment, AttachmentStage::Handshaking(_)) =>
+                    {
+                        Some((&mut operation.child, &mut operation.attachment))
+                    }
+                    _ => None,
+                };
+                if let Some((child, attachment)) = operation {
+                    completed_task = take_attachment_task(attachment);
+                    *attachment = AttachmentStage::Settled;
+                    if let Ok(control) = result {
+                        child.control = Some(control);
+                    }
+                }
+            }
+            LifecycleCompletion::EarlyStopRequested { token, .. } => {
+                if let LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation)) =
+                    &mut self.state
+                    && operation.token == token
+                    && matches!(
+                        operation.termination,
+                        EarlyTerminationStage::Graceful {
+                            task: GracefulStopTask::Requesting(_),
+                            ..
+                        }
+                    )
+                {
+                    completed_task = take_graceful_stop_task(&mut operation.termination);
+                }
+            }
+            LifecycleCompletion::Stopped { .. } | LifecycleCompletion::Document { .. } => {}
+        }
+        self.track_task(completed_task, "terminal lifecycle completion");
+    }
+
+    fn mark_terminal_commit_unknown(&mut self) {
+        let child = match &mut self.state {
+            LifecycleState::Operating(LifecycleOperation::Launching(operation)) => {
+                Some(&mut operation.child)
+            }
+            LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation)) => {
+                Some(&mut operation.child)
+            }
+            _ => None,
+        };
+        if let Some(child) = child {
+            child.evidence =
+                tribal_wire::management::EarlyChildTerminationEvidence::CommitOutcomeUnknown {
+                    runtime: child.identity.clone(),
+                };
+        }
+    }
+
+    async fn terminate_for_worker(
         &mut self,
         correlation: Option<tribal_wire::management::PanicCorrelationId>,
     ) {
+        self.fold_ready_terminal_completions().await;
         let exact_exit = match &mut self.state {
             LifecycleState::Running { child, .. } | LifecycleState::Unresponsive { child, .. } => {
                 managed_child_exited(child)
@@ -1906,10 +2334,14 @@ fn prepare_child(
     })
 }
 
-async fn finish_launch(pending: PendingAttachment) -> Result<LaunchAttachment, LaunchFailure> {
-    let paths = pending.paths.clone();
-    let manager_instance_id = pending.manager_instance_id.clone();
-    let custody_proof = pending.custody_proof;
+async fn commit_custody(pending: PendingAttachment) -> Result<CommittedCustody, LaunchFailure> {
+    let PendingAttachment {
+        identity,
+        paths,
+        manager_instance_id,
+        custody_proof,
+        control_proof,
+    } = pending;
     let custody = match tokio::task::spawn_blocking(move || {
         ManagerCustody::attach_initial(&paths, &manager_instance_id, custody_proof)
     })
@@ -1926,9 +2358,8 @@ async fn finish_launch(pending: PendingAttachment) -> Result<LaunchAttachment, L
                 },
                 evidence:
                     tribal_wire::management::EarlyChildTerminationEvidence::CommitOutcomeUnknown {
-                        runtime: pending.identity,
+                        runtime: identity,
                     },
-                custody: None,
             });
         }
         Err(error) => {
@@ -1941,37 +2372,15 @@ async fn finish_launch(pending: PendingAttachment) -> Result<LaunchAttachment, L
                 },
                 evidence:
                     tribal_wire::management::EarlyChildTerminationEvidence::CommitOutcomeUnknown {
-                        runtime: pending.identity,
+                        runtime: identity,
                     },
-                custody: None,
             });
         }
     };
-    let control = match RuntimeControlClient::connect(
-        &pending.paths.runtime_control_socket_path,
-        &pending.manager_instance_id,
-        &pending.identity,
-        pending.control_proof,
-    )
-    .await
-    {
-        Ok(control) => control,
-        Err(error) => {
-            return Err(LaunchFailure {
-                failure: StoppedProcessFailure::RuntimeHandshakeFailed {
-                    presentation: failure_presentation(
-                        "managed runtime handshake failed",
-                        &error.to_string(),
-                    ),
-                },
-                evidence: tribal_wire::management::EarlyChildTerminationEvidence::Recoverable {
-                    runtime: pending.identity,
-                },
-                custody: Some(custody),
-            });
-        }
-    };
-    Ok(LaunchAttachment { custody, control })
+    Ok(CommittedCustody {
+        custody,
+        control_proof,
+    })
 }
 
 async fn terminate_early_child(child: &mut EarlyChild) {
@@ -1987,6 +2396,42 @@ async fn terminate_early_child(child: &mut EarlyChild) {
 
 fn early_child_exited(child: &mut EarlyChild) -> bool {
     matches!(child.child.try_wait(), Ok(Some(_)))
+}
+
+fn take_attachment_task(stage: &mut AttachmentStage) -> Option<JoinHandle<()>> {
+    match std::mem::replace(stage, AttachmentStage::Settled) {
+        AttachmentStage::Committing(task) | AttachmentStage::Handshaking(task) => Some(task),
+        AttachmentStage::Settled => None,
+    }
+}
+
+fn attachment_task_finished(stage: &AttachmentStage) -> bool {
+    match stage {
+        AttachmentStage::Committing(task) | AttachmentStage::Handshaking(task) => {
+            task.is_finished()
+        }
+        AttachmentStage::Settled => false,
+    }
+}
+
+fn take_graceful_stop_task(stage: &mut EarlyTerminationStage) -> Option<JoinHandle<()>> {
+    let EarlyTerminationStage::Graceful { task, .. } = stage else {
+        return None;
+    };
+    match std::mem::replace(task, GracefulStopTask::Accepted) {
+        GracefulStopTask::Requesting(task) => Some(task),
+        GracefulStopTask::AwaitingCapability | GracefulStopTask::Accepted => None,
+    }
+}
+
+fn graceful_stop_task_finished(stage: &EarlyTerminationStage) -> bool {
+    matches!(
+        stage,
+        EarlyTerminationStage::Graceful {
+            task: GracefulStopTask::Requesting(task),
+            ..
+        } if task.is_finished()
+    )
 }
 
 fn managed_child_exited(child: &mut ManagedChild) -> bool {
@@ -2760,8 +3205,8 @@ mod tests {
     use super::*;
     use crate::management::{authority, configuration, worker};
 
-    /// A local thread panic crosses two in-process channels without I/O.
-    const TERMINAL_DEADLINE: Duration = Duration::from_secs(2);
+    /// Local lifecycle observations have no external service dependency.
+    const TEST_OBSERVATION_DEADLINE: Duration = Duration::from_secs(2);
 
     fn header() -> LifecycleSnapshotHeader {
         LifecycleSnapshotHeader {
@@ -2769,6 +3214,90 @@ mod tests {
             revision: 1,
             manager_version: "test".to_owned(),
         }
+    }
+
+    fn no_runtime_origin() -> NoRuntimeLifecycleSnapshot {
+        let LifecycleState::NoRuntime(snapshot) = placeholder_state() else {
+            unreachable!("the placeholder is a no-runtime state");
+        };
+        snapshot
+    }
+
+    fn early_child() -> EarlyChild {
+        let child = tokio::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("test child starts");
+        let pid = child.id().expect("test child has a process id");
+        let config_path = ConfigFilePath {
+            path: "/tmp/tribal.yaml".to_owned(),
+        };
+        EarlyChild {
+            child,
+            identity: RuntimeIdentity {
+                instance_id: "early-child".to_owned(),
+                pid,
+                binary_version: "test".to_owned(),
+                config_path: config_path.clone(),
+            },
+            custody: None,
+            control: None,
+            evidence: tribal_wire::management::EarlyChildTerminationEvidence::PreCommit {
+                pid,
+                config_path,
+            },
+        }
+    }
+
+    fn test_owner() -> (
+        tempfile::TempDir,
+        LifecycleOwner,
+        worker::ConfigWorkerRuntime,
+    ) {
+        let temp = tempfile::tempdir().expect("temporary authority root");
+        let config_path = temp.path().join("tribal.yaml");
+        let config = tribal_config::TribalConfig::minimum_valid(
+            "postgres://user:pass@localhost:5432/tribal",
+        );
+        std::fs::write(
+            &config_path,
+            serde_yaml::to_string(&config).expect("configuration serialises"),
+        )
+        .expect("configuration writes");
+        let authority = authority::AuthorityLease::acquire(&config_path)
+            .expect("authority acquisition succeeds");
+        let authority::AuthorityAcquire::Acquired(authority) = authority else {
+            panic!("temporary config path has one authority");
+        };
+        let (config, mut worker_runtime) =
+            worker::spawn(configuration::ConfigAuthority::new(config_path.clone()))
+                .expect("configuration worker starts");
+        let config_terminal = worker_runtime
+            .take_terminal()
+            .expect("worker terminal has one owner");
+        let (_command_sender, receiver) = mpsc::channel(COMMAND_CAPACITY);
+        let (completion_sender, completions) = mpsc::channel(COMPLETION_CAPACITY);
+        let state = placeholder_state();
+        let (publisher, _snapshots) = watch::channel(state.snapshot());
+        let owner = LifecycleOwner {
+            receiver,
+            completions,
+            completion_sender,
+            observations: tokio::task::JoinSet::new(),
+            publisher,
+            state,
+            next_token: 1,
+            config_path,
+            config,
+            authority: Arc::new(authority),
+            shutdown: CancellationToken::new(),
+            shutdown_seen: false,
+            config_terminal,
+            worker_exit: None,
+        };
+        (temp, owner, worker_runtime)
     }
 
     #[test]
@@ -2893,6 +3422,187 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ready_custody_commit_is_folded_before_terminal_publication() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let child = early_child();
+        let runtime = child.identity.clone();
+        let (custody, _runtime_custody) =
+            ManagerCustody::pair_for_test().expect("custody pair creates");
+        let (start, _start_result) = oneshot::channel();
+        owner.state =
+            LifecycleState::Operating(LifecycleOperation::Launching(LaunchingOperation {
+                token: 41,
+                snapshot: tribal_wire::management::StartingLifecycleSnapshot {
+                    header: header(),
+                    phase: tribal_wire::management::StartingPhase::Starting,
+                },
+                origin: no_runtime_origin(),
+                child,
+                intent: LaunchIntent::Start {
+                    waiters: vec![start],
+                },
+                attachment: AttachmentStage::Committing(tokio::spawn(async {})),
+            }));
+        owner
+            .completion_sender
+            .try_send(LifecycleCompletion::CustodyCommitted {
+                token: 41,
+                result: Ok(CommittedCustody {
+                    custody,
+                    control_proof: RuntimeCustodyProof::new("proof".to_owned()),
+                }),
+            })
+            .expect("ready commit is queued");
+
+        owner.terminate_for_worker(None).await;
+
+        assert!(matches!(
+            owner.state.snapshot().phase,
+            LifecyclePhase::ManagerTerminating {
+                termination: ManagerTermination::ConfigWorkerPanicked {
+                    runtime: ManagerTerminationRuntime::Recoverable { runtime: observed },
+                    ..
+                }
+            } if observed == runtime
+        ));
+        let LifecycleState::TerminatingOperation {
+            operation: LifecycleOperation::Launching(operation),
+            ..
+        } = &mut owner.state
+        else {
+            panic!("terminal state retains the launch resources");
+        };
+        assert!(operation.child.custody.is_some());
+        drop(operation.child.custody.take());
+        let _ = operation.child.child.start_kill();
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, operation.child.child.wait())
+            .await
+            .expect("test child is reaped")
+            .expect("test child status is available");
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_forced_reap_commit_upgrades_custody_without_extending_deadline() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let child = early_child();
+        let runtime = child.identity.clone();
+        let deadline = tokio::time::Instant::now() + STOP_DEADLINE;
+        let (stop, _stop_result) = oneshot::channel();
+        owner.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(
+            CancellingLaunchOperation {
+                token: 42,
+                header: header(),
+                child,
+                origin: no_runtime_origin(),
+                intent: CancellationIntent::Stop {
+                    waiters: vec![stop],
+                },
+                attachment: AttachmentStage::Committing(tokio::spawn(async {})),
+                termination: EarlyTerminationStage::ForcedReap { deadline },
+            },
+        ));
+        let (custody, _runtime_custody) =
+            ManagerCustody::pair_for_test().expect("custody pair creates");
+
+        owner
+            .handle_custody_commit(
+                42,
+                Ok(CommittedCustody {
+                    custody,
+                    control_proof: RuntimeCustodyProof::new("proof".to_owned()),
+                }),
+            )
+            .await;
+
+        let LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation)) =
+            &mut owner.state
+        else {
+            panic!("forced cancellation remains in flight");
+        };
+        assert!(matches!(
+            operation.termination,
+            EarlyTerminationStage::ForcedReap { deadline: observed } if observed == deadline
+        ));
+        assert!(matches!(
+            operation.child.evidence,
+            tribal_wire::management::EarlyChildTerminationEvidence::Recoverable {
+                runtime: ref observed,
+            } if observed == &runtime
+        ));
+        assert!(operation.child.custody.is_some());
+        drop(operation.child.custody.take());
+        let _ = operation.child.child.start_kill();
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, operation.child.child.wait())
+            .await
+            .expect("test child is reaped")
+            .expect("test child status is available");
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_panicked_attachment_forces_then_reaps_early_child() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let task = tokio::spawn(async { panic!("attachment task panic") });
+        let (stop, _stop_result) = oneshot::channel();
+        owner.state = LifecycleState::Operating(LifecycleOperation::CancellingLaunch(
+            CancellingLaunchOperation {
+                token: 43,
+                header: header(),
+                child: early_child(),
+                origin: no_runtime_origin(),
+                intent: CancellationIntent::Stop {
+                    waiters: vec![stop],
+                },
+                attachment: AttachmentStage::Committing(task),
+                termination: EarlyTerminationStage::Graceful {
+                    task: GracefulStopTask::AwaitingCapability,
+                    deadline: tokio::time::Instant::now() + STOP_DEADLINE,
+                },
+            },
+        ));
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
+            while let LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation)) =
+                &owner.state
+            {
+                if attachment_task_finished(&operation.attachment) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("attachment panic becomes observable");
+
+        owner.observe_early_cancellation().await;
+
+        assert!(matches!(
+            owner.state,
+            LifecycleState::Operating(LifecycleOperation::CancellingLaunch(
+                CancellingLaunchOperation {
+                    termination: EarlyTerminationStage::ForcedReap { .. },
+                    ..
+                }
+            ))
+        ));
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
+            loop {
+                owner.observe_early_cancellation().await;
+                if matches!(owner.state, LifecycleState::NoRuntime(_)) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("forced child is reaped without waiting for the deadline");
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
     async fn test_config_worker_panic_publishes_the_terminal_snapshot_before_owner_exit() {
         let temp = tempfile::tempdir().expect("temporary authority root");
         let config_path = temp.path().join("tribal.yaml");
@@ -2932,7 +3642,7 @@ mod tests {
             config.panic_for_test().await,
             "the panic command is admitted"
         );
-        let exit = tokio::time::timeout(TERMINAL_DEADLINE, lifecycle_task)
+        let exit = tokio::time::timeout(TEST_OBSERVATION_DEADLINE, lifecycle_task)
             .await
             .expect("lifecycle owner observes the terminal channel")
             .expect("lifecycle task joins");
