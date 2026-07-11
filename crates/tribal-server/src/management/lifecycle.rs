@@ -311,6 +311,15 @@ enum RuntimeLinkEvent {
         generation: u64,
         connection: RuntimeControlConnection,
     },
+    RequestRecoveryExhausted {
+        generation: u64,
+    },
+}
+
+enum RequestReconnectOutcome {
+    Restored(RuntimeControlConnection),
+    Exhausted,
+    Cancelled,
 }
 
 enum StopCompletion {
@@ -669,9 +678,18 @@ async fn monitor_runtime_link_with<LogConnect, LogFuture, RequestConnect, Reques
             {
                 return;
             }
-            let Some(restored) = reconnect_request_channel(&mut connect_request, &cancel).await
-            else {
-                return;
+            let restored = match reconnect_request_channel(&mut connect_request, &cancel).await {
+                RequestReconnectOutcome::Restored(connection) => connection,
+                RequestReconnectOutcome::Exhausted => {
+                    let _ = send_runtime_link_event(
+                        &sender,
+                        &cancel,
+                        RuntimeLinkEvent::RequestRecoveryExhausted { generation },
+                    )
+                    .await;
+                    return;
+                }
+                RequestReconnectOutcome::Cancelled => return,
             };
             control = restored.clone();
             if !send_runtime_link_event(
@@ -763,26 +781,26 @@ where
 async fn reconnect_request_channel<Connect, ConnectFuture>(
     connect: &mut Connect,
     cancel: &CancellationToken,
-) -> Option<RuntimeControlConnection>
+) -> RequestReconnectOutcome
 where
     Connect: FnMut() -> ConnectFuture,
     ConnectFuture: Future<Output = Result<RuntimeControlConnection, RuntimeControlError>>,
 {
     for attempt in 0..RUNTIME_RECONNECT_ATTEMPTS {
         let result = tokio::select! {
-            () = cancel.cancelled() => return None,
+            () = cancel.cancelled() => return RequestReconnectOutcome::Cancelled,
             result = connect() => result,
         };
         if let Ok(connection) = result
             && connection.is_compatible()
         {
-            return Some(connection);
+            return RequestReconnectOutcome::Restored(connection);
         }
         if attempt + 1 < RUNTIME_RECONNECT_ATTEMPTS && !wait_for_retry(attempt, cancel).await {
-            return None;
+            return RequestReconnectOutcome::Cancelled;
         }
     }
-    None
+    RequestReconnectOutcome::Exhausted
 }
 
 async fn wait_for_retry(attempt: usize, cancel: &CancellationToken) -> bool {
@@ -995,6 +1013,35 @@ impl LifecycleOwner {
                         .as_mut()
                         .and_then(|link| link.restore_phase.take())
                         .unwrap_or_else(|| running_phase(&child.identity, &child.control, false));
+                    changed = true;
+                }
+                if changed {
+                    self.publish_current();
+                }
+            }
+            RuntimeLinkEvent::RequestRecoveryExhausted { generation } => {
+                let mut changed = false;
+                if let LifecycleState::Running { snapshot, child } = &mut self.state
+                    && child.link.as_ref().map(|link| link.generation) == Some(generation)
+                    && child
+                        .link
+                        .as_ref()
+                        .and_then(|link| link.restore_phase.as_ref())
+                        .is_some()
+                {
+                    let restart_pending = restart_pending(&snapshot.phase);
+                    snapshot.header = next_header(&snapshot.header);
+                    snapshot.phase = RunningPhase::Degraded {
+                        runtime: child.identity.clone(),
+                        reason: DegradedReason::RuntimeControlLost {
+                            report: readiness::derive(Vec::new(), false, Vec::new()),
+                            presentation: failure_presentation(
+                                "runtime control is unavailable",
+                                "the manager could not reconnect to the runtime",
+                            ),
+                        },
+                        restart_pending,
+                    };
                     changed = true;
                 }
                 if changed {
@@ -2568,40 +2615,41 @@ impl LifecycleOwner {
     }
 
     fn apply_config_change(&mut self) {
-        match &mut self.state {
-            LifecycleState::NoRuntime(_) => self.request_document_refresh(),
-            LifecycleState::Running { snapshot, .. } => match snapshot.phase.clone() {
-                RunningPhase::Healthy { runtime, .. } => {
-                    snapshot.header = next_header(&snapshot.header);
-                    snapshot.phase = RunningPhase::Healthy {
-                        runtime,
-                        restart_pending: true,
-                    };
-                    self.publish_current();
+        let changed = match &mut self.state {
+            LifecycleState::NoRuntime(_) => {
+                self.request_document_refresh();
+                false
+            }
+            LifecycleState::Running { snapshot, child } => {
+                let Some(phase) = with_restart_pending(snapshot.phase.clone()) else {
+                    return;
+                };
+                if let Some(underlying) = child
+                    .link
+                    .as_mut()
+                    .and_then(|link| link.restore_phase.as_mut())
+                    && let Some(updated) = with_restart_pending(underlying.clone())
+                {
+                    *underlying = updated;
                 }
-                RunningPhase::Degraded {
-                    runtime, reason, ..
-                } => {
-                    snapshot.header = next_header(&snapshot.header);
-                    snapshot.phase = RunningPhase::Degraded {
-                        runtime,
-                        reason,
-                        restart_pending: true,
-                    };
-                    self.publish_current();
-                }
-                RunningPhase::VersionMismatch { .. } => {}
-            },
+                snapshot.header = next_header(&snapshot.header);
+                snapshot.phase = phase;
+                true
+            }
             LifecycleState::Operating(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
-            | LifecycleState::Terminating(_) => {}
+            | LifecycleState::Terminating(_) => false,
+        };
+        if changed {
+            self.publish_current();
         }
     }
 
     fn apply_readiness(&mut self, report: ReadinessReport) {
         self.latest_readiness = LatestReadiness::Report(report.clone());
+        let mut changed = false;
         match &mut self.state {
             LifecycleState::NoRuntime(snapshot) => {
                 let failure = no_runtime_failure(&snapshot.phase);
@@ -2617,52 +2665,39 @@ impl LifecycleOwner {
                             readiness,
                             failure,
                         };
-                        self.publish_current();
+                        changed = true;
                     }
                 } else if let Ok(readiness) = StartClearReadinessReport::try_from(report) {
                     snapshot.header = next_header(&snapshot.header);
                     snapshot.phase = NoRuntimePhase::Stopped {
                         state: StoppedState::Ready { readiness, failure },
                     };
-                    self.publish_current();
+                    changed = true;
                 }
             }
-            LifecycleState::Running { snapshot, .. } => match snapshot.phase.clone() {
-                RunningPhase::Healthy {
-                    runtime,
-                    restart_pending,
-                }
-                | RunningPhase::Degraded {
-                    runtime,
-                    restart_pending,
-                    ..
-                } => {
-                    if matches!(report.health, HealthVerdict::Degraded { .. }) {
-                        if let Ok(report) = HealthDegradedReadinessReport::try_from(report) {
-                            snapshot.header = next_header(&snapshot.header);
-                            snapshot.phase = RunningPhase::Degraded {
-                                runtime,
-                                reason: DegradedReason::Readiness { report },
-                                restart_pending,
-                            };
-                            self.publish_current();
-                        }
-                    } else if matches!(report.health, HealthVerdict::Clear) {
-                        snapshot.header = next_header(&snapshot.header);
-                        snapshot.phase = RunningPhase::Healthy {
-                            runtime,
-                            restart_pending,
-                        };
-                        self.publish_current();
+            LifecycleState::Running { snapshot, child } => {
+                if let Some(underlying) = child
+                    .link
+                    .as_mut()
+                    .and_then(|link| link.restore_phase.as_mut())
+                {
+                    if let Some(updated) = running_phase_for_readiness(underlying, &report) {
+                        *underlying = updated;
                     }
+                } else if let Some(phase) = running_phase_for_readiness(&snapshot.phase, &report) {
+                    snapshot.header = next_header(&snapshot.header);
+                    snapshot.phase = phase;
+                    changed = true;
                 }
-                RunningPhase::VersionMismatch { .. } => {}
-            },
+            }
             LifecycleState::Operating(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
             | LifecycleState::Terminating(_) => {}
+        }
+        if changed {
+            self.publish_current();
         }
     }
 
@@ -3859,6 +3894,57 @@ fn restart_pending(phase: &RunningPhase) -> bool {
     }
 }
 
+fn with_restart_pending(phase: RunningPhase) -> Option<RunningPhase> {
+    match phase {
+        RunningPhase::Healthy { runtime, .. } => Some(RunningPhase::Healthy {
+            runtime,
+            restart_pending: true,
+        }),
+        RunningPhase::Degraded {
+            runtime, reason, ..
+        } => Some(RunningPhase::Degraded {
+            runtime,
+            reason,
+            restart_pending: true,
+        }),
+        RunningPhase::VersionMismatch { .. } => None,
+    }
+}
+
+fn running_phase_for_readiness(
+    phase: &RunningPhase,
+    report: &ReadinessReport,
+) -> Option<RunningPhase> {
+    let (runtime, restart_pending) = match phase {
+        RunningPhase::Healthy {
+            runtime,
+            restart_pending,
+        }
+        | RunningPhase::Degraded {
+            runtime,
+            restart_pending,
+            ..
+        } => (runtime.clone(), *restart_pending),
+        RunningPhase::VersionMismatch { .. } => return None,
+    };
+    if matches!(report.health, HealthVerdict::Degraded { .. }) {
+        HealthDegradedReadinessReport::try_from(report.clone())
+            .ok()
+            .map(|report| RunningPhase::Degraded {
+                runtime,
+                reason: DegradedReason::Readiness { report },
+                restart_pending,
+            })
+    } else if matches!(report.health, HealthVerdict::Clear) {
+        Some(RunningPhase::Healthy {
+            runtime,
+            restart_pending,
+        })
+    } else {
+        None
+    }
+}
+
 fn shutdown_stopping(snapshot: &StoppingLifecycleSnapshot) -> ShutdownInProgressLifecycleSnapshot {
     let StoppingPhase::Stopping { runtime } = &snapshot.phase;
     ShutdownInProgressLifecycleSnapshot {
@@ -4096,6 +4182,21 @@ mod tests {
                 &tribal_wire::management::ConfigDigest::from_bytes(b"valid"),
             ),
         }
+    }
+
+    fn health_degraded_report() -> ReadinessReport {
+        readiness::derive(
+            vec![readiness::observation(
+                CheckResult::Fail {
+                    name: CheckName::ConfigValidate,
+                    detail: "runtime configuration changed".to_owned(),
+                    remediation: "restart the runtime".to_owned(),
+                },
+                Vec::new(),
+            )],
+            true,
+            Vec::new(),
+        )
     }
 
     fn no_runtime_origin() -> NoRuntimeLifecycleSnapshot {
@@ -4616,6 +4717,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_request_recovery_exhaustion_is_terminal_and_cancellation_is_silent() {
+        let (control, request_peer) =
+            RuntimeControlConnection::pair_for_test().expect("request pair creates");
+        let (observer, _observer_peer) =
+            RuntimeLogObserver::pair_for_test().expect("observer pair creates");
+        let observer = Arc::new(Mutex::new(Some(observer)));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (sender, mut receiver) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        drop(request_peer);
+        let task = tokio::spawn({
+            let observer = Arc::clone(&observer);
+            let attempts = Arc::clone(&attempts);
+            let cancel = cancel.clone();
+            async move {
+                monitor_runtime_link_with(
+                    23,
+                    control,
+                    sender,
+                    cancel,
+                    move || {
+                        let result = observer
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take()
+                            .ok_or(RuntimeControlError::Closed);
+                        async move { result }
+                    },
+                    move || {
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        async { Err(RuntimeControlError::Closed) }
+                    },
+                )
+                .await;
+            }
+        });
+
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::ObservationInterrupted { generation: 23 }
+        ));
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::RequestLost { generation: 23 }
+        ));
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::RequestRecoveryExhausted { generation: 23 }
+        ));
+        assert_eq!(attempts.load(Ordering::Relaxed), RUNTIME_RECONNECT_ATTEMPTS);
+        task.await.expect("exhausted monitor joins");
+
+        let (control, request_peer) =
+            RuntimeControlConnection::pair_for_test().expect("cancel request pair creates");
+        let (observer, _observer_peer) =
+            RuntimeLogObserver::pair_for_test().expect("cancel observer pair creates");
+        let observer = Arc::new(Mutex::new(Some(observer)));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (sender, mut receiver) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        drop(request_peer);
+        let task = tokio::spawn({
+            let observer = Arc::clone(&observer);
+            let attempts = Arc::clone(&attempts);
+            let cancel = cancel.clone();
+            async move {
+                monitor_runtime_link_with(
+                    24,
+                    control,
+                    sender,
+                    cancel,
+                    move || {
+                        let result = observer
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take()
+                            .ok_or(RuntimeControlError::Closed);
+                        async move { result }
+                    },
+                    move || {
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        async { Err(RuntimeControlError::Closed) }
+                    },
+                )
+                .await;
+            }
+        });
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::ObservationInterrupted { generation: 24 }
+        ));
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::RequestLost { generation: 24 }
+        ));
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
+            while attempts.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first request retry runs");
+        cancel.cancel();
+        task.await.expect("cancelled monitor joins");
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn test_runtime_link_events_are_generation_fenced_and_log_failures_fail_open() {
         let (_temp, mut owner, worker_runtime) = test_owner();
         let (mut child, _runtime_custody, _runtime_control) = a_managed_child();
@@ -4629,7 +4838,7 @@ mod tests {
             header: header(),
             phase: RunningPhase::Healthy {
                 runtime: child.identity.clone(),
-                restart_pending: true,
+                restart_pending: false,
             },
         };
         let initial = LifecycleSnapshot::from(snapshot.clone());
@@ -4666,6 +4875,18 @@ mod tests {
             lost.phase,
             LifecyclePhase::Degraded {
                 reason: DegradedReason::RuntimeControlLost { .. },
+                restart_pending: false,
+                ..
+            }
+        ));
+
+        owner.apply_config_change();
+        owner.apply_readiness(health_degraded_report());
+        let recovering = owner.state.snapshot();
+        assert!(matches!(
+            recovering.phase,
+            LifecyclePhase::Degraded {
+                reason: DegradedReason::RuntimeControlLost { .. },
                 restart_pending: true,
                 ..
             }
@@ -4678,19 +4899,58 @@ mod tests {
             connection: restored,
         });
         let restored = owner.state.snapshot();
-        assert_eq!(restored.header.revision, initial.header.revision + 2);
+        assert_eq!(restored.header.revision, recovering.header.revision + 1);
         assert!(matches!(
             restored.phase,
+            LifecyclePhase::Degraded {
+                reason: DegradedReason::Readiness { .. },
+                restart_pending: true,
+                ..
+            }
+        ));
+
+        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestLost { generation });
+        owner.apply_readiness(readiness::derive(Vec::new(), true, Vec::new()));
+        assert!(matches!(
+            owner.state.snapshot().phase,
+            LifecyclePhase::Degraded {
+                reason: DegradedReason::RuntimeControlLost { .. },
+                restart_pending: true,
+                ..
+            }
+        ));
+        let (restored, _runtime_peer) =
+            RuntimeControlConnection::pair_for_test().expect("second restored connection creates");
+        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestRestored {
+            generation,
+            connection: restored,
+        });
+        assert!(matches!(
+            owner.state.snapshot().phase,
             LifecyclePhase::Healthy {
                 restart_pending: true,
                 ..
             }
         ));
 
-        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestLost {
+        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestLost { generation });
+        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestRecoveryExhausted { generation });
+        let exhausted = owner.state.snapshot();
+        assert!(matches!(
+            exhausted.phase,
+            LifecyclePhase::Degraded {
+                reason: DegradedReason::RuntimeControlLost {
+                    ref presentation,
+                    ..
+                },
+                ..
+            } if presentation.message.contains("could not reconnect")
+        ));
+
+        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestRecoveryExhausted {
             generation: generation + 1,
         });
-        assert_eq!(owner.state.snapshot(), restored);
+        assert_eq!(owner.state.snapshot(), exhausted);
         drop(owner);
         worker_runtime.join().expect("worker thread joins");
     }
