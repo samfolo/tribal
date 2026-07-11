@@ -435,6 +435,17 @@ impl RuntimeReconnectCapability {
 }
 
 impl RuntimeLogObserver {
+    #[cfg(test)]
+    pub(crate) fn pair_for_test() -> io::Result<(Self, UnixStream)> {
+        let (manager, runtime) = UnixStream::pair()?;
+        Ok((
+            Self {
+                stream: BufReader::new(manager),
+            },
+            runtime,
+        ))
+    }
+
     pub(crate) async fn next(
         &mut self,
     ) -> Result<Option<RuntimeControlEvent>, RuntimeControlError> {

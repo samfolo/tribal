@@ -1,6 +1,6 @@
 //! One-owner lifecycle reducer for managed runtime processes.
 
-use std::{os::fd::AsRawFd as _, path::PathBuf, sync::Arc, time::Duration};
+use std::{future::Future, os::fd::AsRawFd as _, path::PathBuf, sync::Arc, time::Duration};
 
 use tokio::{
     process::Child,
@@ -605,11 +605,42 @@ async fn request<T>(
 async fn monitor_runtime_link(
     generation: u64,
     capability: RuntimeReconnectCapability,
-    mut control: RuntimeControlConnection,
+    control: RuntimeControlConnection,
     sender: mpsc::Sender<RuntimeLinkEvent>,
     cancel: CancellationToken,
 ) {
-    let mut observer = connect_log_observer(&capability, &cancel).await;
+    let log_capability = capability.clone();
+    monitor_runtime_link_with(
+        generation,
+        control,
+        sender,
+        cancel,
+        move || {
+            let capability = log_capability.clone();
+            async move { capability.connect_logs(RUNTIME_RECONNECT_DEADLINE).await }
+        },
+        move || {
+            let capability = capability.clone();
+            async move { capability.connect_request(RUNTIME_RECONNECT_DEADLINE).await }
+        },
+    )
+    .await;
+}
+
+async fn monitor_runtime_link_with<LogConnect, LogFuture, RequestConnect, RequestFuture>(
+    generation: u64,
+    mut control: RuntimeControlConnection,
+    sender: mpsc::Sender<RuntimeLinkEvent>,
+    cancel: CancellationToken,
+    mut connect_logs: LogConnect,
+    mut connect_request: RequestConnect,
+) where
+    LogConnect: FnMut() -> LogFuture + Send,
+    LogFuture: Future<Output = Result<RuntimeLogObserver, RuntimeControlError>> + Send,
+    RequestConnect: FnMut() -> RequestFuture + Send,
+    RequestFuture: Future<Output = Result<RuntimeControlConnection, RuntimeControlError>> + Send,
+{
+    let mut observer = connect_log_observer(&mut connect_logs, &cancel).await;
     if observer.is_none()
         && !send_runtime_link_event(
             &sender,
@@ -638,7 +669,8 @@ async fn monitor_runtime_link(
             {
                 return;
             }
-            let Some(restored) = reconnect_request_channel(&capability, &cancel).await else {
+            let Some(restored) = reconnect_request_channel(&mut connect_request, &cancel).await
+            else {
                 return;
             };
             control = restored.clone();
@@ -654,7 +686,7 @@ async fn monitor_runtime_link(
             {
                 return;
             }
-            observer = connect_log_observer(&capability, &cancel).await;
+            observer = connect_log_observer(&mut connect_logs, &cancel).await;
             if observer.is_none()
                 && !send_runtime_link_event(
                     &sender,
@@ -700,19 +732,23 @@ async fn monitor_runtime_link(
             {
                 return;
             }
-            observer = connect_log_observer(&capability, &cancel).await;
+            observer = connect_log_observer(&mut connect_logs, &cancel).await;
         }
     }
 }
 
-async fn connect_log_observer(
-    capability: &RuntimeReconnectCapability,
+async fn connect_log_observer<Connect, ConnectFuture>(
+    connect: &mut Connect,
     cancel: &CancellationToken,
-) -> Option<RuntimeLogObserver> {
+) -> Option<RuntimeLogObserver>
+where
+    Connect: FnMut() -> ConnectFuture,
+    ConnectFuture: Future<Output = Result<RuntimeLogObserver, RuntimeControlError>>,
+{
     for attempt in 0..RUNTIME_RECONNECT_ATTEMPTS {
         let result = tokio::select! {
             () = cancel.cancelled() => return None,
-            result = capability.connect_logs(RUNTIME_RECONNECT_DEADLINE) => result,
+            result = connect() => result,
         };
         if let Ok(observer) = result {
             return Some(observer);
@@ -724,14 +760,18 @@ async fn connect_log_observer(
     None
 }
 
-async fn reconnect_request_channel(
-    capability: &RuntimeReconnectCapability,
+async fn reconnect_request_channel<Connect, ConnectFuture>(
+    connect: &mut Connect,
     cancel: &CancellationToken,
-) -> Option<RuntimeControlConnection> {
+) -> Option<RuntimeControlConnection>
+where
+    Connect: FnMut() -> ConnectFuture,
+    ConnectFuture: Future<Output = Result<RuntimeControlConnection, RuntimeControlError>>,
+{
     for attempt in 0..RUNTIME_RECONNECT_ATTEMPTS {
         let result = tokio::select! {
             () = cancel.cancelled() => return None,
-            result = capability.connect_request(RUNTIME_RECONNECT_DEADLINE) => result,
+            result = connect() => result,
         };
         if let Ok(connection) = result
             && connection.is_compatible()
@@ -4010,11 +4050,36 @@ fn custody_loss_termination(runtime: CustodyLossTerminationRuntime) -> ManagerTe
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use tokio::io::AsyncWriteExt as _;
+
     use super::*;
     use crate::management::{authority, configuration, worker};
 
     /// Local lifecycle observations have no external service dependency.
     const TEST_OBSERVATION_DEADLINE: Duration = Duration::from_secs(2);
+
+    async fn runtime_link_event(
+        receiver: &mut mpsc::Receiver<RuntimeLinkEvent>,
+    ) -> RuntimeLinkEvent {
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, receiver.recv())
+            .await
+            .expect("runtime-link event arrives before the test deadline")
+            .expect("runtime-link sender remains live")
+    }
+
+    async fn send_observer_event(peer: &mut tokio::net::UnixStream, event: &RuntimeControlEvent) {
+        let mut bytes = serde_json::to_vec(event).expect("runtime event serialises");
+        bytes.push(b'\n');
+        peer.write_all(&bytes).await.expect("runtime event writes");
+    }
 
     fn header() -> LifecycleSnapshotHeader {
         LifecycleSnapshotHeader {
@@ -4310,6 +4375,244 @@ mod tests {
             worker_exit: None,
         };
         (temp, owner, worker_runtime)
+    }
+
+    #[tokio::test]
+    async fn test_runtime_link_monitor_resubscribes_after_observer_eof() {
+        let (control, _request_peer) =
+            RuntimeControlConnection::pair_for_test().expect("request pair creates");
+        let (first, first_peer) =
+            RuntimeLogObserver::pair_for_test().expect("first observer pair creates");
+        let (second, mut second_peer) =
+            RuntimeLogObserver::pair_for_test().expect("second observer pair creates");
+        let observers = Arc::new(Mutex::new(VecDeque::from([Ok(first), Ok(second)])));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (sender, mut receiver) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn({
+            let observers = Arc::clone(&observers);
+            let attempts = Arc::clone(&attempts);
+            let cancel = cancel.clone();
+            async move {
+                monitor_runtime_link_with(
+                    7,
+                    control,
+                    sender,
+                    cancel,
+                    move || {
+                        let result = observers
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .pop_front()
+                            .unwrap_or(Err(RuntimeControlError::Closed));
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        async move { result }
+                    },
+                    || async { Err(RuntimeControlError::Closed) },
+                )
+                .await;
+            }
+        });
+
+        drop(first_peer);
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::ObservationInterrupted { generation: 7 }
+        ));
+        send_observer_event(
+            &mut second_peer,
+            &RuntimeControlEvent::LogLine {
+                line: "resumed".to_owned(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::Observation {
+                generation: 7,
+                event: RuntimeControlEvent::LogLine { ref line },
+            } if line == "resumed"
+        ));
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+
+        cancel.cancel();
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, task)
+            .await
+            .expect("monitor cancels")
+            .expect("monitor task joins");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_link_monitor_exhausts_and_cancels_observer_retry() {
+        let (control, _request_peer) =
+            RuntimeControlConnection::pair_for_test().expect("request pair creates");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (sender, mut receiver) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn({
+            let attempts = Arc::clone(&attempts);
+            let cancel = cancel.clone();
+            async move {
+                monitor_runtime_link_with(
+                    11,
+                    control,
+                    sender,
+                    cancel,
+                    move || {
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        async { Err(RuntimeControlError::ProofRefused) }
+                    },
+                    || async { Err(RuntimeControlError::Closed) },
+                )
+                .await;
+            }
+        });
+
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::ObservationInterrupted { generation: 11 }
+        ));
+        assert_eq!(attempts.load(Ordering::Relaxed), RUNTIME_RECONNECT_ATTEMPTS);
+        cancel.cancel();
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, task)
+            .await
+            .expect("disconnected monitor cancels")
+            .expect("monitor task joins");
+
+        let (control, _request_peer) =
+            RuntimeControlConnection::pair_for_test().expect("second request pair creates");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (sender, _receiver) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn({
+            let attempts = Arc::clone(&attempts);
+            let cancel = cancel.clone();
+            async move {
+                monitor_runtime_link_with(
+                    12,
+                    control,
+                    sender,
+                    cancel,
+                    move || {
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        async { Err(RuntimeControlError::ProofRefused) }
+                    },
+                    || async { Err(RuntimeControlError::Closed) },
+                )
+                .await;
+            }
+        });
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
+            while attempts.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first retry attempt runs");
+        cancel.cancel();
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, task)
+            .await
+            .expect("backoff cancellation joins")
+            .expect("monitor task joins");
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_request_eof_restarts_the_observer_after_required_recovery() {
+        let (control, request_peer) =
+            RuntimeControlConnection::pair_for_test().expect("request pair creates");
+        let (first_observer, _first_observer_peer) =
+            RuntimeLogObserver::pair_for_test().expect("first observer pair creates");
+        let (second_observer, mut second_observer_peer) =
+            RuntimeLogObserver::pair_for_test().expect("second observer pair creates");
+        let observers = Arc::new(Mutex::new(VecDeque::from([
+            Ok(first_observer),
+            Ok(second_observer),
+        ])));
+        let (restored, _restored_peer) =
+            RuntimeControlConnection::pair_for_test().expect("restored request pair creates");
+        let requests = Arc::new(Mutex::new(VecDeque::from([Ok(restored)])));
+        let log_attempts = Arc::new(AtomicUsize::new(0));
+        let request_attempts = Arc::new(AtomicUsize::new(0));
+        let (sender, mut receiver) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn({
+            let observers = Arc::clone(&observers);
+            let requests = Arc::clone(&requests);
+            let log_attempts = Arc::clone(&log_attempts);
+            let request_attempts = Arc::clone(&request_attempts);
+            let cancel = cancel.clone();
+            async move {
+                monitor_runtime_link_with(
+                    19,
+                    control,
+                    sender,
+                    cancel,
+                    move || {
+                        log_attempts.fetch_add(1, Ordering::Relaxed);
+                        let result = observers
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .pop_front()
+                            .unwrap_or(Err(RuntimeControlError::Closed));
+                        async move { result }
+                    },
+                    move || {
+                        request_attempts.fetch_add(1, Ordering::Relaxed);
+                        let result = requests
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .pop_front()
+                            .unwrap_or(Err(RuntimeControlError::Closed));
+                        async move { result }
+                    },
+                )
+                .await;
+            }
+        });
+
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
+            while log_attempts.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("initial observer connects");
+        drop(request_peer);
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::ObservationInterrupted { generation: 19 }
+        ));
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::RequestLost { generation: 19 }
+        ));
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::RequestRestored { generation: 19, .. }
+        ));
+        send_observer_event(
+            &mut second_observer_peer,
+            &RuntimeControlEvent::LogLine {
+                line: "after recovery".to_owned(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::Observation {
+                generation: 19,
+                event: RuntimeControlEvent::LogLine { ref line },
+            } if line == "after recovery"
+        ));
+        assert_eq!(log_attempts.load(Ordering::Relaxed), 2);
+        assert_eq!(request_attempts.load(Ordering::Relaxed), 1);
+
+        cancel.cancel();
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, task)
+            .await
+            .expect("restored monitor cancels")
+            .expect("monitor task joins");
     }
 
     #[tokio::test]
