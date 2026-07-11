@@ -1,10 +1,10 @@
 //! One-owner lifecycle reducer for managed runtime processes.
 
-use std::{os::fd::AsRawFd as _, path::PathBuf, sync::Arc, time::Duration};
+use std::{future::Future, os::fd::AsRawFd as _, path::PathBuf, sync::Arc, time::Duration};
 
 use tokio::{
     process::Child,
-    sync::{mpsc, oneshot, watch},
+    sync::{broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -15,16 +15,16 @@ use tribal_wire::{
         ConfigDiagnosticLocation, ConfigDocument, ConfigFilePath, CustodyLossTerminationRuntime,
         DegradedReason, FailedNoRuntimeLifecycleSnapshot, FailedNoRuntimePhase,
         HealthDegradedReadinessReport, HealthVerdict, LifecyclePhase, LifecycleSnapshot,
-        LifecycleSnapshotHeader, ManagedRuntimeStatusResult, ManagerShutdownOperation,
-        ManagerShutdownResult, ManagerTerminatingLifecycleSnapshot, ManagerTerminatingPhase,
-        ManagerTermination, ManagerTerminationRuntime, NoRuntimeLifecycleSnapshot, NoRuntimePhase,
-        ReadinessReport, RestartOperationInProgress, RestartRuntimeOperation,
-        RestartRuntimeUnresponsiveLifecycleSnapshot, RestartRuntimeUnresponsivePhase,
-        RunningLifecycleSnapshot, RunningPhase, RuntimeExitFailure, RuntimeIdentity,
-        RuntimeLogsTailResult, RuntimeOperation, RuntimeReadUnavailable, RuntimeRestartResult,
-        RuntimeStartResult, RuntimeStopResult, RuntimeStopTimedOutFailure, RuntimeTokenListResult,
-        RuntimeUnresponsiveLifecycleSnapshot, RuntimeUnresponsivePhase,
-        ShutdownInProgressLifecycleSnapshot, ShutdownInProgressPhase,
+        LifecycleSnapshotHeader, ManagedRuntimeStatusResult, ManagementEvent, ManagementLogLoss,
+        ManagerShutdownOperation, ManagerShutdownResult, ManagerTerminatingLifecycleSnapshot,
+        ManagerTerminatingPhase, ManagerTermination, ManagerTerminationRuntime,
+        NoRuntimeLifecycleSnapshot, NoRuntimePhase, ReadinessReport, RestartOperationInProgress,
+        RestartRuntimeOperation, RestartRuntimeUnresponsiveLifecycleSnapshot,
+        RestartRuntimeUnresponsivePhase, RunningLifecycleSnapshot, RunningPhase,
+        RuntimeExitFailure, RuntimeIdentity, RuntimeLogsTailResult, RuntimeOperation,
+        RuntimeReadUnavailable, RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult,
+        RuntimeStopTimedOutFailure, RuntimeTokenListResult, RuntimeUnresponsiveLifecycleSnapshot,
+        RuntimeUnresponsivePhase, ShutdownInProgressLifecycleSnapshot, ShutdownInProgressPhase,
         ShutdownRuntimeUnresponsiveLifecycleSnapshot, ShutdownRuntimeUnresponsivePhase,
         StartBlockedReadinessReport, StartBlockedVerdict, StartClearReadinessReport,
         StartClearVerdict, StartOperationInProgress, StartSuperseder, StartVerdict,
@@ -32,7 +32,9 @@ use tribal_wire::{
         StopRuntimeUnresponsivePhase, StoppedProcessFailure, StoppedState,
         StoppingLifecycleSnapshot, StoppingPhase,
     },
-    runtime_control::{RuntimeConfigApplyOutcome, RuntimeConfigChange, RuntimeCustodyProof},
+    runtime_control::{
+        RuntimeConfigApplyOutcome, RuntimeConfigChange, RuntimeControlEvent, RuntimeCustodyProof,
+    },
 };
 
 use super::{
@@ -42,20 +44,29 @@ use super::{
         ManagerCustody, generate_proof,
     },
     readiness,
-    runtime_control::{RuntimeControlClient, RuntimeControlConnection, RuntimeControlError},
+    runtime_control::{
+        RuntimeControlAdmission, RuntimeControlClient, RuntimeControlConnection,
+        RuntimeControlError, RuntimeLogObserver, RuntimeReconnectCapability,
+    },
     worker::{ConfigWorkerClient, ConfigWorkerExit},
 };
 use crate::commands::serve::MANAGED_AUTHORITY_FD;
 
 const COMMAND_CAPACITY: usize = 16;
 const COMPLETION_CAPACITY: usize = 1;
+const RUNTIME_EVENT_CAPACITY: usize = 64;
+const MANAGEMENT_EVENT_CAPACITY: usize = 64;
 const STOP_DEADLINE: Duration = Duration::from_secs(10);
+const RUNTIME_LINK_POLL: Duration = Duration::from_millis(100);
+const RUNTIME_RECONNECT_DEADLINE: Duration = Duration::from_secs(1);
+const RUNTIME_RECONNECT_ATTEMPTS: usize = 3;
 
 /// Async command handle for the sole lifecycle owner task.
 #[derive(Debug, Clone)]
 pub(crate) struct LifecycleController {
     sender: mpsc::Sender<LifecycleCommand>,
     snapshots: watch::Receiver<LifecycleSnapshot>,
+    events: broadcast::Sender<ManagementEvent>,
 }
 
 enum LifecycleCommand {
@@ -91,6 +102,8 @@ struct ManagedChild {
     identity: RuntimeIdentity,
     custody: ManagerCustody,
     control: RuntimeControlConnection,
+    reconnect: Option<RuntimeReconnectCapability>,
+    link: Option<RuntimeLink>,
 }
 
 struct PreparedChild {
@@ -110,7 +123,7 @@ struct EarlyChild {
     child: Child,
     identity: RuntimeIdentity,
     custody: Option<ManagerCustody>,
-    control: Option<RuntimeControlConnection>,
+    control: Option<RuntimeControlAdmission>,
     evidence: tribal_wire::management::EarlyChildTerminationEvidence,
 }
 
@@ -249,7 +262,7 @@ enum LifecycleCompletion {
     },
     RuntimeConnected {
         token: u64,
-        result: Result<RuntimeControlConnection, RuntimeControlError>,
+        result: Result<RuntimeControlAdmission, RuntimeControlError>,
     },
     EarlyStopRequested {
         token: u64,
@@ -263,6 +276,50 @@ enum LifecycleCompletion {
         token: u64,
         document: Option<ConfigDocument>,
     },
+}
+
+struct RuntimeLink {
+    generation: u64,
+    cancel: CancellationToken,
+    restore_phase: Option<RunningPhase>,
+}
+
+impl RuntimeLink {
+    fn cancel(&self) {
+        self.cancel.cancel();
+    }
+}
+
+impl Drop for RuntimeLink {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+enum RuntimeLinkEvent {
+    Observation {
+        generation: u64,
+        event: RuntimeControlEvent,
+    },
+    ObservationInterrupted {
+        generation: u64,
+    },
+    RequestLost {
+        generation: u64,
+    },
+    RequestRestored {
+        generation: u64,
+        connection: RuntimeControlConnection,
+    },
+    RequestRecoveryExhausted {
+        generation: u64,
+    },
+}
+
+enum RequestReconnectOutcome {
+    Restored(RuntimeControlConnection),
+    Exhausted,
+    Cancelled,
 }
 
 enum StopCompletion {
@@ -280,11 +337,15 @@ struct LifecycleOwner {
     receiver: mpsc::Receiver<LifecycleCommand>,
     completions: mpsc::Receiver<LifecycleCompletion>,
     completion_sender: mpsc::Sender<LifecycleCompletion>,
+    runtime_events: mpsc::Receiver<RuntimeLinkEvent>,
+    runtime_event_sender: mpsc::Sender<RuntimeLinkEvent>,
     observations: tokio::task::JoinSet<()>,
     publisher: watch::Sender<LifecycleSnapshot>,
+    events: broadcast::Sender<ManagementEvent>,
     state: LifecycleState,
     latest_readiness: LatestReadiness,
     next_token: u64,
+    next_runtime_generation: u64,
     config_path: PathBuf,
     config: ConfigWorkerClient,
     authority: Arc<AuthorityLease>,
@@ -393,7 +454,7 @@ impl LifecycleController {
         let latest_readiness = LatestReadiness::from_document(&document);
         let state = match recovered {
             Some(recovered) => {
-                let control = RuntimeControlClient::connect(
+                let admission = RuntimeControlClient::connect(
                     &authority.paths().runtime_control_socket_path,
                     &header.manager_instance_id,
                     &recovered.identity,
@@ -401,14 +462,16 @@ impl LifecycleController {
                 )
                 .await
                 .map_err(|source| LifecycleStartError::RuntimeControl { source })?;
-                let phase = running_phase(&recovered.identity, &control, false);
+                let phase = running_phase(&recovered.identity, &admission.connection, false);
                 LifecycleState::Running {
                     snapshot: RunningLifecycleSnapshot { header, phase },
                     child: ManagedChild {
                         process: ManagedProcess::Recovered,
                         identity: recovered.identity,
                         custody: recovered.custody,
-                        control,
+                        control: admission.connection,
+                        reconnect: admission.reconnect,
+                        link: None,
                     },
                 }
             }
@@ -422,15 +485,21 @@ impl LifecycleController {
         let (publisher, snapshots) = watch::channel(state.snapshot());
         let (sender, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (completion_sender, completions) = mpsc::channel(COMPLETION_CAPACITY);
-        let owner = LifecycleOwner {
+        let (runtime_event_sender, runtime_events) = mpsc::channel(RUNTIME_EVENT_CAPACITY);
+        let (events, _) = broadcast::channel(MANAGEMENT_EVENT_CAPACITY);
+        let mut owner = LifecycleOwner {
             receiver,
             completions,
             completion_sender,
+            runtime_events,
+            runtime_event_sender,
             observations: tokio::task::JoinSet::new(),
             publisher,
+            events: events.clone(),
             state,
             latest_readiness,
             next_token: 1,
+            next_runtime_generation: 1,
             config_path,
             config,
             authority,
@@ -439,12 +508,24 @@ impl LifecycleController {
             config_terminal,
             worker_exit: None,
         };
+        owner.start_runtime_link();
         let task = tokio::spawn(owner.run());
-        Ok((Self { sender, snapshots }, task))
+        Ok((
+            Self {
+                sender,
+                snapshots,
+                events,
+            },
+            task,
+        ))
     }
 
     pub(crate) fn subscribe(&self) -> watch::Receiver<LifecycleSnapshot> {
         self.snapshots.clone()
+    }
+
+    pub(crate) fn subscribe_events(&self) -> broadcast::Receiver<ManagementEvent> {
+        self.events.subscribe()
     }
 
     pub(crate) async fn snapshot(&self) -> Option<LifecycleSnapshot> {
@@ -530,6 +611,217 @@ async fn request<T>(
     receiver.await.ok()
 }
 
+async fn monitor_runtime_link(
+    generation: u64,
+    capability: RuntimeReconnectCapability,
+    control: RuntimeControlConnection,
+    sender: mpsc::Sender<RuntimeLinkEvent>,
+    cancel: CancellationToken,
+) {
+    let log_capability = capability.clone();
+    monitor_runtime_link_with(
+        generation,
+        control,
+        sender,
+        cancel,
+        move || {
+            let capability = log_capability.clone();
+            async move { capability.connect_logs(RUNTIME_RECONNECT_DEADLINE).await }
+        },
+        move || {
+            let capability = capability.clone();
+            async move { capability.connect_request(RUNTIME_RECONNECT_DEADLINE).await }
+        },
+    )
+    .await;
+}
+
+async fn monitor_runtime_link_with<LogConnect, LogFuture, RequestConnect, RequestFuture>(
+    generation: u64,
+    mut control: RuntimeControlConnection,
+    sender: mpsc::Sender<RuntimeLinkEvent>,
+    cancel: CancellationToken,
+    mut connect_logs: LogConnect,
+    mut connect_request: RequestConnect,
+) where
+    LogConnect: FnMut() -> LogFuture + Send,
+    LogFuture: Future<Output = Result<RuntimeLogObserver, RuntimeControlError>> + Send,
+    RequestConnect: FnMut() -> RequestFuture + Send,
+    RequestFuture: Future<Output = Result<RuntimeControlConnection, RuntimeControlError>> + Send,
+{
+    let mut observer = connect_log_observer(&mut connect_logs, &cancel).await;
+    if observer.is_none()
+        && !send_runtime_link_event(
+            &sender,
+            &cancel,
+            RuntimeLinkEvent::ObservationInterrupted { generation },
+        )
+        .await
+    {
+        return;
+    }
+    loop {
+        if control.is_closed() {
+            drop(observer.take());
+            if !send_runtime_link_event(
+                &sender,
+                &cancel,
+                RuntimeLinkEvent::ObservationInterrupted { generation },
+            )
+            .await
+                || !send_runtime_link_event(
+                    &sender,
+                    &cancel,
+                    RuntimeLinkEvent::RequestLost { generation },
+                )
+                .await
+            {
+                return;
+            }
+            let restored = match reconnect_request_channel(&mut connect_request, &cancel).await {
+                RequestReconnectOutcome::Restored(connection) => connection,
+                RequestReconnectOutcome::Exhausted => {
+                    let _ = send_runtime_link_event(
+                        &sender,
+                        &cancel,
+                        RuntimeLinkEvent::RequestRecoveryExhausted { generation },
+                    )
+                    .await;
+                    return;
+                }
+                RequestReconnectOutcome::Cancelled => return,
+            };
+            control = restored.clone();
+            if !send_runtime_link_event(
+                &sender,
+                &cancel,
+                RuntimeLinkEvent::RequestRestored {
+                    generation,
+                    connection: restored,
+                },
+            )
+            .await
+            {
+                return;
+            }
+            observer = connect_log_observer(&mut connect_logs, &cancel).await;
+            if observer.is_none()
+                && !send_runtime_link_event(
+                    &sender,
+                    &cancel,
+                    RuntimeLinkEvent::ObservationInterrupted { generation },
+                )
+                .await
+            {
+                return;
+            }
+            continue;
+        }
+
+        let Some(active) = observer.as_mut() else {
+            tokio::select! {
+                () = cancel.cancelled() => return,
+                () = tokio::time::sleep(RUNTIME_LINK_POLL) => {}
+            }
+            continue;
+        };
+        let event = tokio::select! {
+            () = cancel.cancelled() => return,
+            () = tokio::time::sleep(RUNTIME_LINK_POLL) => continue,
+            event = active.next() => event,
+        };
+        if let Ok(Some(event)) = event {
+            if !send_runtime_link_event(
+                &sender,
+                &cancel,
+                RuntimeLinkEvent::Observation { generation, event },
+            )
+            .await
+            {
+                return;
+            }
+        } else {
+            if !send_runtime_link_event(
+                &sender,
+                &cancel,
+                RuntimeLinkEvent::ObservationInterrupted { generation },
+            )
+            .await
+            {
+                return;
+            }
+            observer = connect_log_observer(&mut connect_logs, &cancel).await;
+        }
+    }
+}
+
+async fn connect_log_observer<Connect, ConnectFuture>(
+    connect: &mut Connect,
+    cancel: &CancellationToken,
+) -> Option<RuntimeLogObserver>
+where
+    Connect: FnMut() -> ConnectFuture,
+    ConnectFuture: Future<Output = Result<RuntimeLogObserver, RuntimeControlError>>,
+{
+    for attempt in 0..RUNTIME_RECONNECT_ATTEMPTS {
+        let result = tokio::select! {
+            () = cancel.cancelled() => return None,
+            result = connect() => result,
+        };
+        if let Ok(observer) = result {
+            return Some(observer);
+        }
+        if attempt + 1 < RUNTIME_RECONNECT_ATTEMPTS && !wait_for_retry(attempt, cancel).await {
+            return None;
+        }
+    }
+    None
+}
+
+async fn reconnect_request_channel<Connect, ConnectFuture>(
+    connect: &mut Connect,
+    cancel: &CancellationToken,
+) -> RequestReconnectOutcome
+where
+    Connect: FnMut() -> ConnectFuture,
+    ConnectFuture: Future<Output = Result<RuntimeControlConnection, RuntimeControlError>>,
+{
+    for attempt in 0..RUNTIME_RECONNECT_ATTEMPTS {
+        let result = tokio::select! {
+            () = cancel.cancelled() => return RequestReconnectOutcome::Cancelled,
+            result = connect() => result,
+        };
+        if let Ok(connection) = result
+            && connection.is_compatible()
+        {
+            return RequestReconnectOutcome::Restored(connection);
+        }
+        if attempt + 1 < RUNTIME_RECONNECT_ATTEMPTS && !wait_for_retry(attempt, cancel).await {
+            return RequestReconnectOutcome::Cancelled;
+        }
+    }
+    RequestReconnectOutcome::Exhausted
+}
+
+async fn wait_for_retry(attempt: usize, cancel: &CancellationToken) -> bool {
+    let delay = Duration::from_millis(50_u64 << attempt.min(4));
+    tokio::select! {
+        () = cancel.cancelled() => false,
+        () = tokio::time::sleep(delay) => true,
+    }
+}
+
+async fn send_runtime_link_event(
+    sender: &mpsc::Sender<RuntimeLinkEvent>,
+    cancel: &CancellationToken,
+    event: RuntimeLinkEvent,
+) -> bool {
+    tokio::select! {
+        () = cancel.cancelled() => false,
+        result = sender.send(event) => result.is_ok(),
+    }
+}
+
 impl LifecycleOwner {
     async fn run(mut self) -> LifecycleExit {
         let mut process_poll = tokio::time::interval(Duration::from_millis(250));
@@ -548,6 +840,11 @@ impl LifecycleOwner {
                 completion = self.completions.recv() => {
                     if let Some(completion) = completion {
                         self.handle_completion(completion).await;
+                    }
+                }
+                event = self.runtime_events.recv() => {
+                    if let Some(event) = event {
+                        self.handle_runtime_link_event(event);
                     }
                 }
                 _ = process_poll.tick(), if polls_process_resources(&self.state) => {
@@ -581,6 +878,7 @@ impl LifecycleOwner {
                 break;
             }
         }
+        self.cancel_runtime_link();
         while let Some(result) = self.observations.join_next().await {
             if let Err(error) = result {
                 tracing::error!(%error, "lifecycle observation task failed during shutdown");
@@ -615,6 +913,157 @@ impl LifecycleOwner {
             LifecycleCommand::ConfigChanged => self.apply_config_change(),
             LifecycleCommand::Readiness(report) => self.apply_readiness(report),
             LifecycleCommand::ReadinessUnavailable => self.apply_readiness_unavailable(),
+        }
+    }
+
+    fn start_runtime_link(&mut self) {
+        let generation = self.next_runtime_generation;
+        let sender = self.runtime_event_sender.clone();
+        let (capability, control, cancel) = match &mut self.state {
+            LifecycleState::Running { child, .. } => {
+                let Some(capability) = child.reconnect.clone() else {
+                    return;
+                };
+                if child.link.is_some() {
+                    return;
+                }
+                let cancel = CancellationToken::new();
+                child.link = Some(RuntimeLink {
+                    generation,
+                    cancel: cancel.clone(),
+                    restore_phase: None,
+                });
+                (capability, child.control.clone(), cancel)
+            }
+            LifecycleState::NoRuntime(_)
+            | LifecycleState::Operating(_)
+            | LifecycleState::Unresponsive { .. }
+            | LifecycleState::TerminatingOperation { .. }
+            | LifecycleState::TerminatingManaged { .. }
+            | LifecycleState::Terminating(_) => return,
+        };
+        self.next_runtime_generation = self.next_runtime_generation.wrapping_add(1);
+        self.observations.spawn(monitor_runtime_link(
+            generation, capability, control, sender, cancel,
+        ));
+    }
+
+    fn handle_runtime_link_event(&mut self, event: RuntimeLinkEvent) {
+        match event {
+            RuntimeLinkEvent::Observation { generation, event }
+                if self.runtime_generation() == Some(generation) =>
+            {
+                let event = match event {
+                    RuntimeControlEvent::LogLine { line } => ManagementEvent::LogLine { line },
+                    RuntimeControlEvent::LogsLost => ManagementEvent::LogsLost {
+                        loss: ManagementLogLoss::ObservationInterrupted,
+                    },
+                };
+                let _ = self.events.send(event);
+            }
+            RuntimeLinkEvent::ObservationInterrupted { generation }
+                if self.runtime_generation() == Some(generation) =>
+            {
+                let _ = self.events.send(ManagementEvent::LogsLost {
+                    loss: ManagementLogLoss::ObservationInterrupted,
+                });
+            }
+            RuntimeLinkEvent::RequestLost { generation } => {
+                let mut changed = false;
+                if let LifecycleState::Running { snapshot, child } = &mut self.state
+                    && child.link.as_ref().map(|link| link.generation) == Some(generation)
+                {
+                    let restart_pending = restart_pending(&snapshot.phase);
+                    if let Some(link) = &mut child.link
+                        && link.restore_phase.is_none()
+                    {
+                        link.restore_phase = Some(snapshot.phase.clone());
+                    }
+                    snapshot.header = next_header(&snapshot.header);
+                    snapshot.phase = RunningPhase::Degraded {
+                        runtime: child.identity.clone(),
+                        reason: DegradedReason::RuntimeControlLost {
+                            report: readiness::derive(Vec::new(), false, Vec::new()),
+                            presentation: failure_presentation(
+                                "runtime control is unavailable",
+                                "the manager is reconnecting to the runtime",
+                            ),
+                        },
+                        restart_pending,
+                    };
+                    changed = true;
+                }
+                if changed {
+                    self.publish_current();
+                }
+            }
+            RuntimeLinkEvent::RequestRestored {
+                generation,
+                connection,
+            } => {
+                let mut changed = false;
+                if let LifecycleState::Running { snapshot, child } = &mut self.state
+                    && child.link.as_ref().map(|link| link.generation) == Some(generation)
+                    && connection.is_compatible()
+                {
+                    child.control = connection;
+                    snapshot.header = next_header(&snapshot.header);
+                    snapshot.phase = child
+                        .link
+                        .as_mut()
+                        .and_then(|link| link.restore_phase.take())
+                        .unwrap_or_else(|| running_phase(&child.identity, &child.control, false));
+                    changed = true;
+                }
+                if changed {
+                    self.publish_current();
+                }
+            }
+            RuntimeLinkEvent::RequestRecoveryExhausted { generation } => {
+                let mut changed = false;
+                if let LifecycleState::Running { snapshot, child } = &mut self.state
+                    && child.link.as_ref().map(|link| link.generation) == Some(generation)
+                    && child
+                        .link
+                        .as_ref()
+                        .and_then(|link| link.restore_phase.as_ref())
+                        .is_some()
+                {
+                    let restart_pending = restart_pending(&snapshot.phase);
+                    snapshot.header = next_header(&snapshot.header);
+                    snapshot.phase = RunningPhase::Degraded {
+                        runtime: child.identity.clone(),
+                        reason: DegradedReason::RuntimeControlLost {
+                            report: readiness::derive(Vec::new(), false, Vec::new()),
+                            presentation: failure_presentation(
+                                "runtime control is unavailable",
+                                "the manager could not reconnect to the runtime",
+                            ),
+                        },
+                        restart_pending,
+                    };
+                    changed = true;
+                }
+                if changed {
+                    self.publish_current();
+                }
+            }
+            RuntimeLinkEvent::Observation { .. }
+            | RuntimeLinkEvent::ObservationInterrupted { .. } => {}
+        }
+    }
+
+    fn runtime_generation(&self) -> Option<u64> {
+        match &self.state {
+            LifecycleState::Running { child, .. } => {
+                child.link.as_ref().map(|link| link.generation)
+            }
+            LifecycleState::NoRuntime(_)
+            | LifecycleState::Operating(_)
+            | LifecycleState::Unresponsive { .. }
+            | LifecycleState::TerminatingOperation { .. }
+            | LifecycleState::TerminatingManaged { .. }
+            | LifecycleState::Terminating(_) => None,
         }
     }
 
@@ -1186,10 +1635,13 @@ impl LifecycleOwner {
 
     fn begin_stop_state(
         &mut self,
-        child: ManagedChild,
+        mut child: ManagedChild,
         intent: StopIntent,
         running: &RunningLifecycleSnapshot,
     ) -> LifecycleState {
+        if let Some(link) = child.link.take() {
+            link.cancel();
+        }
         let token = self.take_token();
         let snapshot = StoppingLifecycleSnapshot {
             header: next_header(&running.header),
@@ -1372,7 +1824,7 @@ impl LifecycleOwner {
     async fn handle_runtime_connected(
         &mut self,
         token: u64,
-        result: Result<RuntimeControlConnection, RuntimeControlError>,
+        result: Result<RuntimeControlAdmission, RuntimeControlError>,
     ) {
         let state = std::mem::replace(&mut self.state, placeholder_state());
         self.state = match state {
@@ -1401,7 +1853,7 @@ impl LifecycleOwner {
                     return self.terminate_launch_for_custody_loss(operation, runtime);
                 }
                 match result {
-                    Ok(control) => {
+                    Ok(admission) => {
                         if let Some(status) = exact_exit {
                             let failure = StoppedProcessFailure::RuntimeAnnouncementFailed {
                                 presentation: failure_presentation(
@@ -1435,7 +1887,9 @@ impl LifecycleOwner {
                             process: ManagedProcess::Owned(operation.child.child),
                             identity: operation.child.identity,
                             custody,
-                            control,
+                            control: admission.connection,
+                            reconnect: admission.reconnect,
+                            link: None,
                         };
                         let snapshot = RunningLifecycleSnapshot {
                             header: next_header(&operation.snapshot.header),
@@ -1468,8 +1922,8 @@ impl LifecycleOwner {
                 self.track_task(task, "runtime handshake");
                 operation.attachment = AttachmentStage::Settled;
                 match result {
-                    Ok(control) => {
-                        operation.child.control = Some(control);
+                    Ok(admission) => {
+                        operation.child.control = Some(admission);
                         self.start_early_stop(&mut operation);
                     }
                     Err(_) => self.force_early_reap(&mut operation),
@@ -1488,6 +1942,7 @@ impl LifecycleOwner {
                 return;
             }
         };
+        self.start_runtime_link();
         self.publish_current();
     }
 
@@ -1548,7 +2003,12 @@ impl LifecycleOwner {
         if !matches!(task, GracefulStopTask::AwaitingCapability) {
             return;
         }
-        let Some(control) = operation.child.control.clone() else {
+        let Some(control) = operation
+            .child
+            .control
+            .as_ref()
+            .map(|admission| admission.connection.clone())
+        else {
             return;
         };
         let runtime = operation.child.identity.clone();
@@ -1888,6 +2348,9 @@ impl LifecycleOwner {
             }
         };
         if child.custody.is_closed() {
+            if let Some(link) = child.link.take() {
+                link.cancel();
+            }
             let runtime = custody_loss_runtime(&child.identity, exact_exit.is_some());
             let snapshot = custody_loss_snapshot(header, runtime);
             self.state = LifecycleState::TerminatingManaged { snapshot, child };
@@ -2152,40 +2615,41 @@ impl LifecycleOwner {
     }
 
     fn apply_config_change(&mut self) {
-        match &mut self.state {
-            LifecycleState::NoRuntime(_) => self.request_document_refresh(),
-            LifecycleState::Running { snapshot, .. } => match snapshot.phase.clone() {
-                RunningPhase::Healthy { runtime, .. } => {
-                    snapshot.header = next_header(&snapshot.header);
-                    snapshot.phase = RunningPhase::Healthy {
-                        runtime,
-                        restart_pending: true,
-                    };
-                    self.publish_current();
+        let changed = match &mut self.state {
+            LifecycleState::NoRuntime(_) => {
+                self.request_document_refresh();
+                false
+            }
+            LifecycleState::Running { snapshot, child } => {
+                let Some(phase) = with_restart_pending(snapshot.phase.clone()) else {
+                    return;
+                };
+                if let Some(underlying) = child
+                    .link
+                    .as_mut()
+                    .and_then(|link| link.restore_phase.as_mut())
+                    && let Some(updated) = with_restart_pending(underlying.clone())
+                {
+                    *underlying = updated;
                 }
-                RunningPhase::Degraded {
-                    runtime, reason, ..
-                } => {
-                    snapshot.header = next_header(&snapshot.header);
-                    snapshot.phase = RunningPhase::Degraded {
-                        runtime,
-                        reason,
-                        restart_pending: true,
-                    };
-                    self.publish_current();
-                }
-                RunningPhase::VersionMismatch { .. } => {}
-            },
+                snapshot.header = next_header(&snapshot.header);
+                snapshot.phase = phase;
+                true
+            }
             LifecycleState::Operating(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
-            | LifecycleState::Terminating(_) => {}
+            | LifecycleState::Terminating(_) => false,
+        };
+        if changed {
+            self.publish_current();
         }
     }
 
     fn apply_readiness(&mut self, report: ReadinessReport) {
         self.latest_readiness = LatestReadiness::Report(report.clone());
+        let mut changed = false;
         match &mut self.state {
             LifecycleState::NoRuntime(snapshot) => {
                 let failure = no_runtime_failure(&snapshot.phase);
@@ -2201,52 +2665,39 @@ impl LifecycleOwner {
                             readiness,
                             failure,
                         };
-                        self.publish_current();
+                        changed = true;
                     }
                 } else if let Ok(readiness) = StartClearReadinessReport::try_from(report) {
                     snapshot.header = next_header(&snapshot.header);
                     snapshot.phase = NoRuntimePhase::Stopped {
                         state: StoppedState::Ready { readiness, failure },
                     };
-                    self.publish_current();
+                    changed = true;
                 }
             }
-            LifecycleState::Running { snapshot, .. } => match snapshot.phase.clone() {
-                RunningPhase::Healthy {
-                    runtime,
-                    restart_pending,
-                }
-                | RunningPhase::Degraded {
-                    runtime,
-                    restart_pending,
-                    ..
-                } => {
-                    if matches!(report.health, HealthVerdict::Degraded { .. }) {
-                        if let Ok(report) = HealthDegradedReadinessReport::try_from(report) {
-                            snapshot.header = next_header(&snapshot.header);
-                            snapshot.phase = RunningPhase::Degraded {
-                                runtime,
-                                reason: DegradedReason::Readiness { report },
-                                restart_pending,
-                            };
-                            self.publish_current();
-                        }
-                    } else if matches!(report.health, HealthVerdict::Clear) {
-                        snapshot.header = next_header(&snapshot.header);
-                        snapshot.phase = RunningPhase::Healthy {
-                            runtime,
-                            restart_pending,
-                        };
-                        self.publish_current();
+            LifecycleState::Running { snapshot, child } => {
+                if let Some(underlying) = child
+                    .link
+                    .as_mut()
+                    .and_then(|link| link.restore_phase.as_mut())
+                {
+                    if let Some(updated) = running_phase_for_readiness(underlying, &report) {
+                        *underlying = updated;
                     }
+                } else if let Some(phase) = running_phase_for_readiness(&snapshot.phase, &report) {
+                    snapshot.header = next_header(&snapshot.header);
+                    snapshot.phase = phase;
+                    changed = true;
                 }
-                RunningPhase::VersionMismatch { .. } => {}
-            },
+            }
             LifecycleState::Operating(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
             | LifecycleState::Terminating(_) => {}
+        }
+        if changed {
+            self.publish_current();
         }
     }
 
@@ -2413,6 +2864,7 @@ impl LifecycleOwner {
         correlation: Option<tribal_wire::management::PanicCorrelationId>,
     ) {
         self.fold_ready_terminal_completions().await;
+        self.cancel_runtime_link();
         let exact_exit = match &mut self.state {
             LifecycleState::Running { child, .. } | LifecycleState::Unresponsive { child, .. } => {
                 managed_child_exited(child)
@@ -2550,6 +3002,27 @@ impl LifecycleOwner {
         self.shutdown.cancel();
     }
 
+    fn cancel_runtime_link(&mut self) {
+        let child = match &mut self.state {
+            LifecycleState::Running { child, .. } | LifecycleState::Unresponsive { child, .. } => {
+                Some(child)
+            }
+            LifecycleState::Operating(LifecycleOperation::Stopping(operation)) => {
+                operation.child.as_mut()
+            }
+            LifecycleState::NoRuntime(_)
+            | LifecycleState::Operating(
+                LifecycleOperation::Launching(_) | LifecycleOperation::CancellingLaunch(_),
+            )
+            | LifecycleState::TerminatingOperation { .. }
+            | LifecycleState::TerminatingManaged { .. }
+            | LifecycleState::Terminating(_) => None,
+        };
+        if let Some(link) = child.and_then(|child| child.link.take()) {
+            link.cancel();
+        }
+    }
+
     fn begin_external_shutdown(&mut self) -> bool {
         match &self.state {
             LifecycleState::NoRuntime(_)
@@ -2678,7 +3151,7 @@ async fn commit_custody(pending: PendingAttachment) -> Result<CommittedCustody, 
 
 async fn terminate_early_child(child: &mut EarlyChild) {
     if let Some(control) = &mut child.control {
-        let _ = control.stop(&child.identity).await;
+        let _ = control.connection.stop(&child.identity).await;
     }
     if let Some(custody) = &mut child.custody {
         let _ = custody.stop(&child.identity);
@@ -3409,6 +3882,69 @@ fn running_phase(
     }
 }
 
+fn restart_pending(phase: &RunningPhase) -> bool {
+    match phase {
+        RunningPhase::Healthy {
+            restart_pending, ..
+        }
+        | RunningPhase::Degraded {
+            restart_pending, ..
+        } => *restart_pending,
+        RunningPhase::VersionMismatch { .. } => false,
+    }
+}
+
+fn with_restart_pending(phase: RunningPhase) -> Option<RunningPhase> {
+    match phase {
+        RunningPhase::Healthy { runtime, .. } => Some(RunningPhase::Healthy {
+            runtime,
+            restart_pending: true,
+        }),
+        RunningPhase::Degraded {
+            runtime, reason, ..
+        } => Some(RunningPhase::Degraded {
+            runtime,
+            reason,
+            restart_pending: true,
+        }),
+        RunningPhase::VersionMismatch { .. } => None,
+    }
+}
+
+fn running_phase_for_readiness(
+    phase: &RunningPhase,
+    report: &ReadinessReport,
+) -> Option<RunningPhase> {
+    let (runtime, restart_pending) = match phase {
+        RunningPhase::Healthy {
+            runtime,
+            restart_pending,
+        }
+        | RunningPhase::Degraded {
+            runtime,
+            restart_pending,
+            ..
+        } => (runtime.clone(), *restart_pending),
+        RunningPhase::VersionMismatch { .. } => return None,
+    };
+    if matches!(report.health, HealthVerdict::Degraded { .. }) {
+        HealthDegradedReadinessReport::try_from(report.clone())
+            .ok()
+            .map(|report| RunningPhase::Degraded {
+                runtime,
+                reason: DegradedReason::Readiness { report },
+                restart_pending,
+            })
+    } else if matches!(report.health, HealthVerdict::Clear) {
+        Some(RunningPhase::Healthy {
+            runtime,
+            restart_pending,
+        })
+    } else {
+        None
+    }
+}
+
 fn shutdown_stopping(snapshot: &StoppingLifecycleSnapshot) -> ShutdownInProgressLifecycleSnapshot {
     let StoppingPhase::Stopping { runtime } = &snapshot.phase;
     ShutdownInProgressLifecycleSnapshot {
@@ -3600,11 +4136,36 @@ fn custody_loss_termination(runtime: CustodyLossTerminationRuntime) -> ManagerTe
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use tokio::io::AsyncWriteExt as _;
+
     use super::*;
     use crate::management::{authority, configuration, worker};
 
     /// Local lifecycle observations have no external service dependency.
     const TEST_OBSERVATION_DEADLINE: Duration = Duration::from_secs(2);
+
+    async fn runtime_link_event(
+        receiver: &mut mpsc::Receiver<RuntimeLinkEvent>,
+    ) -> RuntimeLinkEvent {
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, receiver.recv())
+            .await
+            .expect("runtime-link event arrives before the test deadline")
+            .expect("runtime-link sender remains live")
+    }
+
+    async fn send_observer_event(peer: &mut tokio::net::UnixStream, event: &RuntimeControlEvent) {
+        let mut bytes = serde_json::to_vec(event).expect("runtime event serialises");
+        bytes.push(b'\n');
+        peer.write_all(&bytes).await.expect("runtime event writes");
+    }
 
     fn header() -> LifecycleSnapshotHeader {
         LifecycleSnapshotHeader {
@@ -3621,6 +4182,21 @@ mod tests {
                 &tribal_wire::management::ConfigDigest::from_bytes(b"valid"),
             ),
         }
+    }
+
+    fn health_degraded_report() -> ReadinessReport {
+        readiness::derive(
+            vec![readiness::observation(
+                CheckResult::Fail {
+                    name: CheckName::ConfigValidate,
+                    detail: "runtime configuration changed".to_owned(),
+                    remediation: "restart the runtime".to_owned(),
+                },
+                Vec::new(),
+            )],
+            true,
+            Vec::new(),
+        )
     }
 
     fn no_runtime_origin() -> NoRuntimeLifecycleSnapshot {
@@ -3753,10 +4329,19 @@ mod tests {
                 identity,
                 custody,
                 control,
+                reconnect: None,
+                link: None,
             },
             runtime_custody,
             runtime_control,
         )
+    }
+
+    fn admission_for_test(connection: RuntimeControlConnection) -> RuntimeControlAdmission {
+        RuntimeControlAdmission {
+            connection,
+            reconnect: None,
+        }
     }
 
     async fn make_managed_exact_exit(child: &mut ManagedChild) {
@@ -3865,17 +4450,23 @@ mod tests {
             .expect("worker terminal has one owner");
         let (_command_sender, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (completion_sender, completions) = mpsc::channel(COMPLETION_CAPACITY);
+        let (runtime_event_sender, runtime_events) = mpsc::channel(RUNTIME_EVENT_CAPACITY);
         let state = placeholder_state();
         let (publisher, _snapshots) = watch::channel(state.snapshot());
+        let (events, _) = broadcast::channel(MANAGEMENT_EVENT_CAPACITY);
         let owner = LifecycleOwner {
             receiver,
             completions,
             completion_sender,
+            runtime_events,
+            runtime_event_sender,
             observations: tokio::task::JoinSet::new(),
             publisher,
+            events,
             state,
             latest_readiness: LatestReadiness::Report(start_blocked_report()),
             next_token: 1,
+            next_runtime_generation: 1,
             config_path,
             config,
             authority: Arc::new(authority),
@@ -3885,6 +4476,483 @@ mod tests {
             worker_exit: None,
         };
         (temp, owner, worker_runtime)
+    }
+
+    #[tokio::test]
+    async fn test_runtime_link_monitor_resubscribes_after_observer_eof() {
+        let (control, _request_peer) =
+            RuntimeControlConnection::pair_for_test().expect("request pair creates");
+        let (first, first_peer) =
+            RuntimeLogObserver::pair_for_test().expect("first observer pair creates");
+        let (second, mut second_peer) =
+            RuntimeLogObserver::pair_for_test().expect("second observer pair creates");
+        let observers = Arc::new(Mutex::new(VecDeque::from([Ok(first), Ok(second)])));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (sender, mut receiver) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn({
+            let observers = Arc::clone(&observers);
+            let attempts = Arc::clone(&attempts);
+            let cancel = cancel.clone();
+            async move {
+                monitor_runtime_link_with(
+                    7,
+                    control,
+                    sender,
+                    cancel,
+                    move || {
+                        let result = observers
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .pop_front()
+                            .unwrap_or(Err(RuntimeControlError::Closed));
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        async move { result }
+                    },
+                    || async { Err(RuntimeControlError::Closed) },
+                )
+                .await;
+            }
+        });
+
+        drop(first_peer);
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::ObservationInterrupted { generation: 7 }
+        ));
+        send_observer_event(
+            &mut second_peer,
+            &RuntimeControlEvent::LogLine {
+                line: "resumed".to_owned(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::Observation {
+                generation: 7,
+                event: RuntimeControlEvent::LogLine { ref line },
+            } if line == "resumed"
+        ));
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+
+        cancel.cancel();
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, task)
+            .await
+            .expect("monitor cancels")
+            .expect("monitor task joins");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_link_monitor_exhausts_and_cancels_observer_retry() {
+        let (control, _request_peer) =
+            RuntimeControlConnection::pair_for_test().expect("request pair creates");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (sender, mut receiver) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn({
+            let attempts = Arc::clone(&attempts);
+            let cancel = cancel.clone();
+            async move {
+                monitor_runtime_link_with(
+                    11,
+                    control,
+                    sender,
+                    cancel,
+                    move || {
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        async { Err(RuntimeControlError::ProofRefused) }
+                    },
+                    || async { Err(RuntimeControlError::Closed) },
+                )
+                .await;
+            }
+        });
+
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::ObservationInterrupted { generation: 11 }
+        ));
+        assert_eq!(attempts.load(Ordering::Relaxed), RUNTIME_RECONNECT_ATTEMPTS);
+        cancel.cancel();
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, task)
+            .await
+            .expect("disconnected monitor cancels")
+            .expect("monitor task joins");
+
+        let (control, _request_peer) =
+            RuntimeControlConnection::pair_for_test().expect("second request pair creates");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (sender, _receiver) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn({
+            let attempts = Arc::clone(&attempts);
+            let cancel = cancel.clone();
+            async move {
+                monitor_runtime_link_with(
+                    12,
+                    control,
+                    sender,
+                    cancel,
+                    move || {
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        async { Err(RuntimeControlError::ProofRefused) }
+                    },
+                    || async { Err(RuntimeControlError::Closed) },
+                )
+                .await;
+            }
+        });
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
+            while attempts.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first retry attempt runs");
+        cancel.cancel();
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, task)
+            .await
+            .expect("backoff cancellation joins")
+            .expect("monitor task joins");
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_request_eof_restarts_the_observer_after_required_recovery() {
+        let (control, request_peer) =
+            RuntimeControlConnection::pair_for_test().expect("request pair creates");
+        let (first_observer, _first_observer_peer) =
+            RuntimeLogObserver::pair_for_test().expect("first observer pair creates");
+        let (second_observer, mut second_observer_peer) =
+            RuntimeLogObserver::pair_for_test().expect("second observer pair creates");
+        let observers = Arc::new(Mutex::new(VecDeque::from([
+            Ok(first_observer),
+            Ok(second_observer),
+        ])));
+        let (restored, _restored_peer) =
+            RuntimeControlConnection::pair_for_test().expect("restored request pair creates");
+        let requests = Arc::new(Mutex::new(VecDeque::from([Ok(restored)])));
+        let log_attempts = Arc::new(AtomicUsize::new(0));
+        let request_attempts = Arc::new(AtomicUsize::new(0));
+        let (sender, mut receiver) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn({
+            let observers = Arc::clone(&observers);
+            let requests = Arc::clone(&requests);
+            let log_attempts = Arc::clone(&log_attempts);
+            let request_attempts = Arc::clone(&request_attempts);
+            let cancel = cancel.clone();
+            async move {
+                monitor_runtime_link_with(
+                    19,
+                    control,
+                    sender,
+                    cancel,
+                    move || {
+                        log_attempts.fetch_add(1, Ordering::Relaxed);
+                        let result = observers
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .pop_front()
+                            .unwrap_or(Err(RuntimeControlError::Closed));
+                        async move { result }
+                    },
+                    move || {
+                        request_attempts.fetch_add(1, Ordering::Relaxed);
+                        let result = requests
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .pop_front()
+                            .unwrap_or(Err(RuntimeControlError::Closed));
+                        async move { result }
+                    },
+                )
+                .await;
+            }
+        });
+
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
+            while log_attempts.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("initial observer connects");
+        drop(request_peer);
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::ObservationInterrupted { generation: 19 }
+        ));
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::RequestLost { generation: 19 }
+        ));
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::RequestRestored { generation: 19, .. }
+        ));
+        send_observer_event(
+            &mut second_observer_peer,
+            &RuntimeControlEvent::LogLine {
+                line: "after recovery".to_owned(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::Observation {
+                generation: 19,
+                event: RuntimeControlEvent::LogLine { ref line },
+            } if line == "after recovery"
+        ));
+        assert_eq!(log_attempts.load(Ordering::Relaxed), 2);
+        assert_eq!(request_attempts.load(Ordering::Relaxed), 1);
+
+        cancel.cancel();
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, task)
+            .await
+            .expect("restored monitor cancels")
+            .expect("monitor task joins");
+    }
+
+    #[tokio::test]
+    async fn test_request_recovery_exhaustion_is_terminal_and_cancellation_is_silent() {
+        let (control, request_peer) =
+            RuntimeControlConnection::pair_for_test().expect("request pair creates");
+        let (observer, _observer_peer) =
+            RuntimeLogObserver::pair_for_test().expect("observer pair creates");
+        let observer = Arc::new(Mutex::new(Some(observer)));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (sender, mut receiver) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        drop(request_peer);
+        let task = tokio::spawn({
+            let observer = Arc::clone(&observer);
+            let attempts = Arc::clone(&attempts);
+            let cancel = cancel.clone();
+            async move {
+                monitor_runtime_link_with(
+                    23,
+                    control,
+                    sender,
+                    cancel,
+                    move || {
+                        let result = observer
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take()
+                            .ok_or(RuntimeControlError::Closed);
+                        async move { result }
+                    },
+                    move || {
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        async { Err(RuntimeControlError::Closed) }
+                    },
+                )
+                .await;
+            }
+        });
+
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::ObservationInterrupted { generation: 23 }
+        ));
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::RequestLost { generation: 23 }
+        ));
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::RequestRecoveryExhausted { generation: 23 }
+        ));
+        assert_eq!(attempts.load(Ordering::Relaxed), RUNTIME_RECONNECT_ATTEMPTS);
+        task.await.expect("exhausted monitor joins");
+
+        let (control, request_peer) =
+            RuntimeControlConnection::pair_for_test().expect("cancel request pair creates");
+        let (observer, _observer_peer) =
+            RuntimeLogObserver::pair_for_test().expect("cancel observer pair creates");
+        let observer = Arc::new(Mutex::new(Some(observer)));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (sender, mut receiver) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        drop(request_peer);
+        let task = tokio::spawn({
+            let observer = Arc::clone(&observer);
+            let attempts = Arc::clone(&attempts);
+            let cancel = cancel.clone();
+            async move {
+                monitor_runtime_link_with(
+                    24,
+                    control,
+                    sender,
+                    cancel,
+                    move || {
+                        let result = observer
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take()
+                            .ok_or(RuntimeControlError::Closed);
+                        async move { result }
+                    },
+                    move || {
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        async { Err(RuntimeControlError::Closed) }
+                    },
+                )
+                .await;
+            }
+        });
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::ObservationInterrupted { generation: 24 }
+        ));
+        assert!(matches!(
+            runtime_link_event(&mut receiver).await,
+            RuntimeLinkEvent::RequestLost { generation: 24 }
+        ));
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
+            while attempts.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first request retry runs");
+        cancel.cancel();
+        task.await.expect("cancelled monitor joins");
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_runtime_link_events_are_generation_fenced_and_log_failures_fail_open() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (mut child, _runtime_custody, _runtime_control) = a_managed_child();
+        let generation = 17;
+        child.link = Some(RuntimeLink {
+            generation,
+            cancel: CancellationToken::new(),
+            restore_phase: None,
+        });
+        let snapshot = RunningLifecycleSnapshot {
+            header: header(),
+            phase: RunningPhase::Healthy {
+                runtime: child.identity.clone(),
+                restart_pending: false,
+            },
+        };
+        let initial = LifecycleSnapshot::from(snapshot.clone());
+        owner.state = LifecycleState::Running { snapshot, child };
+        let mut events = owner.events.subscribe();
+
+        owner.handle_runtime_link_event(RuntimeLinkEvent::Observation {
+            generation,
+            event: RuntimeControlEvent::LogLine {
+                line: "line".to_owned(),
+            },
+        });
+        assert_eq!(owner.state.snapshot(), initial);
+        assert_eq!(
+            events.recv().await.expect("log event publishes"),
+            ManagementEvent::LogLine {
+                line: "line".to_owned()
+            }
+        );
+
+        owner.handle_runtime_link_event(RuntimeLinkEvent::ObservationInterrupted { generation });
+        assert_eq!(owner.state.snapshot(), initial);
+        assert_eq!(
+            events.recv().await.expect("loss event publishes"),
+            ManagementEvent::LogsLost {
+                loss: ManagementLogLoss::ObservationInterrupted
+            }
+        );
+
+        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestLost { generation });
+        let lost = owner.state.snapshot();
+        assert_eq!(lost.header.revision, initial.header.revision + 1);
+        assert!(matches!(
+            lost.phase,
+            LifecyclePhase::Degraded {
+                reason: DegradedReason::RuntimeControlLost { .. },
+                restart_pending: false,
+                ..
+            }
+        ));
+
+        owner.apply_config_change();
+        owner.apply_readiness(health_degraded_report());
+        let recovering = owner.state.snapshot();
+        assert!(matches!(
+            recovering.phase,
+            LifecyclePhase::Degraded {
+                reason: DegradedReason::RuntimeControlLost { .. },
+                restart_pending: true,
+                ..
+            }
+        ));
+
+        let (restored, _runtime_peer) =
+            RuntimeControlConnection::pair_for_test().expect("restored connection creates");
+        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestRestored {
+            generation,
+            connection: restored,
+        });
+        let restored = owner.state.snapshot();
+        assert_eq!(restored.header.revision, recovering.header.revision + 1);
+        assert!(matches!(
+            restored.phase,
+            LifecyclePhase::Degraded {
+                reason: DegradedReason::Readiness { .. },
+                restart_pending: true,
+                ..
+            }
+        ));
+
+        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestLost { generation });
+        owner.apply_readiness(readiness::derive(Vec::new(), true, Vec::new()));
+        assert!(matches!(
+            owner.state.snapshot().phase,
+            LifecyclePhase::Degraded {
+                reason: DegradedReason::RuntimeControlLost { .. },
+                restart_pending: true,
+                ..
+            }
+        ));
+        let (restored, _runtime_peer) =
+            RuntimeControlConnection::pair_for_test().expect("second restored connection creates");
+        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestRestored {
+            generation,
+            connection: restored,
+        });
+        assert!(matches!(
+            owner.state.snapshot().phase,
+            LifecyclePhase::Healthy {
+                restart_pending: true,
+                ..
+            }
+        ));
+
+        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestLost { generation });
+        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestRecoveryExhausted { generation });
+        let exhausted = owner.state.snapshot();
+        assert!(matches!(
+            exhausted.phase,
+            LifecyclePhase::Degraded {
+                reason: DegradedReason::RuntimeControlLost {
+                    ref presentation,
+                    ..
+                },
+                ..
+            } if presentation.message.contains("could not reconnect")
+        ));
+
+        owner.handle_runtime_link_event(RuntimeLinkEvent::RequestRecoveryExhausted {
+            generation: generation + 1,
+        });
+        assert_eq!(owner.state.snapshot(), exhausted);
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
     }
 
     #[test]
@@ -4265,7 +5333,9 @@ mod tests {
         let (control, _runtime_control) =
             RuntimeControlConnection::pair_for_test().expect("runtime-control pair creates");
 
-        owner.handle_runtime_connected(41, Ok(control)).await;
+        owner
+            .handle_runtime_connected(41, Ok(admission_for_test(control)))
+            .await;
 
         assert!(matches!(
             owner.state.snapshot().phase,
@@ -4327,7 +5397,9 @@ mod tests {
         let (control, _runtime_control) =
             RuntimeControlConnection::pair_for_test().expect("runtime-control pair creates");
 
-        owner.handle_runtime_connected(42, Ok(control)).await;
+        owner
+            .handle_runtime_connected(42, Ok(admission_for_test(control)))
+            .await;
 
         assert_custody_loss_absent(&owner.state);
         assert!(matches!(

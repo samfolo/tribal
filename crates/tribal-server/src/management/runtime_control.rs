@@ -4,7 +4,10 @@ use std::{
     io,
     os::{fd::AsRawFd as _, unix::fs::PermissionsExt as _},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -12,19 +15,20 @@ use sqlx::PgPool;
 use tokio::{
     io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader},
     net::{UnixListener, UnixStream},
-    sync::{Mutex, watch},
+    sync::{Mutex, broadcast, watch},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
 use tribal_config::{ReloadClass, TribalConfig, load_config, reload_class, validate};
 use tribal_telemetry::{LogFilterHandle, LogRing};
 use tribal_wire::{
+    control::ControlEvent,
     management::{ConfigDigest, ConfigRevision, RuntimeIdentity, TokenList},
     runtime_control::{
         ManagedRuntimeStatus, RUNTIME_CONTROL_CONTRACT_VERSION, RuntimeBootstrapRefusal,
         RuntimeBootstrapRequest, RuntimeBootstrapResponse, RuntimeConfigApplyOutcome,
         RuntimeConfigApplyRefusal, RuntimeConfigChange, RuntimeControlClientHello,
-        RuntimeControlRefusal, RuntimeControlRequest, RuntimeControlResponse,
+        RuntimeControlEvent, RuntimeControlRefusal, RuntimeControlRequest, RuntimeControlResponse,
         RuntimeControlServerHello, RuntimeCustodyProof,
     },
 };
@@ -47,6 +51,7 @@ pub(crate) struct RuntimeControlService {
     pub(crate) config: watch::Sender<Arc<TribalConfig>>,
     pub(crate) log_filter: LogFilterHandle,
     pub(crate) log_ring: LogRing,
+    pub(crate) events: broadcast::Sender<ControlEvent>,
     pub(crate) pool: PgPool,
     pub(crate) shutdown: CancellationToken,
 }
@@ -58,10 +63,31 @@ pub(crate) enum RuntimeControlConnection {
     VersionMismatch(BootstrapStopClient),
 }
 
+/// Required request connection plus the optional compatible re-connect seam.
+pub(crate) struct RuntimeControlAdmission {
+    pub(crate) connection: RuntimeControlConnection,
+    pub(crate) reconnect: Option<RuntimeReconnectCapability>,
+}
+
 /// Cloneable compatible client; the stream remains serialised behind one lock.
 #[derive(Clone)]
 pub(crate) struct RuntimeControlClient {
     stream: Arc<Mutex<FramedStream>>,
+    invalidated: Arc<AtomicBool>,
+}
+
+/// Exact authenticated capability retained only with its managed runtime.
+#[derive(Clone)]
+pub(crate) struct RuntimeReconnectCapability {
+    path: PathBuf,
+    manager_instance_id: String,
+    runtime: RuntimeIdentity,
+    proof: Arc<zeroize::Zeroizing<String>>,
+}
+
+/// Reader for one dedicated compatible runtime log subscription.
+pub(crate) struct RuntimeLogObserver {
+    stream: FramedStream,
 }
 
 /// Restricted stop capability retained across a private protocol mismatch.
@@ -91,6 +117,8 @@ pub(crate) enum RuntimeControlError {
     ProofRefused,
     #[error("runtime-control returned a different runtime identity")]
     RuntimeIdentityMismatch,
+    #[error("runtime-control protocol version is incompatible")]
+    VersionMismatch,
     #[error("runtime-control connection closed before a response")]
     Closed,
     #[error("runtime-control connection timed out")]
@@ -112,6 +140,7 @@ impl RuntimeControlConnection {
         let (manager, runtime) = UnixStream::pair()?;
         let client = RuntimeControlClient {
             stream: Arc::new(Mutex::new(BufReader::new(manager))),
+            invalidated: Arc::new(AtomicBool::new(false)),
         };
         Ok((Self::Compatible(client), runtime))
     }
@@ -140,7 +169,9 @@ impl RuntimeControlConnection {
     /// Observes authenticated runtime-control EOF without consuming a frame.
     pub(crate) fn is_closed(&self) -> bool {
         match self {
-            Self::Compatible(client) => stream_is_closed(&client.stream),
+            Self::Compatible(client) => {
+                client.invalidated.load(Ordering::Acquire) || stream_is_closed(&client.stream)
+            }
             Self::VersionMismatch(client) => stream_is_closed(&client.stream),
         }
     }
@@ -160,50 +191,19 @@ impl RuntimeControlClient {
         manager_instance_id: &str,
         expected_runtime: &RuntimeIdentity,
         proof: RuntimeCustodyProof,
-    ) -> Result<RuntimeControlConnection, RuntimeControlError> {
-        let proof_copy = zeroize::Zeroizing::new(proof.expose_secret().to_owned());
-        let stream = tokio::time::timeout(CONNECT_DEADLINE, connect_with_retry(path))
-            .await
-            .map_err(|_| RuntimeControlError::TimedOut)??;
-        let mut stream = BufReader::new(stream);
-        write_frame(
-            stream.get_mut(),
-            &RuntimeBootstrapRequest::Handshake {
-                hello: RuntimeControlClientHello {
-                    protocol_version: RUNTIME_CONTROL_CONTRACT_VERSION,
-                    manager_instance_id: manager_instance_id.to_owned(),
-                },
-                proof,
-            },
-        )
-        .await?;
-        let response: RuntimeBootstrapResponse = read_frame(&mut stream)
-            .await?
-            .ok_or(RuntimeControlError::Closed)?;
-        match response {
-            RuntimeBootstrapResponse::Compatible { hello } => {
-                verify_runtime(&hello, expected_runtime)?;
-                Ok(RuntimeControlConnection::Compatible(Self {
-                    stream: Arc::new(Mutex::new(stream)),
-                }))
-            }
-            RuntimeBootstrapResponse::VersionMismatch { hello } => {
-                verify_runtime(&hello, expected_runtime)?;
-                Ok(RuntimeControlConnection::VersionMismatch(
-                    BootstrapStopClient {
-                        stream: Arc::new(Mutex::new(stream)),
-                        proof: Arc::new(proof_copy),
-                    },
-                ))
-            }
-            RuntimeBootstrapResponse::Refused { reason } => Err(match reason {
-                RuntimeBootstrapRefusal::PeerIdentityMismatch => RuntimeControlError::PeerIdentity,
-                RuntimeBootstrapRefusal::CustodyProofInvalid
-                | RuntimeBootstrapRefusal::RuntimeIdentityMismatch
-                | RuntimeBootstrapRefusal::RuntimeTerminating => RuntimeControlError::ProofRefused,
-            }),
-            RuntimeBootstrapResponse::StopAccepted => Err(RuntimeControlError::ProofRefused),
-        }
+    ) -> Result<RuntimeControlAdmission, RuntimeControlError> {
+        let capability = RuntimeReconnectCapability {
+            path: path.to_owned(),
+            manager_instance_id: manager_instance_id.to_owned(),
+            runtime: expected_runtime.clone(),
+            proof: Arc::new(zeroize::Zeroizing::new(proof.expose_secret().to_owned())),
+        };
+        let connection = capability.connect_request(CONNECT_DEADLINE).await?;
+        let reconnect = connection.is_compatible().then_some(capability);
+        Ok(RuntimeControlAdmission {
+            connection,
+            reconnect,
+        })
     }
 
     pub(crate) async fn apply_config(
@@ -221,7 +221,8 @@ impl RuntimeControlClient {
             | RuntimeControlResponse::Readiness { .. }
             | RuntimeControlResponse::StopAccepted
             | RuntimeControlResponse::LogsTail { .. }
-            | RuntimeControlResponse::TokenList { .. } => Err(RuntimeControlError::Closed),
+            | RuntimeControlResponse::LogsSubscribed
+            | RuntimeControlResponse::TokenList { .. } => self.unexpected_response().await,
         }
     }
 
@@ -232,8 +233,9 @@ impl RuntimeControlClient {
             | RuntimeControlResponse::ApplyConfig { .. }
             | RuntimeControlResponse::StopAccepted
             | RuntimeControlResponse::LogsTail { .. }
+            | RuntimeControlResponse::LogsSubscribed
             | RuntimeControlResponse::TokenList { .. }
-            | RuntimeControlResponse::Refused { .. } => Err(RuntimeControlError::Closed),
+            | RuntimeControlResponse::Refused { .. } => self.unexpected_response().await,
         }
     }
 
@@ -247,8 +249,9 @@ impl RuntimeControlClient {
             | RuntimeControlResponse::Readiness { .. }
             | RuntimeControlResponse::ApplyConfig { .. }
             | RuntimeControlResponse::StopAccepted
+            | RuntimeControlResponse::LogsSubscribed
             | RuntimeControlResponse::TokenList { .. }
-            | RuntimeControlResponse::Refused { .. } => Err(RuntimeControlError::Closed),
+            | RuntimeControlResponse::Refused { .. } => self.unexpected_response().await,
         }
     }
 
@@ -260,7 +263,8 @@ impl RuntimeControlClient {
             | RuntimeControlResponse::ApplyConfig { .. }
             | RuntimeControlResponse::StopAccepted
             | RuntimeControlResponse::LogsTail { .. }
-            | RuntimeControlResponse::Refused { .. } => Err(RuntimeControlError::Closed),
+            | RuntimeControlResponse::LogsSubscribed
+            | RuntimeControlResponse::Refused { .. } => self.unexpected_response().await,
         }
     }
 
@@ -277,7 +281,8 @@ impl RuntimeControlClient {
             | RuntimeControlResponse::Readiness { .. }
             | RuntimeControlResponse::ApplyConfig { .. }
             | RuntimeControlResponse::LogsTail { .. }
-            | RuntimeControlResponse::TokenList { .. } => Err(RuntimeControlError::Closed),
+            | RuntimeControlResponse::LogsSubscribed
+            | RuntimeControlResponse::TokenList { .. } => self.unexpected_response().await,
         }
     }
 
@@ -285,15 +290,166 @@ impl RuntimeControlClient {
         &self,
         request: RuntimeControlRequest,
     ) -> Result<RuntimeControlResponse, RuntimeControlError> {
-        tokio::time::timeout(REQUEST_DEADLINE, async {
+        if self.invalidated.load(Ordering::Acquire) {
+            return Err(RuntimeControlError::Closed);
+        }
+        let result = tokio::time::timeout(REQUEST_DEADLINE, async {
             let mut stream = self.stream.lock().await;
             write_frame(stream.get_mut(), &request).await?;
             read_frame(&mut stream)
                 .await?
                 .ok_or(RuntimeControlError::Closed)
         })
+        .await;
+        match result {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(error)) => {
+                self.invalidate().await;
+                Err(error)
+            }
+            Err(_) => {
+                self.invalidate().await;
+                Err(RuntimeControlError::TimedOut)
+            }
+        }
+    }
+
+    async fn invalidate(&self) {
+        self.invalidated.store(true, Ordering::Release);
+        let mut stream = self.stream.lock().await;
+        // The flag is authoritative; shutdown only wakes any blocked peer.
+        let _ = stream.get_mut().shutdown().await;
+    }
+
+    async fn unexpected_response<T>(&self) -> Result<T, RuntimeControlError> {
+        self.invalidate().await;
+        Err(RuntimeControlError::Closed)
+    }
+}
+
+impl RuntimeReconnectCapability {
+    pub(crate) async fn connect_request(
+        &self,
+        deadline: Duration,
+    ) -> Result<RuntimeControlConnection, RuntimeControlError> {
+        let (stream, response) = self.bootstrap(deadline).await?;
+        match response {
+            RuntimeBootstrapResponse::Compatible { hello } => {
+                verify_runtime(&hello, &self.runtime)?;
+                Ok(RuntimeControlConnection::Compatible(RuntimeControlClient {
+                    stream: Arc::new(Mutex::new(stream)),
+                    invalidated: Arc::new(AtomicBool::new(false)),
+                }))
+            }
+            RuntimeBootstrapResponse::VersionMismatch { hello } => {
+                verify_runtime(&hello, &self.runtime)?;
+                Ok(RuntimeControlConnection::VersionMismatch(
+                    BootstrapStopClient {
+                        stream: Arc::new(Mutex::new(stream)),
+                        proof: Arc::clone(&self.proof),
+                    },
+                ))
+            }
+            RuntimeBootstrapResponse::Refused { reason } => Err(match reason {
+                RuntimeBootstrapRefusal::PeerIdentityMismatch => RuntimeControlError::PeerIdentity,
+                RuntimeBootstrapRefusal::CustodyProofInvalid
+                | RuntimeBootstrapRefusal::RuntimeIdentityMismatch
+                | RuntimeBootstrapRefusal::RuntimeTerminating => RuntimeControlError::ProofRefused,
+            }),
+            RuntimeBootstrapResponse::StopAccepted => Err(RuntimeControlError::ProofRefused),
+        }
+    }
+
+    pub(crate) async fn connect_logs(
+        &self,
+        deadline: Duration,
+    ) -> Result<RuntimeLogObserver, RuntimeControlError> {
+        tokio::time::timeout(deadline, async {
+            let (mut stream, response) = self.bootstrap(deadline).await?;
+            match response {
+                RuntimeBootstrapResponse::Compatible { hello } => {
+                    verify_runtime(&hello, &self.runtime)?;
+                }
+                RuntimeBootstrapResponse::VersionMismatch { .. } => {
+                    return Err(RuntimeControlError::VersionMismatch);
+                }
+                RuntimeBootstrapResponse::Refused { reason } => {
+                    return Err(match reason {
+                        RuntimeBootstrapRefusal::PeerIdentityMismatch => {
+                            RuntimeControlError::PeerIdentity
+                        }
+                        RuntimeBootstrapRefusal::CustodyProofInvalid
+                        | RuntimeBootstrapRefusal::RuntimeIdentityMismatch
+                        | RuntimeBootstrapRefusal::RuntimeTerminating => {
+                            RuntimeControlError::ProofRefused
+                        }
+                    });
+                }
+                RuntimeBootstrapResponse::StopAccepted => {
+                    return Err(RuntimeControlError::ProofRefused);
+                }
+            }
+            write_frame(stream.get_mut(), &RuntimeControlRequest::SubscribeLogs).await?;
+            match read_frame::<RuntimeControlResponse>(&mut stream).await? {
+                Some(RuntimeControlResponse::LogsSubscribed) => Ok(RuntimeLogObserver { stream }),
+                Some(
+                    RuntimeControlResponse::Status { .. }
+                    | RuntimeControlResponse::Readiness { .. }
+                    | RuntimeControlResponse::ApplyConfig { .. }
+                    | RuntimeControlResponse::StopAccepted
+                    | RuntimeControlResponse::LogsTail { .. }
+                    | RuntimeControlResponse::TokenList { .. }
+                    | RuntimeControlResponse::Refused { .. },
+                )
+                | None => Err(RuntimeControlError::Closed),
+            }
+        })
         .await
         .map_err(|_| RuntimeControlError::TimedOut)?
+    }
+
+    async fn bootstrap(
+        &self,
+        deadline: Duration,
+    ) -> Result<(FramedStream, RuntimeBootstrapResponse), RuntimeControlError> {
+        let stream = tokio::time::timeout(deadline, connect_with_retry(&self.path))
+            .await
+            .map_err(|_| RuntimeControlError::TimedOut)??;
+        let mut stream = BufReader::new(stream);
+        write_frame(
+            stream.get_mut(),
+            &RuntimeBootstrapRequest::Handshake {
+                hello: RuntimeControlClientHello {
+                    protocol_version: RUNTIME_CONTROL_CONTRACT_VERSION,
+                    manager_instance_id: self.manager_instance_id.clone(),
+                },
+                proof: RuntimeCustodyProof::new(self.proof.to_string()),
+            },
+        )
+        .await?;
+        let response: RuntimeBootstrapResponse = read_frame(&mut stream)
+            .await?
+            .ok_or(RuntimeControlError::Closed)?;
+        Ok((stream, response))
+    }
+}
+
+impl RuntimeLogObserver {
+    #[cfg(test)]
+    pub(crate) fn pair_for_test() -> io::Result<(Self, UnixStream)> {
+        let (manager, runtime) = UnixStream::pair()?;
+        Ok((
+            Self {
+                stream: BufReader::new(manager),
+            },
+            runtime,
+        ))
+    }
+
+    pub(crate) async fn next(
+        &mut self,
+    ) -> Result<Option<RuntimeControlEvent>, RuntimeControlError> {
+        read_frame(&mut self.stream).await
     }
 }
 
@@ -445,6 +601,11 @@ async fn serve_compatible(
     service: &RuntimeControlService,
 ) -> Result<(), RuntimeControlError> {
     while let Some(request) = read_frame::<RuntimeControlRequest>(stream).await? {
+        if matches!(request, RuntimeControlRequest::SubscribeLogs) {
+            let events = service.events.subscribe();
+            write_frame(stream.get_mut(), &RuntimeControlResponse::LogsSubscribed).await?;
+            return serve_log_subscription(stream, events, &service.shutdown).await;
+        }
         let response = dispatch(request, service).await;
         write_frame(stream.get_mut(), &response).await?;
         if matches!(response, RuntimeControlResponse::StopAccepted) {
@@ -452,6 +613,30 @@ async fn serve_compatible(
         }
     }
     Ok(())
+}
+
+async fn serve_log_subscription(
+    stream: &mut FramedStream,
+    mut events: broadcast::Receiver<ControlEvent>,
+    shutdown: &CancellationToken,
+) -> Result<(), RuntimeControlError> {
+    loop {
+        let event = tokio::select! {
+            () = shutdown.cancelled() => return Ok(()),
+            event = events.recv() => event,
+        };
+        let event = match event {
+            Ok(ControlEvent::LogsLine { line }) => {
+                RuntimeControlEvent::LogLine { line: line.message }
+            }
+            Ok(ControlEvent::ConfigChanged { .. } | ControlEvent::PromptReloaded { .. }) => {
+                continue;
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => RuntimeControlEvent::LogsLost,
+            Err(broadcast::error::RecvError::Closed) => return Ok(()),
+        };
+        write_frame(stream.get_mut(), &event).await?;
+    }
 }
 
 async fn serve_restricted(
@@ -526,6 +711,9 @@ async fn dispatch(
                 .into_iter()
                 .map(|line| line.message)
                 .collect(),
+        },
+        RuntimeControlRequest::SubscribeLogs => RuntimeControlResponse::Refused {
+            reason: RuntimeControlRefusal::OperationUnavailable,
         },
         RuntimeControlRequest::TokenList => {
             match crate::control::list_local_token_metadata(&service.pool).await {
@@ -749,6 +937,103 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test(start_paused = true)]
+    async fn test_request_timeout_invalidates_the_uncorrelated_stream() {
+        let (connection, runtime) =
+            RuntimeControlConnection::pair_for_test().expect("runtime-control pair creates");
+        let client = connection
+            .compatible()
+            .expect("test connection is compatible");
+        let mut runtime = BufReader::new(runtime);
+        let request = tokio::spawn({
+            let client = client.clone();
+            async move { client.status().await }
+        });
+
+        assert_eq!(
+            read_frame::<RuntimeControlRequest>(&mut runtime)
+                .await
+                .expect("request frame reads"),
+            Some(RuntimeControlRequest::Status),
+        );
+        tokio::time::advance(REQUEST_DEADLINE).await;
+        assert!(matches!(
+            request.await.expect("request task joins"),
+            Err(RuntimeControlError::TimedOut)
+        ));
+        assert!(connection.is_closed());
+        assert!(matches!(
+            client.status().await,
+            Err(RuntimeControlError::Closed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_unexpected_response_invalidates_the_request_stream() {
+        let (connection, runtime) =
+            RuntimeControlConnection::pair_for_test().expect("runtime-control pair creates");
+        let client = connection
+            .compatible()
+            .expect("test connection is compatible");
+        let mut runtime = BufReader::new(runtime);
+        let request = tokio::spawn({
+            let client = client.clone();
+            async move { client.status().await }
+        });
+
+        assert_eq!(
+            read_frame::<RuntimeControlRequest>(&mut runtime)
+                .await
+                .expect("request frame reads"),
+            Some(RuntimeControlRequest::Status),
+        );
+        write_frame(runtime.get_mut(), &RuntimeControlResponse::StopAccepted)
+            .await
+            .expect("unexpected response writes");
+        assert!(matches!(
+            request.await.expect("request task joins"),
+            Err(RuntimeControlError::Closed)
+        ));
+        assert!(connection.is_closed());
+    }
+
+    #[tokio::test]
+    async fn test_mixed_runtime_event_lag_never_claims_a_line_count() {
+        let (manager, runtime) = UnixStream::pair().expect("runtime log pair creates");
+        let mut manager = BufReader::new(manager);
+        let mut runtime = BufReader::new(runtime);
+        let (events, receiver) = broadcast::channel(1);
+        events
+            .send(ControlEvent::ConfigChanged {
+                keys: vec!["logging.level".to_owned()],
+                effect: tribal_wire::control::WriteEffect::NeedsRestart,
+            })
+            .expect("config event queues");
+        events
+            .send(ControlEvent::PromptReloaded {
+                stage: "answer".to_owned(),
+                role: "system".to_owned(),
+                version_id: "v2".to_owned(),
+            })
+            .expect("prompt event queues");
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn({
+            let shutdown = shutdown.clone();
+            async move { serve_log_subscription(&mut manager, receiver, &shutdown).await }
+        });
+
+        assert_eq!(
+            read_frame::<RuntimeControlEvent>(&mut runtime)
+                .await
+                .expect("loss frame reads"),
+            Some(RuntimeControlEvent::LogsLost),
+        );
+        shutdown.cancel();
+        task.await
+            .expect("subscription task joins")
+            .expect("subscription exits cleanly");
+    }
+
     #[tokio::test]
     async fn test_compatible_client_authenticates_and_stops_exact_runtime() {
         let temp = tempfile::tempdir().expect("temporary runtime-control root");
@@ -765,6 +1050,7 @@ mod tests {
         let _subscriber = Registry::default().with(filter_layer);
         let shutdown = CancellationToken::new();
         let config_sender = watch::Sender::new(Arc::new(config.clone()));
+        let (events, _) = broadcast::channel(8);
         let runtime = RuntimeIdentity {
             instance_id: "runtime-one".to_owned(),
             pid: std::process::id(),
@@ -786,6 +1072,7 @@ mod tests {
                 config: config_sender.clone(),
                 log_filter,
                 log_ring: LogRing::new(8),
+                events: events.clone(),
                 pool: sqlx::postgres::PgPoolOptions::new()
                     .connect_lazy("postgres://localhost/tribal")
                     .expect("lazy pool builds"),
@@ -794,7 +1081,7 @@ mod tests {
         )
         .await
         .expect("runtime-control server binds");
-        let connection = RuntimeControlClient::connect(
+        let admission = RuntimeControlClient::connect(
             &socket_path,
             "manager-one",
             &runtime,
@@ -802,8 +1089,31 @@ mod tests {
         )
         .await
         .expect("runtime-control handshake succeeds");
+        let connection = admission.connection;
 
         assert!(connection.is_compatible());
+        let mut observer = admission
+            .reconnect
+            .expect("compatible admission retains re-connect capability")
+            .connect_logs(CONNECT_DEADLINE)
+            .await
+            .expect("log subscription connects");
+        events
+            .send(ControlEvent::LogsLine {
+                line: tribal_wire::control::LogLine {
+                    at: chrono::Utc::now(),
+                    level: tribal_wire::control::LogLevel::Info,
+                    target: "test".to_owned(),
+                    message: "live line".to_owned(),
+                },
+            })
+            .expect("subscriber receives log event");
+        assert_eq!(
+            observer.next().await.expect("event reads"),
+            Some(RuntimeControlEvent::LogLine {
+                line: "live line".to_owned()
+            })
+        );
         let full_client = connection
             .compatible()
             .expect("compatible connection has a full client");

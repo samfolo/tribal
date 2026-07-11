@@ -14,10 +14,12 @@ use tokio_util::sync::CancellationToken;
 use tribal_wire::management::{
     BootstrapShutdownRefusal, ConfigPersistenceObservation, ConfigPersistencePhase,
     MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest, ManagementBootstrapResponse,
-    ManagementError, ManagementEvent, ManagementResponseError, ManagementServerHello,
+    ManagementError, ManagementEvent, ManagementLogLoss, ManagementMethod, ManagementResponseError,
+    ManagementServerHello,
 };
 
 use super::{
+    config_schema,
     configuration::ConfigAuthorityError,
     lifecycle::LifecycleController,
     probe::{ProbeError, ProbeService},
@@ -213,6 +215,7 @@ async fn handle_connection(
 
     if compatible {
         let mut lifecycle_updates = services.lifecycle.subscribe();
+        let mut lifecycle_events = services.lifecycle.subscribe_events();
         let mut config_updates = services.config.subscribe();
         let product = services.product.session();
         let connection = ConnectionServices {
@@ -227,6 +230,7 @@ async fn handle_connection(
             &mut write,
             &connection,
             &mut lifecycle_updates,
+            &mut lifecycle_events,
             &mut config_updates,
         )
         .await;
@@ -272,6 +276,7 @@ async fn serve_full(
     lifecycle_updates: &mut tokio::sync::watch::Receiver<
         tribal_wire::management::LifecycleSnapshot,
     >,
+    lifecycle_events: &mut tokio::sync::broadcast::Receiver<ManagementEvent>,
     config_updates: &mut tokio::sync::broadcast::Receiver<
         tribal_wire::management::ConfigChangeEvent,
     >,
@@ -310,17 +315,54 @@ async fn serve_full(
                     return;
                 }
             }
-            changed = config_updates.recv() => match changed {
-                Ok(change) => {
-                    let event = ManagementEvent::ConfigChanged { change };
+            event = lifecycle_events.recv() => {
+                let Some(event) = public_lifecycle_event(event) else {
+                    return;
+                };
+                if write_frame(write, &event).await.is_err() {
+                    return;
+                }
+            }
+            changed = config_updates.recv() => {
+                if let Some(event) = public_config_event(changed) {
                     if write_frame(write, &event).await.is_err() {
                         return;
                     }
+                } else {
+                    return;
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
         }
+    }
+}
+
+fn public_config_event(
+    event: Result<
+        tribal_wire::management::ConfigChangeEvent,
+        tokio::sync::broadcast::error::RecvError,
+    >,
+) -> Option<ManagementEvent> {
+    match event {
+        Ok(change) => Some(ManagementEvent::ConfigChanged { change }),
+        // Reconnection gives clients a fresh config read surface after position loss.
+        Err(
+            tokio::sync::broadcast::error::RecvError::Lagged(_)
+            | tokio::sync::broadcast::error::RecvError::Closed,
+        ) => None,
+    }
+}
+
+fn public_lifecycle_event(
+    event: Result<ManagementEvent, tokio::sync::broadcast::error::RecvError>,
+) -> Option<ManagementEvent> {
+    match event {
+        Ok(event) => Some(event),
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+            Some(ManagementEvent::LogsLost {
+                loss: ManagementLogLoss::ObservationInterrupted,
+            })
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
     }
 }
 
@@ -370,36 +412,42 @@ async fn dispatch(
     lifecycle: &LifecycleController,
     request: ManagementRequest,
 ) -> Result<serde_json::Value, ManagementResponseError> {
-    match request.method.as_str() {
-        "manager.snapshot" => lifecycle_value(lifecycle.snapshot().await),
-        "runtime.start" => lifecycle_value(lifecycle.start().await),
-        "runtime.stop" => lifecycle_value(lifecycle.stop().await),
-        "runtime.restart" => lifecycle_value(lifecycle.restart().await),
-        "manager.shutdown" => lifecycle_value(lifecycle.shutdown().await),
-        "server.status" => lifecycle_value(lifecycle.runtime_status().await),
-        "logs.tail" => {
+    let method =
+        serde_json::from_value::<ManagementMethod>(serde_json::Value::String(request.method))
+            .map_err(|_| invalid_request("unknown management method"))?;
+    match method {
+        ManagementMethod::ManagerSnapshot => lifecycle_value(lifecycle.snapshot().await),
+        ManagementMethod::RuntimeStart => lifecycle_value(lifecycle.start().await),
+        ManagementMethod::RuntimeStop => lifecycle_value(lifecycle.stop().await),
+        ManagementMethod::RuntimeRestart => lifecycle_value(lifecycle.restart().await),
+        ManagementMethod::ManagerShutdown => lifecycle_value(lifecycle.shutdown().await),
+        ManagementMethod::ServerStatus => lifecycle_value(lifecycle.runtime_status().await),
+        ManagementMethod::LogsTail => {
             let request: tribal_wire::management::RuntimeLogsTailRequest =
                 parse_params(request.params)?;
             lifecycle_value(lifecycle.runtime_logs_tail(request.lines).await)
         }
-        "token.list" => lifecycle_value(lifecycle.runtime_token_list().await),
-        "check.report" => readiness_value(config, probe, lifecycle).await,
-        "database.probe" => {
+        ManagementMethod::TokenList => lifecycle_value(lifecycle.runtime_token_list().await),
+        ManagementMethod::CheckReport => readiness_value(config, probe, lifecycle).await,
+        ManagementMethod::DatabaseProbe => {
             let receipt = probe.database().await.map_err(probe_error)?;
             refresh_readiness(config, probe, lifecycle).await?;
             product_value(Ok(receipt))
         }
-        "credential.probe" => {
+        ManagementMethod::CredentialProbe => {
             let receipts = probe.credentials().await.map_err(probe_error)?;
             refresh_readiness(config, probe, lifecycle).await?;
             product_value(Ok(receipts))
         }
-        "config.getAll" => to_value(config.document().await),
-        "config.path" => to_value(config.path().await),
-        "config.schema" => serde_json::to_value(tribal_config::config_schema())
-            .map_err(|_| invalid_request("configuration schema encoding failed")),
-        "config.get" => to_value(config.get(parse_params(request.params)?).await),
-        "config.validate" => {
+        ManagementMethod::ConfigGetAll => to_value(config.document().await),
+        ManagementMethod::ConfigPath => to_value(config.path().await),
+        ManagementMethod::ConfigSchema => serde_json::to_value(
+            config_schema::project(tribal_config::config_schema())
+                .map_err(|_| invalid_request("configuration schema projection failed"))?,
+        )
+        .map_err(|_| invalid_request("configuration schema encoding failed")),
+        ManagementMethod::ConfigGet => to_value(config.get(parse_params(request.params)?).await),
+        ManagementMethod::ConfigValidate => {
             let request: ConfigValidateRequest = parse_params(request.params)?;
             let violations = config
                 .validate(request.key.as_str().to_owned(), request.value)
@@ -416,7 +464,7 @@ async fn dispatch(
                     .collect::<Vec<_>>(),
             }))
         }
-        "config.set" => {
+        ManagementMethod::ConfigSet => {
             let request: tribal_wire::management::ConfigSetRequest = parse_params(request.params)?;
             let runtime_changes = vec![tribal_wire::runtime_control::RuntimeConfigChange {
                 key: request.key.clone(),
@@ -441,7 +489,7 @@ async fn dispatch(
             }
             product_value(Ok(outcome))
         }
-        "config.patch" => {
+        ManagementMethod::ConfigPatch => {
             let request: tribal_wire::management::ConfigPatchRequest =
                 parse_params(request.params)?;
             let runtime_changes = request
@@ -461,8 +509,8 @@ async fn dispatch(
             }
             product_value(Ok(outcome))
         }
-        "models.catalogue" => product_value(product.models_catalogue().await),
-        "models.select" => {
+        ManagementMethod::ModelsCatalogue => product_value(product.models_catalogue().await),
+        ManagementMethod::ModelsSelect => {
             let mut outcome = product.select_model(parse_params(request.params)?).await?;
             project_patch_effects(lifecycle, &mut outcome, Vec::new()).await;
             if patch_requires_lifecycle_update(&outcome) {
@@ -470,14 +518,14 @@ async fn dispatch(
             }
             product_value(Ok(outcome))
         }
-        "credential.sources" => product_value(
+        ManagementMethod::CredentialSources => product_value(
             product
                 .credential_sources(parse_params(request.params)?)
                 .await,
         ),
-        "graph.genesisOptions" => product_value(product.genesis_options().await),
-        "graph.embedding_profile" => product_value(product.embedding_profile().await),
-        "graph.configureGenesis" => {
+        ManagementMethod::GraphGenesisOptions => product_value(product.genesis_options().await),
+        ManagementMethod::GraphEmbeddingProfile => product_value(product.embedding_profile().await),
+        ManagementMethod::GraphConfigureGenesis => {
             let mut outcome = product
                 .configure_genesis(parse_params(request.params)?)
                 .await?;
@@ -487,12 +535,11 @@ async fn dispatch(
             }
             product_value(Ok(outcome))
         }
-        "graph.convergeGenesis" => product_value(
+        ManagementMethod::GraphConvergeGenesis => product_value(
             product
                 .converge_genesis(parse_params(request.params)?)
                 .await,
         ),
-        _ => Err(invalid_request("unknown management method")),
     }
 }
 
@@ -770,6 +817,23 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn test_mixed_public_event_lag_never_claims_a_line_count() {
+        assert_eq!(
+            public_lifecycle_event(Err(tokio::sync::broadcast::error::RecvError::Lagged(7))),
+            Some(ManagementEvent::LogsLost {
+                loss: ManagementLogLoss::ObservationInterrupted,
+            })
+        );
+    }
+
+    #[test]
+    fn test_config_lag_terminates_the_stream_for_a_fresh_read() {
+        assert!(
+            public_config_event(Err(tokio::sync::broadcast::error::RecvError::Lagged(3))).is_none()
+        );
+    }
+
     #[tokio::test]
     async fn test_compatible_and_mismatched_clients_get_restricted_handshakes() {
         let temp = tempfile::tempdir().expect("temporary socket root");
@@ -835,8 +899,9 @@ mod tests {
             let mut bytes = serde_json::to_vec(&request).expect("request serialises");
             bytes.push(b'\n');
             stream.write_all(&bytes).await.expect("request writes");
+            let mut reader = BufReader::new(stream);
             let mut response = String::new();
-            BufReader::new(stream)
+            reader
                 .read_line(&mut response)
                 .await
                 .expect("response reads");
@@ -847,6 +912,30 @@ mod tests {
                 expected_compatible,
             );
             if expected_compatible {
+                let mut request = serde_json::to_vec(&serde_json::json!({
+                    "id": 1,
+                    "method": ManagementMethod::ConfigSchema,
+                }))
+                .expect("schema request serialises");
+                request.push(b'\n');
+                reader
+                    .get_mut()
+                    .write_all(&request)
+                    .await
+                    .expect("schema request writes");
+                let mut response = String::new();
+                reader
+                    .read_line(&mut response)
+                    .await
+                    .expect("schema response reads");
+                let response: serde_json::Value =
+                    serde_json::from_str(&response).expect("schema response parses");
+                let schema: tribal_wire::management::ConfigSchema =
+                    serde_json::from_value(response["result"].clone())
+                        .expect("schema response uses the public DTO");
+                assert!(schema.schema.is_object());
+                assert!(!schema.fields.is_empty());
+                assert_eq!(schema.groups, tribal_config::config_schema().groups);
                 shutdown.cancel();
             } else {
                 super::super::client::ManagementClient::request_shutdown(

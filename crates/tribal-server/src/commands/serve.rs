@@ -189,6 +189,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
                     config: control_context.config.clone(),
                     log_filter: control_context.log_filter.clone(),
                     log_ring: control_context.log_ring.clone(),
+                    events: control_events.clone(),
                     pool: control_context.pool.clone(),
                     shutdown: cancellation_token.clone(),
                 },

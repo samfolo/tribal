@@ -13,8 +13,10 @@ const GOLDEN: &str = "tests/golden/management_contract.json";
 fn management_contract_matches_its_golden_schema() {
     let schemas: BTreeMap<&str, RootSchema> = BTreeMap::from([
         ("ConfigFieldPath", schema_for!(m::ConfigFieldPath)),
+        ("ConfigSchema", schema_for!(m::ConfigSchema)),
         ("LifecycleSnapshot", schema_for!(m::LifecycleSnapshot)),
         ("ManagementEvent", schema_for!(m::ManagementEvent)),
+        ("ManagementMethod", schema_for!(m::ManagementMethod)),
         ("RuntimeStartResult", schema_for!(m::RuntimeStartResult)),
         ("RuntimeStopResult", schema_for!(m::RuntimeStopResult)),
         ("RuntimeRestartResult", schema_for!(m::RuntimeRestartResult)),
@@ -34,6 +36,7 @@ fn management_contract_matches_its_golden_schema() {
         ("ConfigDocument", schema_for!(m::ConfigDocument)),
         ("ConfigValue", schema_for!(m::ConfigValue)),
         ("ConfigSetRequest", schema_for!(m::ConfigSetRequest)),
+        ("ConfigWriteOutcome", schema_for!(m::ConfigWriteOutcome)),
         ("ConfigPatchRequest", schema_for!(m::ConfigPatchRequest)),
         ("ConfigPatchOutcome", schema_for!(m::ConfigPatchOutcome)),
         ("ProbeReceipt", schema_for!(m::ProbeReceipt)),
