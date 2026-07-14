@@ -1,151 +1,65 @@
 #!/usr/bin/env bash
-#
-# Tribal container entrypoint. Four flows dispatched on positional args:
-#
-#   1. Arg pass-through: any arg(s) other than the sole --reset -> exec "$@".
-#      Lets `docker run --rm <image> tribal --version` and similar one-offs
-#      bypass the bootstrap orchestration.
-#   2. First run: no args, no project_id file -> tribal bootstrap, persist
-#      project_id, print onboarding block to stderr, exec tribal serve.
-#   3. Subsequent run: no args, project_id file present -> read project_id,
-#      print brief stderr summary, exec tribal serve. No re-mint.
-#   4. --reset (sole arg): delete credentials.json + project_id, then fall
-#      into the first-run flow. Bootstrap is idempotent against the existing
-#      Postgres project row (UniqueViolation -> find_by_git_remote).
-#
-# XDG_CONFIG_HOME is the parent directory; Tribal then nests its own files
-# under a `tribal/` subdirectory (the binary's credential resolver, not a
-# Docker-specific choice). With XDG_CONFIG_HOME=/var/lib/tribal, the
-# resolved paths become /var/lib/tribal/tribal/{tribal.yaml,credentials.json},
-# which is why every state path below carries the inner `tribal/` segment.
-#
-# Env-var plumbing differs by purpose:
-#   - TRIBAL_PROJECT_REMOTE, TRIBAL_PROJECT_NAME: script-side variables,
-#     read here and forwarded to `tribal bootstrap --remote / --name`.
-#     One-shot inputs that identify the project to register; not part
-#     of the binary's persisted config and not loaded by figment.
-#   - TRIBAL_SERVER__TRANSPORT, TRIBAL_SERVER__BIND_ADDRESS, TRIBAL_*__*:
-#     figment-loaded config fields (the double underscore is figment's
-#     nested-path separator). The binary reads these directly. We do
-#     NOT pass `--transport` here so a compose user can swap http/sse
-#     by changing TRIBAL_SERVER__TRANSPORT alone.
+# Tribal container lifecycle. The manager owns configuration and the managed
+# network runtime; this shell only projects bootstrap and signal shutdown.
 
 set -euo pipefail
 
-STATE_DIR="/var/lib/tribal/tribal"
-PROJECT_ID_FILE="${STATE_DIR}/project_id"
-CREDENTIALS_FILE="${STATE_DIR}/credentials.json"
+if [[ $# -gt 0 ]]; then
+  exec "$@"
+fi
 
-print_full_onboarding() {
-  cat >&2 <<'EOF'
+shutdown_manager() {
+  tribal manager shutdown >/dev/null 2>&1 || true
+  rm -f "${manager_record:-}"
+}
+
+trap shutdown_manager EXIT INT TERM
+
+manager_record="$(mktemp)"
+tribal manager run --announce-json >"$manager_record" &
+manager_pid="$!"
+for _ in $(seq 1 600); do
+  [[ -s "$manager_record" ]] && break
+  if ! kill -0 "$manager_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+if ! IFS= read -r announcement <"$manager_record"; then
+  echo "tribal manager exited before announcing readiness" >&2
+  wait "$manager_pid"
+  exit 1
+fi
+if ! jq -e '.status == "ready" and .data.announcement.socket_path and .data.announcement.config_path' <<<"$announcement" >/dev/null; then
+  echo "tribal manager returned an invalid launch receipt" >&2
+  exit 1
+fi
+
+bootstrap_receipt="$(tribal bootstrap --auth persisted-bearer --json)"
+if ! jq -e '.config_revision and .value.database and .value.handoff' <<<"$bootstrap_receipt" >/dev/null; then
+  echo "tribal bootstrap returned an invalid receipt" >&2
+  exit 1
+fi
+
+integration_receipt="$(tribal integration mcp-config --auth persisted-bearer --json)"
+if ! jq -e '.config_revision and .value.data.document' <<<"$integration_receipt" >/dev/null; then
+  echo "tribal integration mcp-config returned an invalid receipt" >&2
+  exit 1
+fi
+
+tribal runtime start --json >/dev/null
+
+cat >&2 <<'EOF'
 ================================================================
 Tribal is running on http://localhost:8725/mcp.
 
 To wire Tribal into Claude Code, run this from your host shell:
-  claude mcp add-json tribal "$(docker compose exec tribal tribal mcp-config)"
+  claude mcp add-json tribal "$(docker compose exec tribal tribal integration mcp-config --auth persisted-bearer --json | jq -c '.value.data.document')"
 
-For Codex / Gemini CLI / OpenCode, see the installation skill.
-
-To verify your installation is healthy:
+To verify readiness:
   docker compose exec tribal tribal check
-
-To verify your providers are ready for real ingest:
-  docker compose exec tribal tribal check --providers
-
-This compose flow uses a placeholder git remote
-(https://example.com/local/tribal-docker.git). To re-register
-against your real repo, ask your agent (after wiring) to run:
-  tribal project register --remote <your-repo-url>
-
-Provider configuration is your responsibility. The defaults
-target a local Ollama on the host
-(http://host.docker.internal:11434); ensure it is running with
-the required models pulled. To use a cloud provider instead, set
-its provider, model, and base_url (plus API key) in .env before
-'docker compose up'. See .env.example for a ready-to-paste block.
-
-To install Tribal's skills into your agent:
-  npx skills add tribal-memory/skills
-
-To remove Tribal entirely:
-  docker compose down -v
-  npx skills remove installing-tribal using-tribal
 ================================================================
 EOF
-}
 
-print_brief_status() {
-  cat >&2 <<'EOF'
-Tribal is running on http://localhost:8725/mcp.
-
-To wire into Claude Code (from your host shell):
-  claude mcp add-json tribal "$(docker compose exec tribal tribal mcp-config)"
-EOF
-}
-
-first_run() {
-  mkdir -p "$STATE_DIR"
-  : "${TRIBAL_PROJECT_REMOTE:?TRIBAL_PROJECT_REMOTE must be set (compose provides a default; see docker-compose.yml)}"
-  : "${TRIBAL_PROJECT_NAME:?TRIBAL_PROJECT_NAME must be set (compose provides a default; see docker-compose.yml)}"
-  # Transport selection flows through TRIBAL_SERVER__TRANSPORT (env →
-  # figment → config); deliberately not passed as `--transport` so a
-  # compose user can swap to sse via env without editing the script.
-  local bootstrap_json project_id
-  bootstrap_json="$(tribal bootstrap \
-    --remote "$TRIBAL_PROJECT_REMOTE" \
-    --name "$TRIBAL_PROJECT_NAME" \
-    --json)"
-
-  if ! project_id="$(jq -e -r '.project_id | select(type == "string" and length > 0)' <<<"$bootstrap_json")"; then
-    echo "tribal bootstrap returned JSON without a non-empty string .project_id; refusing to continue" >&2
-    exit 1
-  fi
-
-  # `tribal bootstrap` is warn-and-success on credentials-file persistence:
-  # the JSON payload survives a write failure, leaving the container with
-  # no token to hand off. Fail loudly here so the host-shell wire-up
-  # one-liner never sees a "ready" container without a usable file.
-  if [[ ! -s "$CREDENTIALS_FILE" ]] || ! jq -e '.auth.token | type == "string" and length > 0' "$CREDENTIALS_FILE" >/dev/null 2>&1; then
-    echo "tribal bootstrap succeeded but $CREDENTIALS_FILE is missing or has no .auth.token; cannot hand off credentials" >&2
-    exit 1
-  fi
-
-  # `install -m 0644` is not a tempfile+rename atomic write, but project_id
-  # is a single short line and a mid-write interrupt is extraordinarily
-  # unlikely; the subsequent-run flow's content validation catches a
-  # corrupt file on the next start regardless.
-  install -m 0644 /dev/stdin "$PROJECT_ID_FILE" <<<"$project_id"
-  print_full_onboarding
-  exec tribal serve --project "$project_id"
-}
-
-subsequent_run() {
-  local project_id
-  project_id="$(cat "$PROJECT_ID_FILE")"
-  if [[ -z "$project_id" || "$project_id" =~ [[:space:]] ]]; then
-    echo "$PROJECT_ID_FILE is empty or contains whitespace; recreate it with 'docker compose run --rm tribal --reset'" >&2
-    exit 1
-  fi
-  # `tribal check` downgrades a missing credentials.json to a warning,
-  # so without this guard the container reaches healthy while the
-  # host-shell wire-up has no token to surface.
-  if [[ ! -s "$CREDENTIALS_FILE" ]] || ! jq -e '.auth.token | type == "string" and length > 0' "$CREDENTIALS_FILE" >/dev/null 2>&1; then
-    echo "$CREDENTIALS_FILE is missing or has no .auth.token; recreate it with 'docker compose run --rm tribal --reset'" >&2
-    exit 1
-  fi
-  print_brief_status
-  exec tribal serve --project "$project_id"
-}
-
-# -- Dispatch --
-
-if [[ $# -eq 1 && "${1:-}" == "--reset" ]]; then
-  rm -f "$CREDENTIALS_FILE" "$PROJECT_ID_FILE"
-  first_run
-elif [[ $# -gt 0 ]]; then
-  exec "$@"
-elif [[ -f "$PROJECT_ID_FILE" ]]; then
-  subsequent_run
-else
-  first_run
-fi
+wait "$manager_pid"
+trap - EXIT INT TERM

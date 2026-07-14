@@ -10,7 +10,9 @@ use std::{
 };
 
 use tracing_subscriber::EnvFilter;
-use tribal_domain::{MAX_EMBEDDING_DIMENSIONS, ProviderKind, normalise_endpoint_url};
+use tribal_domain::{
+    MAX_EMBEDDING_DIMENSIONS, ProviderKind, TransportKind, normalise_endpoint_url,
+};
 use url::Url;
 
 use crate::{
@@ -18,7 +20,7 @@ use crate::{
     error::ConfigError,
     sections::{
         MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
-        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind, TribalConfig, is_valid_connection_name,
+        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TribalConfig, is_valid_connection_name,
         oauth_surface_is_routable,
     },
 };

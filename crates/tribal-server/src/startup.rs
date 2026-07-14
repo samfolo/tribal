@@ -29,4 +29,4 @@ pub(crate) use providers::{
     completion_stage_specs, probe_startup_providers, validate_embedding_identity,
 };
 pub(crate) use provisioning::{provision_genesis, read_active_profile};
-pub(crate) use watcher::{SelfWriteSentinel, init_config_watcher, init_prompt_watcher};
+pub(crate) use watcher::{init_config_watcher, init_prompt_watcher};

@@ -278,7 +278,7 @@ pub async fn count_tasks_by_status(conn: &mut PgConnection, status: &str) -> i64
 
 /// Counts rows in the `prompt_versions` table.
 ///
-/// Used by setup-flow tests to assert that the `tribal setup` command
+/// Used by bootstrap-flow tests to assert that database initialisation
 /// does not upsert prompts (that responsibility belongs to `tribal
 /// serve`).
 ///

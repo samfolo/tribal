@@ -95,3 +95,11 @@ pub enum CheckResult {
         detail: String,
     },
 }
+
+/// Ordered local readiness rows and their aggregate success state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CheckReport {
+    pub ok: bool,
+    pub checks: Vec<CheckResult>,
+}

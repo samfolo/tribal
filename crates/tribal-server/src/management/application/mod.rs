@@ -7,6 +7,7 @@ mod integration;
 mod pagination;
 mod project;
 mod reindex;
+pub(crate) mod support;
 mod thread;
 mod token;
 
@@ -126,9 +127,9 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::ConfigPath => config_value(self.config.path().await),
             ManagementMethod::ConfigSchema => serde_json::to_value(
                 config_schema::project(tribal_config::config_schema())
-                    .map_err(|_| invalid_request("configuration schema projection failed"))?,
+                    .map_err(|_| internal_error("configuration schema projection failed"))?,
             )
-            .map_err(|_| invalid_request("configuration schema encoding failed")),
+            .map_err(|_| internal_error("configuration schema encoding failed")),
             ManagementMethod::ConfigGet => {
                 config_value(self.config.get(parse_call::<ConfigGetCall>(params)?).await)
             }
@@ -241,7 +242,7 @@ impl<'a> ManagementApplication<'a> {
     async fn readiness_value(&self) -> Result<serde_json::Value, ManagementResponseError> {
         let report = self.readiness_report().await?;
         serde_json::to_value(report)
-            .map_err(|_| invalid_request("readiness response encoding failed"))
+            .map_err(|_| internal_error("readiness response encoding failed"))
     }
 
     async fn lifecycle_value(
@@ -257,7 +258,7 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::ServerStatus => {
                 lifecycle_value(self.lifecycle.runtime_status().await)
             }
-            _ => unreachable!("lifecycle dispatch admits only lifecycle methods"),
+            _ => Err(internal_error("lifecycle dispatch invariant failed")),
         }
     }
 
@@ -298,7 +299,7 @@ impl<'a> ManagementApplication<'a> {
                         .map_err(token::public_error),
                 )
             }
-            _ => unreachable!("token dispatch admits only token methods"),
+            _ => Err(internal_error("token dispatch invariant failed")),
         }
     }
 
@@ -377,7 +378,7 @@ impl<'a> ManagementApplication<'a> {
                 let request = parse_call::<ReindexPruneCall>(params)?;
                 response_value(self.reindex.prune(request).await.map_err(reindex_error))
             }
-            _ => unreachable!("reindex dispatch admits only reindex methods"),
+            _ => Err(internal_error("reindex dispatch invariant failed")),
         }
     }
 
@@ -421,7 +422,7 @@ impl<'a> ManagementApplication<'a> {
             .is_some_and(|snapshot| lifecycle_has_runtime(&snapshot.phase));
         readiness::automatic(self.config, self.probe, runtime_present)
             .await
-            .map_err(|_| invalid_request("readiness observation failed"))
+            .map_err(|_| internal_error("readiness observation failed"))
     }
 }
 
@@ -438,22 +439,22 @@ where
 fn lifecycle_value<T: serde::Serialize>(
     result: Option<T>,
 ) -> Result<serde_json::Value, ManagementResponseError> {
-    let value = result.ok_or_else(|| invalid_request("lifecycle owner is unavailable"))?;
-    serde_json::to_value(value).map_err(|_| invalid_request("lifecycle response encoding failed"))
+    let value = result.ok_or_else(|| internal_error("lifecycle owner is unavailable"))?;
+    serde_json::to_value(value).map_err(|_| internal_error("lifecycle response encoding failed"))
 }
 
 fn config_value<T: serde::Serialize>(
     result: Result<T, ConfigAuthorityError>,
 ) -> Result<serde_json::Value, ManagementResponseError> {
     let value = result.map_err(management_error)?;
-    serde_json::to_value(value).map_err(|_| invalid_request("management response encoding failed"))
+    serde_json::to_value(value).map_err(|_| internal_error("management response encoding failed"))
 }
 
 fn response_value<T: serde::Serialize>(
     result: Result<T, ManagementResponseError>,
 ) -> Result<serde_json::Value, ManagementResponseError> {
     let value = result?;
-    serde_json::to_value(value).map_err(|_| invalid_request("management response encoding failed"))
+    serde_json::to_value(value).map_err(|_| internal_error("management response encoding failed"))
 }
 
 async fn project_runtime_effect(
@@ -558,6 +559,13 @@ fn invalid_request(message: &str) -> ManagementResponseError {
     ManagementResponseError {
         message: message.to_owned(),
         error: ManagementError::ConfigurationInvalid { fields: Vec::new() },
+    }
+}
+
+fn internal_error(message: &str) -> ManagementResponseError {
+    ManagementResponseError {
+        message: message.to_owned(),
+        error: ManagementError::InternalInvariant,
     }
 }
 

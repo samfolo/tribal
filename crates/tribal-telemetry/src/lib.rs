@@ -14,7 +14,7 @@ mod subscriber;
 
 pub use error::TelemetryError;
 pub use guard::TelemetryGuard;
-pub use log_ring::LogRing;
+pub use log_ring::{LogLevel, LogLine, LogRing};
 pub use propagation::{
     INVALID_SESSION_TRACE_ID, INVALID_TRACE_ID, TraceLink, current_span_id, current_trace_context,
     current_trace_id, is_valid_trace_id, link_span_to_ids, parent_span_from_trace_id,

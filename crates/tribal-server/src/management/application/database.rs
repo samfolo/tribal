@@ -22,7 +22,7 @@ use super::super::{
     worker::ConfigWorkerClient,
 };
 use crate::{
-    commands::common::{
+    management::application::support::{
         COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, find_or_create_principal,
     },
     startup::run_migrations,

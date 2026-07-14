@@ -13,7 +13,8 @@ use tribal_auth::{
     oauth::{OAuthRouterState, OAuthRuntimeConfig, oauth_router},
     require_bearer_auth,
 };
-use tribal_config::{ServerConfig, TransportKind};
+use tribal_config::ServerConfig;
+use tribal_domain::TransportKind;
 use tribal_mcp::{AppState, HandlerConfig};
 
 use super::{common, sse_lifecycle::SseLifecycleLayer};

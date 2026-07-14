@@ -8826,6 +8826,21 @@
         "description": "Stable failure classification for configuration and product actions.",
         "oneOf": [
           {
+            "description": "Manager code reached an invariant it could not uphold.",
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "internal_invariant"
+                ]
+              }
+            }
+          },
+          {
             "description": "An explicitly requested external probe could not produce evidence.",
             "type": "object",
             "required": [

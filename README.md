@@ -71,7 +71,7 @@ tribal bootstrap
 
 ## Setting up
 
-`tribal bootstrap` is the canonical first run. From inside the git repository you want Tribal to know about, it runs setup, registers the current repository as a project, mints a bearer token, persists credentials, and emits the MCP config snippet your harness will need. Run it once per repository:
+`tribal bootstrap` is the canonical first run. It asks the local manager to initialise the configured database, apply model and graph settings, optionally register a working tree, and ensure a namespaced default credential. It is safe to run again against the same durable state:
 
 ```bash
 tribal bootstrap
@@ -79,10 +79,12 @@ tribal bootstrap
 
 Flags worth knowing:
 
-- `--transport stdio|http|sse` chooses the connection shape. Stdio is the simpler default and what direct binary installs (Homebrew, shell installer) use out of the box. HTTP is required for the Docker Compose path, since the server runs in a container the host connects to over the network. Direct installs can opt into HTTP too if you prefer a persistent server.
+- `--project-path DIRECTORY` includes project registration in the bootstrap composition. Omit it when initialising an unscoped deployment.
+- `--transport stdio|http|sse` chooses the integration receipt's connection shape. Omission follows the configured transport.
+- `--auth oauth|persisted-bearer` selects network authentication. Exporting a bearer is explicit and is not available for stdio.
 - `--json` emits a structured JSON record of everything that happened. Useful for scripting and for piping into the diagnostic flow described below.
 
-The underlying commands are `tribal setup` (one-time database and credentials setup) and `tribal project register` (per-project registration). You rarely need them directly. Bootstrap composes them and adds the MCP config layer on top.
+Bootstrap composes the same typed manager capabilities available under `tribal database`, `tribal project`, `tribal token`, and `tribal integration`; those commands never open the database or credential store independently.
 
 ## Verifying readiness
 
@@ -106,7 +108,7 @@ tribal check --json
 
 ## Connecting to your agent harness
 
-The canonical MCP config for any compatible harness comes from `tribal mcp-config`, which writes the JSON snippet to stdout. On a local HTTP or SSE deployment the snippet is URL-only: an OAuth-capable harness registers and authenticates itself on first connect, so there is nothing to copy. Pass `--static-token` to embed the persisted bearer token instead, for a harness that authenticates with an `Authorization` header only. The stdio snippet carries no token; it authenticates as a local principal at runtime.
+The canonical MCP config for any compatible harness comes from `tribal integration mcp-config`. On a local HTTP or SSE deployment the default OAuth document is URL-only. Pass `--auth persisted-bearer` to make the secret-bearing export explicit for a harness that only supports an `Authorization` header. The stdio document carries no token and starts explicitly unscoped or with the selected project context.
 
 For per-harness translations, ask your agent to invoke the [`installing-tribal` skill](https://github.com/tribal-memory/skills/tree/main/skills/installing-tribal). It walks through wiring Tribal into your harness and produces the exact command to run.
 
@@ -121,7 +123,7 @@ The [`using-tribal` skill](https://github.com/tribal-memory/skills/tree/main/ski
 Most operational issues fall into a small set of patterns:
 
 - **Port already in use.** Tribal exits with the conflicting address in the error message. Free the port, or switch to `--transport stdio` to bypass network binding.
-- **Bad credentials state.** Delete `credentials.json` (under `$XDG_CONFIG_HOME/tribal/`) and re-run `tribal bootstrap`. Bootstrap is symmetric and will write a fresh credential safely.
+- **Bad credentials state.** Re-run `tribal bootstrap`; the manager recovers or replaces the namespaced pending/stable credential pair transactionally.
 - **Corrupted Docker volume.** Stop the stack with `docker compose down -v`, then `docker compose up`. The volume is recreated on the next start.
 - **Stale project context.** If `TRIBAL_PROJECT_ID` is set in your environment to a project that no longer exists, unset it or re-run `tribal bootstrap` against the current directory's git remote.
 - **Missing provider env vars.** `tribal check --providers` names which provider stage is failing and walks the resolution chain. Set the missing variable and re-run.
@@ -143,7 +145,6 @@ For runtime failure modes that fall outside the check suite (worker death, trans
 Manual steps, in any order:
 
 - Remove the binary. `brew uninstall tribal` for Homebrew installs, the installer's removal script for the shell-installer path, or `docker compose down -v` for the containerised path.
-- Delete the credentials file at `$XDG_CONFIG_HOME/tribal/credentials.json`.
+- Delete the namespaced credential directory at `$XDG_CONFIG_HOME/tribal/credentials/`.
 - Drop the Postgres database Tribal was using.
 - Remove the skills with `npx skills remove installing-tribal using-tribal`.
-

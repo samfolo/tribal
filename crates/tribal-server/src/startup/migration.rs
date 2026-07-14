@@ -14,7 +14,7 @@ use crate::error::AppError;
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Checks whether the database has been initialised with `tribal setup`.
+/// Checks whether the database has been initialised through the manager.
 ///
 /// Returns `Ok(())` if the `_sqlx_migrations` table exists, or
 /// `Err(AppError::FirstRunRequired)` otherwise.

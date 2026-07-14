@@ -76,6 +76,27 @@ check:
     # feature-flipped clippy would recompile the graph.
     SQLX_OFFLINE=true cargo clippy --workspace --all-targets --features tribal-wire/schema,tribal-config/schema -- -D warnings
 
+# Build the current image and prove its manager-owned bootstrap, runtime, and signal lifecycle.
+container-smoke:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash -n scripts/tribal-entrypoint
+    docker compose config --quiet
+    tag="tribal-management-smoke:$$"
+    cleanup() {
+        TRIBAL_IMAGE="$tag" docker compose down --volumes >/dev/null 2>&1 || true
+        docker image rm "$tag" >/dev/null 2>&1 || true
+    }
+    trap cleanup EXIT
+    docker build --build-arg "TRIBAL_GIT_DESCRIBE=$(git describe --tags --always --dirty)" --tag "$tag" .
+    TRIBAL_IMAGE="$tag" docker compose up --detach --wait
+    TRIBAL_IMAGE="$tag" docker compose exec -T tribal tribal runtime status --json >/dev/null
+    TRIBAL_IMAGE="$tag" docker compose exec -T tribal \
+        tribal integration mcp-config --auth persisted-bearer --json \
+        | jq -e '.config_revision and .value.data.document' >/dev/null
+    TRIBAL_IMAGE="$tag" docker compose stop tribal
+    [ "$(TRIBAL_IMAGE="$tag" docker compose ps --status exited --services tribal)" = "tribal" ]
+
 # Format code
 fmt:
     cargo +nightly fmt --all

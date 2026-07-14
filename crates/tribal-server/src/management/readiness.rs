@@ -45,13 +45,17 @@ pub(crate) async fn automatic(
     for _ in 0..AUTOMATIC_OBSERVATION_ATTEMPTS {
         let snapshot = config.check_snapshot().await?;
         let revision = snapshot.revision.clone();
-        let report = crate::commands::run_report_async(crate::commands::CheckReportOptions {
-            config_path: &snapshot.path,
-            source: crate::commands::CheckConfigSource::ProvenBytes(snapshot.bytes),
-            providers: false,
-            project: None,
-            token: None,
-        })
+        let report = crate::management::operator_check::run_report_async(
+            crate::management::operator_check::CheckReportOptions {
+                config_path: &snapshot.path,
+                source: crate::management::operator_check::CheckConfigSource::ProvenBytes(
+                    snapshot.bytes,
+                ),
+                providers: false,
+                project: None,
+                token: None,
+            },
+        )
         .await?;
         if config.check_snapshot().await?.revision != revision {
             continue;

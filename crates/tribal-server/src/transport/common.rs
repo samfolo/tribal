@@ -19,8 +19,9 @@ use tribal_auth::{
         BearerChallenge, OAuthRuntimeConfig, PATH_PROTECTED_RESOURCE_METADATA, SCOPES_CATALOGUE,
     },
 };
-use tribal_config::{DEFAULT_BIND_ADDRESS, ServerConfig, TransportKind};
+use tribal_config::{DEFAULT_BIND_ADDRESS, ServerConfig};
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
+use tribal_domain::TransportKind;
 use tribal_mcp::{
     AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
     TribalServerHandler,

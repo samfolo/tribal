@@ -299,13 +299,11 @@ mod tests {
     use tribal_wire::management::{ConfigRevision, ReindexApplyResolution};
 
     use super::*;
-    use crate::{
-        commands::common::find_or_create_principal,
-        management::{
-            configuration::ConfigAuthority,
-            product::{ProductService, ProductSession},
-            worker::{self, ConfigWorkerRuntime},
-        },
+    use crate::management::{
+        application::support::find_or_create_principal,
+        configuration::ConfigAuthority,
+        product::{ProductService, ProductSession},
+        worker::{self, ConfigWorkerRuntime},
     };
 
     struct Harness {

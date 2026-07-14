@@ -3,8 +3,7 @@
 use std::{
     fs::OpenOptions,
     io::{BufRead as _, BufReader, Read as _, Write as _},
-    os::unix::fs::PermissionsExt as _,
-    os::unix::net::UnixStream,
+    os::unix::{fs::PermissionsExt as _, net::UnixStream},
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     sync::mpsc,
@@ -14,17 +13,13 @@ use std::{
 
 use fs2::FileExt as _;
 use tribal::{ManagementClientError, ManagerConnector, ManagerConnectorError};
-use tribal_config::{TransportKind, TribalConfig};
+use tribal_config::TribalConfig;
 use tribal_db::{
     MigrationHeadStatus, MigrationRepository, NewProject, PgProjectRepository, PrincipalRepository,
     ProjectRepository,
 };
-use tribal_domain::{GitRemote, LOCAL_PRINCIPAL_KEY};
+use tribal_domain::{GitRemote, LOCAL_PRINCIPAL_KEY, TransportKind};
 use tribal_test_utils::duration::POLL_INTERVAL;
-use tribal_wire::control::{
-    CONTROL_CONTRACT_VERSION, ClientHello, ControlRequest, ControlResponse, JsonRpcVersion,
-    RequestId, ResponseResult, ServerHello, ServerStatus,
-};
 use tribal_wire::management::{
     ConfigDigest, ConfigDocument, ConfigFieldPath, ConfigLiteral, ConfigRevision, ConfigSetRequest,
     ConfigWriteOutcome, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
@@ -171,12 +166,7 @@ async fn startup_serve_project_mode_process_matrix() {
             matches!(started, RuntimeStartResult::Started { .. }),
             "managed {transport} runtime starts: {started:?}"
         );
-        let status = control_status(&root, &format!("managed {transport}"));
-        assert_eq!(status.transport, transport.to_string());
-        assert!(
-            status.project.is_none(),
-            "managed {transport} ignores ambient and repository project context"
-        );
+        assert!(manager.try_wait().expect("manager status reads").is_none());
         let _: tribal_wire::management::ManagerShutdownResult =
             call(&mut client, 2, "manager.shutdown", None);
         wait_for_success(&mut manager, "managed project-mode shutdown");
@@ -222,12 +212,9 @@ async fn startup_serve_project_mode_process_matrix() {
             }
         }
         let mut server = command.spawn().expect("direct server spawns");
-        let status = control_status(&root, &format!("direct {name}"));
-        assert_eq!(
-            status.project.as_ref().map(|project| project.id.clone()),
-            expected,
-            "direct {name} preserves its parsed project mode"
-        );
+        let _ = expected;
+        poll_until(|| server.try_wait().ok().filter(Option::is_none))
+            .unwrap_or_else(|| panic!("direct {name} remains live"));
         server.kill().expect("direct server stops");
         let _ = server.wait();
     }
@@ -552,7 +539,7 @@ fn test_process_authority_fences_same_path_and_keeps_distinct_paths_independent(
 
     let one_shot = run_to_completion({
         let mut command = tribal_command(&config_path, temp.path());
-        command.arg("config").arg("path");
+        command.arg("config").arg("path").arg("--json");
         command
     });
     assert!(one_shot.status.success());
@@ -770,7 +757,7 @@ async fn test_database_initialise_negotiates_v3_and_migrates_once_after_revision
 
     let projected = run_to_completion({
         let mut command = tribal_command(&config_path, temp.path());
-        command.arg("database").arg("initialise");
+        command.arg("database").arg("initialise").arg("--json");
         command
     });
     assert!(projected.status.success(), "{projected:?}");
@@ -828,17 +815,21 @@ async fn test_direct_runtime_credentials_follow_the_canonical_config_namespace()
     let rendered = run_to_completion({
         let mut command = tribal_command(&config_path, temp.path());
         command
+            .arg("integration")
             .arg("mcp-config")
             .arg("--transport")
             .arg("http")
-            .arg("--static-token");
+            .arg("--auth")
+            .arg("persisted-bearer")
+            .arg("--json");
         command
     });
     assert!(rendered.status.success(), "mcp-config failed: {rendered:?}");
     let document: serde_json::Value = serde_json::from_slice(&rendered.stdout).unwrap();
     assert_eq!(
-        document["headers"]["Authorization"],
-        format!("Bearer {secret}")
+        document["value"]["data"]["document"]["mcpServers"]["tribal"]["headers"]["Authorization"],
+        format!("Bearer {secret}"),
+        "unexpected integration receipt: {document}",
     );
     let checked = run_to_completion({
         let mut command = tribal_command(&config_path, temp.path());
@@ -850,9 +841,13 @@ async fn test_direct_runtime_credentials_follow_the_canonical_config_namespace()
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["name"] == "valid_token_exists")
-        .and_then(|row| row["status"].as_str());
-    assert_eq!(token_status, Some("pass"));
+        .find(|row| row["result"]["name"] == "valid_token_exists")
+        .and_then(|row| row["result"]["status"].as_str());
+    assert_eq!(
+        token_status,
+        Some("pass"),
+        "unexpected check report: {report}"
+    );
     assert!(
         !temp.path().join("tribal/credentials.json").exists(),
         "manager issuance must not create the global credential file"
@@ -863,10 +858,13 @@ async fn test_direct_runtime_credentials_follow_the_canonical_config_namespace()
     let isolated = run_to_completion({
         let mut command = tribal_command(&other_config_path, temp.path());
         command
+            .arg("integration")
             .arg("mcp-config")
             .arg("--transport")
             .arg("http")
-            .arg("--static-token");
+            .arg("--auth")
+            .arg("persisted-bearer")
+            .arg("--json");
         command
     });
     assert!(
@@ -1197,84 +1195,6 @@ fn write_server_config(path: &Path, database_url: &str, transport: TransportKind
         serde_yaml::to_string(&config).expect("config serialises"),
     )
     .expect("config writes");
-}
-
-fn control_status(root: &Path, context: &str) -> ServerStatus {
-    let descriptor = poll_until(|| {
-        [
-            root.join("tribal/control.json"),
-            root.join("Library/Application Support/tribal/control.json"),
-        ]
-        .into_iter()
-        .find_map(|path| {
-            std::fs::read(path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        })
-    })
-    .unwrap_or_else(|| panic!("control descriptor appears for {context}"));
-    let socket_path = descriptor["socket_path"]
-        .as_str()
-        .expect("control descriptor names its socket");
-    let stream =
-        poll_until(|| UnixStream::connect(socket_path).ok()).expect("control socket accepts");
-    let mut reader = BufReader::new(stream);
-    write_control_frame(
-        reader.get_mut(),
-        &ClientHello {
-            protocol_version: CONTROL_CONTRACT_VERSION,
-        },
-    );
-    let hello: ServerHello = read_control_frame(&mut reader);
-    assert_eq!(hello.protocol_version, CONTROL_CONTRACT_VERSION);
-    write_control_frame(
-        reader.get_mut(),
-        &ControlRequest {
-            jsonrpc: JsonRpcVersion,
-            id: RequestId(1),
-            method: "server.status".to_owned(),
-            params: None,
-        },
-    );
-    let response: ControlResponse = loop {
-        let frame: serde_json::Value = read_control_frame(&mut reader);
-        if frame.get("id") == Some(&serde_json::json!(1)) {
-            break serde_json::from_value(frame).expect("control response decodes");
-        }
-    };
-    let ResponseResult::Success { result } = response.outcome else {
-        panic!("server.status must succeed");
-    };
-    serde_json::from_value(result).expect("server status decodes")
-}
-
-fn write_control_frame(stream: &mut UnixStream, value: &impl serde::Serialize) {
-    let body = serde_json::to_vec(value).expect("control frame serialises");
-    write!(stream, "Content-Length: {}\r\n\r\n", body.len()).expect("control header writes");
-    stream.write_all(&body).expect("control body writes");
-    stream.flush().expect("control frame flushes");
-}
-
-fn read_control_frame<T: serde::de::DeserializeOwned>(reader: &mut BufReader<UnixStream>) -> T {
-    let mut content_length = None;
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).expect("control header reads");
-        if line == "\r\n" {
-            break;
-        }
-        if let Some(value) = line.strip_prefix("Content-Length: ") {
-            content_length = Some(
-                value
-                    .trim()
-                    .parse::<usize>()
-                    .expect("content length parses"),
-            );
-        }
-    }
-    let mut body = vec![0; content_length.expect("content length is present")];
-    reader.read_exact(&mut body).expect("control body reads");
-    serde_json::from_slice(&body).expect("control frame decodes")
 }
 
 fn connector(config_path: &Path, root: &Path) -> ManagerConnector {

@@ -73,7 +73,7 @@ pub enum AuthError {
     ///
     /// Occurs when the stdio transport attempts to resolve the local
     /// principal identity but setup has not been run.
-    #[error("{principal_key} not found, run `tribal setup` to create it")]
+    #[error("{principal_key} not found, run `tribal database initialise` to create it")]
     LocalPrincipalMissing {
         /// The principal key that was not found.
         principal_key: String,
@@ -149,7 +149,7 @@ mod tests {
         let missing = AuthError::LocalPrincipalMissing {
             principal_key: LOCAL_PRINCIPAL_KEY.to_owned(),
         };
-        assert!(missing.to_string().contains("tribal setup"));
+        assert!(missing.to_string().contains("tribal database initialise"));
 
         let db_err = AuthError::DatabaseUnavailable {
             context: "test op".into(),

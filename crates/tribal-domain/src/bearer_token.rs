@@ -11,7 +11,7 @@ impl SecretKind for BearerTokenKind {
 }
 
 /// MCP bearer token issued by `tribal token create` and persisted in
-/// `credentials.json` for later wire-up.
+/// the namespaced stable credential envelope for later wire-up.
 ///
 /// See [`RedactedSecret`] for the construction, validation, redaction,
 /// and serde round-trip discipline shared with all secret newtypes.

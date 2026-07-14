@@ -1,8 +1,7 @@
 //! Server transport and connection configuration.
 
 use serde::{Deserialize, Serialize};
-
-use super::TransportKind;
+use tribal_domain::TransportKind;
 
 // ---------------------------------------------------------------------------
 // Constants

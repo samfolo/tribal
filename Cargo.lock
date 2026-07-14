@@ -5677,7 +5677,6 @@ dependencies = [
  "tracing-subscriber",
  "tribal-config",
  "tribal-domain",
- "tribal-wire",
 ]
 
 [[package]]

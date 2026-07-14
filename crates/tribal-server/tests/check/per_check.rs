@@ -3,7 +3,8 @@
 //! the orchestrator threads state correctly and the wire row reads as
 //! expected for a few representative cases.
 
-use tribal_config::{ENV_PUBLIC_MCP_URL, TransportKind, TribalConfig};
+use tribal_config::{ENV_PUBLIC_MCP_URL, TribalConfig};
+use tribal_domain::TransportKind;
 use tribal_test_utils::{TestDb, env_lock};
 
 use super::common::{

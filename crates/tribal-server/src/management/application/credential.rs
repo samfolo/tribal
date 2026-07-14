@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::Acquire as _;
 use tokio::sync::{mpsc, oneshot, watch};
 use tribal_auth::{IssuedAuthToken, issue_token_with_record};
-use tribal_config::{CredentialsPermissions, CredentialsReadError};
 use tribal_db::{
     AdvisoryLockRepository, AuthTokenRepository, DbError, LocalDefaultCredential,
     LocalDefaultCredentialRepository, PgAdvisoryLockRepository, PgAuthTokenRepository,
@@ -19,10 +18,9 @@ use tribal_db::{
 use tribal_domain::{AuthTokenId, BearerToken, CredentialGenerationId, Scope};
 
 use crate::{
-    commands::common::find_or_create_principal,
     error::AppError,
     management::{
-        application::database::DatabaseSession,
+        application::{database::DatabaseSession, support::find_or_create_principal},
         authority::{AuthorityError, AuthorityLease, ConfigAuthorityNamespace, credential_paths},
     },
 };
@@ -71,19 +69,9 @@ pub(super) enum CredentialCoordinatorError {
     GeneratedToken,
 }
 
-/// Proven source metadata for a direct-runtime persisted bearer.
-pub(crate) enum PersistedCredentialSource {
-    Namespaced,
-    Legacy {
-        path: PathBuf,
-        permissions: CredentialsPermissions,
-    },
-}
-
 /// Secret-bearing direct-runtime result with no debug projection.
 pub(crate) struct ResolvedPersistedBearer {
     pub(crate) token: BearerToken,
-    pub(crate) source: PersistedCredentialSource,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,8 +86,8 @@ pub(crate) enum PersistedCredentialReadError {
         #[source]
         source: CredentialStoreError,
     },
-    #[error(transparent)]
-    Legacy(#[from] CredentialsReadError),
+    #[error("no namespaced persisted credential exists")]
+    Missing,
 }
 
 /// Resolves the persisted bearer bound to a canonical config authority.
@@ -118,20 +106,9 @@ pub(crate) fn read_persisted_bearer(
         .map_err(|source| PersistedCredentialReadError::Namespaced { source })?
     {
         let Auth::Bearer { token } = envelope.auth;
-        return Ok(ResolvedPersistedBearer {
-            token,
-            source: PersistedCredentialSource::Namespaced,
-        });
+        return Ok(ResolvedPersistedBearer { token });
     }
-    let loaded = tribal_config::read_credentials()?;
-    let tribal_config::Auth::Bearer { token } = loaded.credentials.auth;
-    Ok(ResolvedPersistedBearer {
-        token,
-        source: PersistedCredentialSource::Legacy {
-            path: loaded.path,
-            permissions: loaded.permissions,
-        },
-    })
+    Err(PersistedCredentialReadError::Missing)
 }
 
 struct IssueCommand {

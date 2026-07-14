@@ -8,6 +8,7 @@ pub(crate) mod configuration;
 pub(crate) mod connector;
 pub(crate) mod custody;
 pub(crate) mod lifecycle;
+pub(crate) mod operator_check;
 pub(crate) mod probe;
 pub(crate) mod product;
 pub(crate) mod readiness;

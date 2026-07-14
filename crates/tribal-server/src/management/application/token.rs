@@ -30,7 +30,9 @@ use super::{
         InventoryPosition,
     },
 };
-use crate::commands::common::{TtlInput, compute_expires_at, find_or_create_principal};
+use crate::management::application::support::{
+    TtlInput, compute_expires_at, find_or_create_principal,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum TokenAdministrationError {

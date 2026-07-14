@@ -2,7 +2,7 @@
 //!
 //! Two rendering modes target different first-run flows:
 //!
-//! - [`render_minimal_config`] for `tribal setup` — emits only the
+//! - [`render_minimal_config`] for manager bootstrap — emits only the
 //!   resolved database URL.
 //! - [`render_persisted_config`] for `tribal bootstrap` — emits the
 //!   resolved database URL plus every field the user pinned through a
@@ -278,10 +278,10 @@ fn render<T: Serialize>(view: &T) -> Result<String, ConfigError> {
 
 #[cfg(test)]
 mod tests {
-    use tribal_domain::ProviderKind;
+    use tribal_domain::{ProviderKind, TransportKind};
 
     use super::*;
-    use crate::{ServerCliOverrides, sections::TransportKind};
+    use crate::ServerCliOverrides;
 
     /// Parses the YAML body following the header.
     fn parse_yaml(content: &str) -> serde_yaml::Value {

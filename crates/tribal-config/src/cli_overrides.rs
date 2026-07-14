@@ -10,9 +10,7 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use tribal_domain::ProviderKind;
-
-use crate::sections::TransportKind;
+use tribal_domain::{ProviderKind, TransportKind};
 
 // ---------------------------------------------------------------------------
 // Top-level overrides

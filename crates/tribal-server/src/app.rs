@@ -7,8 +7,8 @@ use clap::{CommandFactory, Parser};
 use crate::{
     cli::{
         Cli, Command, ConfigCommand, CredentialCommand, CredentialSourcesCommand, DatabaseCommand,
-        GraphCommand, ManagerCommand, ModelsCommand, ProjectCommand, ReindexCommand,
-        ThreadsCommand, TokenCommand,
+        GraphCommand, IntegrationCommand, ManagerCommand, ModelsCommand, ProjectCommand,
+        ReindexCommand, ThreadsCommand, TokenCommand,
     },
     commands,
     error::AppError,
@@ -70,10 +70,7 @@ impl App {
 
         match command {
             Command::Bootstrap { args } => {
-                commands::bootstrap(&self.cli.global.config, args)?;
-            }
-            Command::Setup { args } => {
-                commands::setup(&self.cli.global.config, args)?;
+                run_async(commands::bootstrap(&self.cli.global.config, args))?;
             }
             Command::Serve { args } => run_async(commands::serve(&self.cli.global.config, args))?,
             Command::Manager(command) => match command {
@@ -105,16 +102,19 @@ impl App {
                 ))?;
             }
             Command::Database(command) => match command {
-                DatabaseCommand::Initialise => {
-                    commands::database::initialise(&self.cli.global.config)?;
+                DatabaseCommand::Initialise { output } => {
+                    run_async(commands::database::initialise(
+                        &self.cli.global.config,
+                        output,
+                    ))?;
                 }
             },
             Command::Project(command) => match command {
                 ProjectCommand::Register { args } => {
-                    commands::project::register(&self.cli.global.config, args)?;
+                    run_async(commands::project::register(&self.cli.global.config, args))?;
                 }
                 ProjectCommand::List { args } => {
-                    commands::project::list(&self.cli.global.config, args)?;
+                    run_async(commands::project::list(&self.cli.global.config, args))?;
                 }
             },
             Command::Config(command) => match command {
@@ -136,38 +136,38 @@ impl App {
             },
             Command::Token(command) => match command {
                 TokenCommand::Create { args } => {
-                    commands::token::create(&self.cli.global.config, args)?;
+                    run_async(commands::token::create(&self.cli.global.config, args))?;
                 }
                 TokenCommand::List { args } => {
-                    commands::token::list(&self.cli.global.config, args)?;
+                    run_async(commands::token::list(&self.cli.global.config, args))?;
                 }
                 TokenCommand::Revoke { args } => {
-                    commands::token::revoke(&self.cli.global.config, args)?;
+                    run_async(commands::token::revoke(&self.cli.global.config, args))?;
                 }
                 TokenCommand::RevokeAll { args } => {
-                    commands::token::revoke_all(&self.cli.global.config, args)?;
+                    run_async(commands::token::revoke_all(&self.cli.global.config, args))?;
                 }
             },
-            Command::McpConfig { args } => {
-                commands::mcp_config(&self.cli.global.config, args)?;
-            }
+            Command::Integration(IntegrationCommand::McpConfig { args }) => run_async(
+                commands::integration::mcp_config(&self.cli.global.config, args),
+            )?,
             Command::Check { args } => {
                 run_async(commands::check(&self.cli.global.config, args))?;
             }
             Command::Reindex(command) => match command {
                 ReindexCommand::Run { args } => {
-                    commands::reindex::run(&self.cli.global.config, args)?;
+                    run_async(commands::reindex::run(&self.cli.global.config, args))?;
                 }
-                ReindexCommand::Cancel { args } => {
-                    commands::reindex::cancel(&self.cli.global.config, args)?;
+                ReindexCommand::Cancel { output } => {
+                    run_async(commands::reindex::cancel(&self.cli.global.config, output))?;
                 }
                 ReindexCommand::Prune { args } => {
-                    commands::reindex::prune(&self.cli.global.config, args)?;
+                    run_async(commands::reindex::prune(&self.cli.global.config, args))?;
                 }
             },
             Command::Threads(command) => match command {
                 ThreadsCommand::Prune { args } => {
-                    commands::threads::prune(&self.cli.global.config, args)?;
+                    run_async(commands::threads::prune(&self.cli.global.config, args))?;
                 }
             },
         }

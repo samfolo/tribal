@@ -192,13 +192,17 @@ async fn run_report(
     snapshot: &ConfigProbeSnapshot,
     providers: bool,
 ) -> Result<Vec<CheckResult>, ProbeError> {
-    let output = crate::commands::run_report_async(crate::commands::CheckReportOptions {
-        config_path: &snapshot.path,
-        source: crate::commands::CheckConfigSource::Parsed(Box::new(snapshot.config.clone())),
-        providers,
-        project: None,
-        token: None,
-    })
+    let output = crate::management::operator_check::run_report_async(
+        crate::management::operator_check::CheckReportOptions {
+            config_path: &snapshot.path,
+            source: crate::management::operator_check::CheckConfigSource::Parsed(Box::new(
+                snapshot.config.clone(),
+            )),
+            providers,
+            project: None,
+            token: None,
+        },
+    )
     .await?;
     Ok(output.checks)
 }

@@ -33,18 +33,6 @@ pub(crate) const REMOTE_URL_MISSING_HOST: &str = "remote URL has no host compone
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Detects the git remote from the current working directory.
-///
-/// Delegates to [`detect_git_remote_from`] with `"."` as the start
-/// directory.
-///
-/// # Errors
-///
-/// See [`detect_git_remote_from`] for the full set of failure modes.
-pub(crate) fn detect_git_remote() -> Result<GitRemote, AppError> {
-    detect_git_remote_from(Path::new("."))
-}
-
 /// Detects the git remote starting from `start_dir`.
 ///
 /// Uses `gix::discover` to find the enclosing repository and reads the

@@ -7,9 +7,9 @@
 use std::io;
 
 use thiserror::Error;
-use tribal_config::{ConfigError, CredentialsReadError, MissingApiKeyKind, TransportKind};
+use tribal_config::{ConfigError, MissingApiKeyKind};
 use tribal_db::DbError;
-use tribal_domain::ProviderKind;
+use tribal_domain::{ProviderKind, TransportKind};
 use tribal_inference::ProviderRegistryError;
 use tribal_telemetry::TelemetryError;
 
@@ -27,7 +27,8 @@ const EXIT_CODE_WORKER_DEATH: i32 = 70;
 /// [`AppError::FirstRunRequired`]'s `Display` impl and
 /// `CheckDetail::MigrationsTableMissing` so the two render paths can
 /// never drift.
-pub const FIRST_RUN_REQUIRED: &str = "database is uninitialised; run `tribal setup` first";
+pub const FIRST_RUN_REQUIRED: &str =
+    "database is uninitialised; run `tribal database initialise` first";
 
 // ---------------------------------------------------------------------------
 // AppError
@@ -90,7 +91,7 @@ pub enum AppError {
         source: DbError,
     },
 
-    /// Database has no migrations table — `tribal setup` required.
+    /// Database has no migrations table — manager initialisation required.
     #[error("{FIRST_RUN_REQUIRED}")]
     FirstRunRequired,
 
@@ -324,16 +325,6 @@ pub enum AppError {
         /// The underlying database error.
         #[source]
         source: DbError,
-    },
-
-    /// Loading the persisted credentials file failed. The wrapped error's
-    /// `Display` is the user-facing literal `tribal mcp-config` renders;
-    /// no prefix is added.
-    #[error("{source}")]
-    Credentials {
-        /// The underlying credentials-read error.
-        #[source]
-        source: CredentialsReadError,
     },
 
     /// A configured value failed an invariant that the loader's

@@ -18,13 +18,12 @@ use tokio::signal;
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio_util::sync::CancellationToken;
 use tribal_auth::oauth::OAuthRuntimeConfig;
-use tribal_config::{CliShadow, TransportKind, config_warnings, load_config, validate};
-use tribal_domain::ProjectId;
+use tribal_config::{config_warnings, load_config, validate};
+use tribal_domain::{ProjectId, TransportKind};
 use tribal_mcp::HandlerConfig;
 
 use crate::{
     cli::ServeArgs,
-    control,
     error::AppError,
     management::{
         authority::{
@@ -35,14 +34,9 @@ use crate::{
         runtime_control::{self, RuntimeControlService},
     },
     orchestration,
-    startup::{POOL_NAME_MCP, SelfWriteSentinel, init_config_watcher},
+    startup::{POOL_NAME_MCP, init_config_watcher},
     transport,
 };
-
-/// The environment marker a supervisor (the desktop app, launchd) exports when
-/// it spawns the binary, declaring that it owns the process's lifecycle. It
-/// governs `server.restart`: mediated when set, refused otherwise.
-const SUPERVISED_MARKER: &str = "TRIBAL_SUPERVISED";
 
 /// Inherited locked authority description for a manager-spawned runtime.
 pub(crate) const MANAGED_AUTHORITY_FD: &str = "TRIBAL_MANAGED_AUTHORITY_FD";
@@ -53,21 +47,6 @@ pub(crate) enum ServeProjectMode {
     Auto,
     Unscoped,
     Project(ProjectId),
-}
-
-/// Whether a supervisor owns this process, read from [`SUPERVISED_MARKER`].
-fn is_supervised() -> bool {
-    supervised_from(std::env::var(SUPERVISED_MARKER).ok().as_deref())
-}
-
-/// Interprets the supervision marker's value. Only an explicit truthy value
-/// counts, so a stray empty or `0` export never claims supervision the operator
-/// did not intend.
-fn supervised_from(value: Option<&str>) -> bool {
-    value.is_some_and(|raw| {
-        let value = raw.trim();
-        value == "1" || value.eq_ignore_ascii_case("true")
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -97,22 +76,16 @@ pub(crate) async fn run(config_path: &str, args: ServeArgs) -> Result<(), AppErr
     let mut managed_control = managed_runtime_control(&authority_lease, runtime_custody.as_ref())?;
     let mode = serve_project_mode(args.project.clone(), args.unscoped)?;
     let (cli_overrides, _) = args.into_cli_overrides();
-    let cli_shadow = CliShadow::from_overrides(&cli_overrides);
-
     let config = load_config(config_path, Some(cli_overrides), None)?;
     validate(&config)?;
 
-    // The control-plane event bus, created before telemetry init so the
-    // log-capture layer can publish onto it: the prompt watcher, the config-file
-    // watcher, the log-capture layer, and the control socket all publish to and
-    // subscribe from this one channel.
-    let (control_events, _) = tokio::sync::broadcast::channel(control::EVENT_BUS_CAPACITY);
+    let (log_events, _) = tokio::sync::broadcast::channel(512);
 
     let (telemetry_guard, metrics, log_ring, log_filter) =
         tribal_telemetry::init_subscriber_with_log_bridge(
             &config.logging,
             &config.telemetry,
-            control_events.clone(),
+            log_events.clone(),
         )?;
 
     // Surfaced now that the subscriber is live: inert or surprising config
@@ -130,7 +103,6 @@ pub(crate) async fn run(config_path: &str, args: ServeArgs) -> Result<(), AppErr
             cancellation_token.clone(),
             Some(telemetry_guard),
             metrics,
-            Some(control_events.clone()),
         )
     })?;
 
@@ -146,41 +118,9 @@ pub(crate) async fn run(config_path: &str, args: ServeArgs) -> Result<(), AppErr
     // lets axum's graceful shutdown drain active connections before the
     // server exits.
     let transport_error: Option<AppError> = async {
-        // The local control plane serves alongside the MCP transport for the
-        // whole run; it binds best-effort and never blocks MCP from serving.
         let expanded_config_path =
             std::path::PathBuf::from(shellexpand::tilde(config_path).into_owned());
-        let self_write = SelfWriteSentinel::default();
-        let embedding_profile =
-            match crate::startup::read_active_profile(handle.state().mcp_pool()).await {
-                Ok(profile) => control::EmbeddingProfileSnapshot::active(&profile),
-                Err(error) => control::EmbeddingProfileSnapshot::Unknown {
-                    detail: error.to_string(),
-                },
-            };
-        let control_context = control::ControlContext {
-            config: tokio::sync::watch::Sender::new(Arc::new(config.clone())),
-            config_path: expanded_config_path.clone(),
-            cli_shadow: cli_shadow.clone(),
-            self_write: self_write.clone(),
-            config_write_lock: tokio::sync::Mutex::new(()),
-            pool: handle.state().mcp_pool().clone(),
-            embedding_profile: tokio::sync::watch::Sender::new(embedding_profile),
-            events: control_events.clone(),
-            log_ring,
-            log_filter,
-            project: handle.state().resolved_project().map(|project| {
-                tribal_wire::control::ProjectSummary {
-                    id: project.id().to_string(),
-                    name: project.name().to_owned(),
-                }
-            }),
-            cancellation_token: cancellation_token.clone(),
-            started_at: std::time::Instant::now(),
-            binary_version: Arc::clone(handle.state().build_version()),
-            instance_id: Arc::clone(handle.state().instance_id()),
-            supervised: is_supervised(),
-        };
+        let runtime_config = tokio::sync::watch::Sender::new(Arc::new(config.clone()));
         let runtime_control_task = match managed_control.take() {
             Some((runtime, proof)) => match runtime_control::spawn_server(
                 authority_lease.paths().runtime_control_socket_path.clone(),
@@ -188,11 +128,10 @@ pub(crate) async fn run(config_path: &str, args: ServeArgs) -> Result<(), AppErr
                 RuntimeControlService {
                     runtime,
                     config_path: expanded_config_path.clone(),
-                    config: control_context.config.clone(),
-                    log_filter: control_context.log_filter.clone(),
-                    log_ring: control_context.log_ring.clone(),
-                    events: control_events.clone(),
-                    pool: control_context.pool.clone(),
+                    config: runtime_config,
+                    log_filter,
+                    log_ring,
+                    events: log_events.clone(),
                     shutdown: cancellation_token.clone(),
                 },
             )
@@ -207,26 +146,17 @@ pub(crate) async fn run(config_path: &str, args: ServeArgs) -> Result<(), AppErr
             },
             None => None,
         };
-        let control_task = control::spawn_control_plane(control_context).await;
-
-        // The config-file watcher announces an external edit to the file as
-        // `config.changed`; best-effort like the control plane, a failed init
-        // never blocks MCP from serving.
-        let config_watcher_task = match init_config_watcher(
-            &expanded_config_path,
-            control_events.clone(),
-            self_write,
-            cancellation_token.clone(),
-        ) {
-            Ok(watcher) => Some(tokio::spawn(watcher)),
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "config-file watcher init failed; external edits will not notify",
-                );
-                None
-            }
-        };
+        let config_watcher_task =
+            match init_config_watcher(&expanded_config_path, cancellation_token.clone()) {
+                Ok(watcher) => Some(tokio::spawn(watcher)),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "config-file watcher init failed; external edits will not notify",
+                    );
+                    None
+                }
+            };
 
         let mut transport_handle = tokio::spawn(run_transport(
             transport,
@@ -255,7 +185,7 @@ pub(crate) async fn run(config_path: &str, args: ServeArgs) -> Result<(), AppErr
                 )
             },
         };
-        join_companion_tasks(runtime_control_task, control_task, config_watcher_task).await;
+        join_companion_tasks(runtime_control_task, config_watcher_task).await;
         transport_result
     }
     .await;
@@ -287,12 +217,10 @@ fn serve_project_mode(
 
 async fn join_companion_tasks(
     runtime_control: Option<tokio::task::JoinHandle<()>>,
-    control: Option<tokio::task::JoinHandle<()>>,
     config_watcher: Option<tokio::task::JoinHandle<()>>,
 ) {
     for (name, task) in [
         ("runtime-control", runtime_control),
-        ("control", control),
         ("config-file watcher", config_watcher),
     ] {
         if let Some(task) = task
@@ -556,19 +484,6 @@ async fn await_shutdown_trigger(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_supervised_marker_counts_only_explicit_truthy_values() {
-        for truthy in ["1", "true", "TRUE", "True", "  true  "] {
-            assert!(supervised_from(Some(truthy)), "{truthy:?} means supervised");
-        }
-        for falsy in [None, Some(""), Some("0"), Some("false"), Some("yes")] {
-            assert!(
-                !supervised_from(falsy),
-                "{falsy:?} does not claim supervision"
-            );
-        }
-    }
 
     #[test]
     fn test_serve_project_mode_preserves_all_three_modes() {

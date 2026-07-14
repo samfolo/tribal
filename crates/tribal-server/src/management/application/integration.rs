@@ -2,9 +2,8 @@
 
 use std::path::Path;
 
-use tribal_config::TransportKind;
 use tribal_db::{DbError, PgProjectRepository, ProjectRepository as _};
-use tribal_domain::{BearerToken, Project, ProjectId};
+use tribal_domain::{BearerToken, Project, ProjectId, TransportKind};
 use tribal_wire::management::{
     AdministrationFailure, ConfiguredMcpTarget, McpConfigEntry, McpConfigRequest, McpConfigResult,
     McpTarget, McpTargetSelection, NetworkIntegrationAuth, ProjectSelector,
@@ -176,8 +175,8 @@ impl IntegrationAdministration {
                     },
                 })
             }
-            McpTarget::Http { auth } => prepare_network(&session, TransportKind::Http, auth),
-            McpTarget::Sse { auth } => prepare_network(&session, TransportKind::Sse, auth),
+            McpTarget::Http { auth } => prepare_network(&session, TransportKind::Http, auth)?,
+            McpTarget::Sse { auth } => prepare_network(&session, TransportKind::Sse, auth)?,
         };
         Ok(PreparedMcpConfig { session, entry })
     }
@@ -187,21 +186,24 @@ fn prepare_network(
     session: &DatabaseSession,
     transport: TransportKind,
     auth: NetworkIntegrationAuth,
-) -> PreparedMcpEntry {
+) -> Result<PreparedMcpEntry, IntegrationAdministrationError> {
     let url = resolved_advertised_url(&session.config);
-    match auth {
+    let entry = match auth {
         NetworkIntegrationAuth::OAuth => PreparedMcpEntry::Public(PublicMcpConfigDocument {
             server_name: "tribal".to_owned(),
             entry: match transport {
                 TransportKind::Http => PublicMcpServerEntry::Http { url },
                 TransportKind::Sse => PublicMcpServerEntry::Sse { url },
-                TransportKind::Stdio => unreachable!("network renderer excludes stdio"),
+                TransportKind::Stdio => {
+                    return Err(IntegrationAdministrationError::IncompatibleTarget);
+                }
             },
         }),
         NetworkIntegrationAuth::ExportPersistedBearer => {
             PreparedMcpEntry::PersistedBearer { transport, url }
         }
-    }
+    };
+    Ok(entry)
 }
 
 fn resolve_target(
