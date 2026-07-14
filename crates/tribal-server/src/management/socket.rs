@@ -12,22 +12,14 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tribal_wire::management::{
-    BootstrapShutdownRefusal, ConfigGetCall, ConfigPatchCall, ConfigPersistenceObservation,
-    ConfigPersistencePhase, ConfigSetCall, ConfigValidateCall, ConfigValidation, ConfigViolation,
-    CredentialSourcesCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall, LogsTailCall,
-    MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest, ManagementBootstrapResponse,
-    ManagementCall, ManagementError, ManagementEvent, ManagementLogLoss, ManagementMethod,
-    ManagementResponseError, ManagementServerHello, ModelsSelectCall,
+    BootstrapShutdownRefusal, MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest,
+    ManagementBootstrapResponse, ManagementEvent, ManagementLogLoss, ManagementMethod,
+    ManagementResponseError, ManagementServerHello,
 };
 
 use super::{
-    config_schema,
-    configuration::ConfigAuthorityError,
-    lifecycle::LifecycleController,
-    probe::{ProbeError, ProbeService},
-    product::{ProductService, ProductSession},
-    readiness,
-    worker::ConfigWorkerClient,
+    application::ManagementApplication, lifecycle::LifecycleController, probe::ProbeService,
+    product::ProductService, worker::ConfigWorkerClient,
 };
 
 const SOCKET_MODE: u32 = 0o600;
@@ -71,10 +63,7 @@ impl ManagerSocketServices {
 }
 
 struct ConnectionServices<'a> {
-    config: &'a ConfigWorkerClient,
-    product: &'a ProductSession,
-    probe: &'a ProbeService,
-    lifecycle: &'a LifecycleController,
+    application: ManagementApplication<'a>,
     shutdown: &'a CancellationToken,
 }
 
@@ -221,10 +210,12 @@ async fn handle_connection(
         let mut config_updates = services.config.subscribe();
         let product = services.product.session();
         let connection = ConnectionServices {
-            config: &services.config,
-            product: &product,
-            probe: &services.probe,
-            lifecycle: &services.lifecycle,
+            application: ManagementApplication::new(
+                &services.config,
+                &product,
+                &services.probe,
+                &services.lifecycle,
+            ),
             shutdown: &services.shutdown,
         };
         serve_full(
@@ -292,13 +283,11 @@ async fn serve_full(
                     return;
                 };
                 let id = request.id;
-                let response = match dispatch(
-                    services.config,
-                    services.product,
-                    services.probe,
-                    services.lifecycle,
-                    request,
-                ).await {
+                let result = services
+                    .application
+                    .dispatch(request.method, request.params)
+                    .await;
+                let response = match result {
                     Ok(result) => ManagementResponse::Success { id, result },
                     Err(error) => ManagementResponse::Failure { id, error },
                 };
@@ -405,369 +394,6 @@ enum ManagementResponse {
         id: u64,
         error: ManagementResponseError,
     },
-}
-
-async fn dispatch(
-    config: &ConfigWorkerClient,
-    product: &ProductSession,
-    probe: &ProbeService,
-    lifecycle: &LifecycleController,
-    request: ManagementRequest,
-) -> Result<serde_json::Value, ManagementResponseError> {
-    match request.method {
-        ManagementMethod::ManagerSnapshot => lifecycle_value(lifecycle.snapshot().await),
-        ManagementMethod::RuntimeStart => lifecycle_value(lifecycle.start().await),
-        ManagementMethod::RuntimeStop => lifecycle_value(lifecycle.stop().await),
-        ManagementMethod::RuntimeRestart => lifecycle_value(lifecycle.restart().await),
-        ManagementMethod::ManagerShutdown => lifecycle_value(lifecycle.shutdown().await),
-        ManagementMethod::ServerStatus => lifecycle_value(lifecycle.runtime_status().await),
-        ManagementMethod::LogsTail => {
-            let request = parse_call::<LogsTailCall>(request.params)?;
-            lifecycle_value(lifecycle.runtime_logs_tail(request.lines).await)
-        }
-        ManagementMethod::TokenList => lifecycle_value(lifecycle.runtime_token_list().await),
-        ManagementMethod::CheckReport => readiness_value(config, probe, lifecycle).await,
-        ManagementMethod::DatabaseProbe => {
-            let receipt = probe.database().await.map_err(probe_error)?;
-            refresh_readiness(config, probe, lifecycle).await?;
-            product_value(Ok(receipt))
-        }
-        ManagementMethod::CredentialProbe => {
-            let receipts = probe.credentials().await.map_err(probe_error)?;
-            refresh_readiness(config, probe, lifecycle).await?;
-            product_value(Ok(receipts))
-        }
-        ManagementMethod::ConfigGetAll => to_value(config.document().await),
-        ManagementMethod::ConfigPath => to_value(config.path().await),
-        ManagementMethod::ConfigSchema => serde_json::to_value(
-            config_schema::project(tribal_config::config_schema())
-                .map_err(|_| invalid_request("configuration schema projection failed"))?,
-        )
-        .map_err(|_| invalid_request("configuration schema encoding failed")),
-        ManagementMethod::ConfigGet => to_value(
-            config
-                .get(parse_call::<ConfigGetCall>(request.params)?)
-                .await,
-        ),
-        ManagementMethod::ConfigValidate => {
-            let request = parse_call::<ConfigValidateCall>(request.params)?;
-            let violations = config
-                .validate(request.key.as_str().to_owned(), request.value)
-                .await
-                .map_err(management_error)?;
-            product_value(Ok(ConfigValidation {
-                valid: violations.is_empty(),
-                violations: violations
-                    .into_iter()
-                    .map(|violation| ConfigViolation {
-                        key: violation.key,
-                        message: violation.message,
-                    })
-                    .collect(),
-            }))
-        }
-        ManagementMethod::ConfigSet => {
-            let request = parse_call::<ConfigSetCall>(request.params)?;
-            let runtime_changes = vec![tribal_wire::runtime_control::RuntimeConfigChange {
-                key: request.key.clone(),
-                value: tribal_wire::management::ConfigLiteral::new(
-                    request.value.expose_sensitive().clone(),
-                ),
-            }];
-            let mut outcome = config.set(request).await.map_err(management_error)?;
-            project_runtime_effect(
-                lifecycle,
-                &mut outcome.effect,
-                outcome.revision.clone(),
-                runtime_changes,
-            )
-            .await;
-            if !matches!(
-                outcome.effect,
-                tribal_wire::management::ConfigWriteEffect::Unchanged
-                    | tribal_wire::management::ConfigWriteEffect::AppliedLive
-            ) {
-                lifecycle.config_changed().await;
-            }
-            product_value(Ok(outcome))
-        }
-        ManagementMethod::ConfigPatch => {
-            let request = parse_call::<ConfigPatchCall>(request.params)?;
-            let runtime_changes = request
-                .changes
-                .iter()
-                .map(|change| tribal_wire::runtime_control::RuntimeConfigChange {
-                    key: change.key.clone(),
-                    value: tribal_wire::management::ConfigLiteral::new(
-                        change.value.expose_sensitive().clone(),
-                    ),
-                })
-                .collect();
-            let mut outcome = config.patch(request).await.map_err(management_error)?;
-            project_patch_effects(lifecycle, &mut outcome, runtime_changes).await;
-            if patch_requires_lifecycle_update(&outcome) {
-                lifecycle.config_changed().await;
-            }
-            product_value(Ok(outcome))
-        }
-        ManagementMethod::ModelsCatalogue => product_value(product.models_catalogue().await),
-        ManagementMethod::ModelsSelect => {
-            let mut outcome = product
-                .select_model(parse_call::<ModelsSelectCall>(request.params)?)
-                .await?;
-            project_patch_effects(lifecycle, &mut outcome, Vec::new()).await;
-            if patch_requires_lifecycle_update(&outcome) {
-                lifecycle.config_changed().await;
-            }
-            product_value(Ok(outcome))
-        }
-        ManagementMethod::CredentialSources => product_value(
-            product
-                .credential_sources(parse_call::<CredentialSourcesCall>(request.params)?)
-                .await,
-        ),
-        ManagementMethod::GraphGenesisOptions => product_value(product.genesis_options().await),
-        ManagementMethod::GraphEmbeddingProfile => product_value(product.embedding_profile().await),
-        ManagementMethod::GraphConfigureGenesis => {
-            let mut outcome = product
-                .configure_genesis(parse_call::<GraphConfigureGenesisCall>(request.params)?)
-                .await?;
-            project_patch_effects(lifecycle, &mut outcome, Vec::new()).await;
-            if patch_requires_lifecycle_update(&outcome) {
-                lifecycle.config_changed().await;
-            }
-            product_value(Ok(outcome))
-        }
-        ManagementMethod::GraphConvergeGenesis => product_value(
-            product
-                .converge_genesis(parse_call::<GraphConvergeGenesisCall>(request.params)?)
-                .await,
-        ),
-    }
-}
-
-fn lifecycle_value<T: serde::Serialize>(
-    result: Option<T>,
-) -> Result<serde_json::Value, ManagementResponseError> {
-    let value = result.ok_or_else(|| invalid_request("lifecycle owner is unavailable"))?;
-    serde_json::to_value(value).map_err(|_| invalid_request("lifecycle response encoding failed"))
-}
-
-async fn readiness_value(
-    config: &ConfigWorkerClient,
-    probe: &ProbeService,
-    lifecycle: &LifecycleController,
-) -> Result<serde_json::Value, ManagementResponseError> {
-    let report = readiness_report(config, probe, lifecycle).await?;
-    serde_json::to_value(report).map_err(|_| invalid_request("readiness response encoding failed"))
-}
-
-async fn refresh_readiness(
-    config: &ConfigWorkerClient,
-    probe: &ProbeService,
-    lifecycle: &LifecycleController,
-) -> Result<(), ManagementResponseError> {
-    let report = readiness_report(config, probe, lifecycle).await?;
-    lifecycle.update_readiness(report).await;
-    Ok(())
-}
-
-async fn readiness_report(
-    config: &ConfigWorkerClient,
-    probe: &ProbeService,
-    lifecycle: &LifecycleController,
-) -> Result<tribal_wire::management::ReadinessReport, ManagementResponseError> {
-    let runtime_present = lifecycle
-        .snapshot()
-        .await
-        .is_some_and(|snapshot| lifecycle_has_runtime(&snapshot.phase));
-    readiness::automatic(config, probe, runtime_present)
-        .await
-        .map_err(|_| invalid_request("readiness observation failed"))
-}
-
-fn parse_call<C: ManagementCall>(
-    params: Option<serde_json::Value>,
-) -> Result<C::Request, ManagementResponseError>
-where
-    C::Request: serde::de::DeserializeOwned,
-{
-    serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
-        .map_err(|_| invalid_request("management request parameters are invalid"))
-}
-
-fn to_value<T: serde::Serialize>(
-    result: Result<T, ConfigAuthorityError>,
-) -> Result<serde_json::Value, ManagementResponseError> {
-    let value = result.map_err(management_error)?;
-    serde_json::to_value(value).map_err(|_| invalid_request("management response encoding failed"))
-}
-
-fn product_value<T: serde::Serialize>(
-    result: Result<T, ManagementResponseError>,
-) -> Result<serde_json::Value, ManagementResponseError> {
-    let value = result?;
-    serde_json::to_value(value).map_err(|_| invalid_request("management response encoding failed"))
-}
-
-async fn project_runtime_effect(
-    lifecycle: &LifecycleController,
-    effect: &mut tribal_wire::management::ConfigWriteEffect,
-    revision: tribal_wire::management::ConfigRevision,
-    changes: Vec<tribal_wire::runtime_control::RuntimeConfigChange>,
-) {
-    if matches!(
-        effect,
-        tribal_wire::management::ConfigWriteEffect::OnNextStart
-    ) {
-        let running = lifecycle
-            .snapshot()
-            .await
-            .is_some_and(|snapshot| lifecycle_has_runtime(&snapshot.phase));
-        if !running {
-            return;
-        }
-        let hot = !changes.is_empty()
-            && changes.iter().all(|change| {
-                tribal_config::reload_class(change.key.as_str()) == tribal_config::ReloadClass::Hot
-            });
-        let applied = if hot {
-            lifecycle.apply_config(revision, changes).await
-        } else {
-            None
-        };
-        *effect = if matches!(
-            applied,
-            Some(tribal_wire::runtime_control::RuntimeConfigApplyOutcome::Applied)
-        ) {
-            tribal_wire::management::ConfigWriteEffect::AppliedLive
-        } else {
-            tribal_wire::management::ConfigWriteEffect::AwaitingRestart
-        };
-    }
-}
-
-async fn project_patch_effects(
-    lifecycle: &LifecycleController,
-    outcome: &mut tribal_wire::management::ConfigPatchOutcome,
-    changes: Vec<tribal_wire::runtime_control::RuntimeConfigChange>,
-) {
-    let running = lifecycle
-        .snapshot()
-        .await
-        .is_some_and(|snapshot| lifecycle_has_runtime(&snapshot.phase));
-    if !running {
-        return;
-    }
-    let hot = !changes.is_empty()
-        && changes.iter().all(|change| {
-            tribal_config::reload_class(change.key.as_str()) == tribal_config::ReloadClass::Hot
-        });
-    let applied = if hot {
-        lifecycle
-            .apply_config(outcome.revision.clone(), changes)
-            .await
-    } else {
-        None
-    };
-    for field in &mut outcome.fields {
-        if matches!(
-            field.effect,
-            tribal_wire::management::ConfigWriteEffect::OnNextStart
-        ) {
-            field.effect = if matches!(
-                applied,
-                Some(tribal_wire::runtime_control::RuntimeConfigApplyOutcome::Applied)
-            ) {
-                tribal_wire::management::ConfigWriteEffect::AppliedLive
-            } else {
-                tribal_wire::management::ConfigWriteEffect::AwaitingRestart
-            };
-        }
-    }
-}
-
-fn lifecycle_has_runtime(phase: &tribal_wire::management::LifecyclePhase) -> bool {
-    matches!(
-        phase,
-        tribal_wire::management::LifecyclePhase::Healthy { .. }
-            | tribal_wire::management::LifecyclePhase::Degraded { .. }
-            | tribal_wire::management::LifecyclePhase::VersionMismatch { .. }
-            | tribal_wire::management::LifecyclePhase::Stopping { .. }
-            | tribal_wire::management::LifecyclePhase::RuntimeUnresponsive { .. }
-    )
-}
-
-fn patch_requires_lifecycle_update(outcome: &tribal_wire::management::ConfigPatchOutcome) -> bool {
-    outcome.fields.iter().any(|field| {
-        !matches!(
-            field.effect,
-            tribal_wire::management::ConfigWriteEffect::Unchanged
-                | tribal_wire::management::ConfigWriteEffect::AppliedLive
-        )
-    })
-}
-
-fn invalid_request(message: &str) -> ManagementResponseError {
-    ManagementResponseError {
-        message: message.to_owned(),
-        error: ManagementError::ConfigurationInvalid { fields: Vec::new() },
-    }
-}
-
-fn probe_error(_error: ProbeError) -> ManagementResponseError {
-    ManagementResponseError {
-        message: "external probe is unavailable".to_owned(),
-        error: ManagementError::ProbeUnavailable,
-    }
-}
-
-pub(super) fn management_error(error: ConfigAuthorityError) -> ManagementResponseError {
-    let message = error.to_string();
-    let error = match error {
-        ConfigAuthorityError::Conflict { expected, actual } => {
-            ManagementError::ConfigConflict { expected, actual }
-        }
-        ConfigAuthorityError::PatchRefused { reason } => {
-            ManagementError::ConfigPatchRefused { reason }
-        }
-        ConfigAuthorityError::Write { source } => {
-            let fields = source
-                .violations()
-                .into_iter()
-                .flatten()
-                .filter_map(|violation| tribal_domain::ConfigFieldPath::parse(&violation.key).ok())
-                .collect();
-            if source.violations().is_some() {
-                ManagementError::ConfigurationInvalid { fields }
-            } else {
-                ManagementError::ConfigPersistenceUnavailable {
-                    phase: ConfigPersistencePhase::NotCommitted,
-                    observation: ConfigPersistenceObservation::Unreadable,
-                }
-            }
-        }
-        ConfigAuthorityError::DurabilityUncertain {
-            observed_digest, ..
-        } => ManagementError::ConfigPersistenceUnavailable {
-            phase: ConfigPersistencePhase::DurabilityUncertain,
-            observation: ConfigPersistenceObservation::Observed {
-                digest: observed_digest,
-            },
-        },
-        ConfigAuthorityError::Io { .. } | ConfigAuthorityError::StableWinnerUnavailable => {
-            ManagementError::ConfigPersistenceUnavailable {
-                phase: ConfigPersistencePhase::DurabilityUncertain,
-                observation: ConfigPersistenceObservation::Unreadable,
-            }
-        }
-        ConfigAuthorityError::Invalid { .. }
-        | ConfigAuthorityError::UnknownKey { .. }
-        | ConfigAuthorityError::WorkerUnavailable => {
-            ManagementError::ConfigurationInvalid { fields: Vec::new() }
-        }
-    };
-    ManagementResponseError { message, error }
 }
 
 async fn read_frame<T: serde::de::DeserializeOwned>(

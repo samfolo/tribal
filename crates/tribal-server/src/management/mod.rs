@@ -1,5 +1,6 @@
 //! Runtime-independent local authority and application services.
 
+pub(crate) mod application;
 pub(crate) mod authority;
 pub(crate) mod client;
 pub(crate) mod config_schema;

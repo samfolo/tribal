@@ -13,9 +13,10 @@ use std::{
 use tribal_config::{CliShadow, ReloadClass, SetError, TribalConfig, WriteEffect, reload_class};
 use tribal_wire::management::{
     ConfigDigest, ConfigDocument, ConfigFieldOutcome, ConfigFilePath, ConfigGetRequest,
-    ConfigLiteral, ConfigPatchOutcome, ConfigPatchRefusal, ConfigPatchRequest, ConfigRevision,
-    ConfigSetRequest, ConfigValue, ConfigWriteEffect, ConfigWriteOutcome, CredentialSourceKind,
-    InferenceStage,
+    ConfigLiteral, ConfigPatchOutcome, ConfigPatchRefusal, ConfigPatchRequest,
+    ConfigPersistenceObservation, ConfigPersistencePhase, ConfigRevision, ConfigSetRequest,
+    ConfigValue, ConfigWriteEffect, ConfigWriteOutcome, CredentialSourceKind, InferenceStage,
+    ManagementError, ManagementResponseError,
 };
 
 /// Maximum time spent proving a stable filesystem winner under raw-file races.
@@ -650,6 +651,54 @@ fn managed_effect(effect: WriteEffect, runtime_attached: bool) -> ConfigWriteEff
         WriteEffect::Live | WriteEffect::NeedsRestart => ConfigWriteEffect::OnNextStart,
         WriteEffect::Shadowed { by } => ConfigWriteEffect::Shadowed { by },
     }
+}
+
+pub(super) fn management_error(error: ConfigAuthorityError) -> ManagementResponseError {
+    let message = error.to_string();
+    let error = match error {
+        ConfigAuthorityError::Conflict { expected, actual } => {
+            ManagementError::ConfigConflict { expected, actual }
+        }
+        ConfigAuthorityError::PatchRefused { reason } => {
+            ManagementError::ConfigPatchRefused { reason }
+        }
+        ConfigAuthorityError::Write { source } => {
+            let fields = source
+                .violations()
+                .into_iter()
+                .flatten()
+                .filter_map(|violation| tribal_domain::ConfigFieldPath::parse(&violation.key).ok())
+                .collect();
+            if source.violations().is_some() {
+                ManagementError::ConfigurationInvalid { fields }
+            } else {
+                ManagementError::ConfigPersistenceUnavailable {
+                    phase: ConfigPersistencePhase::NotCommitted,
+                    observation: ConfigPersistenceObservation::Unreadable,
+                }
+            }
+        }
+        ConfigAuthorityError::DurabilityUncertain {
+            observed_digest, ..
+        } => ManagementError::ConfigPersistenceUnavailable {
+            phase: ConfigPersistencePhase::DurabilityUncertain,
+            observation: ConfigPersistenceObservation::Observed {
+                digest: observed_digest,
+            },
+        },
+        ConfigAuthorityError::Io { .. } | ConfigAuthorityError::StableWinnerUnavailable => {
+            ManagementError::ConfigPersistenceUnavailable {
+                phase: ConfigPersistencePhase::DurabilityUncertain,
+                observation: ConfigPersistenceObservation::Unreadable,
+            }
+        }
+        ConfigAuthorityError::Invalid { .. }
+        | ConfigAuthorityError::UnknownKey { .. }
+        | ConfigAuthorityError::WorkerUnavailable => {
+            ManagementError::ConfigurationInvalid { fields: Vec::new() }
+        }
+    };
+    ManagementResponseError { message, error }
 }
 
 #[cfg(test)]

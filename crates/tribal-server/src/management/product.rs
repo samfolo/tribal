@@ -26,7 +26,8 @@ use tribal_wire::management::{
 };
 
 use super::{
-    configuration::CredentialMaterial, socket::management_error, worker::ConfigWorkerClient,
+    configuration::{CredentialMaterial, management_error},
+    worker::ConfigWorkerClient,
 };
 
 struct ModelDescriptor {
