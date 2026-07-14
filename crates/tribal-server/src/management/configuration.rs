@@ -7,6 +7,7 @@ use std::{
     io::{self, Read as _},
     os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -66,6 +67,22 @@ pub(crate) struct ConfigProbeSnapshot {
     pub(crate) path: PathBuf,
     pub(crate) config: TribalConfig,
     pub(crate) revision: ConfigRevision,
+}
+
+/// Effective configuration and revision proven from the same durable bytes.
+pub(crate) struct ResolvedConfigSnapshot {
+    pub(crate) config: Arc<TribalConfig>,
+    pub(crate) revision: ConfigRevision,
+}
+
+impl std::fmt::Debug for ResolvedConfigSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResolvedConfigSnapshot")
+            .field("config", &"<redacted>")
+            .field("revision", &self.revision)
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for ConfigProbeSnapshot {
@@ -258,21 +275,23 @@ impl ConfigAuthority {
         Ok(materials)
     }
 
-    pub(crate) fn database_url(&self) -> Result<zeroize::Zeroizing<String>, ConfigAuthorityError> {
-        let proven = self.stable_winner()?;
-        Ok(zeroize::Zeroizing::new(
-            Self::load_valid(&proven)?.database.url,
-        ))
-    }
-
     /// Returns a parsed configuration and the revision proven from the same bytes.
     pub(crate) fn probe_snapshot(&self) -> Result<ConfigProbeSnapshot, ConfigAuthorityError> {
+        let snapshot = self.resolved_snapshot()?;
+        Ok(ConfigProbeSnapshot {
+            path: self.path.clone(),
+            config: Arc::unwrap_or_clone(snapshot.config),
+            revision: snapshot.revision,
+        })
+    }
+
+    /// Returns the effective configuration and revision from one stable read.
+    pub(crate) fn resolved_snapshot(&self) -> Result<ResolvedConfigSnapshot, ConfigAuthorityError> {
         self.reconcile_if_needed()?;
         let proven = self.stable_winner()?;
         let config = Self::load_valid(&proven)?;
-        Ok(ConfigProbeSnapshot {
-            path: self.path.clone(),
-            config,
+        Ok(ResolvedConfigSnapshot {
+            config: Arc::new(config),
             revision: proven.revision,
         })
     }

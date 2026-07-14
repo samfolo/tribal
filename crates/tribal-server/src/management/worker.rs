@@ -17,7 +17,7 @@ use tribal_wire::management::{
 
 use super::configuration::{
     ConfigAuthority, ConfigAuthorityError, ConfigCheckSnapshot, ConfigProbeSnapshot,
-    CredentialMaterial,
+    CredentialMaterial, ResolvedConfigSnapshot,
 };
 
 const COMMAND_CAPACITY: usize = 1;
@@ -114,9 +114,9 @@ enum ConfigCommand {
             oneshot::Sender<Result<Vec<tribal_config::ConfigViolation>, ConfigAuthorityError>>,
     },
     CredentialMaterials(oneshot::Sender<Result<Vec<CredentialMaterial>, ConfigAuthorityError>>),
-    DatabaseUrl(oneshot::Sender<Result<zeroize::Zeroizing<String>, ConfigAuthorityError>>),
     ProbeSnapshot(oneshot::Sender<Result<ConfigProbeSnapshot, ConfigAuthorityError>>),
     CheckSnapshot(oneshot::Sender<Result<ConfigCheckSnapshot, ConfigAuthorityError>>),
+    ResolvedSnapshot(oneshot::Sender<Result<ResolvedConfigSnapshot, ConfigAuthorityError>>),
     #[cfg(test)]
     Panic,
 }
@@ -301,14 +301,14 @@ fn dispatch(
         ConfigCommand::CredentialMaterials(response) => {
             let _ = response.send(authority.credential_materials());
         }
-        ConfigCommand::DatabaseUrl(response) => {
-            let _ = response.send(authority.database_url());
-        }
         ConfigCommand::ProbeSnapshot(response) => {
             let _ = response.send(authority.probe_snapshot());
         }
         ConfigCommand::CheckSnapshot(response) => {
             let _ = response.send(authority.check_snapshot());
+        }
+        ConfigCommand::ResolvedSnapshot(response) => {
+            let _ = response.send(authority.resolved_snapshot());
         }
         #[cfg(test)]
         ConfigCommand::Panic => panic!("config-worker-test-panic"),
@@ -432,14 +432,10 @@ impl ConfigWorkerClient {
     pub(crate) async fn database_url(
         &self,
     ) -> Result<zeroize::Zeroizing<String>, ConfigAuthorityError> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(ConfigCommand::DatabaseUrl(response))
-            .await
-            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
-        receiver
-            .await
-            .unwrap_or(Err(ConfigAuthorityError::WorkerUnavailable))
+        let snapshot = self.resolved_snapshot().await?;
+        Ok(zeroize::Zeroizing::new(
+            snapshot.config.database.url.clone(),
+        ))
     }
 
     pub(crate) async fn probe_snapshot(&self) -> Result<ConfigProbeSnapshot, ConfigAuthorityError> {
@@ -457,6 +453,19 @@ impl ConfigWorkerClient {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(ConfigCommand::CheckSnapshot(response))
+            .await
+            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
+        receiver
+            .await
+            .unwrap_or(Err(ConfigAuthorityError::WorkerUnavailable))
+    }
+
+    pub(crate) async fn resolved_snapshot(
+        &self,
+    ) -> Result<ResolvedConfigSnapshot, ConfigAuthorityError> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(ConfigCommand::ResolvedSnapshot(response))
             .await
             .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
         receiver

@@ -1,5 +1,8 @@
 //! Manager-private operator application façade.
 
+mod database;
+
+use database::DatabaseAccess;
 use tribal_wire::management::{
     ConfigGetCall, ConfigPatchCall, ConfigSetCall, ConfigValidateCall, ConfigValidation,
     ConfigViolation, CredentialSourcesCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall,
@@ -23,6 +26,11 @@ pub(crate) struct ManagementApplication<'a> {
     product: &'a ProductSession,
     probe: &'a ProbeService,
     lifecycle: &'a LifecycleController,
+    #[expect(
+        dead_code,
+        reason = "the façade owns the database capability independently of call availability"
+    )]
+    database: DatabaseAccess,
 }
 
 impl<'a> ManagementApplication<'a> {
@@ -37,6 +45,7 @@ impl<'a> ManagementApplication<'a> {
             product,
             probe,
             lifecycle,
+            database: DatabaseAccess::new(config.clone()),
         }
     }
 
