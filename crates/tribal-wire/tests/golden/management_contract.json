@@ -1534,6 +1534,85 @@
       }
     }
   },
+  "DatabaseInitialiseRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DatabaseInitialiseRequest",
+    "type": "object",
+    "required": [
+      "expected_revision"
+    ],
+    "properties": {
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      }
+    }
+  },
+  "DatabaseInitialiseResult": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DatabaseInitialiseResult",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/DatabaseInitialiseOutcome"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "DatabaseInitialiseOutcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "initialised"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "already_initialised"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
   "GenesisConfigurationRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "GenesisConfigurationRequest",
@@ -7182,6 +7261,7 @@
       "logs.tail",
       "token.list",
       "check.report",
+      "database.initialise",
       "database.probe",
       "credential.probe",
       "config.getAll",

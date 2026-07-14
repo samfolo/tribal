@@ -2,12 +2,12 @@
 
 mod database;
 
-use database::DatabaseAccess;
+use database::{DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
 use tribal_wire::management::{
     ConfigGetCall, ConfigPatchCall, ConfigSetCall, ConfigValidateCall, ConfigValidation,
-    ConfigViolation, CredentialSourcesCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall,
-    LogsTailCall, ManagementCall, ManagementError, ManagementMethod, ManagementResponseError,
-    ModelsSelectCall,
+    ConfigViolation, CredentialSourcesCall, DatabaseInitialiseCall, GraphConfigureGenesisCall,
+    GraphConvergeGenesisCall, LogsTailCall, ManagementCall, ManagementError, ManagementMethod,
+    ManagementResponseError, ModelsSelectCall,
 };
 
 use super::{
@@ -26,10 +26,6 @@ pub(crate) struct ManagementApplication<'a> {
     product: &'a ProductSession,
     probe: &'a ProbeService,
     lifecycle: &'a LifecycleController,
-    #[expect(
-        dead_code,
-        reason = "the façade owns the database capability independently of call availability"
-    )]
     database: DatabaseAccess,
 }
 
@@ -71,6 +67,7 @@ impl<'a> ManagementApplication<'a> {
                 lifecycle_value(self.lifecycle.runtime_token_list().await)
             }
             ManagementMethod::CheckReport => self.readiness_value().await,
+            ManagementMethod::DatabaseInitialise => self.initialise_database_value(params).await,
             ManagementMethod::DatabaseProbe => {
                 let receipt = self.probe.database().await.map_err(probe_error)?;
                 self.refresh_readiness().await?;
@@ -201,6 +198,19 @@ impl<'a> ManagementApplication<'a> {
         let report = self.readiness_report().await?;
         serde_json::to_value(report)
             .map_err(|_| invalid_request("readiness response encoding failed"))
+    }
+
+    async fn initialise_database_value(
+        &self,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, ManagementResponseError> {
+        let request = parse_call::<DatabaseInitialiseCall>(params)?;
+        response_value(
+            self.database
+                .initialise(request)
+                .await
+                .map_err(database_initialise_error),
+        )
     }
 
     async fn refresh_readiness(&self) -> Result<(), ManagementResponseError> {
@@ -363,6 +373,42 @@ fn probe_error(_error: ProbeError) -> ManagementResponseError {
     ManagementResponseError {
         message: "external probe is unavailable".to_owned(),
         error: ManagementError::ProbeUnavailable,
+    }
+}
+
+fn database_initialise_error(error: DatabaseInitialiseError) -> ManagementResponseError {
+    match error {
+        DatabaseInitialiseError::Session(DatabaseAccessError::Configuration(error)) => {
+            management_error(error)
+        }
+        DatabaseInitialiseError::Session(DatabaseAccessError::RevisionConflict {
+            expected,
+            actual,
+        }) => ManagementResponseError {
+            message: "configuration changed before database initialisation".to_owned(),
+            error: ManagementError::ConfigConflict { expected, actual },
+        },
+        DatabaseInitialiseError::Migration { .. } => administration_error(
+            "database migration failed",
+            tribal_wire::management::AdministrationFailure::DatabaseMigrationFailed,
+        ),
+        DatabaseInitialiseError::Session(DatabaseAccessError::Connection { .. })
+        | DatabaseInitialiseError::MigrationState { .. }
+        | DatabaseInitialiseError::MigrationConnection { .. }
+        | DatabaseInitialiseError::Principal { .. } => administration_error(
+            "database is unavailable",
+            tribal_wire::management::AdministrationFailure::DatabaseUnavailable,
+        ),
+    }
+}
+
+fn administration_error(
+    message: &str,
+    failure: tribal_wire::management::AdministrationFailure,
+) -> ManagementResponseError {
+    ManagementResponseError {
+        message: message.to_owned(),
+        error: ManagementError::Administration { failure },
     }
 }
 

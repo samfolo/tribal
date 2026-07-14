@@ -5,11 +5,12 @@ use serde::{Deserialize, Serialize};
 use super::{
     ConfigDocument, ConfigFilePath, ConfigGetRequest, ConfigPatchOutcome, ConfigPatchRequest,
     ConfigSchema, ConfigSetRequest, ConfigValidateRequest, ConfigValidation, ConfigValue,
-    ConfigWriteOutcome, CredentialSources, CredentialSourcesRequest, GenesisConfigurationRequest,
-    GenesisConvergenceRequest, GenesisOptions, GraphEmbeddingProfile, LifecycleSnapshot,
-    ManagedRuntimeStatusResult, ManagerShutdownResult, ModelSelectionRequest, ModelsCatalogue,
-    ProbeReceipt, ReadinessReport, RuntimeLogsTailRequest, RuntimeLogsTailResult,
-    RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult, RuntimeTokenListResult,
+    ConfigWriteOutcome, CredentialSources, CredentialSourcesRequest, DatabaseInitialiseRequest,
+    DatabaseInitialiseResult, GenesisConfigurationRequest, GenesisConvergenceRequest,
+    GenesisOptions, GraphEmbeddingProfile, LifecycleSnapshot, ManagedRuntimeStatusResult,
+    ManagerShutdownResult, ModelSelectionRequest, ModelsCatalogue, ProbeReceipt, ReadinessReport,
+    RuntimeLogsTailRequest, RuntimeLogsTailResult, RuntimeRestartResult, RuntimeStartResult,
+    RuntimeStopResult, RuntimeTokenListResult,
 };
 
 /// The request and response types owned by one management method.
@@ -149,6 +150,12 @@ management_calls! {
         call: CheckReportCall,
         request: (),
         response: ReadinessReport,
+    },
+    DatabaseInitialise => {
+        wire: "database.initialise",
+        call: DatabaseInitialiseCall,
+        request: DatabaseInitialiseRequest,
+        response: DatabaseInitialiseResult,
     },
     DatabaseProbe => {
         wire: "database.probe",

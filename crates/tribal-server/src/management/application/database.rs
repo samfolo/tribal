@@ -8,13 +8,25 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use sqlx::PgPool;
 use tribal_config::TribalConfig;
-use tribal_wire::management::{ConfigRevision, Revisioned};
+use tribal_db::{
+    MigrationHeadStatus, MigrationRepository, PgMigrationRepository, PrincipalRepository,
+};
+use tribal_domain::LOCAL_PRINCIPAL_KEY;
+use tribal_wire::management::{
+    ConfigRevision, DatabaseInitialiseOutcome, DatabaseInitialiseRequest, DatabaseInitialiseResult,
+    Revisioned,
+};
 
 use super::super::{
     configuration::{ConfigAuthorityError, ResolvedConfigSnapshot},
     worker::ConfigWorkerClient,
 };
-use crate::commands::common::{COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS};
+use crate::{
+    commands::common::{
+        COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, find_or_create_principal,
+    },
+    startup::run_migrations,
+};
 
 const POOL_NAME: &str = "management";
 
@@ -68,6 +80,32 @@ pub(crate) enum DatabaseAccessError {
     Connection {
         #[source]
         source: tribal_db::DbError,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DatabaseInitialiseError {
+    #[error(transparent)]
+    Session(#[from] DatabaseAccessError),
+    #[error("database migration state is unavailable: {source}")]
+    MigrationState {
+        #[source]
+        source: tribal_db::DbError,
+    },
+    #[error("database migration connection is unavailable: {source}")]
+    MigrationConnection {
+        #[source]
+        source: sqlx::Error,
+    },
+    #[error("database migration failed: {source}")]
+    Migration {
+        #[source]
+        source: crate::error::AppError,
+    },
+    #[error("local principal initialisation failed: {source}")]
+    Principal {
+        #[source]
+        source: crate::error::AppError,
     },
 }
 
@@ -128,6 +166,56 @@ impl DatabaseAccess {
         expected_revision: &ConfigRevision,
     ) -> Result<DatabaseSession, DatabaseAccessError> {
         self.session(Some(expected_revision)).await
+    }
+
+    pub(crate) async fn initialise(
+        &self,
+        request: DatabaseInitialiseRequest,
+    ) -> Result<DatabaseInitialiseResult, DatabaseInitialiseError> {
+        let session = self.mutation_session(&request.expected_revision).await?;
+        let expected_head = tribal_db::MIGRATOR
+            .iter()
+            .last()
+            .expect("compiled migrations are non-empty")
+            .version;
+        let mut connection = session
+            .pool
+            .acquire()
+            .await
+            .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })?;
+        let migration_state = PgMigrationRepository
+            .current_head_matches(&mut connection, expected_head)
+            .await
+            .map_err(|source| DatabaseInitialiseError::MigrationState { source })?;
+        drop(connection);
+
+        run_migrations(&session.pool)
+            .await
+            .map_err(|source| DatabaseInitialiseError::Migration { source })?;
+
+        let mut connection = session
+            .pool
+            .acquire()
+            .await
+            .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })?;
+        let principal_existed = tribal_db::PgPrincipalRepository
+            .find_by_key(&mut connection, LOCAL_PRINCIPAL_KEY)
+            .await
+            .map_err(|source| DatabaseInitialiseError::Principal {
+                source: crate::error::AppError::Database { source },
+            })?
+            .is_some();
+        find_or_create_principal(&mut connection, LOCAL_PRINCIPAL_KEY)
+            .await
+            .map_err(|source| DatabaseInitialiseError::Principal { source })?;
+
+        let outcome =
+            if matches!(migration_state, MigrationHeadStatus::Matches) && principal_existed {
+                DatabaseInitialiseOutcome::AlreadyInitialised
+            } else {
+                DatabaseInitialiseOutcome::Initialised
+            };
+        Ok(session.revisioned(outcome).into())
     }
 }
 
@@ -214,5 +302,38 @@ mod revision_session {
         assert_eq!(receipt.config_revision, session.revision);
         assert_ne!(later.revision, session.revision);
         assert!(!session.pool.is_closed());
+    }
+
+    #[tokio::test]
+    async fn test_initialise_ensures_local_principal_then_becomes_a_typed_noop() {
+        let database = tribal_test_utils::TestDb::new().await;
+        sqlx::query("DELETE FROM principals WHERE principal_key = $1")
+            .bind(LOCAL_PRINCIPAL_KEY)
+            .execute(database.pool())
+            .await
+            .unwrap();
+        let (_temp, _path, worker, _runtime) = config_worker(database.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let access = DatabaseAccess::new(worker);
+
+        let first = access
+            .initialise(DatabaseInitialiseRequest {
+                expected_revision: revision.clone(),
+            })
+            .await
+            .unwrap();
+        let repeated = access
+            .initialise(DatabaseInitialiseRequest {
+                expected_revision: revision.clone(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(first.config_revision, revision);
+        assert_eq!(first.value, DatabaseInitialiseOutcome::Initialised);
+        assert_eq!(
+            repeated.value,
+            DatabaseInitialiseOutcome::AlreadyInitialised
+        );
     }
 }

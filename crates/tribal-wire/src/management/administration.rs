@@ -30,7 +30,35 @@ pub enum DatabaseInitialiseOutcome {
     AlreadyInitialised,
 }
 
-pub type DatabaseInitialiseResult = Revisioned<DatabaseInitialiseOutcome>;
+/// Concrete schema identity for a revisioned database-initialisation receipt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DatabaseInitialiseResult(Revisioned<DatabaseInitialiseOutcome>);
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for DatabaseInitialiseResult {
+    fn schema_name() -> String {
+        "DatabaseInitialiseResult".to_owned()
+    }
+
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        <Revisioned<DatabaseInitialiseOutcome> as schemars::JsonSchema>::json_schema(generator)
+    }
+}
+
+impl From<Revisioned<DatabaseInitialiseOutcome>> for DatabaseInitialiseResult {
+    fn from(value: Revisioned<DatabaseInitialiseOutcome>) -> Self {
+        Self(value)
+    }
+}
+
+impl std::ops::Deref for DatabaseInitialiseResult {
+    type Target = Revisioned<DatabaseInitialiseOutcome>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

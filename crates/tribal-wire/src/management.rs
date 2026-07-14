@@ -104,11 +104,11 @@ pub use maintenance::{
 pub use method::{
     CheckReportCall, ConfigGetAllCall, ConfigGetCall, ConfigPatchCall, ConfigPathCall,
     ConfigSchemaCall, ConfigSetCall, ConfigValidateCall, CredentialProbeCall,
-    CredentialSourcesCall, DatabaseProbeCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall,
-    GraphEmbeddingProfileCall, GraphGenesisOptionsCall, LogsTailCall, ManagementCall,
-    ManagementMethod, ManagerShutdownCall, ManagerSnapshotCall, ModelsCatalogueCall,
-    ModelsSelectCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall,
-    TokenListCall,
+    CredentialSourcesCall, DatabaseInitialiseCall, DatabaseProbeCall, GraphConfigureGenesisCall,
+    GraphConvergeGenesisCall, GraphEmbeddingProfileCall, GraphGenesisOptionsCall, LogsTailCall,
+    ManagementCall, ManagementMethod, ManagerShutdownCall, ManagerSnapshotCall,
+    ModelsCatalogueCall, ModelsSelectCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall,
+    ServerStatusCall, TokenListCall,
 };
 #[cfg(feature = "schema")]
 pub use method::{ManagementCallSchema, management_call_schemas};
@@ -135,4 +135,4 @@ pub use crate::{
 };
 
 /// The version of the public local-management contract.
-pub const MANAGEMENT_CONTRACT_VERSION: u16 = 2;
+pub const MANAGEMENT_CONTRACT_VERSION: u16 = 3;
