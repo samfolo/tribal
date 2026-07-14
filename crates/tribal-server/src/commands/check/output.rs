@@ -4,10 +4,14 @@ pub use tribal_wire::control::{CheckReport as CheckOutput, CheckResult};
 
 use super::checks::{CheckOutcome, CheckOutcomes};
 
+#[cfg(any(test, feature = "test-helpers"))]
 mod human;
+#[cfg(any(test, feature = "test-helpers"))]
 mod json;
 
+#[cfg(feature = "test-helpers")]
 pub(in crate::commands::check) use human::write_human;
+#[cfg(feature = "test-helpers")]
 pub(in crate::commands::check) use json::write_json;
 
 // ---------------------------------------------------------------------------

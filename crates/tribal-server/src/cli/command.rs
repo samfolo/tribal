@@ -1,12 +1,13 @@
 //! Clap command and argument definitions for the Tribal CLI.
 
-use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use tribal_config::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
     InferenceStageCliOverrides, InitCliOverrides, ServerCliOverrides, TelemetryCliOverrides,
-    TransportKind, default_config_file_path,
+    default_config_file_path,
 };
 use tribal_domain::{ProviderKind, Scope, TaskType, is_mintable_scope};
+use tribal_wire::management::{KnownModelId, TransportKind};
 
 use super::{flags::PersistableFlag, styles::STYLES};
 
@@ -130,6 +131,18 @@ pub enum Command {
     #[command(subcommand, display_order = 4)]
     Runtime(RuntimeCommand),
 
+    /// Discover and select curated models.
+    #[command(subcommand, display_order = 5)]
+    Models(ModelsCommand),
+
+    /// Discover credentials for an exact product operation.
+    #[command(subcommand, display_order = 6)]
+    Credential(CredentialCommand),
+
+    /// Inspect graph configuration choices.
+    #[command(subcommand, display_order = 7)]
+    Graph(GraphCommand),
+
     /// Manage the configured database.
     #[command(subcommand, display_order = 5)]
     Database(DatabaseCommand),
@@ -197,13 +210,124 @@ pub struct ManageArgs {
 #[derive(Debug, Subcommand)]
 pub enum RuntimeCommand {
     /// Start the managed runtime.
-    Start,
+    Start {
+        #[command(flatten)]
+        output: OutputArgs,
+    },
     /// Stop the managed runtime.
-    Stop,
+    Stop {
+        #[command(flatten)]
+        output: OutputArgs,
+    },
     /// Restart the managed runtime.
-    Restart,
+    Restart {
+        #[command(flatten)]
+        output: OutputArgs,
+    },
     /// Print the latest lifecycle snapshot.
-    Status,
+    Status {
+        #[command(flatten)]
+        output: OutputArgs,
+    },
+}
+
+/// Output selection shared by typed command projections.
+#[derive(Debug, Clone, Copy, Default, Args)]
+pub struct OutputArgs {
+    /// Emit the exact management response as JSON.
+    #[arg(long, help_heading = "Output")]
+    pub json: bool,
+}
+
+/// Curated model discovery subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ModelsCommand {
+    /// List model identities accepted by product actions.
+    List {
+        #[command(flatten)]
+        output: OutputArgs,
+    },
+}
+
+/// Credential capability discovery subcommands.
+#[derive(Debug, Subcommand)]
+pub enum CredentialCommand {
+    /// List stored sources compatible with an exact use.
+    #[command(subcommand)]
+    Sources(CredentialSourcesCommand),
+}
+
+/// Use-bound credential source queries.
+#[derive(Debug, Subcommand)]
+pub enum CredentialSourcesCommand {
+    /// Discover sources for a curated model selection.
+    Model {
+        #[command(flatten)]
+        args: ModelCredentialSourceArgs,
+    },
+    /// Discover sources for graph genesis.
+    Genesis {
+        #[command(flatten)]
+        args: GenesisCredentialSourceArgs,
+    },
+}
+
+/// Inference stage accepted at the command boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum InferenceStageArg {
+    Extraction,
+    Triage,
+    Relation,
+}
+
+/// Arguments for model credential discovery.
+#[derive(Debug, Args)]
+pub struct ModelCredentialSourceArgs {
+    /// Curated model identity from `tribal models list`.
+    #[arg(long)]
+    pub model: KnownModelId,
+    /// Stage receiving the selected model; repeat for multiple stages.
+    #[arg(long, value_enum, required = true)]
+    pub stage: Vec<InferenceStageArg>,
+    /// Use the provider's default endpoint instead of preserving the current one.
+    #[arg(long, conflicts_with = "endpoint")]
+    pub provider_default: bool,
+    /// Select a custom endpoint.
+    #[arg(long, value_name = "URL")]
+    pub endpoint: Option<String>,
+    /// Output selection.
+    #[command(flatten)]
+    pub output: OutputArgs,
+}
+
+/// Arguments for genesis credential discovery.
+#[derive(Debug, Args)]
+pub struct GenesisCredentialSourceArgs {
+    /// Embedding provider.
+    #[arg(long, value_parser = clap::value_parser!(ProviderKind))]
+    pub provider: ProviderKind,
+    /// Embedding model.
+    #[arg(long)]
+    pub model: String,
+    /// Embedding output dimensions.
+    #[arg(long)]
+    pub dimensions: Option<u32>,
+    /// Embedding endpoint base URL.
+    #[arg(long = "base-url")]
+    pub base_url: Option<String>,
+    /// Output selection.
+    #[command(flatten)]
+    pub output: OutputArgs,
+}
+
+/// Graph discovery subcommands.
+#[derive(Debug, Subcommand)]
+pub enum GraphCommand {
+    /// List the valid graph-genesis inputs.
+    GenesisOptions {
+        #[command(flatten)]
+        output: OutputArgs,
+    },
 }
 
 /// Database administration subcommands.
@@ -580,16 +704,6 @@ pub struct CheckArgs {
     #[arg(long, help_heading = "Check")]
     pub providers: bool,
 
-    /// Project ID to verify directly, bypassing the
-    /// `TRIBAL_PROJECT_ID` / git-remote cascade.
-    #[arg(long, help_heading = "Check")]
-    pub project: Option<String>,
-
-    /// Bearer token to verify, overriding the
-    /// `TRIBAL_AUTH_TOKEN` / `credentials.json` resolution order.
-    #[arg(long, help_heading = "Check")]
-    pub token: Option<String>,
-
     /// Emit a single JSON object on stdout instead of the human
     /// form on stderr.
     #[arg(long, help_heading = "Output")]
@@ -929,9 +1043,7 @@ pub struct ReindexRunArgs {
 /// Configuration subcommands.
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
-    /// Print the fully resolved configuration as YAML. Sensitive fields
-    /// (database URL, API keys) are redacted unless `--show-secrets`
-    /// is passed.
+    /// Print the redacted resolved configuration.
     Show {
         /// Arguments for config show.
         #[command(flatten)]
@@ -953,16 +1065,18 @@ pub enum ConfigCommand {
         args: ConfigValidateArgs,
     },
     /// Print the canonical configuration path.
-    Path,
+    Path {
+        #[command(flatten)]
+        output: OutputArgs,
+    },
 }
 
 /// Arguments for `config show`.
 #[derive(Debug, Clone, Copy, Args)]
 pub struct ConfigShowArgs {
-    /// Reveal sensitive values (database URL, API keys) instead of
-    /// redacting them.
-    #[arg(long)]
-    pub show_secrets: bool,
+    /// Output selection.
+    #[command(flatten)]
+    pub output: OutputArgs,
 }
 
 /// Arguments for `config get`.
@@ -970,6 +1084,9 @@ pub struct ConfigShowArgs {
 pub struct ConfigGetArgs {
     /// Validated dotted configuration field path.
     pub key: String,
+    /// Output selection.
+    #[command(flatten)]
+    pub output: OutputArgs,
 }
 
 /// Arguments for `config set`.
@@ -979,6 +1096,9 @@ pub struct ConfigSetArgs {
     pub key: String,
     /// JSON value, or a bare string when JSON parsing fails.
     pub value: String,
+    /// Output selection.
+    #[command(flatten)]
+    pub output: OutputArgs,
 }
 
 /// Arguments for `config validate`.
@@ -988,6 +1108,9 @@ pub struct ConfigValidateArgs {
     pub key: String,
     /// JSON value, or a bare string when JSON parsing fails.
     pub value: String,
+    /// Output selection.
+    #[command(flatten)]
+    pub output: OutputArgs,
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,29 +1264,17 @@ mod tests {
 
     #[test]
     fn test_runtime_capability_group_parses_every_command() {
-        for (name, expected) in [
-            ("start", RuntimeCommand::Start),
-            ("stop", RuntimeCommand::Stop),
-            ("restart", RuntimeCommand::Restart),
-            ("status", RuntimeCommand::Status),
-        ] {
+        for name in ["start", "stop", "restart", "status"] {
             let cli =
                 Cli::try_parse_from(["tribal", "runtime", name]).expect("runtime command parses");
             assert!(matches!(
-                (cli.command, expected),
-                (
-                    Some(Command::Runtime(RuntimeCommand::Start)),
-                    RuntimeCommand::Start
-                ) | (
-                    Some(Command::Runtime(RuntimeCommand::Stop)),
-                    RuntimeCommand::Stop
-                ) | (
-                    Some(Command::Runtime(RuntimeCommand::Restart)),
-                    RuntimeCommand::Restart
-                ) | (
-                    Some(Command::Runtime(RuntimeCommand::Status)),
-                    RuntimeCommand::Status
-                )
+                cli.command,
+                Some(Command::Runtime(
+                    RuntimeCommand::Start { .. }
+                        | RuntimeCommand::Stop { .. }
+                        | RuntimeCommand::Restart { .. }
+                        | RuntimeCommand::Status { .. }
+                ))
             ));
         }
     }
@@ -1847,18 +1958,13 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Config(ConfigCommand::Show { args }))
-            if !args.show_secrets
+            if !args.output.json
         ));
     }
 
     #[test]
-    fn test_config_show_parses_show_secrets() {
-        let cli = Cli::try_parse_from(["tribal", "config", "show", "--show-secrets"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Config(ConfigCommand::Show { args }))
-            if args.show_secrets
-        ));
+    fn test_config_show_rejects_secret_reveal() {
+        assert!(Cli::try_parse_from(["tribal", "config", "show", "--show-secrets"]).is_err());
     }
 
     #[test]
@@ -1896,7 +2002,7 @@ mod tests {
         let path = Cli::try_parse_from(["tribal", "config", "path"]).expect("config path parses");
         assert!(matches!(
             path.command,
-            Some(Command::Config(ConfigCommand::Path))
+            Some(Command::Config(ConfigCommand::Path { .. }))
         ));
     }
 

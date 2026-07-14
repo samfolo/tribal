@@ -66,6 +66,67 @@ fn manager_shutdown_projection() {
     assert!(!Path::new(&announcement.socket_path).exists());
 }
 
+#[test]
+fn config_watcher_lag_rereads_snapshot() {
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    let mut config = TribalConfig::minimum_valid("postgres://localhost/tribal");
+    config.logging.level = "info".to_owned();
+    std::fs::write(
+        &config_path,
+        serde_yaml::to_string(&config).expect("config serialises"),
+    )
+    .expect("config writes");
+    let mut manager = spawn_manager(&config_path, temp.path());
+    let announcement = continuing_announcement(read_manager_record(&mut manager));
+    let mut lagged = handshake(&announcement);
+    let mut writer = handshake(&announcement);
+
+    let initial: ConfigDocument = call(&mut writer, 1, "config.getAll", None);
+    let mut revision = config_revision(&initial);
+    for sequence in 0..2_048_u64 {
+        let level = if sequence % 2 == 0 { "debug" } else { "info" };
+        let request = ConfigSetRequest {
+            key: ConfigFieldPath::parse("logging.level").expect("config path parses"),
+            value: ConfigLiteral::new(serde_json::json!(level)),
+            expected_revision: revision,
+        };
+        let outcome: ConfigWriteOutcome = call(
+            &mut writer,
+            sequence + 2,
+            "config.set",
+            Some(&serde_json::to_value(request).expect("request serialises")),
+        );
+        revision = outcome.revision;
+    }
+
+    config.logging.level = "trace".to_owned();
+    let edited = serde_yaml::to_string(&config).expect("edited config serialises");
+    let edited_revision = ConfigRevision::from_digest(&ConfigDigest::from_bytes(edited.as_bytes()));
+    std::fs::write(&config_path, edited).expect("raw config edit writes");
+
+    lagged
+        .get_ref()
+        .set_read_timeout(Some(PROCESS_TIMEOUT))
+        .expect("lagged subscriber timeout configures");
+    drain_until_disconnect(&mut lagged);
+
+    let mut reconnected = handshake(&announcement);
+    let snapshot = poll_until(|| {
+        let document: ConfigDocument = call(&mut reconnected, 10_000, "config.getAll", None);
+        (config_revision(&document) == edited_revision).then_some(document)
+    })
+    .expect("reconnected client observes the raw edit");
+    assert_eq!(config_logging_level(&snapshot), Some("trace"));
+
+    let _: tribal_wire::management::ManagerShutdownResult =
+        call(&mut reconnected, 10_001, "manager.shutdown", None);
+    wait_for_success(&mut manager, "config lag shutdown");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn startup_serve_project_mode_process_matrix() {
     let database = tribal_test_utils::TestDb::new().await;
@@ -1531,6 +1592,42 @@ fn read_frame<T: serde::de::DeserializeOwned>(reader: &mut BufReader<UnixStream>
     let mut line = String::new();
     reader.read_line(&mut line).expect("frame reads");
     serde_json::from_str(&line).expect("frame parses")
+}
+
+fn drain_until_disconnect(reader: &mut BufReader<UnixStream>) {
+    loop {
+        let mut frame = Vec::new();
+        match reader.read_until(b'\n', &mut frame) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(error) => panic!("lagged subscriber did not disconnect: {error}"),
+        }
+    }
+}
+
+fn config_revision(document: &ConfigDocument) -> ConfigRevision {
+    match document {
+        ConfigDocument::DurableValid { revision, .. }
+        | ConfigDocument::DurableInvalid { revision } => revision.clone(),
+        ConfigDocument::UncertainValid { .. }
+        | ConfigDocument::UncertainInvalid { .. }
+        | ConfigDocument::Unreadable { .. } => {
+            panic!("test requires a stable configuration revision: {document:?}")
+        }
+    }
+}
+
+fn config_logging_level(document: &ConfigDocument) -> Option<&str> {
+    match document {
+        ConfigDocument::DurableValid { values, .. } => values
+            .expose_sensitive()
+            .pointer("/logging/level")
+            .and_then(serde_json::Value::as_str),
+        ConfigDocument::DurableInvalid { .. }
+        | ConfigDocument::UncertainValid { .. }
+        | ConfigDocument::UncertainInvalid { .. }
+        | ConfigDocument::Unreadable { .. } => None,
+    }
 }
 
 fn phase(snapshot: &LifecycleSnapshot) -> &'static str {

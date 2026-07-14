@@ -9,7 +9,8 @@ use std::{
 
 use tokio::{io::AsyncReadExt as _, process::Command};
 use tribal_wire::management::{
-    ManagerAnnouncement, ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord,
+    ManagementCall, ManagerAnnouncement, ManagerLaunchDisposition, ManagerLaunchFailure,
+    ManagerLaunchRecord,
 };
 
 use super::client::{ManagementClient, ManagementClientError};
@@ -224,6 +225,23 @@ impl ManagerConnection {
     /// Borrows the typed management client.
     pub fn client_mut(&mut self) -> &mut ManagementClient {
         &mut self.client
+    }
+
+    /// Invokes one typed call through the admitted manager session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request cannot be framed or the manager refuses it.
+    pub async fn call<C>(
+        &mut self,
+        request: &C::Request,
+    ) -> Result<C::Response, ManagementClientError>
+    where
+        C: ManagementCall,
+        C::Request: serde::Serialize,
+        C::Response: serde::de::DeserializeOwned,
+    {
+        self.client.call::<C>(request).await
     }
 
     /// Consumes the launch evidence and returns the typed client.

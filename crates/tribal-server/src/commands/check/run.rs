@@ -1,20 +1,20 @@
 //! Entry point and step-pipeline driver for `tribal check`.
 
-use std::{
-    io::{self, IsTerminal, Write},
-    path::Path,
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
-use anstream::AutoStream;
+#[cfg(feature = "test-helpers")]
+use std::io::Write;
 use strum::IntoEnumIterator;
-use tribal_ui::{Mode, StreamThemeContext, Theme, resolve_mode};
+#[cfg(feature = "test-helpers")]
+use tribal_ui::Theme;
 
+#[cfg(feature = "test-helpers")]
+use super::output::{write_human, write_json};
 use super::{
     checks::{CheckOutcome, CheckOutcomes, CheckState, CheckStep, Preflight, SkipMask},
-    output::{self, CheckOutput, write_human, write_json},
+    output::{self, CheckOutput},
 };
-use crate::{cli::CheckArgs, commands::common::resolve_absolute_config_path, error::AppError};
+use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -23,6 +23,7 @@ use crate::{cli::CheckArgs, commands::common::resolve_absolute_config_path, erro
 /// Bundle of inputs threaded into [`run_async`].  Re-exported at the
 /// crate root under the `test-helpers` feature for integration-test
 /// consumers.
+#[cfg(feature = "test-helpers")]
 pub struct CheckOptions<'a> {
     /// Absolute path to the resolved config file.
     pub config_path: &'a Path,
@@ -38,6 +39,7 @@ pub struct CheckOptions<'a> {
     pub theme: &'a Theme,
 }
 
+#[cfg(feature = "test-helpers")]
 impl<'a> CheckOptions<'a> {
     fn report_options(&self) -> CheckReportOptions<'a> {
         CheckReportOptions {
@@ -68,6 +70,7 @@ pub(crate) struct CheckReportOptions<'a> {
 /// Mutually exclusive configuration input for one check run.
 pub(crate) enum CheckConfigSource {
     /// Load the named filesystem path.
+    #[cfg(feature = "test-helpers")]
     Path,
     /// Consume an already-parsed in-process snapshot.
     Parsed(Box<tribal_config::TribalConfig>),
@@ -78,52 +81,6 @@ pub(crate) enum CheckConfigSource {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-
-/// Runs the `tribal check` diagnostic flow.
-///
-/// # Errors
-///
-/// Returns an [`AppError`] if config-path resolution or the underlying
-/// async runtime fails to spin up.
-pub(crate) fn run(config_path: &str, args: CheckArgs) -> Result<(), AppError> {
-    let CheckArgs {
-        providers,
-        project,
-        token,
-        json,
-    } = args;
-
-    let absolute_config_path = resolve_absolute_config_path(config_path)?;
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|source| AppError::Runtime { source })?;
-
-    let stderr_lock = io::stderr().lock();
-    let is_tty = stderr_lock.is_terminal();
-    let stream_ctx = StreamThemeContext::probe_stderr(is_tty, resolve_mode(Mode::Auto));
-    let mut wrapped_stderr = AutoStream::new(stderr_lock, stream_ctx.color_choice);
-    let mut stdout = io::stdout().lock();
-
-    let output = rt.block_on(run_async(
-        CheckOptions {
-            config_path: &absolute_config_path,
-            json,
-            providers,
-            project: project.as_deref(),
-            token: token.as_deref(),
-            theme: &stream_ctx.theme,
-        },
-        &mut stdout,
-        &mut wrapped_stderr,
-    ))?;
-    if output.ok {
-        Ok(())
-    } else {
-        Err(AppError::CheckFailed)
-    }
-}
 
 /// Async core for [`run`].
 ///
@@ -148,6 +105,7 @@ pub(crate) fn run(config_path: &str, args: CheckArgs) -> Result<(), AppError> {
 /// Panics if JSON serialisation of [`CheckOutput`] fails.  All fields
 /// derive `Serialize` from primitive types, so this is unreachable in
 /// practice.
+#[cfg(feature = "test-helpers")]
 pub async fn run_async(
     opts: CheckOptions<'_>,
     out_stdout: &mut dyn Write,
@@ -213,6 +171,7 @@ fn build_state(opts: CheckReportOptions<'_>) -> Result<CheckState, AppError> {
             source,
         })?;
     let (config, config_bytes) = match opts.source {
+        #[cfg(feature = "test-helpers")]
         CheckConfigSource::Path => (None, None),
         CheckConfigSource::Parsed(config) => (Some(*config), None),
         CheckConfigSource::ProvenBytes(bytes) => (None, Some(bytes)),

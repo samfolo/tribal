@@ -78,20 +78,6 @@ pub(crate) enum ConfigWorkerStartError {
     },
 }
 
-/// Fail-closed result of a one-shot sensitive configuration call.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum OneShotConfigError {
-    #[error("operating-system entropy is unavailable: {source}")]
-    Entropy {
-        #[source]
-        source: getrandom::Error,
-    },
-    #[error("configuration operation panicked; correlation: {correlation:?}")]
-    Panicked {
-        correlation: Option<PanicCorrelationId>,
-    },
-}
-
 enum ConfigCommand {
     Path(oneshot::Sender<ConfigFilePath>),
     Document(oneshot::Sender<Result<ConfigDocument, ConfigAuthorityError>>),
@@ -233,14 +219,6 @@ fn install_sensitive_panic_hook() {
 fn update_frame(mac: &mut hmac::Hmac<sha2::Sha256>, value: &[u8]) {
     mac.update(&(value.len() as u64).to_be_bytes());
     mac.update(value);
-}
-
-pub(crate) fn run_one_shot<T>(operation: impl FnOnce() -> T) -> Result<T, OneShotConfigError> {
-    let reporter =
-        PanicReporter::generate().map_err(|source| OneShotConfigError::Entropy { source })?;
-    catch_sensitive(operation).map_err(|panic| OneShotConfigError::Panicked {
-        correlation: reporter.correlate(panic),
-    })
 }
 
 fn dispatch(
@@ -571,18 +549,5 @@ mod tests {
         })
         .expect("outer sensitive call returns");
         assert!(!child_scope, "sensitive suppression remains thread-local");
-    }
-
-    #[test]
-    fn test_one_shot_panic_returns_only_an_opaque_correlation() {
-        let error = run_one_shot(|| panic!("one-shot-secret"))
-            .expect_err("one-shot panic is returned as a typed error");
-        assert!(matches!(
-            error,
-            OneShotConfigError::Panicked {
-                correlation: Some(ref correlation),
-            } if correlation.as_str().starts_with("pcorr_")
-                && !correlation.as_str().contains("one-shot-secret")
-        ));
     }
 }

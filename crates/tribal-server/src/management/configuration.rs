@@ -186,12 +186,6 @@ impl ConfigAuthority {
         }
     }
 
-    /// Current proven revision for one-shot optimistic operations.
-    pub(crate) fn revision(&self) -> Result<ConfigRevision, ConfigAuthorityError> {
-        self.reconcile_if_needed()?;
-        Ok(self.stable_winner()?.revision)
-    }
-
     /// Validates one field candidate without persistence.
     pub(crate) fn validate_value(
         &self,

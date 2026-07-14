@@ -6,8 +6,9 @@ use clap::{CommandFactory, Parser};
 
 use crate::{
     cli::{
-        Cli, Command, ConfigCommand, DatabaseCommand, ManagerCommand, ProjectCommand,
-        ReindexCommand, ThreadsCommand, TokenCommand,
+        Cli, Command, ConfigCommand, CredentialCommand, CredentialSourcesCommand, DatabaseCommand,
+        GraphCommand, ManagerCommand, ModelsCommand, ProjectCommand, ReindexCommand,
+        ThreadsCommand, TokenCommand,
     },
     commands,
     error::AppError,
@@ -83,7 +84,26 @@ impl App {
                     run_async(commands::manage_shutdown(&self.cli.global.config))?;
                 }
             },
-            Command::Runtime(command) => commands::runtime(&self.cli.global.config, &command)?,
+            Command::Runtime(command) => {
+                run_async(commands::runtime(&self.cli.global.config, &command))?;
+            }
+            Command::Models(ModelsCommand::List { output }) => {
+                run_async(commands::discovery::models(&self.cli.global.config, output))?;
+            }
+            Command::Credential(CredentialCommand::Sources(command)) => match command {
+                CredentialSourcesCommand::Model { args } => run_async(
+                    commands::discovery::model_credentials(&self.cli.global.config, args),
+                )?,
+                CredentialSourcesCommand::Genesis { args } => run_async(
+                    commands::discovery::genesis_credentials(&self.cli.global.config, args),
+                )?,
+            },
+            Command::Graph(GraphCommand::GenesisOptions { output }) => {
+                run_async(commands::discovery::genesis_options(
+                    &self.cli.global.config,
+                    output,
+                ))?;
+            }
             Command::Database(command) => match command {
                 DatabaseCommand::Initialise => {
                     commands::database::initialise(&self.cli.global.config)?;
@@ -99,19 +119,19 @@ impl App {
             },
             Command::Config(command) => match command {
                 ConfigCommand::Show { args } => {
-                    commands::config::show(&self.cli.global.config, args)?;
+                    run_async(commands::config::show(&self.cli.global.config, args))?;
                 }
                 ConfigCommand::Get { args } => {
-                    commands::config::get(&self.cli.global.config, &args)?;
+                    run_async(commands::config::get(&self.cli.global.config, &args))?;
                 }
                 ConfigCommand::Set { args } => {
-                    commands::config::set(&self.cli.global.config, &args)?;
+                    run_async(commands::config::set(&self.cli.global.config, &args))?;
                 }
                 ConfigCommand::Validate { args } => {
-                    commands::config::validate(&self.cli.global.config, &args)?;
+                    run_async(commands::config::validate(&self.cli.global.config, &args))?;
                 }
-                ConfigCommand::Path => {
-                    commands::config::path(&self.cli.global.config)?;
+                ConfigCommand::Path { output } => {
+                    run_async(commands::config::path(&self.cli.global.config, output))?;
                 }
             },
             Command::Token(command) => match command {
@@ -132,7 +152,7 @@ impl App {
                 commands::mcp_config(&self.cli.global.config, args)?;
             }
             Command::Check { args } => {
-                commands::check(&self.cli.global.config, args)?;
+                run_async(commands::check(&self.cli.global.config, args))?;
             }
             Command::Reindex(command) => match command {
                 ReindexCommand::Run { args } => {
