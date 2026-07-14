@@ -16,7 +16,6 @@ mod prompts;
 mod root;
 mod server;
 mod telemetry;
-mod transport_kind;
 mod worker;
 
 pub use agents::{
@@ -64,5 +63,5 @@ pub use prompts::{PromptSource, PromptsConfig};
 pub use root::{TribalConfig, VERSION};
 pub use server::{DEFAULT_BIND_ADDRESS, MAX_LIFECYCLE_DURATION_MS, ServerConfig, SseConfig};
 pub use telemetry::{FileRotation, TelemetryConfig};
-pub use transport_kind::TransportKind;
+pub use tribal_domain::TransportKind;
 pub use worker::WorkerConfig;

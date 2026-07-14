@@ -100,6 +100,7 @@ mod tag_similarity_result;
 mod task;
 mod token_usage;
 mod tool_failure;
+mod transport_kind;
 mod triage;
 mod usage;
 
@@ -186,6 +187,7 @@ pub use tag_similarity_result::TagSimilarityResult;
 pub use task::{ErrorOutcome, Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};
 pub use token_usage::{TokenUsage, TokenUsageBuilder, TokenUsageStage, UsageOwner, UsageTotals};
 pub use tool_failure::{RecoverableToolFailure, ToolFailure};
+pub use transport_kind::TransportKind;
 pub use triage::{
     SimilarItem, SimilarItemBuilder, TriageOutcome, TriageResult, TriageResultBuilder,
     TriageSimilarItemDecision, TriageSimilarItemDecisionBuilder,

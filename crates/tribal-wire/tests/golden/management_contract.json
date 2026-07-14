@@ -7218,6 +7218,208 @@
       }
     },
     "definitions": {
+      "AdministrationFailure": {
+        "description": "Stable client-actionable administration failure classification.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "database_unavailable"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "database_migration_failed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "project_source_invalid"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "project_not_found"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "$ref": "#/definitions/ProjectId"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "token_issuance_refused"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "persisted_credential_unavailable"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "persisted_credential_recovery_failed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "inventory_item_too_large"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "item"
+                ],
+                "properties": {
+                  "item": {
+                    "$ref": "#/definitions/InventoryItemRef"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "integration_target_incompatible"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "integration_unavailable"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "reindex_unavailable"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "thread_retention_refused"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "AuthTokenId": {
+        "type": "string",
+        "pattern": "^at_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-cortex-swift-type": "validated-string"
+      },
       "ConfigDigest": {
         "type": "string",
         "pattern": "^cdig_[A-Za-z0-9_-]{43}$",
@@ -7537,6 +7739,47 @@
                 "type": "string",
                 "enum": [
                   "duplicate"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "InventoryItemRef": {
+        "description": "Inventory row that could not fit within the management response budget.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/ProjectId"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "project"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/AuthTokenId"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "token"
                 ]
               }
             }
@@ -7932,6 +8175,32 @@
                 }
               }
             }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "data"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "administration"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "failure"
+                ],
+                "properties": {
+                  "failure": {
+                    "$ref": "#/definitions/AdministrationFailure"
+                  }
+                }
+              }
+            }
           }
         ]
       },
@@ -7941,6 +8210,11 @@
         "enum": [
           "platform_endpoint_unavailable"
         ]
+      },
+      "ProjectId": {
+        "type": "string",
+        "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-cortex-swift-type": "validated-string"
       }
     }
   },

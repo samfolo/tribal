@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::transport_kind::TransportKind;
+use super::TransportKind;
 
 // ---------------------------------------------------------------------------
 // Constants

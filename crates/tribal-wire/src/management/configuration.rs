@@ -3,7 +3,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::{ConfigFieldPath, ProviderKind};
+use tribal_domain::{AuthTokenId, ConfigFieldPath, ProjectId, ProviderKind};
 
 use super::{
     ConfigDigest, ConfigRevision, CredentialSourceId, EmbeddingProfileRevision, KnownModelId,
@@ -692,6 +692,37 @@ pub enum ManagementError {
     GenesisPolicyRefused {
         reason: GenesisPolicyRefusal,
     },
+    Administration {
+        failure: AdministrationFailure,
+    },
+}
+
+/// Inventory row that could not fit within the management response budget.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum InventoryItemRef {
+    Project(ProjectId),
+    Token(AuthTokenId),
+}
+
+/// Stable client-actionable administration failure classification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "code", content = "data", rename_all = "snake_case")]
+pub enum AdministrationFailure {
+    DatabaseUnavailable,
+    DatabaseMigrationFailed,
+    ProjectSourceInvalid,
+    ProjectNotFound { id: ProjectId },
+    TokenIssuanceRefused,
+    PersistedCredentialUnavailable,
+    PersistedCredentialRecoveryFailed,
+    InventoryItemTooLarge { item: InventoryItemRef },
+    IntegrationTargetIncompatible,
+    IntegrationUnavailable,
+    ReindexUnavailable,
+    ThreadRetentionRefused,
 }
 
 /// Reason a credential capability cannot be consumed.
@@ -817,5 +848,23 @@ mod tests {
     fn test_config_literal_debug_is_constant_redacted() {
         let literal = ConfigLiteral::new(serde_json::json!({"token": "sentinel"}));
         assert_eq!(format!("{literal:?}"), "<redacted config literal>");
+    }
+
+    #[test]
+    fn test_administration_failure_retains_both_public_classifications() {
+        let error = ManagementError::Administration {
+            failure: AdministrationFailure::DatabaseUnavailable,
+        };
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({
+                "code": "administration",
+                "data": {
+                    "failure": {
+                        "code": "database_unavailable"
+                    }
+                }
+            })
+        );
     }
 }

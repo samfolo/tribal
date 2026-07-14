@@ -39,6 +39,7 @@ pub enum ScopeParseError {
 /// dot-segmented resource path (starting with `tribal`, lowercase
 /// ASCII only) from an operation (`read` or `write`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "String", into = "String")]
 pub struct Scope(String);
 

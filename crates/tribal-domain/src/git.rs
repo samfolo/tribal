@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Or build from already-parsed components via [`GitRemote::from_parts`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "String", into = "String")]
 pub struct GitRemote {
     canonical: String,
