@@ -11,6 +11,7 @@ mod bootstrap;
 mod check;
 pub(crate) mod common;
 pub(crate) mod config;
+pub(crate) mod database;
 pub(crate) mod manage;
 mod mcp_config;
 pub(crate) mod project;

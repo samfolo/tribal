@@ -9,9 +9,9 @@ mod styles;
 
 pub use command::{
     BootstrapArgs, CheckArgs, Cli, Command, ConfigCommand, ConfigGetArgs, ConfigSetArgs,
-    ConfigShowArgs, ConfigValidateArgs, DatabaseArgs, ManageArgs, McpConfigArgs, ProjectCommand,
-    ProjectListArgs, ProjectRegisterArgs, ReindexCommand, ReindexRunArgs, RuntimeCommand,
-    ServeArgs, SetupArgs, ThreadsCommand, ThreadsPruneArgs, TokenCommand, TokenCreateArgs,
-    TokenListArgs, TokenRevokeAllArgs, TokenRevokeArgs,
+    ConfigShowArgs, ConfigValidateArgs, DatabaseArgs, DatabaseCommand, ManageArgs, McpConfigArgs,
+    ProjectCommand, ProjectListArgs, ProjectRegisterArgs, ReindexCommand, ReindexRunArgs,
+    RuntimeCommand, ServeArgs, SetupArgs, ThreadsCommand, ThreadsPruneArgs, TokenCommand,
+    TokenCreateArgs, TokenListArgs, TokenRevokeAllArgs, TokenRevokeArgs,
 };
 pub(crate) use flags::PersistableFlag;

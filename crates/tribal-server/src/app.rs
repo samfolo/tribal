@@ -6,7 +6,8 @@ use clap::{CommandFactory, Parser};
 
 use crate::{
     cli::{
-        Cli, Command, ConfigCommand, ProjectCommand, ReindexCommand, ThreadsCommand, TokenCommand,
+        Cli, Command, ConfigCommand, DatabaseCommand, ProjectCommand, ReindexCommand,
+        ThreadsCommand, TokenCommand,
     },
     commands,
     error::AppError,
@@ -80,6 +81,11 @@ impl App {
                 commands::manage(&self.cli.global.config, &args)?;
             }
             Command::Runtime(command) => commands::runtime(&self.cli.global.config, &command)?,
+            Command::Database(command) => match command {
+                DatabaseCommand::Initialise => {
+                    commands::database::initialise(&self.cli.global.config)?;
+                }
+            },
             Command::Project(command) => match command {
                 ProjectCommand::Register { args } => {
                     commands::project::register(&self.cli.global.config, args)?;

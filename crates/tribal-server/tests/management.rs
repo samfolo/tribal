@@ -10,12 +10,16 @@ use std::{
 };
 
 use tribal_config::{TransportKind, TribalConfig};
+use tribal_db::{MigrationHeadStatus, MigrationRepository, PrincipalRepository};
+use tribal_domain::LOCAL_PRINCIPAL_KEY;
 use tribal_test_utils::duration::POLL_INTERVAL;
 use tribal_wire::management::{
-    ConfigDocument, ConfigFieldPath, ConfigLiteral, ConfigSetRequest, ConfigWriteOutcome,
-    LifecycleSnapshot, MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest,
-    ManagementBootstrapResponse, ManagementClientHello, ManagerLaunchDisposition,
-    ManagerLaunchRecord, RuntimeIdentity, RuntimeStartResult,
+    ConfigDigest, ConfigDocument, ConfigFieldPath, ConfigLiteral, ConfigRevision, ConfigSetRequest,
+    ConfigWriteOutcome, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
+    DatabaseInitialiseResult, LifecycleSnapshot, MANAGEMENT_CONTRACT_VERSION,
+    ManagementBootstrapRequest, ManagementBootstrapResponse, ManagementClientHello,
+    ManagementError, ManagementResponseError, ManagerLaunchDisposition, ManagerLaunchRecord,
+    RuntimeIdentity, RuntimeStartResult,
 };
 
 /// Upper bound for manager replacement and child-process observations.
@@ -222,6 +226,126 @@ async fn test_managed_runtime_survives_competing_and_successive_manager_recovery
     wait_for_success(&mut second_successor, "recovered manager shutdown");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn test_database_initialise_negotiates_v3_and_migrates_once_after_revision_check() {
+    let database = tribal_test_utils::TestDb::new_unmigrated().await;
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    let config = TribalConfig::minimum_valid(database.database_url());
+    std::fs::write(
+        &config_path,
+        serde_yaml::to_string(&config).expect("config serialises"),
+    )
+    .expect("config writes");
+
+    let mut manager = spawn_manager(&config_path, temp.path());
+    let announcement = continuing_announcement(read_manager_record(&mut manager));
+
+    let (_v2_reader, v2_response) = handshake_version(&announcement, 2);
+    assert!(matches!(
+        v2_response,
+        ManagementBootstrapResponse::VersionMismatch { hello }
+            if hello.protocol_version == MANAGEMENT_CONTRACT_VERSION
+    ));
+
+    let mut client = handshake(&announcement);
+    let document: ConfigDocument = call(&mut client, 1, "config.getAll", None);
+    let ConfigDocument::DurableValid { revision, .. } = document else {
+        panic!("valid configuration must expose its durable revision");
+    };
+    let stale = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"stale"));
+    let stale_request = DatabaseInitialiseRequest {
+        expected_revision: stale.clone(),
+    };
+    let stale_error = call_error(
+        &mut client,
+        2,
+        "database.initialise",
+        Some(&serde_json::to_value(stale_request).expect("request serialises")),
+    );
+    assert!(matches!(
+        stale_error.error,
+        ManagementError::ConfigConflict { expected, actual }
+            if expected == stale && actual == revision
+    ));
+    let mut connection = database.raw_connection().await.expect("database connects");
+    assert!(
+        !tribal_db::PgMigrationRepository
+            .has_migrations_table(&mut connection)
+            .await
+            .expect("migration state reads"),
+        "stale refusal must precede database effects"
+    );
+    drop(connection);
+
+    let request = DatabaseInitialiseRequest {
+        expected_revision: revision.clone(),
+    };
+    let first: DatabaseInitialiseResult = call(
+        &mut client,
+        3,
+        "database.initialise",
+        Some(&serde_json::to_value(&request).expect("request serialises")),
+    );
+    assert_eq!(first.config_revision, revision);
+    assert_eq!(first.value, DatabaseInitialiseOutcome::Initialised);
+
+    let mut connection = database
+        .raw_connection()
+        .await
+        .expect("database reconnects");
+    let expected_head = tribal_db::MIGRATOR
+        .iter()
+        .last()
+        .expect("compiled migrations are non-empty")
+        .version;
+    assert_eq!(
+        tribal_db::PgMigrationRepository
+            .current_head_matches(&mut connection, expected_head)
+            .await
+            .expect("migration head reads"),
+        MigrationHeadStatus::Matches
+    );
+    assert!(
+        tribal_db::PgPrincipalRepository
+            .find_by_key(&mut connection, LOCAL_PRINCIPAL_KEY)
+            .await
+            .expect("principal reads")
+            .is_some()
+    );
+    drop(connection);
+
+    let second: DatabaseInitialiseResult = call(
+        &mut client,
+        4,
+        "database.initialise",
+        Some(&serde_json::to_value(request).expect("request serialises")),
+    );
+    assert_eq!(second.config_revision, revision);
+    assert_eq!(second.value, DatabaseInitialiseOutcome::AlreadyInitialised);
+
+    let projected = run_to_completion({
+        let mut command = tribal_command(&config_path, temp.path());
+        command.arg("database").arg("initialise");
+        command
+    });
+    assert!(projected.status.success(), "{projected:?}");
+    let projected: DatabaseInitialiseResult =
+        serde_json::from_slice(&projected.stdout).expect("database command result parses");
+    assert_eq!(projected.config_revision, revision);
+    assert_eq!(
+        projected.value,
+        DatabaseInitialiseOutcome::AlreadyInitialised
+    );
+
+    let _: tribal_wire::management::ManagerShutdownResult =
+        call(&mut client, 5, "manager.shutdown", None);
+    wait_for_success(&mut manager, "manager shutdown");
+}
+
 fn tribal_command(config_path: &std::path::Path, root: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tribal"));
     command
@@ -336,23 +460,29 @@ fn poll_until<T>(mut observe: impl FnMut() -> Option<T>) -> Option<T> {
 }
 
 fn handshake(announcement: &tribal_wire::management::ManagerAnnouncement) -> BufReader<UnixStream> {
-    let stream = connect_with_retry(&announcement.socket_path);
-    let mut reader = BufReader::new(stream);
-    write_frame(
-        reader.get_mut(),
-        &ManagementBootstrapRequest::Handshake {
-            hello: ManagementClientHello {
-                protocol_version: MANAGEMENT_CONTRACT_VERSION,
-            },
-        },
-    );
-    let hello: ManagementBootstrapResponse = read_frame(&mut reader);
+    let (reader, hello) = handshake_version(announcement, MANAGEMENT_CONTRACT_VERSION);
     assert!(matches!(
         hello,
         ManagementBootstrapResponse::Compatible { ref hello }
             if hello.manager_instance_id == announcement.instance_id
     ));
     reader
+}
+
+fn handshake_version(
+    announcement: &tribal_wire::management::ManagerAnnouncement,
+    protocol_version: u16,
+) -> (BufReader<UnixStream>, ManagementBootstrapResponse) {
+    let stream = connect_with_retry(&announcement.socket_path);
+    let mut reader = BufReader::new(stream);
+    write_frame(
+        reader.get_mut(),
+        &ManagementBootstrapRequest::Handshake {
+            hello: ManagementClientHello { protocol_version },
+        },
+    );
+    let hello: ManagementBootstrapResponse = read_frame(&mut reader);
+    (reader, hello)
 }
 
 fn wait_for_start_clear(reader: &mut BufReader<UnixStream>) {
@@ -440,6 +570,26 @@ fn call<T: serde::de::DeserializeOwned>(
         }
         assert_eq!(response["id"], id);
         return serde_json::from_value(response["result"].clone()).expect("typed result decodes");
+    }
+}
+
+fn call_error(
+    reader: &mut BufReader<UnixStream>,
+    id: u64,
+    method: &str,
+    params: Option<&serde_json::Value>,
+) -> ManagementResponseError {
+    write_frame(
+        reader.get_mut(),
+        &serde_json::json!({"id": id, "method": method, "params": params}),
+    );
+    loop {
+        let response: serde_json::Value = read_frame(reader);
+        if response.get("event").is_some() {
+            continue;
+        }
+        assert_eq!(response["id"], id);
+        return serde_json::from_value(response["error"].clone()).expect("typed error decodes");
     }
 }
 

@@ -109,7 +109,15 @@ db-down:
 
 # Run database migrations against local Postgres
 db-migrate:
-    cargo run -p tribal -- setup
+    cargo run -p tribal -- database initialise
+
+# Create a database migration in the canonical migration set
+db-migration-new name:
+    cargo sqlx migrate add --source crates/tribal-db/migrations {{quote(name)}}
+
+# Apply migrations to the database used for SQLx preparation
+db-migrate-preparation:
+    cargo sqlx migrate run --source crates/tribal-db/migrations
 
 # Regenerate sqlx offline query metadata
 sqlx-prepare:

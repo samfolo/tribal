@@ -410,25 +410,56 @@ impl TestDb {
         let base = base_url().await?;
         ensure_template(&base).await?;
 
-        let admin_url = replace_database(&base, MAINTENANCE_DB_NAME);
+        Self::try_new_from_base(&base, Some(TEMPLATE_DB_NAME)).await
+    }
+
+    /// Provisions a fresh isolated database without applying migrations.
+    ///
+    /// Use this only when the behavior under test is responsible for first-run
+    /// migration. Ordinary tests should use [`Self::new`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the database cannot be provisioned.
+    pub async fn new_unmigrated() -> Self {
+        Self::try_new_unmigrated()
+            .await
+            .expect("failed to provision unmigrated test database")
+    }
+
+    /// Provisions a fresh isolated database without applying migrations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestDbError`] if the base server is unreachable, the database
+    /// cannot be created, or the pool cannot connect.
+    pub async fn try_new_unmigrated() -> Result<Self, TestDbError> {
+        let base = base_url().await?;
+        Self::try_new_from_base(&base, None).await
+    }
+
+    async fn try_new_from_base(base: &str, template: Option<&str>) -> Result<Self, TestDbError> {
+        let admin_url = replace_database(base, MAINTENANCE_DB_NAME);
         let db_name = format!("t_{}", Uuid::new_v4().simple());
 
         let mut admin = PgConnection::connect(&admin_url)
             .await
             .map_err(|source| TestDbError::ConnectionFailed { source })?;
+        let create = match template {
+            Some(template) => format!("CREATE DATABASE \"{db_name}\" TEMPLATE \"{template}\""),
+            None => format!("CREATE DATABASE \"{db_name}\""),
+        };
         admin
-            .execute(
-                format!("CREATE DATABASE \"{db_name}\" TEMPLATE \"{TEMPLATE_DB_NAME}\"").as_str(),
-            )
+            .execute(create.as_str())
             .await
             .map_err(|source| TestDbError::Provision {
-                context: format!("cloning test database {db_name}"),
+                context: format!("creating test database {db_name}"),
                 source,
             })?;
         // Close the maintenance connection promptly; cleanup opens its own.
         let _ = admin.close().await;
 
-        let database_url = replace_database(&base, &db_name);
+        let database_url = replace_database(base, &db_name);
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(5))

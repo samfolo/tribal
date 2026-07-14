@@ -134,8 +134,12 @@ pub enum Command {
     #[command(subcommand, display_order = 4)]
     Runtime(RuntimeCommand),
 
+    /// Manage the configured database.
+    #[command(subcommand, display_order = 5)]
+    Database(DatabaseCommand),
+
     /// Run first-time database setup and migrations.
-    #[command(display_order = 5)]
+    #[command(display_order = 6)]
     Setup {
         /// Arguments for the setup subcommand.
         #[command(flatten)]
@@ -191,6 +195,13 @@ pub enum RuntimeCommand {
     Restart,
     /// Print the latest lifecycle snapshot.
     Status,
+}
+
+/// Database administration subcommands.
+#[derive(Debug, Subcommand)]
+pub enum DatabaseCommand {
+    /// Apply migrations and ensure the local principal exists.
+    Initialise,
 }
 
 // ---------------------------------------------------------------------------
