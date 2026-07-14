@@ -12,7 +12,7 @@ use tokio::{
 use tribal_wire::management::{
     BootstrapShutdownRefusal, MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest,
     ManagementBootstrapResponse, ManagementCall, ManagementClientHello, ManagementEvent,
-    ManagementMethod, ManagementResponseError,
+    ManagementMethod, ManagementResponseError, ManagerAnnouncement,
 };
 
 use super::authority::AuthorityDescriptor;
@@ -20,7 +20,7 @@ use super::authority::AuthorityDescriptor;
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 /// Compatible full-protocol connection to one discovered manager.
-pub(crate) struct ManagementClient {
+pub struct ManagementClient {
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
     next_id: u64,
@@ -28,7 +28,7 @@ pub(crate) struct ManagementClient {
 
 /// Failure discovering or speaking to a manager.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ManagementClientError {
+pub enum ManagementClientError {
     #[error("authority descriptor does not contain a manager socket")]
     MissingSocket,
     #[error("connecting to management socket: {source}")]
@@ -62,6 +62,28 @@ impl ManagementClient {
             .socket_path
             .as_ref()
             .ok_or(ManagementClientError::MissingSocket)?;
+        Self::connect_identity(socket, &descriptor.instance_id).await
+    }
+
+    /// Connects and verifies a manager launch announcement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket, frame, protocol, or announced identity is invalid.
+    pub async fn connect_announcement(
+        announcement: &ManagerAnnouncement,
+    ) -> Result<Self, ManagementClientError> {
+        Self::connect_identity(
+            std::path::Path::new(&announcement.socket_path),
+            &announcement.instance_id,
+        )
+        .await
+    }
+
+    async fn connect_identity(
+        socket: &std::path::Path,
+        expected_instance_id: &str,
+    ) -> Result<Self, ManagementClientError> {
         let stream = UnixStream::connect(socket)
             .await
             .map_err(|source| ManagementClientError::Connect { source })?;
@@ -82,7 +104,7 @@ impl ManagementClient {
             client.read().await?.ok_or(ManagementClientError::Closed)?;
         match response {
             ManagementBootstrapResponse::Compatible { hello }
-                if hello.manager_instance_id == descriptor.instance_id =>
+                if hello.manager_instance_id == expected_instance_id =>
             {
                 Ok(client)
             }
@@ -132,7 +154,11 @@ impl ManagementClient {
     }
 
     /// Calls one full-protocol method and decodes its typed result.
-    pub(crate) async fn call<C>(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, framing, decoding, or the management call fails.
+    pub async fn call<C>(
         &mut self,
         request: &C::Request,
     ) -> Result<C::Response, ManagementClientError>

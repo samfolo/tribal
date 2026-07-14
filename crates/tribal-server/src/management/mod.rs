@@ -5,6 +5,7 @@ pub(crate) mod authority;
 pub(crate) mod client;
 pub(crate) mod config_schema;
 pub(crate) mod configuration;
+pub(crate) mod connector;
 pub(crate) mod custody;
 pub(crate) mod lifecycle;
 pub(crate) mod probe;

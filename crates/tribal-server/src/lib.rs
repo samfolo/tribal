@@ -21,6 +21,10 @@ pub use commands::{
     mcp_config_async, setup_async, token_create_async,
 };
 pub use error::AppError;
+pub use management::{
+    client::{ManagementClient, ManagementClientError},
+    connector::{ManagerConnection, ManagerConnector, ManagerConnectorError},
+};
 pub use orchestration::{ServerHandle, start_server};
 #[cfg(feature = "test-helpers")]
 pub use transport::{run_http_transport, run_sse_transport};

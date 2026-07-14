@@ -1,14 +1,19 @@
 //! Process proof for the runtime-independent manager launch and repair path.
 
 use std::{
+    fs::OpenOptions,
     io::{BufRead as _, BufReader, Read as _, Write as _},
+    os::unix::fs::PermissionsExt as _,
     os::unix::net::UnixStream,
+    path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
 
+use fs2::FileExt as _;
+use tribal::{ManagerConnector, ManagerConnectorError, ManagementClientError};
 use tribal_config::{TransportKind, TribalConfig};
 use tribal_db::{
     MigrationHeadStatus, MigrationRepository, NewProject, PgProjectRepository, PrincipalRepository,
@@ -21,7 +26,8 @@ use tribal_wire::management::{
     ConfigWriteOutcome, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
     DatabaseInitialiseResult, LifecycleSnapshot, MANAGEMENT_CONTRACT_VERSION,
     ManagementBootstrapRequest, ManagementBootstrapResponse, ManagementClientHello,
-    ManagementError, ManagementResponseError, ManagerLaunchDisposition, ManagerLaunchRecord,
+    ManagementError, ManagementResponseError, ManagementServerHello, ManagerAnnouncement,
+    ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord, ManagerShutdownCall,
     PageCursor, PageRequest, PageSize, ProjectList, ProjectListRequest, ProjectRegisterInput,
     ProjectRegisterOutcome, ProjectRegisterRequest, ProjectRegistrationSource, RuntimeIdentity,
     RuntimeStartResult, TokenCreateRequest, TokenCreateResult,
@@ -29,6 +35,240 @@ use tribal_wire::management::{
 
 /// Upper bound for manager replacement and child-process observations.
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(20);
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connector_concurrent_first_launch() {
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    std::fs::write(&config_path, "database: [").expect("invalid config writes");
+    let first = connector(&config_path, temp.path()).connect();
+    let second = connector(&config_path, temp.path()).connect();
+    let (first, second) = tokio::join!(first, second);
+    let mut first = first.expect("first connector attaches");
+    let mut second = second.expect("second connector attaches");
+
+    assert_eq!(
+        first.announcement().instance_id,
+        second.announcement().instance_id
+    );
+    assert!(matches!(
+        (first.disposition(), second.disposition()),
+        (
+            ManagerLaunchDisposition::ManagerContinues,
+            ManagerLaunchDisposition::ContenderExits
+        ) | (
+            ManagerLaunchDisposition::ContenderExits,
+            ManagerLaunchDisposition::ManagerContinues
+        )
+    ));
+    let first_snapshot: LifecycleSnapshot = first
+        .client_mut()
+        .call::<tribal_wire::management::ManagerSnapshotCall>(&())
+        .await
+        .expect("first connector calls manager");
+    let second_snapshot: LifecycleSnapshot = second
+        .client_mut()
+        .call::<tribal_wire::management::ManagerSnapshotCall>(&())
+        .await
+        .expect("second connector calls manager");
+    assert_eq!(
+        first_snapshot.header.manager_instance_id,
+        second_snapshot.header.manager_instance_id
+    );
+    let descriptors = authority_descriptors(temp.path());
+    assert_eq!(descriptors.len(), 1, "one authority announcement is live");
+    assert_eq!(descriptors[0]["kind"], "manager");
+
+    first
+        .client_mut()
+        .call::<ManagerShutdownCall>(&())
+        .await
+        .expect("manager shutdown succeeds");
+    assert!(
+        poll_until(|| (!Path::new(&first.announcement().socket_path).exists()).then_some(())).is_some(),
+        "manager socket must disappear after shutdown"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connector_standalone_runtime_conflict() {
+    let database = tribal_test_utils::TestDb::new().await;
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    let mut config = TribalConfig::minimum_valid(database.database_url());
+    config.server.transport = TransportKind::Http;
+    config.server.bind_address = Some("127.0.0.1:0".to_owned());
+    std::fs::write(
+        &config_path,
+        serde_yaml::to_string(&config).expect("config serialises"),
+    )
+    .expect("config writes");
+    let mut runtime = tribal_command(&config_path, temp.path())
+        .arg("serve")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("standalone runtime spawns");
+    assert!(
+        poll_until(|| {
+            authority_descriptors(temp.path())
+                .iter()
+                .any(|descriptor| descriptor["kind"] == "standalone_runtime")
+                .then_some(())
+        })
+        .is_some(),
+        "standalone runtime must publish authority"
+    );
+
+    let Err(error) = connector(&config_path, temp.path()).connect().await else {
+        panic!("connector must refuse standalone runtime authority");
+    };
+    assert!(matches!(
+        error,
+        ManagerConnectorError::LaunchRefused {
+            failure: ManagerLaunchFailure::DirectRuntimeConflict { .. }
+        }
+    ));
+    runtime.kill().expect("standalone runtime stops");
+    let _ = runtime.wait();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connector_recovering_authority_conflict() {
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    std::fs::write(&config_path, "database: [").expect("invalid config writes");
+    let lock_path = config_path.with_file_name(".tribal.yaml.authority.lock");
+    let ready_path = temp.path().join("lock-ready");
+    let mut holder = Command::new(std::env::current_exe().expect("test executable resolves"))
+        .arg("--ignored")
+        .arg("--exact")
+        .arg("connector_recovering_lock_holder")
+        .env("CONNECTOR_LOCK_PATH", &lock_path)
+        .env("CONNECTOR_READY_PATH", &ready_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("lock holder spawns");
+    assert!(
+        poll_until(|| ready_path.exists().then_some(())).is_some(),
+        "lock holder must acquire authority"
+    );
+
+    let Err(error) = connector(&config_path, temp.path()).connect().await else {
+        panic!("connector must refuse recovering authority");
+    };
+    assert!(matches!(
+        error,
+        ManagerConnectorError::LaunchRefused {
+            failure: ManagerLaunchFailure::AuthorityRecovering { .. }
+        }
+    ));
+    holder.kill().expect("lock holder stops");
+    let _ = holder.wait();
+}
+
+#[test]
+#[ignore = "process helper entered only by connector_recovering_authority_conflict"]
+fn connector_recovering_lock_holder() {
+    let lock_path = PathBuf::from(std::env::var_os("CONNECTOR_LOCK_PATH").expect("lock path set"));
+    let ready_path = PathBuf::from(std::env::var_os("CONNECTOR_READY_PATH").expect("ready path set"));
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .expect("authority lock opens");
+    lock.lock_exclusive().expect("authority lock acquires");
+    std::fs::write(ready_path, b"ready").expect("ready marker writes");
+    loop {
+        thread::sleep(Duration::from_mins(1));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connector_incompatible_manager_refusal() {
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    std::fs::write(&config_path, "database: [").expect("invalid config writes");
+    let socket_path = temp.path().join("incompatible.sock");
+    let listener = tokio::net::UnixListener::bind(&socket_path).expect("fake manager binds");
+    let announcement = fake_announcement(&config_path, &socket_path, "incompatible");
+    let launcher = write_fake_launcher(temp.path(), &announcement, true);
+    let server = tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+
+        let (stream, _) = listener.accept().await.expect("fake manager accepts");
+        let mut reader = tokio::io::BufReader::new(stream);
+        let mut request = Vec::new();
+        reader
+            .read_until(b'\n', &mut request)
+            .await
+            .expect("handshake reads");
+        let mut stream = reader.into_inner();
+        let response = ManagementBootstrapResponse::VersionMismatch {
+            hello: ManagementServerHello {
+                protocol_version: MANAGEMENT_CONTRACT_VERSION + 1,
+                binary_version: "incompatible".to_owned(),
+                manager_instance_id: "incompatible".to_owned(),
+            },
+        };
+        let mut bytes = serde_json::to_vec(&response).expect("response serialises");
+        bytes.push(b'\n');
+        stream.write_all(&bytes).await.expect("response writes");
+    });
+
+    let Err(error) = ManagerConnector::with_executable(launcher, &config_path)
+        .connect()
+        .await
+    else {
+        panic!("connector must refuse incompatible manager");
+    };
+    assert!(matches!(
+        error,
+        ManagerConnectorError::Attach {
+            source: ManagementClientError::VersionMismatch
+        }
+    ));
+    server.await.expect("fake manager task joins");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connector_manager_disappears_before_attach() {
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    std::fs::write(&config_path, "database: [").expect("invalid config writes");
+    let socket_path = temp.path().join("absent.sock");
+    let announcement = fake_announcement(&config_path, &socket_path, "vanished");
+    let launcher = write_fake_launcher(temp.path(), &announcement, false);
+
+    let Err(error) = ManagerConnector::with_executable(launcher, &config_path)
+        .connect()
+        .await
+    else {
+        panic!("connector must reject vanished manager");
+    };
+    assert!(matches!(
+        error,
+        ManagerConnectorError::ManagerDisappeared
+    ));
+}
 
 #[test]
 fn test_invalid_config_manager_repairs_without_restart() {
@@ -714,6 +954,68 @@ fn manager_command(config_path: &std::path::Path, root: &std::path::Path) -> Com
     let mut command = tribal_command(config_path, root);
     command.arg("manage").arg("--announce-json");
     command
+}
+
+fn connector(config_path: &Path, root: &Path) -> ManagerConnector {
+    ["HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "XDG_STATE_HOME"]
+        .into_iter()
+        .fold(
+            ManagerConnector::with_executable(env!("CARGO_BIN_EXE_tribal"), config_path),
+            |connector, key| connector.environment(key, root),
+        )
+}
+
+fn authority_descriptors(root: &Path) -> Vec<serde_json::Value> {
+    let management = root.join("tribal/management");
+    let Ok(namespaces) = std::fs::read_dir(management) else {
+        return Vec::new();
+    };
+    namespaces
+        .filter_map(Result::ok)
+        .filter_map(|namespace| std::fs::read(namespace.path().join("authority.json")).ok())
+        .filter_map(|bytes| serde_json::from_slice(&bytes).ok())
+        .collect()
+}
+
+fn fake_announcement(
+    config_path: &Path,
+    socket_path: &Path,
+    instance_id: &str,
+) -> ManagerAnnouncement {
+    ManagerAnnouncement {
+        instance_id: instance_id.to_owned(),
+        socket_path: socket_path.to_string_lossy().into_owned(),
+        protocol_version: MANAGEMENT_CONTRACT_VERSION,
+        binary_version: env!("CARGO_PKG_VERSION").to_owned(),
+        config_path: tribal_wire::management::ConfigFilePath {
+            path: config_path.to_string_lossy().into_owned(),
+        },
+        pid: std::process::id(),
+    }
+}
+
+fn write_fake_launcher(root: &Path, announcement: &ManagerAnnouncement, remain_alive: bool) -> PathBuf {
+    let path = root.join(if remain_alive {
+        "incompatible-manager"
+    } else {
+        "vanished-manager"
+    });
+    let record = ManagerLaunchRecord::Ready {
+        announcement: announcement.clone(),
+        disposition: ManagerLaunchDisposition::ManagerContinues,
+    };
+    let encoded = serde_json::to_string(&record)
+        .expect("launch record serialises")
+        .replace('\'', "'\\''");
+    let tail = if remain_alive { "sleep 2\n" } else { "exit 0\n" };
+    std::fs::write(
+        &path,
+        format!("#!/bin/sh\nprintf '%s' '{encoded}'\nexec 1>&-\n{tail}"),
+    )
+    .expect("fake launcher writes");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+        .expect("fake launcher is executable");
+    path
 }
 
 fn spawn_manager(config_path: &std::path::Path, root: &std::path::Path) -> Child {
