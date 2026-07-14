@@ -160,20 +160,6 @@ pub trait AuthTokenRepository {
     /// Returns [`DbError::QueryFailed`] on database errors.
     async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<AuthToken>, DbError>;
 
-    /// Finds tokens whose hash starts with the given prefix.
-    ///
-    /// Returns at most two results — enough for callers to distinguish
-    /// zero, one, or ambiguous matches without scanning the full table.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_by_hash_prefix(
-        &self,
-        conn: &mut PgConnection,
-        prefix: &str,
-    ) -> Result<Vec<AuthToken>, DbError>;
-
     /// Batch-revokes all active tokens, optionally filtered by principal.
     ///
     /// Only tokens that are neither revoked nor expired are affected.
@@ -363,33 +349,6 @@ impl AuthTokenRepository for PgAuthTokenRepository {
                     context: "listing all auth tokens".to_owned(),
                     source: e,
                 })?;
-
-        Ok(rows.iter().map(map_auth_token_row).collect())
-    }
-
-    async fn find_by_hash_prefix(
-        &self,
-        conn: &mut PgConnection,
-        prefix: &str,
-    ) -> Result<Vec<AuthToken>, DbError> {
-        if prefix.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let sql = format!(
-            "SELECT {COLUMNS} FROM auth_tokens \
-             WHERE LEFT(token_hash, length($1)) = $1 \
-             LIMIT 2",
-        );
-
-        let rows = sqlx::query(&sql)
-            .bind(prefix)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|e| DbError::QueryFailed {
-                context: format!("finding auth tokens by hash prefix '{prefix}'"),
-                source: e,
-            })?;
 
         Ok(rows.iter().map(map_auth_token_row).collect())
     }

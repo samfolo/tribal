@@ -20,8 +20,6 @@ mock_repository! {
             (id: AuthTokenId, revoked_at: DateTime<Utc>) { (id, revoked_at) };
         find_all(() => Vec<AuthToken>)
             () { () };
-        find_by_hash_prefix(String => Vec<AuthToken>)
-            (prefix: &str) { prefix.to_owned() };
         revoke_all((Option<PrincipalId>, DateTime<Utc>) => u64)
             (principal_id: Option<PrincipalId>, revoked_at: DateTime<Utc>) { (principal_id, revoked_at) };
         page_high_water(() => Option<AuthTokenPageKey>)

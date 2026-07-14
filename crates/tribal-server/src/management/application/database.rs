@@ -1,9 +1,4 @@
 //! Revision-bound database sessions for management capabilities.
-#![allow(
-    dead_code,
-    reason = "database calls are required to cross this revision-bound seam"
-)]
-
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use sqlx::PgPool;
@@ -307,11 +302,6 @@ mod revision_session {
     #[tokio::test]
     async fn test_initialise_ensures_local_principal_then_becomes_a_typed_noop() {
         let database = tribal_test_utils::TestDb::new().await;
-        sqlx::query("DELETE FROM principals WHERE principal_key = $1")
-            .bind(LOCAL_PRINCIPAL_KEY)
-            .execute(database.pool())
-            .await
-            .unwrap();
         let (_temp, _path, worker, _runtime) = config_worker(database.database_url());
         let revision = worker.resolved_snapshot().await.unwrap().revision;
         let access = DatabaseAccess::new(worker);

@@ -22,38 +22,15 @@ enum IntegrationCommandError {
     },
     #[error("the current directory is not an absolute path")]
     RelativeCurrentDirectory,
+    #[error("persisted bearer authentication is unavailable for stdio integration")]
+    PersistedBearerStdio,
 }
 
 pub(crate) async fn mcp_config(
     config_path: &str,
     args: IntegrationMcpConfigArgs,
 ) -> Result<(), AppError> {
-    let stdio_context = stdio_context(args.unscoped, args.project)?;
-    let target = match args.transport {
-        None => McpTargetSelection::Configured {
-            policy: match args.auth {
-                IntegrationAuthArg::OAuth => ConfiguredMcpTarget::Public { stdio_context },
-                IntegrationAuthArg::PersistedBearer => {
-                    ConfiguredMcpTarget::ExportPersistedBearer { stdio_context }
-                }
-            },
-        },
-        Some(TransportKind::Stdio) => McpTargetSelection::Explicit {
-            target: McpTarget::Stdio {
-                context: stdio_context,
-            },
-        },
-        Some(TransportKind::Http) => McpTargetSelection::Explicit {
-            target: McpTarget::Http {
-                auth: network_auth(args.auth),
-            },
-        },
-        Some(TransportKind::Sse) => McpTargetSelection::Explicit {
-            target: McpTarget::Sse {
-                auth: network_auth(args.auth),
-            },
-        },
-    };
+    let target = target(args.transport, args.auth, args.unscoped, args.project)?;
     let mut connection = config::connect(config_path).await?;
     let expected_revision = config::stable_revision(
         connection
@@ -74,6 +51,44 @@ pub(crate) async fn mcp_config(
         &result,
         "writing MCP configuration",
     )
+}
+
+fn target(
+    transport: Option<TransportKind>,
+    auth: IntegrationAuthArg,
+    unscoped: bool,
+    project: Option<tribal_domain::ProjectId>,
+) -> Result<McpTargetSelection, AppError> {
+    let stdio_context = stdio_context(unscoped, project)?;
+    let target = match transport {
+        None => McpTargetSelection::Configured {
+            policy: match auth {
+                IntegrationAuthArg::OAuth => ConfiguredMcpTarget::Public { stdio_context },
+                IntegrationAuthArg::PersistedBearer => {
+                    ConfiguredMcpTarget::ExportPersistedBearer { stdio_context }
+                }
+            },
+        },
+        Some(TransportKind::Stdio) if auth == IntegrationAuthArg::PersistedBearer => {
+            return Err(command_error(IntegrationCommandError::PersistedBearerStdio));
+        }
+        Some(TransportKind::Stdio) => McpTargetSelection::Explicit {
+            target: McpTarget::Stdio {
+                context: stdio_context,
+            },
+        },
+        Some(TransportKind::Http) => McpTargetSelection::Explicit {
+            target: McpTarget::Http {
+                auth: network_auth(auth),
+            },
+        },
+        Some(TransportKind::Sse) => McpTargetSelection::Explicit {
+            target: McpTarget::Sse {
+                auth: network_auth(auth),
+            },
+        },
+    };
+    Ok(target)
 }
 
 fn stdio_context(
@@ -107,5 +122,23 @@ fn network_auth(auth: IntegrationAuthArg) -> NetworkIntegrationAuth {
 fn command_error(source: IntegrationCommandError) -> AppError {
     AppError::Management {
         source: Box::new(source),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_explicit_stdio_rejects_persisted_bearer_export() {
+        assert!(
+            target(
+                Some(TransportKind::Stdio),
+                IntegrationAuthArg::PersistedBearer,
+                true,
+                None,
+            )
+            .is_err()
+        );
     }
 }

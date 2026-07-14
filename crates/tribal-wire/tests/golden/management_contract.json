@@ -3066,156 +3066,6 @@
       }
     }
   },
-  "GraphEmbeddingProfile": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "GraphEmbeddingProfile",
-    "description": "Active graph embedding identity and drift classification.",
-    "oneOf": [
-      {
-        "type": "object",
-        "required": [
-          "state"
-        ],
-        "properties": {
-          "state": {
-            "type": "string",
-            "enum": [
-              "no_profile"
-            ]
-          }
-        }
-      },
-      {
-        "type": "object",
-        "required": [
-          "data",
-          "state"
-        ],
-        "properties": {
-          "data": {
-            "type": "object",
-            "required": [
-              "profile",
-              "profile_revision"
-            ],
-            "properties": {
-              "genesis_drift": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "profile": {
-                "$ref": "#/definitions/EmbeddingProfileSummary"
-              },
-              "profile_revision": {
-                "$ref": "#/definitions/EmbeddingProfileRevision"
-              }
-            }
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "active"
-            ]
-          }
-        }
-      },
-      {
-        "type": "object",
-        "required": [
-          "data",
-          "state"
-        ],
-        "properties": {
-          "data": {
-            "type": "object",
-            "required": [
-              "detail"
-            ],
-            "properties": {
-              "detail": {
-                "type": "string"
-              }
-            }
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "unknown"
-            ]
-          }
-        }
-      }
-    ],
-    "definitions": {
-      "EmbeddingProfileRevision": {
-        "type": "string",
-        "pattern": "^epr_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "epr_",
-        "x-cortex-swift-type": "canonical-base64url-32"
-      },
-      "EmbeddingProfileSummary": {
-        "description": "Stable summary of a graph's active embedding profile.",
-        "type": "object",
-        "required": [
-          "base_url",
-          "dimensions",
-          "model",
-          "provider"
-        ],
-        "properties": {
-          "base_url": {
-            "type": "string"
-          },
-          "dimensions": {
-            "type": "integer",
-            "format": "uint32",
-            "minimum": 0.0
-          },
-          "model": {
-            "type": "string"
-          },
-          "provider": {
-            "$ref": "#/definitions/ProviderKind"
-          }
-        }
-      },
-      "ProviderKind": {
-        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
-        "oneOf": [
-          {
-            "description": "Local `Ollama` instance.",
-            "type": "string",
-            "enum": [
-              "ollama"
-            ]
-          },
-          {
-            "description": "`Anthropic` cloud API.",
-            "type": "string",
-            "enum": [
-              "anthropic"
-            ]
-          },
-          {
-            "description": "`OpenAI` cloud API.",
-            "type": "string",
-            "enum": [
-              "openai"
-            ]
-          },
-          {
-            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
-            "type": "string",
-            "enum": [
-              "platform"
-            ]
-          }
-        ]
-      }
-    }
-  },
   "LifecycleSnapshot": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "LifecycleSnapshot",
@@ -8252,6 +8102,20 @@
       "AdministrationFailure": {
         "description": "Stable client-actionable administration failure classification.",
         "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "operation_timed_out"
+                ]
+              }
+            }
+          },
           {
             "type": "object",
             "required": [
@@ -14719,6 +14583,178 @@
             "$ref": "#/definitions/TokenState"
           }
         }
+      }
+    }
+  },
+  "Revisioned_for_GraphEmbeddingProfile": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Revisioned_for_GraphEmbeddingProfile",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/GraphEmbeddingProfile"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "EmbeddingProfileRevision": {
+        "type": "string",
+        "pattern": "^epr_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "epr_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "EmbeddingProfileSummary": {
+        "description": "Stable summary of a graph's active embedding profile.",
+        "type": "object",
+        "required": [
+          "base_url",
+          "dimensions",
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "base_url": {
+            "type": "string"
+          },
+          "dimensions": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/definitions/ProviderKind"
+          }
+        }
+      },
+      "GraphEmbeddingProfile": {
+        "description": "Active graph embedding identity and drift classification.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "no_profile"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "profile",
+                  "profile_revision"
+                ],
+                "properties": {
+                  "genesis_drift": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "profile": {
+                    "$ref": "#/definitions/EmbeddingProfileSummary"
+                  },
+                  "profile_revision": {
+                    "$ref": "#/definitions/EmbeddingProfileRevision"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "active"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "detail"
+                ],
+                "properties": {
+                  "detail": {
+                    "type": "string"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unknown"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
       }
     }
   },

@@ -1,5 +1,7 @@
 //! Namespace-bound credential durability and recovery.
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     fs::File,
     io,
@@ -42,6 +44,11 @@ pub(super) struct PersistedIssuance {
     pub(super) token: tribal_domain::AuthToken,
     pub(super) principal: String,
     pub(super) origin: PersistedIssuanceOrigin,
+}
+
+struct StagedIssuance {
+    issuance: PersistedIssuance,
+    generation_id: CredentialGenerationId,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -100,6 +107,8 @@ pub(crate) fn read_persisted_bearer(
         namespace: paths.namespace,
         stable_path: paths.stable_credential_path,
         pending_path: paths.pending_credential_path,
+        #[cfg(test)]
+        promotion_failures: AtomicUsize::new(0),
     };
     if let Some(envelope) = store
         .read_stable()
@@ -382,7 +391,7 @@ async fn ensure_persisted_inner(
             .map_err(|source| CredentialCoordinatorError::Connection { source })?;
         return Ok(existing);
     }
-    let issued = replace_locked(
+    let staged = replace_locked(
         namespace,
         store,
         &mut transaction,
@@ -393,12 +402,9 @@ async fn ensure_persisted_inner(
         expires_at,
     )
     .await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
-    store.promote_pending()?;
-    Ok(issued)
+    let commit = transaction.commit().await;
+    drop(connection);
+    finish_replacement(namespace, store, &session, staged, commit).await
 }
 
 async fn reusable_issuance(
@@ -573,7 +579,7 @@ async fn issue_persisted_inner(
         .await
         .map_err(database_error)?;
     let _ = store.recover(previous.as_ref())?;
-    let issued = replace_locked(
+    let staged = replace_locked(
         namespace,
         store,
         &mut transaction,
@@ -584,12 +590,9 @@ async fn issue_persisted_inner(
         expires_at,
     )
     .await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
-    store.promote_pending()?;
-    Ok(issued)
+    let commit = transaction.commit().await;
+    drop(connection);
+    finish_replacement(namespace, store, &session, staged, commit).await
 }
 
 #[allow(
@@ -605,7 +608,7 @@ async fn replace_locked(
     scopes: Vec<Scope>,
     audience: String,
     expires_at: chrono::DateTime<chrono::Utc>,
-) -> Result<PersistedIssuance, CredentialCoordinatorError> {
+) -> Result<StagedIssuance, CredentialCoordinatorError> {
     let principal = find_or_create_principal(transaction, &principal_key)
         .await
         .map_err(|source| CredentialCoordinatorError::Principal { source })?;
@@ -646,12 +649,92 @@ async fn replace_locked(
         )
         .await
         .map_err(database_error)?;
-    Ok(PersistedIssuance {
-        raw,
-        token,
-        principal: principal.principal_key().to_owned(),
-        origin: PersistedIssuanceOrigin::Issued,
+    Ok(StagedIssuance {
+        generation_id: envelope.generation_id,
+        issuance: PersistedIssuance {
+            raw,
+            token,
+            principal: principal.principal_key().to_owned(),
+            origin: PersistedIssuanceOrigin::Issued,
+        },
     })
+}
+
+async fn finish_replacement(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    session: &DatabaseSession,
+    staged: StagedIssuance,
+    commit: Result<(), sqlx::Error>,
+) -> Result<PersistedIssuance, CredentialCoordinatorError> {
+    let failure = match commit {
+        Ok(()) => match store.promote_pending() {
+            Ok(()) => return Ok(staged.issuance),
+            Err(source) => CredentialCoordinatorError::Store(source),
+        },
+        Err(source) => CredentialCoordinatorError::Connection { source },
+    };
+    reconcile_replacement(namespace, store, session, staged, failure).await
+}
+
+async fn reconcile_replacement(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    session: &DatabaseSession,
+    staged: StagedIssuance,
+    failure: CredentialCoordinatorError,
+) -> Result<PersistedIssuance, CredentialCoordinatorError> {
+    let mut connection = session
+        .pool
+        .acquire()
+        .await
+        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    PgAdvisoryLockRepository
+        .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
+        .await
+        .map_err(database_error)?;
+    let mapping = PgLocalDefaultCredentialRepository
+        .find(&mut transaction, namespace.as_str())
+        .await
+        .map_err(database_error)?;
+    let disposition = store.recover(mapping.as_ref())?;
+    let authoritative = mapping.as_ref().is_some_and(|mapping| {
+        mapping.authority_namespace == namespace.as_str()
+            && mapping.generation_id == staged.generation_id
+            && mapping.token_id == staged.issuance.token.id()
+    });
+    let stable = store.read_stable()?.is_some_and(|envelope| {
+        envelope.generation_id == staged.generation_id
+            && envelope.token_id == staged.issuance.token.id()
+    });
+    let token = PgAuthTokenRepository
+        .find_by_id(&mut transaction, staged.issuance.token.id())
+        .await
+        .map_err(database_error)?;
+    transaction
+        .commit()
+        .await
+        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    let token_matches = token.is_some_and(|token| {
+        token.revoked_at().is_none()
+            && token.token_hash() == tribal_common::sha256_hex(&staged.issuance.raw)
+    });
+    if authoritative
+        && stable
+        && token_matches
+        && matches!(
+            disposition,
+            RecoveryDisposition::Stable | RecoveryDisposition::PromotedPending
+        )
+    {
+        Ok(staged.issuance)
+    } else {
+        Err(failure)
+    }
 }
 
 fn database_error(source: DbError) -> CredentialCoordinatorError {
@@ -727,6 +810,8 @@ pub(super) struct CredentialStore {
     namespace: ConfigAuthorityNamespace,
     stable_path: PathBuf,
     pending_path: PathBuf,
+    #[cfg(test)]
+    promotion_failures: AtomicUsize,
 }
 
 impl CredentialStore {
@@ -736,6 +821,8 @@ impl CredentialStore {
             namespace,
             stable_path,
             pending_path,
+            #[cfg(test)]
+            promotion_failures: AtomicUsize::new(0),
         }
     }
 
@@ -746,6 +833,7 @@ impl CredentialStore {
             stable_path: directory.join(format!("{namespace}.json")),
             pending_path: directory.join(format!("{namespace}.pending")),
             namespace,
+            promotion_failures: AtomicUsize::new(0),
         }
     }
 
@@ -775,6 +863,19 @@ impl CredentialStore {
     }
 
     pub(super) fn promote_pending(&self) -> Result<(), CredentialStoreError> {
+        #[cfg(test)]
+        if self
+            .promotion_failures
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |failures| {
+                failures.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(file_error(
+                &self.pending_path,
+                io::Error::other("injected pending promotion failure"),
+            ));
+        }
         let parent = self
             .stable_path
             .parent()
@@ -784,6 +885,11 @@ impl CredentialStore {
         File::open(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|source| file_error(parent, source))
+    }
+
+    #[cfg(test)]
+    fn fail_next_promotion(&self) {
+        self.promotion_failures.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(super) fn recover(
@@ -955,6 +1061,110 @@ mod recovery {
             RecoveryDisposition::PromotedPending
         );
         assert_eq!(store.read_stable().expect("stable reads"), Some(committed));
+        assert!(!store.pending_path.exists());
+    }
+
+    #[tokio::test]
+    async fn committed_replacement_reconciles_after_lost_ack() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let root = tempfile::tempdir().expect("temporary credential root");
+        let namespace = namespace("1123456789abcdef01234567");
+        let store = CredentialStore::with_root(namespace.clone(), root.path());
+        let revision = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"lost-ack"));
+        let session = session(&database, &revision);
+        let mut connection = session.pool.acquire().await.expect("connection");
+        let mut transaction = connection.begin().await.expect("transaction");
+        PgAdvisoryLockRepository
+            .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
+            .await
+            .expect("credential lock");
+        let staged = replace_locked(
+            &namespace,
+            &store,
+            &mut transaction,
+            None,
+            tribal_domain::LOCAL_PRINCIPAL_KEY.to_owned(),
+            full_access_scopes(),
+            "http://localhost/mcp".to_owned(),
+            Utc::now() + chrono::Duration::hours(1),
+        )
+        .await
+        .expect("replacement stages");
+        let token_id = staged.issuance.token.id();
+        transaction.commit().await.expect("server commits");
+        drop(connection);
+
+        let issued = finish_replacement(
+            &namespace,
+            &store,
+            &session,
+            staged,
+            Err(sqlx::Error::Io(io::Error::other(
+                "commit acknowledgement lost",
+            ))),
+        )
+        .await
+        .expect("lost acknowledgement reconciles");
+
+        assert_eq!(issued.token.id(), token_id);
+        let mapping = PgLocalDefaultCredentialRepository
+            .find(
+                &mut database.pool().acquire().await.unwrap(),
+                namespace.as_str(),
+            )
+            .await
+            .unwrap()
+            .expect("mapping exists");
+        assert_eq!(mapping.token_id, token_id);
+        assert_eq!(
+            store
+                .read_stable()
+                .unwrap()
+                .expect("stable exists")
+                .token_id,
+            token_id
+        );
+        assert!(!store.pending_path.exists());
+    }
+
+    #[tokio::test]
+    async fn committed_replacement_reconciles_after_promotion_failure() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let root = tempfile::tempdir().expect("temporary credential root");
+        let namespace = namespace("2123456789abcdef01234567");
+        let store = CredentialStore::with_root(namespace.clone(), root.path());
+        let revision = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"promotion"));
+        store.fail_next_promotion();
+
+        let issued = issue_persisted_inner(
+            &namespace,
+            &store,
+            session(&database, &revision),
+            tribal_domain::LOCAL_PRINCIPAL_KEY.to_owned(),
+            full_access_scopes(),
+            "http://localhost/mcp".to_owned(),
+            Utc::now() + chrono::Duration::hours(1),
+        )
+        .await
+        .expect("promotion failure reconciles");
+
+        let mapping = PgLocalDefaultCredentialRepository
+            .find(
+                &mut database.pool().acquire().await.unwrap(),
+                namespace.as_str(),
+            )
+            .await
+            .unwrap()
+            .expect("mapping exists");
+        assert_eq!(mapping.token_id, issued.token.id());
+        assert_eq!(
+            store
+                .read_stable()
+                .unwrap()
+                .expect("stable exists")
+                .token_id,
+            issued.token.id()
+        );
         assert!(!store.pending_path.exists());
     }
 

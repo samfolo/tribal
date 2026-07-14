@@ -13,6 +13,7 @@ mod token;
 
 use bootstrap::BootstrapAdministration;
 use credential::CredentialCoordinator;
+pub(crate) use database::DatabaseSession;
 use database::{DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
 use integration::IntegrationAdministration;
 use project::ProjectAdministration;
@@ -218,7 +219,12 @@ impl<'a> ManagementApplication<'a> {
                 response_value(self.product.genesis_options().await)
             }
             ManagementMethod::GraphEmbeddingProfile => {
-                response_value(self.product.embedding_profile().await)
+                let session = self
+                    .database
+                    .read_session()
+                    .await
+                    .map_err(database_access_error)?;
+                response_value(self.product.embedding_profile(&session).await)
             }
             ManagementMethod::GraphConfigureGenesis => {
                 let mut outcome = self
@@ -231,11 +237,15 @@ impl<'a> ManagementApplication<'a> {
                 }
                 response_value(Ok(outcome))
             }
-            ManagementMethod::GraphConvergeGenesis => response_value(
-                self.product
-                    .converge_genesis(parse_call::<GraphConvergeGenesisCall>(params)?)
-                    .await,
-            ),
+            ManagementMethod::GraphConvergeGenesis => {
+                let request = parse_call::<GraphConvergeGenesisCall>(params)?;
+                let session = self
+                    .database
+                    .mutation_session(&request.expected_revision)
+                    .await
+                    .map_err(database_access_error)?;
+                response_value(self.product.converge_genesis(&session, request).await)
+            }
         }
     }
 
@@ -597,6 +607,20 @@ fn database_initialise_error(error: DatabaseInitialiseError) -> ManagementRespon
         | DatabaseInitialiseError::MigrationConnection { .. }
         | DatabaseInitialiseError::Principal { .. } => administration_error(
             "database is unavailable",
+            tribal_wire::management::AdministrationFailure::DatabaseUnavailable,
+        ),
+    }
+}
+
+fn database_access_error(error: DatabaseAccessError) -> ManagementResponseError {
+    match error {
+        DatabaseAccessError::Configuration(error) => management_error(error),
+        DatabaseAccessError::RevisionConflict { expected, actual } => ManagementResponseError {
+            message: "configuration changed before graph administration".to_owned(),
+            error: ManagementError::ConfigConflict { expected, actual },
+        },
+        DatabaseAccessError::Connection { .. } => administration_error(
+            "graph database is unavailable",
             tribal_wire::management::AdministrationFailure::DatabaseUnavailable,
         ),
     }

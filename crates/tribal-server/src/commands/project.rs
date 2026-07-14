@@ -69,7 +69,7 @@ pub(crate) async fn register(config_path: &str, args: ProjectRegisterArgs) -> Re
 
 pub(crate) async fn list(config_path: &str, args: ProjectListArgs) -> Result<(), AppError> {
     let page = PageRequest {
-        size: PageSize::try_from(args.page_size)
+        size: PageSize::try_from(args.limit)
             .map_err(|source| command_error(ProjectCommandError::PageSize { source }))?,
         after: args
             .after

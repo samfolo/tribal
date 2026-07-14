@@ -407,15 +407,6 @@ impl ConfigWorkerClient {
             .unwrap_or(Err(ConfigAuthorityError::WorkerUnavailable))
     }
 
-    pub(crate) async fn database_url(
-        &self,
-    ) -> Result<zeroize::Zeroizing<String>, ConfigAuthorityError> {
-        let snapshot = self.resolved_snapshot().await?;
-        Ok(zeroize::Zeroizing::new(
-            snapshot.config.database.url.clone(),
-        ))
-    }
-
     pub(crate) async fn probe_snapshot(&self) -> Result<ConfigProbeSnapshot, ConfigAuthorityError> {
         let (response, receiver) = oneshot::channel();
         self.sender

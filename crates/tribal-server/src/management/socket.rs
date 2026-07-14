@@ -9,12 +9,13 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader},
     net::{UnixListener, UnixStream},
+    time::{Duration, timeout},
 };
 use tokio_util::sync::CancellationToken;
 use tribal_wire::management::{
-    BootstrapShutdownRefusal, MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest,
-    ManagementBootstrapResponse, ManagementEvent, ManagementLogLoss, ManagementMethod,
-    ManagementResponseError, ManagementServerHello,
+    AdministrationFailure, BootstrapShutdownRefusal, MANAGEMENT_CONTRACT_VERSION,
+    ManagementBootstrapRequest, ManagementBootstrapResponse, ManagementError, ManagementEvent,
+    ManagementLogLoss, ManagementMethod, ManagementResponseError, ManagementServerHello,
 };
 
 use super::{
@@ -29,6 +30,9 @@ const SOCKET_MODE: u32 = 0o600;
 const SOCKET_DIRECTORY_MODE: u32 = 0o700;
 pub(crate) const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_CONNECTIONS: usize = 32;
+const STANDARD_OPERATION_TIMEOUT: Duration = Duration::from_secs(35);
+const LIFECYCLE_OPERATION_TIMEOUT: Duration = Duration::from_secs(20);
+const LONG_OPERATION_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Identity a bound management socket presents during handshake.
 #[derive(Debug, Clone)]
@@ -290,10 +294,12 @@ async fn serve_full(
                     return;
                 };
                 let id = request.id;
-                let result = services
-                    .application
-                    .dispatch(request.method, request.params)
-                    .await;
+                let result = timeout(
+                    operation_timeout(request.method),
+                    services.application.dispatch(request.method, request.params),
+                )
+                .await
+                .unwrap_or_else(|_| Err(operation_timed_out()));
                 let response = match result {
                     Ok(result) => ManagementResponse::Success { id, result },
                     Err(error) => ManagementResponse::Failure { id, error },
@@ -331,6 +337,28 @@ async fn serve_full(
                 }
             }
         }
+    }
+}
+
+fn operation_timeout(method: ManagementMethod) -> Duration {
+    match method {
+        ManagementMethod::RuntimeStart
+        | ManagementMethod::RuntimeStop
+        | ManagementMethod::RuntimeRestart
+        | ManagementMethod::ManagerShutdown => LIFECYCLE_OPERATION_TIMEOUT,
+        ManagementMethod::DatabaseInitialise
+        | ManagementMethod::ReindexRun
+        | ManagementMethod::BootstrapRun => LONG_OPERATION_TIMEOUT,
+        _ => STANDARD_OPERATION_TIMEOUT,
+    }
+}
+
+fn operation_timed_out() -> ManagementResponseError {
+    ManagementResponseError {
+        message: "management operation exceeded its capability deadline".to_owned(),
+        error: ManagementError::Administration {
+            failure: AdministrationFailure::OperationTimedOut,
+        },
     }
 }
 
@@ -465,6 +493,23 @@ mod tests {
         assert!(
             public_config_event(Err(tokio::sync::broadcast::error::RecvError::Lagged(3))).is_none()
         );
+    }
+
+    #[test]
+    fn test_operation_deadlines_cover_capability_policy() {
+        assert_eq!(
+            operation_timeout(ManagementMethod::RuntimeStop),
+            LIFECYCLE_OPERATION_TIMEOUT
+        );
+        assert_eq!(
+            operation_timeout(ManagementMethod::DatabaseInitialise),
+            LONG_OPERATION_TIMEOUT
+        );
+        assert_eq!(
+            operation_timeout(ManagementMethod::ConfigGetAll),
+            STANDARD_OPERATION_TIMEOUT
+        );
+        assert!(LONG_OPERATION_TIMEOUT < super::super::client::CALL_TIMEOUT);
     }
 
     #[tokio::test]

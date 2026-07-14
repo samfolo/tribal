@@ -23,9 +23,11 @@ use tribal_wire::management::{
     GraphEmbeddingProfile, InferenceStage, InvalidStageSetReason, KnownModelEntry, KnownModelId,
     ManagementError, ManagementResponseError, ModelAccess, ModelAvailability,
     ModelSelectionRequest, ModelSettingsCapability, ModelUnavailableReason, ModelsCatalogue,
+    Revisioned,
 };
 
 use super::{
+    application::DatabaseSession,
     configuration::{CredentialMaterial, management_error},
     worker::ConfigWorkerClient,
 };
@@ -504,9 +506,11 @@ impl ProductSession {
 
     pub(crate) async fn embedding_profile(
         &self,
-    ) -> Result<GraphEmbeddingProfile, ManagementResponseError> {
-        let database_url = self.config.database_url().await.map_err(management_error)?;
-        let mut connection = sqlx::PgConnection::connect(database_url.as_str())
+        session: &DatabaseSession,
+    ) -> Result<Revisioned<GraphEmbeddingProfile>, ManagementResponseError> {
+        let mut connection = session
+            .pool
+            .acquire()
             .await
             .map_err(|error| profile_sql_error(&error))?;
         let mut transaction = connection
@@ -530,25 +534,28 @@ impl ProductSession {
             .await
             .map_err(|error| profile_sql_error(&error))?;
         let Some(profile) = profile else {
-            return Ok(GraphEmbeddingProfile::NoProfile);
+            return Ok(session.revisioned(GraphEmbeddingProfile::NoProfile));
         };
-        let (values, _) = document(self.config.document().await.map_err(management_error)?)?;
+        let values =
+            serde_json::to_value(session.config.as_ref()).map_err(|_| invalid_contract())?;
         let summary = profile_summary(&profile);
         let genesis_drift = genesis_differs(&values, &summary)
             .then(|| "configuration differs from the active embedding profile".to_owned());
-        Ok(GraphEmbeddingProfile::Active {
+        Ok(session.revisioned(GraphEmbeddingProfile::Active {
             profile: summary,
             profile_revision: profile_revision(&profile)?,
             genesis_drift,
-        })
+        }))
     }
 
     pub(crate) async fn converge_genesis(
         &self,
+        session: &DatabaseSession,
         request: GenesisConvergenceRequest,
     ) -> Result<ConfigPatchOutcome, ManagementResponseError> {
-        let database_url = self.config.database_url().await.map_err(management_error)?;
-        let mut connection = sqlx::PgConnection::connect(database_url.as_str())
+        let mut connection = session
+            .pool
+            .acquire()
             .await
             .map_err(|error| profile_sql_error(&error))?;
         let mut transaction = connection

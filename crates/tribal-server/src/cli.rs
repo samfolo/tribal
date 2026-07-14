@@ -136,7 +136,7 @@ mod projection {
             for args in [
                 vec!["tribal", "database", "initialise", "--json"],
                 vec!["tribal", "project", "register", "--path", ".", "--json"],
-                vec!["tribal", "project", "list", "--page-size", "20", "--json"],
+                vec!["tribal", "project", "list", "--limit", "20", "--json"],
                 vec![
                     "tribal",
                     "token",
@@ -161,6 +161,14 @@ mod projection {
                     "postgres://localhost/tribal",
                     "--model-selection",
                     "extraction=ollama.default",
+                    "--model-credential-env",
+                    "extraction=OLLAMA_API_KEY",
+                    "--genesis-provider",
+                    "ollama",
+                    "--genesis-model",
+                    "nomic-embed-text",
+                    "--genesis-reuse-stage",
+                    "extraction",
                     "--json",
                 ],
             ] {
@@ -184,6 +192,8 @@ mod projection {
                 vec!["tribal", "project", "register", "--skip-validation"],
                 vec!["tribal", "project", "register", "--transport", "stdio"],
                 vec!["tribal", "token", "list", "--database-url", "postgres://x"],
+                vec!["tribal", "project", "list", "--page-size", "20"],
+                vec!["tribal", "token", "list", "--page-size", "20"],
                 vec!["tribal", "token", "revoke", "550e8400"],
                 vec![
                     "tribal",

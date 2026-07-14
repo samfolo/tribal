@@ -8,6 +8,7 @@ use tokio::{
         UnixStream,
         unix::{OwnedReadHalf, OwnedWriteHalf},
     },
+    time::{Duration, timeout},
 };
 use tribal_wire::management::{
     BootstrapShutdownRefusal, MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest,
@@ -18,6 +19,8 @@ use tribal_wire::management::{
 use super::authority::AuthorityDescriptor;
 
 const MAX_FRAME_BYTES: usize = 64 * 1024;
+const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const CALL_TIMEOUT: Duration = Duration::from_secs(125);
 
 /// Compatible full-protocol connection to one discovered manager.
 pub struct ManagementClient {
@@ -49,6 +52,8 @@ pub enum ManagementClientError {
     InstanceMismatch,
     #[error("management connection closed before a response")]
     Closed,
+    #[error("management request timed out")]
+    TimedOut,
     #[error("management request failed: {error:?}")]
     Request { error: ManagementResponseError },
 }
@@ -81,6 +86,18 @@ impl ManagementClient {
     }
 
     async fn connect_identity(
+        socket: &std::path::Path,
+        expected_instance_id: &str,
+    ) -> Result<Self, ManagementClientError> {
+        timeout(
+            BOOTSTRAP_TIMEOUT,
+            Self::connect_identity_inner(socket, expected_instance_id),
+        )
+        .await
+        .map_err(|_| ManagementClientError::TimedOut)?
+    }
+
+    async fn connect_identity_inner(
         socket: &std::path::Path,
         expected_instance_id: &str,
     ) -> Result<Self, ManagementClientError> {
@@ -123,6 +140,14 @@ impl ManagementClient {
     pub(crate) async fn request_shutdown(
         descriptor: &AuthorityDescriptor,
     ) -> Result<(), ManagementClientError> {
+        timeout(BOOTSTRAP_TIMEOUT, Self::request_shutdown_inner(descriptor))
+            .await
+            .map_err(|_| ManagementClientError::TimedOut)?
+    }
+
+    async fn request_shutdown_inner(
+        descriptor: &AuthorityDescriptor,
+    ) -> Result<(), ManagementClientError> {
         let socket = descriptor
             .socket_path
             .as_ref()
@@ -159,6 +184,23 @@ impl ManagementClient {
     ///
     /// Returns an error when transport, framing, decoding, or the management call fails.
     pub async fn call<C>(
+        &mut self,
+        request: &C::Request,
+    ) -> Result<C::Response, ManagementClientError>
+    where
+        C: ManagementCall,
+        C::Request: serde::Serialize,
+        C::Response: serde::de::DeserializeOwned,
+    {
+        if let Ok(result) = timeout(CALL_TIMEOUT, self.call_inner::<C>(request)).await {
+            result
+        } else {
+            let _ = self.writer.shutdown().await;
+            Err(ManagementClientError::TimedOut)
+        }
+    }
+
+    async fn call_inner<C>(
         &mut self,
         request: &C::Request,
     ) -> Result<C::Response, ManagementClientError>
@@ -278,4 +320,101 @@ enum ClientResponse {
 enum ClientIncoming {
     Response(ClientResponse),
     Event(ManagementEvent),
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::UnixListener,
+    };
+    use tribal_wire::management::ConfigSchemaCall;
+
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn test_handshake_without_response_times_out() {
+        let directory = tempfile::tempdir().expect("temporary socket directory");
+        let socket = directory.path().join("manager.sock");
+        let listener = UnixListener::bind(&socket).expect("bind management socket");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept client");
+            let mut request = [0; 256];
+            let _ = stream.read(&mut request).await.expect("read handshake");
+            std::future::pending::<()>().await;
+        });
+
+        let result = ManagementClient::connect_identity(&socket, "manager").await;
+
+        assert!(matches!(result, Err(ManagementClientError::TimedOut)));
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_call_without_response_times_out() {
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("socket pair");
+        let (read, write) = client_stream.into_split();
+        let mut client = ManagementClient {
+            reader: BufReader::new(read),
+            writer: write,
+            next_id: 1,
+        };
+        let server = tokio::spawn(async move {
+            let mut request = [0; 256];
+            let _ = server_stream
+                .read(&mut request)
+                .await
+                .expect("read request");
+            std::future::pending::<()>().await;
+        });
+
+        let result = client.call::<ConfigSchemaCall>(&()).await;
+
+        assert!(matches!(result, Err(ManagementClientError::TimedOut)));
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_call_waits_past_the_bootstrap_deadline_for_a_manager_result() {
+        struct DelayedCall;
+
+        impl ManagementCall for DelayedCall {
+            type Request = ();
+            type Response = ();
+
+            const METHOD: ManagementMethod = ManagementMethod::ConfigSchema;
+        }
+
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("socket pair");
+        let (read, write) = client_stream.into_split();
+        let mut client = ManagementClient {
+            reader: BufReader::new(read),
+            writer: write,
+            next_id: 1,
+        };
+        let server = tokio::spawn(async move {
+            let mut request = [0; 256];
+            let _ = server_stream
+                .read(&mut request)
+                .await
+                .expect("read request");
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            server_stream
+                .write_all(b"{\"id\":1,\"result\":null}\n")
+                .await
+                .expect("write response");
+        });
+
+        let call = client.call::<DelayedCall>(&());
+        tokio::pin!(call);
+        tokio::select! {
+            result = &mut call => panic!("call completed before the manager answered: {result:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+        tokio::time::advance(Duration::from_secs(6)).await;
+        let result = call.await;
+
+        assert!(matches!(result, Ok(())), "{result:?}");
+        server.await.expect("server joins");
+    }
 }

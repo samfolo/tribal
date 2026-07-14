@@ -99,7 +99,7 @@ pub enum Command {
     Bootstrap {
         /// Arguments for the bootstrap subcommand.
         #[command(flatten)]
-        args: BootstrapArgs,
+        args: Box<BootstrapArgs>,
     },
 
     /// Run readiness diagnostics across config, database, project,
@@ -396,6 +396,23 @@ pub struct BootstrapArgs {
     )]
     pub model_selections: Vec<String>,
 
+    /// Model credential as `stage=ENVIRONMENT_VARIABLE`; repeat by stage.
+    #[arg(
+        long = "model-credential-env",
+        value_name = "STAGE=VARIABLE",
+        help_heading = "Models"
+    )]
+    pub model_credential_env: Vec<String>,
+
+    /// Read one model stage's credential from stdin.
+    #[arg(
+        long = "model-credential-stdin",
+        value_enum,
+        conflicts_with = "genesis_credential_stdin",
+        help_heading = "Models"
+    )]
+    pub model_credential_stdin: Option<InferenceStageArg>,
+
     /// Embedding provider for graph genesis.
     #[arg(long, requires = "genesis_model", help_heading = "Genesis")]
     pub genesis_provider: Option<ProviderKind>,
@@ -411,6 +428,35 @@ pub struct BootstrapArgs {
     /// Embedding endpoint base URL.
     #[arg(long, requires = "genesis_provider", help_heading = "Genesis")]
     pub genesis_base_url: Option<String>,
+
+    /// Environment variable containing the explicit genesis credential.
+    #[arg(
+        long = "genesis-credential-env",
+        value_name = "VARIABLE",
+        requires = "genesis_provider",
+        conflicts_with_all = ["genesis_credential_stdin", "genesis_reuse_stage"],
+        help_heading = "Genesis"
+    )]
+    pub genesis_credential_env: Option<String>,
+
+    /// Read the explicit genesis credential from stdin.
+    #[arg(
+        long = "genesis-credential-stdin",
+        requires = "genesis_provider",
+        conflicts_with_all = ["genesis_credential_env", "genesis_reuse_stage", "model_credential_stdin"],
+        help_heading = "Genesis"
+    )]
+    pub genesis_credential_stdin: bool,
+
+    /// Reuse the selected inference stage credential for genesis.
+    #[arg(
+        long = "genesis-reuse-stage",
+        value_enum,
+        requires = "genesis_provider",
+        conflicts_with_all = ["genesis_credential_env", "genesis_credential_stdin"],
+        help_heading = "Genesis"
+    )]
+    pub genesis_reuse_stage: Option<InferenceStageArg>,
 
     /// Absolute OTLP endpoint to persist.
     #[arg(long, help_heading = "Telemetry")]
@@ -528,7 +574,7 @@ pub struct ProjectRegisterArgs {
 pub struct ProjectListArgs {
     /// Maximum rows in one page.
     #[arg(long, default_value_t = 50)]
-    pub page_size: u16,
+    pub limit: u16,
     /// Opaque continuation cursor from a prior page.
     #[arg(long)]
     pub after: Option<String>,
@@ -622,7 +668,7 @@ pub struct TokenCreateArgs {
 pub struct TokenListArgs {
     /// Maximum rows in one page.
     #[arg(long, default_value_t = 50)]
-    pub page_size: u16,
+    pub limit: u16,
     /// Opaque continuation cursor from a prior page.
     #[arg(long)]
     pub after: Option<String>,

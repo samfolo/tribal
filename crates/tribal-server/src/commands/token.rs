@@ -50,7 +50,7 @@ pub(crate) async fn create(config_path: &str, args: TokenCreateArgs) -> Result<(
 
 pub(crate) async fn list(config_path: &str, args: TokenListArgs) -> Result<(), AppError> {
     let page = PageRequest {
-        size: PageSize::try_from(args.page_size)
+        size: PageSize::try_from(args.limit)
             .map_err(|source| command_error(TokenCommandError::PageSize { source }))?,
         after: args
             .after

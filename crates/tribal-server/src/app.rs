@@ -70,7 +70,7 @@ impl App {
 
         match command {
             Command::Bootstrap { args } => {
-                run_async(commands::bootstrap(&self.cli.global.config, args))?;
+                run_async(commands::bootstrap(&self.cli.global.config, *args))?;
             }
             Command::Serve { args } => run_async(commands::serve(&self.cli.global.config, args))?,
             Command::Manager(command) => match command {

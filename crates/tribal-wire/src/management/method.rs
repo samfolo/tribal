@@ -12,10 +12,10 @@ use super::{
     ModelSelectionRequest, ModelsCatalogue, ProbeReceipt, ProjectList, ProjectListRequest,
     ProjectRegisterRequest, ProjectRegisterResult, ReadinessReport, ReindexCancelRequest,
     ReindexCancelResult, ReindexPruneRequest, ReindexPruneResult, ReindexRunRequest,
-    ReindexRunResult, RuntimeLogsTailRequest, RuntimeLogsTailResult, RuntimeRestartResult,
-    RuntimeStartResult, RuntimeStopResult, ThreadPruneRequest, ThreadPruneResult,
-    TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest, TokenRevokeAllRequest,
-    TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
+    ReindexRunResult, Revisioned, RuntimeLogsTailRequest, RuntimeLogsTailResult,
+    RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult, ThreadPruneRequest,
+    ThreadPruneResult, TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest,
+    TokenRevokeAllRequest, TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
 };
 
 /// The request and response types owned by one management method.
@@ -310,7 +310,7 @@ management_calls! {
         wire: "graph.embedding_profile",
         call: GraphEmbeddingProfileCall,
         request: (),
-        response: GraphEmbeddingProfile,
+        response: Revisioned<GraphEmbeddingProfile>,
     },
     GraphConfigureGenesis => {
         wire: "graph.configureGenesis",
