@@ -1,7 +1,8 @@
 //! Three-phase orchestration: parse cascade, validate-targeted skip,
 //! database-unreachable cascade.
 
-use tribal::{App, AppError};
+use std::process::Command;
+
 use tribal_config::TribalConfig;
 use tribal_domain::{ProviderKind, normalise_endpoint_url};
 use tribal_test_utils::{TestDb, ensure_genesis_profile_with_endpoint, env_lock};
@@ -324,30 +325,40 @@ async fn test_embedding_profile_fails_on_an_unresolvable_active_credential() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_app_run_returns_check_failed_when_any_row_fails() {
-    // app.run() reads process-global env (PATH, XDG, figment layers), so hold
-    // env_lock to serialise against the env-mutating sibling tests in this
-    // binary under `cargo test`. app.run() builds its own runtime, so invoke it
-    // via spawn_blocking to avoid nesting runtimes.
+async fn test_cli_returns_check_failed_when_any_row_fails() {
     let _env = env_lock().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config_path = dir.path().join("tribal.yaml");
     std::fs::write(&config_path, "not: : valid: yaml: :").expect("write malformed yaml");
 
-    let app = App::try_from_args([
-        "tribal",
-        "--config",
-        config_path.to_str().expect("utf8 path"),
-        "check",
-        "--json",
-    ])
-    .expect("parse args");
+    let binary = env!("CARGO_BIN_EXE_tribal");
+    let result = Command::new(binary)
+        .args([
+            "--config",
+            config_path.to_str().expect("utf8 path"),
+            "check",
+            "--json",
+        ])
+        .output()
+        .expect("run check binary");
+    let shutdown = Command::new(binary)
+        .args([
+            "--config",
+            config_path.to_str().expect("utf8 path"),
+            "manager",
+            "shutdown",
+        ])
+        .output()
+        .expect("shut down manager");
 
-    let result = tokio::task::spawn_blocking(move || app.run())
-        .await
-        .expect("run task");
+    assert!(shutdown.status.success(), "manager shutdown: {shutdown:?}");
+    assert_eq!(result.status.code(), Some(1));
+    let output = parse_json(&result.stdout);
     assert!(
-        matches!(result, Err(AppError::CheckFailed)),
-        "expected CheckFailed, got: {result:?}",
+        output["checks"]
+            .as_array()
+            .expect("checks array")
+            .iter()
+            .any(|observation| observation["result"]["status"] == "fail")
     );
 }

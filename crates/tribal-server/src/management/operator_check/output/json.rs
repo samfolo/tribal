@@ -84,12 +84,18 @@ mod tests {
     #[test]
     fn test_write_json_all_pass_matches_snapshot() {
         let captured = render(&fixture_all_pass());
-        assert_json_snapshot!(&captured, "src/commands/check/snapshots/json-all-pass.json");
+        assert_json_snapshot!(
+            &captured,
+            "src/management/operator_check/snapshots/json-all-pass.json"
+        );
     }
 
     #[test]
     fn test_write_json_mixed_matches_snapshot() {
         let captured = render(&fixture_mixed());
-        assert_json_snapshot!(&captured, "src/commands/check/snapshots/json-mixed.json");
+        assert_json_snapshot!(
+            &captured,
+            "src/management/operator_check/snapshots/json-mixed.json"
+        );
     }
 }

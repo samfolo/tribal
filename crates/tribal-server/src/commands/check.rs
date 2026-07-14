@@ -1,6 +1,9 @@
 //! Manager-backed readiness projection and private readiness evaluation.
 
-use tribal_wire::management::{CheckReportCall, CredentialProbeCall};
+use tribal_wire::{
+    management::{CheckReportCall, CredentialProbeCall},
+    operator_check::CheckResult,
+};
 
 use super::presentation;
 use crate::{
@@ -43,7 +46,16 @@ pub(crate) async fn run(config_path: &str, args: CheckArgs) -> Result<(), AppErr
         .call::<CheckReportCall>(&())
         .await
         .map_err(client_error)?;
-    presentation::write(args.json, "Readiness", &report, "writing readiness report")
+    presentation::write(args.json, "Readiness", &report, "writing readiness report")?;
+    if report
+        .checks
+        .iter()
+        .any(|observation| matches!(observation.result, CheckResult::Fail { .. }))
+    {
+        Err(AppError::CheckFailed)
+    } else {
+        Ok(())
+    }
 }
 
 fn connector_error(source: ManagerConnectorError) -> AppError {

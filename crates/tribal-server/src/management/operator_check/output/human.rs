@@ -280,14 +280,17 @@ mod tests {
         let captured = render(&fixture_all_pass());
         assert_text_snapshot!(
             &captured,
-            "src/commands/check/snapshots/stderr-all-pass.txt"
+            "src/management/operator_check/snapshots/stderr-all-pass.txt"
         );
     }
 
     #[test]
     fn test_write_human_mixed_matches_snapshot() {
         let captured = render(&fixture_mixed());
-        assert_text_snapshot!(&captured, "src/commands/check/snapshots/stderr-mixed.txt");
+        assert_text_snapshot!(
+            &captured,
+            "src/management/operator_check/snapshots/stderr-mixed.txt"
+        );
     }
 
     #[test]
@@ -295,7 +298,7 @@ mod tests {
         let captured = render(&fixture_validate_multi_hint());
         assert_text_snapshot!(
             &captured,
-            "src/commands/check/snapshots/stderr-validate-multi-hint.txt"
+            "src/management/operator_check/snapshots/stderr-validate-multi-hint.txt"
         );
     }
 }
