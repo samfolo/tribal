@@ -11,82 +11,7 @@ const GOLDEN: &str = "tests/golden/management_contract.json";
 
 #[test]
 fn management_contract_matches_its_golden_schema() {
-    let schemas: BTreeMap<&str, RootSchema> = BTreeMap::from([
-        ("ConfigFieldPath", schema_for!(m::ConfigFieldPath)),
-        ("ConfigSchema", schema_for!(m::ConfigSchema)),
-        ("LifecycleSnapshot", schema_for!(m::LifecycleSnapshot)),
-        ("ManagementEvent", schema_for!(m::ManagementEvent)),
-        ("ManagementMethod", schema_for!(m::ManagementMethod)),
-        ("RuntimeStartResult", schema_for!(m::RuntimeStartResult)),
-        ("RuntimeStopResult", schema_for!(m::RuntimeStopResult)),
-        ("RuntimeRestartResult", schema_for!(m::RuntimeRestartResult)),
-        (
-            "ManagerShutdownResult",
-            schema_for!(m::ManagerShutdownResult),
-        ),
-        ("ManagerLaunchRecord", schema_for!(m::ManagerLaunchRecord)),
-        (
-            "ManagementBootstrapRequest",
-            schema_for!(m::ManagementBootstrapRequest),
-        ),
-        (
-            "ManagementBootstrapResponse",
-            schema_for!(m::ManagementBootstrapResponse),
-        ),
-        ("ConfigDocument", schema_for!(m::ConfigDocument)),
-        ("ConfigValue", schema_for!(m::ConfigValue)),
-        ("ConfigSetRequest", schema_for!(m::ConfigSetRequest)),
-        ("ConfigWriteOutcome", schema_for!(m::ConfigWriteOutcome)),
-        ("ConfigPatchRequest", schema_for!(m::ConfigPatchRequest)),
-        ("ConfigPatchOutcome", schema_for!(m::ConfigPatchOutcome)),
-        ("ProbeReceipt", schema_for!(m::ProbeReceipt)),
-        ("ModelsCatalogue", schema_for!(m::ModelsCatalogue)),
-        (
-            "ModelSelectionRequest",
-            schema_for!(m::ModelSelectionRequest),
-        ),
-        (
-            "CredentialSourcesRequest",
-            schema_for!(m::CredentialSourcesRequest),
-        ),
-        ("CredentialSources", schema_for!(m::CredentialSources)),
-        ("GenesisOptions", schema_for!(m::GenesisOptions)),
-        (
-            "GenesisConfigurationRequest",
-            schema_for!(m::GenesisConfigurationRequest),
-        ),
-        (
-            "GenesisConvergenceRequest",
-            schema_for!(m::GenesisConvergenceRequest),
-        ),
-        (
-            "GraphEmbeddingProfile",
-            schema_for!(m::GraphEmbeddingProfile),
-        ),
-        (
-            "ManagedRuntimeStatusResult",
-            schema_for!(m::ManagedRuntimeStatusResult),
-        ),
-        (
-            "RuntimeLogsTailRequest",
-            schema_for!(m::RuntimeLogsTailRequest),
-        ),
-        (
-            "RuntimeLogsTailResult",
-            schema_for!(m::RuntimeLogsTailResult),
-        ),
-        (
-            "RuntimeTokenListResult",
-            schema_for!(m::RuntimeTokenListResult),
-        ),
-        ("TokenList", schema_for!(m::TokenList)),
-        ("ConfigChangeEvent", schema_for!(m::ConfigChangeEvent)),
-        (
-            "ManagementResponseError",
-            schema_for!(m::ManagementResponseError),
-        ),
-    ]);
-
+    let schemas = contract_schemas();
     let generated =
         serde_json::to_string_pretty(&schemas).expect("management schemas serialise to JSON");
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(GOLDEN);
@@ -110,4 +35,65 @@ fn management_contract_matches_its_golden_schema() {
         "management schema drifted from {}; run with {UPDATE_ENV_VAR}=1 to update it",
         path.display(),
     );
+}
+
+#[test]
+fn registered_call_catalogue_is_total() {
+    let catalogue = m::management_call_schemas();
+    let registered: Vec<_> = catalogue.iter().map(|call| call.method).collect();
+
+    assert_eq!(registered, m::ManagementMethod::ALL);
+}
+
+fn contract_schemas() -> BTreeMap<String, RootSchema> {
+    let mut schemas = BTreeMap::new();
+    for call in m::management_call_schemas() {
+        insert_renderable(&mut schemas, call.request_name, call.request);
+        insert_renderable(&mut schemas, call.response_name, call.response);
+    }
+
+    for (name, schema) in [
+        (
+            "ManagementBootstrapRequest",
+            schema_for!(m::ManagementBootstrapRequest),
+        ),
+        (
+            "ManagementBootstrapResponse",
+            schema_for!(m::ManagementBootstrapResponse),
+        ),
+        ("ManagementEvent", schema_for!(m::ManagementEvent)),
+        ("ManagementMethod", schema_for!(m::ManagementMethod)),
+        ("ManagerLaunchRecord", schema_for!(m::ManagerLaunchRecord)),
+        (
+            "ManagementResponseError",
+            schema_for!(m::ManagementResponseError),
+        ),
+    ] {
+        insert_schema(&mut schemas, name.to_owned(), schema);
+    }
+    schemas
+}
+
+fn insert_renderable(schemas: &mut BTreeMap<String, RootSchema>, name: String, schema: RootSchema) {
+    let shape = serde_json::to_value(&schema.schema).expect("schema root serialises");
+    let renderable = shape.get("properties").is_some()
+        || shape.get("oneOf").is_some()
+        || shape.get("anyOf").is_some()
+        || shape.get("const").is_some()
+        || shape.get("type").and_then(serde_json::Value::as_str) == Some("string");
+    if renderable {
+        insert_schema(schemas, name, schema);
+    }
+}
+
+fn insert_schema(schemas: &mut BTreeMap<String, RootSchema>, name: String, schema: RootSchema) {
+    if let Some(existing) = schemas.get(&name) {
+        assert_eq!(
+            serde_json::to_value(existing).expect("existing schema serialises"),
+            serde_json::to_value(&schema).expect("registered schema serialises"),
+            "registered calls disagree on schema `{name}`",
+        );
+        return;
+    }
+    schemas.insert(name, schema);
 }

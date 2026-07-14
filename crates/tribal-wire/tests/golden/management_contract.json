@@ -1,50 +1,4 @@
 {
-  "ConfigChangeEvent": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "ConfigChangeEvent",
-    "description": "Durable configuration delta notification.",
-    "type": "object",
-    "required": [
-      "changed",
-      "revision",
-      "source"
-    ],
-    "properties": {
-      "changed": {
-        "type": "array",
-        "items": {
-          "$ref": "#/definitions/ConfigFieldPath"
-        }
-      },
-      "revision": {
-        "$ref": "#/definitions/ConfigRevision"
-      },
-      "source": {
-        "$ref": "#/definitions/ConfigChangeSource"
-      }
-    },
-    "definitions": {
-      "ConfigChangeSource": {
-        "description": "Origin of a durable configuration change.",
-        "type": "string",
-        "enum": [
-          "managed",
-          "raw_file"
-        ]
-      },
-      "ConfigFieldPath": {
-        "type": "string",
-        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
-      },
-      "ConfigRevision": {
-        "type": "string",
-        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
-      }
-    }
-  },
   "ConfigDocument": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ConfigDocument",
@@ -223,12 +177,41 @@
       }
     }
   },
-  "ConfigFieldPath": {
+  "ConfigFilePath": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "ConfigFieldPath",
-    "type": "string",
-    "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-    "x-cortex-swift-type": "validated-string"
+    "title": "ConfigFilePath",
+    "description": "The active configuration file's location.",
+    "type": "object",
+    "required": [
+      "path"
+    ],
+    "properties": {
+      "path": {
+        "description": "Filesystem path read by the authority.",
+        "type": "string"
+      }
+    }
+  },
+  "ConfigGetRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigGetRequest",
+    "description": "Request for a single configuration value.",
+    "type": "object",
+    "required": [
+      "key"
+    ],
+    "properties": {
+      "key": {
+        "$ref": "#/definitions/ConfigFieldPath"
+      }
+    },
+    "definitions": {
+      "ConfigFieldPath": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+        "x-cortex-swift-type": "validated-string"
+      }
+    }
   },
   "ConfigPatchOutcome": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -611,6 +594,79 @@
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-cortex-base64url-prefix": "cfg_",
         "x-cortex-swift-type": "canonical-base64url-32"
+      }
+    }
+  },
+  "ConfigValidateRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigValidateRequest",
+    "description": "Proposed configuration value checked without persistence.",
+    "type": "object",
+    "required": [
+      "key",
+      "value"
+    ],
+    "properties": {
+      "key": {
+        "description": "The dotted field path being checked.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/ConfigFieldPath"
+          }
+        ]
+      },
+      "value": {
+        "description": "The candidate JSON value."
+      }
+    },
+    "definitions": {
+      "ConfigFieldPath": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+        "x-cortex-swift-type": "validated-string"
+      }
+    }
+  },
+  "ConfigValidation": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigValidation",
+    "description": "Validation result for a proposed configuration value.",
+    "type": "object",
+    "required": [
+      "valid",
+      "violations"
+    ],
+    "properties": {
+      "valid": {
+        "description": "Whether the candidate satisfies every configuration rule.",
+        "type": "boolean"
+      },
+      "violations": {
+        "description": "Every violated rule, empty for a valid candidate.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/ConfigViolation"
+        }
+      }
+    },
+    "definitions": {
+      "ConfigViolation": {
+        "description": "One configuration rule violated by a candidate value.",
+        "type": "object",
+        "required": [
+          "key",
+          "message"
+        ],
+        "properties": {
+          "key": {
+            "description": "The dotted field path that violates the rule.",
+            "type": "string"
+          },
+          "message": {
+            "description": "The operator-facing violation detail.",
+            "type": "string"
+          }
+        }
       }
     }
   },
@@ -11151,6 +11207,1001 @@
       }
     }
   },
+  "ReadinessReport": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ReadinessReport",
+    "description": "Readiness derived from one set of typed check observations.",
+    "type": "object",
+    "required": [
+      "checks",
+      "health",
+      "probe_receipts",
+      "start"
+    ],
+    "properties": {
+      "checks": {
+        "description": "The observations from which both verdicts were derived.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/CheckObservation"
+        }
+      },
+      "health": {
+        "description": "Whether a running runtime is healthy.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/HealthVerdict"
+          }
+        ]
+      },
+      "probe_receipts": {
+        "description": "Latest explicit probe evidence, including stale receipts.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/ProbeReceipt"
+        }
+      },
+      "start": {
+        "description": "Whether a runtime may start.",
+        "allOf": [
+          {
+            "$ref": "#/definitions/StartVerdict"
+          }
+        ]
+      }
+    },
+    "definitions": {
+      "CheckName": {
+        "description": "Identifier for a single check row.",
+        "oneOf": [
+          {
+            "description": "Config file parse/read check.",
+            "type": "string",
+            "enum": [
+              "config_parse"
+            ]
+          },
+          {
+            "description": "Config invariant validation check.",
+            "type": "string",
+            "enum": [
+              "config_validate"
+            ]
+          },
+          {
+            "description": "Database connectivity check.",
+            "type": "string",
+            "enum": [
+              "database_reachable"
+            ]
+          },
+          {
+            "description": "Migration head check.",
+            "type": "string",
+            "enum": [
+              "migrations_current"
+            ]
+          },
+          {
+            "description": "Project resolution check.",
+            "type": "string",
+            "enum": [
+              "project_resolution"
+            ]
+          },
+          {
+            "description": "Static token verification check.",
+            "type": "string",
+            "enum": [
+              "valid_token_exists"
+            ]
+          },
+          {
+            "description": "Advertised URL reachability check.",
+            "type": "string",
+            "enum": [
+              "advertised_url_reachable"
+            ]
+          },
+          {
+            "description": "PATH binary uniqueness check.",
+            "type": "string",
+            "enum": [
+              "binary_uniqueness"
+            ]
+          },
+          {
+            "description": "Active embedding profile check.",
+            "type": "string",
+            "enum": [
+              "embedding_profile"
+            ]
+          },
+          {
+            "description": "Embedding provider probe check.",
+            "type": "string",
+            "enum": [
+              "provider_embedding"
+            ]
+          },
+          {
+            "description": "Extraction provider probe check.",
+            "type": "string",
+            "enum": [
+              "provider_extraction"
+            ]
+          },
+          {
+            "description": "Triage provider probe check.",
+            "type": "string",
+            "enum": [
+              "provider_triage"
+            ]
+          },
+          {
+            "description": "Relation provider probe check.",
+            "type": "string",
+            "enum": [
+              "provider_relation"
+            ]
+          }
+        ]
+      },
+      "CheckObservation": {
+        "description": "One check result with its lifecycle policy and repair subjects.",
+        "type": "object",
+        "required": [
+          "result",
+          "scope",
+          "subjects"
+        ],
+        "properties": {
+          "result": {
+            "description": "The observed check result.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/CheckResult"
+              }
+            ]
+          },
+          "scope": {
+            "description": "The lifecycle axes this observation affects.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ReadinessScope"
+              }
+            ]
+          },
+          "subjects": {
+            "description": "The typed operator-facing repair subjects.",
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/CheckSubject"
+            }
+          }
+        }
+      },
+      "CheckResult": {
+        "description": "One row of the check report.",
+        "oneOf": [
+          {
+            "description": "The check passed.",
+            "type": "object",
+            "required": [
+              "detail",
+              "name",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Human-readable detail for the observed state.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Which check produced the row.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/CheckName"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The check surfaced a warning.",
+            "type": "object",
+            "required": [
+              "detail",
+              "name",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Human-readable detail for the observed state.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Which check produced the row.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/CheckName"
+                  }
+                ]
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "warn"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The check failed.",
+            "type": "object",
+            "required": [
+              "detail",
+              "name",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Human-readable detail for the observed state.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Which check produced the row.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/CheckName"
+                  }
+                ]
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "fail"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The check was skipped because a precondition did not hold.",
+            "type": "object",
+            "required": [
+              "detail",
+              "name",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Human-readable detail for the observed state.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Which check produced the row.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/CheckName"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "skip"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "CheckSubject": {
+        "description": "A typed subject an operator can repair after a check result.",
+        "oneOf": [
+          {
+            "description": "A location within configuration input.",
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "location"
+                ],
+                "properties": {
+                  "location": {
+                    "description": "The configuration location that needs attention.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ConfigDiagnosticLocation"
+                      }
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "configuration"
+                ]
+              }
+            }
+          },
+          {
+            "description": "Credential availability or validity.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "credentials"
+                ]
+              }
+            }
+          },
+          {
+            "description": "Project resolution or registration.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "project"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The managed runtime process.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "runtime"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ConfigDiagnosticLocation": {
+        "description": "Configuration input associated with a diagnostic.",
+        "oneOf": [
+          {
+            "description": "A statically defined schema field.",
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "path"
+                ],
+                "properties": {
+                  "path": {
+                    "description": "The validated schema-field identity.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ConfigFieldPath"
+                      }
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "field"
+                ]
+              }
+            }
+          },
+          {
+            "description": "An entry in the dynamic credential catalogue.",
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "key"
+                ],
+                "properties": {
+                  "key": {
+                    "description": "The raw user-authored map key.",
+                    "type": "string"
+                  },
+                  "member": {
+                    "description": "The invalid member, or none when the key itself is invalid.",
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/CredentialEntryMember"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "credential_entry"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ConfigFieldPath": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "CredentialEntryMember": {
+        "description": "A member of a dynamic credential entry.",
+        "oneOf": [
+          {
+            "description": "Credential provider kind.",
+            "type": "string",
+            "enum": [
+              "provider_kind"
+            ]
+          },
+          {
+            "description": "Credential endpoint URL.",
+            "type": "string",
+            "enum": [
+              "base_url"
+            ]
+          },
+          {
+            "description": "Credential API key.",
+            "type": "string",
+            "enum": [
+              "api_key"
+            ]
+          }
+        ]
+      },
+      "HealthVerdict": {
+        "description": "Whether a running runtime is healthy.",
+        "oneOf": [
+          {
+            "description": "Every health-gating check passed.",
+            "type": "object",
+            "required": [
+              "verdict"
+            ],
+            "properties": {
+              "verdict": {
+                "type": "string",
+                "enum": [
+                  "clear"
+                ]
+              }
+            }
+          },
+          {
+            "description": "One or more health-gating checks failed.",
+            "type": "object",
+            "required": [
+              "data",
+              "verdict"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "first",
+                  "rest"
+                ],
+                "properties": {
+                  "first": {
+                    "description": "The first degrading check in report order.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/CheckName"
+                      }
+                    ]
+                  },
+                  "rest": {
+                    "description": "Remaining degrading checks in report order.",
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/definitions/CheckName"
+                    }
+                  }
+                }
+              },
+              "verdict": {
+                "type": "string",
+                "enum": [
+                  "degraded"
+                ]
+              }
+            }
+          },
+          {
+            "description": "Health has no meaning while no runtime is serving.",
+            "type": "object",
+            "required": [
+              "verdict"
+            ],
+            "properties": {
+              "verdict": {
+                "type": "string",
+                "enum": [
+                  "not_applicable"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeOutcome": {
+        "description": "Result of a probe whose subject already owns its check identity.",
+        "oneOf": [
+          {
+            "description": "The external capability answered successfully.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability answered with a non-blocking concern.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "warn"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The capability failed its probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "remediation",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing observation detail.",
+                "type": "string"
+              },
+              "remediation": {
+                "description": "Suggested operator action.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "fail"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A typed prerequisite prevented the probe.",
+            "type": "object",
+            "required": [
+              "detail",
+              "status"
+            ],
+            "properties": {
+              "detail": {
+                "description": "Operator-facing skip detail.",
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "skip"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeReceipt": {
+        "description": "Retained result of one explicitly requested external probe.",
+        "type": "object",
+        "required": [
+          "freshness",
+          "observed_at_unix_ms",
+          "result",
+          "revision",
+          "subject"
+        ],
+        "properties": {
+          "freshness": {
+            "description": "Whether the subject's effective inputs still match the observation.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeReceiptFreshness"
+              }
+            ]
+          },
+          "observed_at_unix_ms": {
+            "description": "Unix time in milliseconds when the observation completed.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "result": {
+            "description": "Typed check result returned by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeOutcome"
+              }
+            ]
+          },
+          "revision": {
+            "description": "Durable configuration revision used by the probe.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ConfigRevision"
+              }
+            ]
+          },
+          "subject": {
+            "description": "External capability that was exercised.",
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProbeSubject"
+              }
+            ]
+          }
+        }
+      },
+      "ProbeReceiptFreshness": {
+        "description": "Relationship between a retained probe and current configuration.",
+        "oneOf": [
+          {
+            "description": "The relevant effective configuration is unchanged.",
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "current"
+                ]
+              }
+            }
+          },
+          {
+            "description": "Relevant inputs changed after the observation.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "current_revision": {
+                    "description": "Current durable revision, when one can still be proven.",
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/ConfigRevision"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "stale"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProbeSubject": {
+        "description": "External capability named by a probe receipt.",
+        "oneOf": [
+          {
+            "description": "The configured database endpoint.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "database"
+                ]
+              }
+            }
+          },
+          {
+            "description": "One inference capability and its configured provider.",
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "capability",
+                  "provider"
+                ],
+                "properties": {
+                  "capability": {
+                    "description": "Provider capability exercised by the check.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderProbeCapability"
+                      }
+                    ]
+                  },
+                  "provider": {
+                    "description": "Provider configured for that capability.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/ProviderKind"
+                      }
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "provider"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      },
+      "ProviderProbeCapability": {
+        "description": "Provider capability exercised by an explicit probe.",
+        "oneOf": [
+          {
+            "description": "Genesis or active-profile embedding.",
+            "type": "string",
+            "enum": [
+              "embedding"
+            ]
+          },
+          {
+            "description": "Entity and relation extraction.",
+            "type": "string",
+            "enum": [
+              "extraction"
+            ]
+          },
+          {
+            "description": "Message triage.",
+            "type": "string",
+            "enum": [
+              "triage"
+            ]
+          },
+          {
+            "description": "Relation classification.",
+            "type": "string",
+            "enum": [
+              "relation"
+            ]
+          }
+        ]
+      },
+      "ReadinessScope": {
+        "description": "Which lifecycle verdicts one check may affect.",
+        "oneOf": [
+          {
+            "description": "The check informs the operator but gates no lifecycle transition.",
+            "type": "string",
+            "enum": [
+              "advisory"
+            ]
+          },
+          {
+            "description": "The check gates only runtime start.",
+            "type": "string",
+            "enum": [
+              "start"
+            ]
+          },
+          {
+            "description": "The check gates only running health.",
+            "type": "string",
+            "enum": [
+              "health"
+            ]
+          },
+          {
+            "description": "The check gates both runtime start and running health.",
+            "type": "string",
+            "enum": [
+              "start_and_health"
+            ]
+          }
+        ]
+      },
+      "StartVerdict": {
+        "description": "Whether local evidence permits starting a runtime.",
+        "oneOf": [
+          {
+            "description": "Every start-gating check passed.",
+            "type": "object",
+            "required": [
+              "verdict"
+            ],
+            "properties": {
+              "verdict": {
+                "type": "string",
+                "enum": [
+                  "clear"
+                ]
+              }
+            }
+          },
+          {
+            "description": "One or more start-gating checks failed.",
+            "type": "object",
+            "required": [
+              "data",
+              "verdict"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "first",
+                  "rest"
+                ],
+                "properties": {
+                  "first": {
+                    "description": "The first blocking check in report order.",
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/CheckName"
+                      }
+                    ]
+                  },
+                  "rest": {
+                    "description": "Remaining blocking checks in report order.",
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/definitions/CheckName"
+                    }
+                  }
+                }
+              },
+              "verdict": {
+                "type": "string",
+                "enum": [
+                  "blocked"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
   "RuntimeLogsTailRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "RuntimeLogsTailRequest",
@@ -20325,61 +21376,6 @@
             "type": "array",
             "items": {
               "$ref": "#/definitions/TokenInfo"
-            }
-          }
-        }
-      }
-    }
-  },
-  "TokenList": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "TokenList",
-    "description": "Every issued token's metadata, the result of `token.list`.",
-    "type": "object",
-    "required": [
-      "tokens"
-    ],
-    "properties": {
-      "tokens": {
-        "description": "The issued tokens, never their secret values.",
-        "type": "array",
-        "items": {
-          "$ref": "#/definitions/TokenInfo"
-        }
-      }
-    },
-    "definitions": {
-      "TokenInfo": {
-        "description": "The non-secret metadata of one issued token.",
-        "type": "object",
-        "required": [
-          "created_at",
-          "principal",
-          "scopes"
-        ],
-        "properties": {
-          "created_at": {
-            "description": "When the token was issued.",
-            "type": "string",
-            "format": "date-time"
-          },
-          "expires_at": {
-            "description": "When the token expires, absent for a non-expiring token.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "principal": {
-            "description": "The principal the token authenticates as.",
-            "type": "string"
-          },
-          "scopes": {
-            "description": "The scopes the token grants.",
-            "type": "array",
-            "items": {
-              "type": "string"
             }
           }
         }

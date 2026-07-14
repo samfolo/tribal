@@ -3,10 +3,11 @@
 use std::{io::Write as _, path::Path};
 
 use tribal_wire::management::{
-    LifecycleSnapshot, RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult,
+    ManagementCall, ManagerSnapshotCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall,
 };
 
 use crate::{
+    cli::RuntimeCommand,
     error::AppError,
     management::{
         authority::{AuthorityAcquire, AuthorityConflict, AuthorityError, AuthorityLease},
@@ -36,7 +37,7 @@ enum RuntimeCommandError {
     },
 }
 
-pub(crate) fn run(config_path: &str, method: &str) -> Result<(), AppError> {
+pub(crate) fn run(config_path: &str, command: &RuntimeCommand) -> Result<(), AppError> {
     let descriptor = match AuthorityLease::acquire(Path::new(config_path))
         .map_err(|source| command_error(RuntimeCommandError::Authority { source }))?
     {
@@ -60,24 +61,26 @@ pub(crate) fn run(config_path: &str, method: &str) -> Result<(), AppError> {
             let mut client = ManagementClient::connect(&descriptor)
                 .await
                 .map_err(|source| RuntimeCommandError::Client { source })?;
-            match method {
-                "runtime.start" => call_value::<RuntimeStartResult>(&mut client, method).await,
-                "runtime.stop" => call_value::<RuntimeStopResult>(&mut client, method).await,
-                "runtime.restart" => call_value::<RuntimeRestartResult>(&mut client, method).await,
-                "manager.snapshot" => call_value::<LifecycleSnapshot>(&mut client, method).await,
-                _ => Err(RuntimeCommandError::ManagerUnavailable),
+            match command {
+                RuntimeCommand::Start => call_value::<RuntimeStartCall>(&mut client).await,
+                RuntimeCommand::Stop => call_value::<RuntimeStopCall>(&mut client).await,
+                RuntimeCommand::Restart => call_value::<RuntimeRestartCall>(&mut client).await,
+                RuntimeCommand::Status => call_value::<ManagerSnapshotCall>(&mut client).await,
             }
         })
         .map_err(command_error)?;
     write_json(&value)
 }
 
-async fn call_value<T: serde::de::DeserializeOwned + serde::Serialize>(
+async fn call_value<C>(
     client: &mut ManagementClient,
-    method: &str,
-) -> Result<serde_json::Value, RuntimeCommandError> {
-    let result: T = client
-        .call(method, None)
+) -> Result<serde_json::Value, RuntimeCommandError>
+where
+    C: ManagementCall<Request = ()>,
+    C::Response: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let result = client
+        .call::<C>(&())
         .await
         .map_err(|source| RuntimeCommandError::Client { source })?;
     serde_json::to_value(result).map_err(|source| RuntimeCommandError::Client {

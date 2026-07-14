@@ -3,8 +3,9 @@
 use std::{io::Write as _, path::Path};
 
 use tribal_wire::management::{
-    ConfigDocument, ConfigFieldPath, ConfigGetRequest, ConfigSetRequest, ConfigValue,
-    ConfigWriteOutcome,
+    ConfigDocument, ConfigFieldPath, ConfigGetAllCall, ConfigGetCall, ConfigGetRequest,
+    ConfigSetCall, ConfigSetRequest, ConfigValidateCall, ConfigValidateRequest, ConfigValidation,
+    ManagementCall,
 };
 
 use crate::{
@@ -38,9 +39,7 @@ pub(crate) fn get(config_path: &str, args: &ConfigGetArgs) -> Result<(), AppErro
         ConfigTarget::OneShot(context) => worker::run_one_shot(|| context.config.get(request))
             .map_err(one_shot_error)?
             .map_err(config_error)?,
-        ConfigTarget::Manager(descriptor) => {
-            manager_call::<ConfigValue>(&descriptor, "config.get", Some(to_params(request)?))?
-        }
+        ConfigTarget::Manager(descriptor) => manager_call::<ConfigGetCall>(&descriptor, &request)?,
     };
     write_json(&value)
 }
@@ -60,16 +59,15 @@ pub(crate) fn set(config_path: &str, args: &ConfigSetArgs) -> Result<(), AppErro
         .map_err(one_shot_error)?
         .map_err(config_error)?,
         ConfigTarget::Manager(descriptor) => {
-            let document: ConfigDocument = manager_call(&descriptor, "config.getAll", None)?;
+            let document: ConfigDocument = manager_call::<ConfigGetAllCall>(&descriptor, &())?;
             let expected_revision = document_revision(document)?;
-            manager_call::<ConfigWriteOutcome>(
+            manager_call::<ConfigSetCall>(
                 &descriptor,
-                "config.set",
-                Some(to_params(ConfigSetRequest {
+                &ConfigSetRequest {
                     key,
                     value: tribal_wire::management::ConfigLiteral::new(value),
                     expected_revision,
-                })?),
+                },
             )?
         }
     };
@@ -87,10 +85,12 @@ pub(crate) fn validate(config_path: &str, args: &ConfigValidateArgs) -> Result<(
                     .map_err(config_error)?;
             validation_value(violations)
         }
-        ConfigTarget::Manager(descriptor) => manager_call::<serde_json::Value>(
+        ConfigTarget::Manager(descriptor) => manager_call::<ConfigValidateCall>(
             &descriptor,
-            "config.validate",
-            Some(serde_json::json!({ "key": key, "value": candidate })),
+            &ConfigValidateRequest {
+                key,
+                value: candidate,
+            },
         )?,
     };
     write_json(&value)
@@ -137,11 +137,15 @@ fn acquire(config_path: &str) -> Result<ConfigTarget, AppError> {
     Ok(ConfigTarget::OneShot(OneShotContext { lease, config }))
 }
 
-fn manager_call<T: serde::de::DeserializeOwned>(
+fn manager_call<C>(
     descriptor: &AuthorityDescriptor,
-    method: &str,
-    params: Option<serde_json::Value>,
-) -> Result<T, AppError> {
+    request: &C::Request,
+) -> Result<C::Response, AppError>
+where
+    C: ManagementCall,
+    C::Request: serde::Serialize,
+    C::Response: serde::de::DeserializeOwned,
+{
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -153,14 +157,7 @@ fn manager_call<T: serde::de::DeserializeOwned>(
         let mut client = ManagementClient::connect(descriptor)
             .await
             .map_err(client_error)?;
-        client.call(method, params).await.map_err(client_error)
-    })
-}
-
-fn to_params(value: impl serde::Serialize) -> Result<serde_json::Value, AppError> {
-    serde_json::to_value(value).map_err(|source| AppError::Io {
-        context: "encoding configuration request".to_owned(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidData, source),
+        client.call::<C>(request).await.map_err(client_error)
     })
 }
 
@@ -178,17 +175,17 @@ fn document_revision(
     }
 }
 
-fn validation_value(violations: Vec<tribal_config::ConfigViolation>) -> serde_json::Value {
-    serde_json::json!({
-        "valid": violations.is_empty(),
-        "violations": violations
+fn validation_value(violations: Vec<tribal_config::ConfigViolation>) -> ConfigValidation {
+    ConfigValidation {
+        valid: violations.is_empty(),
+        violations: violations
             .into_iter()
-            .map(|violation| serde_json::json!({
-                "key": violation.key,
-                "message": violation.message,
-            }))
-            .collect::<Vec<_>>(),
-    })
+            .map(|violation| tribal_wire::management::ConfigViolation {
+                key: violation.key,
+                message: violation.message,
+            })
+            .collect(),
+    }
 }
 
 fn parse_key(raw: &str) -> Result<ConfigFieldPath, AppError> {

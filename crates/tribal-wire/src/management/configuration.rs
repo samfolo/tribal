@@ -63,6 +63,36 @@ pub struct ConfigGetRequest {
     pub key: ConfigFieldPath,
 }
 
+/// Proposed configuration value checked without persistence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ConfigValidateRequest {
+    /// The dotted field path being checked.
+    pub key: ConfigFieldPath,
+    /// The candidate JSON value.
+    pub value: serde_json::Value,
+}
+
+/// One configuration rule violated by a candidate value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ConfigViolation {
+    /// The dotted field path that violates the rule.
+    pub key: String,
+    /// The operator-facing violation detail.
+    pub message: String,
+}
+
+/// Validation result for a proposed configuration value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ConfigValidation {
+    /// Whether the candidate satisfies every configuration rule.
+    pub valid: bool,
+    /// Every violated rule, empty for a valid candidate.
+    pub violations: Vec<ConfigViolation>,
+}
+
 /// Arbitrary configuration JSON with constant-redacted formatting.
 #[derive(PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]

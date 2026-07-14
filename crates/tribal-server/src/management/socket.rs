@@ -12,10 +12,12 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tribal_wire::management::{
-    BootstrapShutdownRefusal, ConfigPersistenceObservation, ConfigPersistencePhase,
+    BootstrapShutdownRefusal, ConfigGetCall, ConfigPatchCall, ConfigPersistenceObservation,
+    ConfigPersistencePhase, ConfigSetCall, ConfigValidateCall, ConfigValidation, ConfigViolation,
+    CredentialSourcesCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall, LogsTailCall,
     MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest, ManagementBootstrapResponse,
-    ManagementError, ManagementEvent, ManagementLogLoss, ManagementMethod, ManagementResponseError,
-    ManagementServerHello,
+    ManagementCall, ManagementError, ManagementEvent, ManagementLogLoss, ManagementMethod,
+    ManagementResponseError, ManagementServerHello, ModelsSelectCall,
 };
 
 use super::{
@@ -387,7 +389,7 @@ fn listener_owner_uid(listener: &UnixListener) -> Option<u32> {
 #[derive(Debug, serde::Deserialize)]
 struct ManagementRequest {
     id: u64,
-    method: String,
+    method: ManagementMethod,
     #[serde(default)]
     params: Option<serde_json::Value>,
 }
@@ -412,10 +414,7 @@ async fn dispatch(
     lifecycle: &LifecycleController,
     request: ManagementRequest,
 ) -> Result<serde_json::Value, ManagementResponseError> {
-    let method =
-        serde_json::from_value::<ManagementMethod>(serde_json::Value::String(request.method))
-            .map_err(|_| invalid_request("unknown management method"))?;
-    match method {
+    match request.method {
         ManagementMethod::ManagerSnapshot => lifecycle_value(lifecycle.snapshot().await),
         ManagementMethod::RuntimeStart => lifecycle_value(lifecycle.start().await),
         ManagementMethod::RuntimeStop => lifecycle_value(lifecycle.stop().await),
@@ -423,8 +422,7 @@ async fn dispatch(
         ManagementMethod::ManagerShutdown => lifecycle_value(lifecycle.shutdown().await),
         ManagementMethod::ServerStatus => lifecycle_value(lifecycle.runtime_status().await),
         ManagementMethod::LogsTail => {
-            let request: tribal_wire::management::RuntimeLogsTailRequest =
-                parse_params(request.params)?;
+            let request = parse_call::<LogsTailCall>(request.params)?;
             lifecycle_value(lifecycle.runtime_logs_tail(request.lines).await)
         }
         ManagementMethod::TokenList => lifecycle_value(lifecycle.runtime_token_list().await),
@@ -446,26 +444,30 @@ async fn dispatch(
                 .map_err(|_| invalid_request("configuration schema projection failed"))?,
         )
         .map_err(|_| invalid_request("configuration schema encoding failed")),
-        ManagementMethod::ConfigGet => to_value(config.get(parse_params(request.params)?).await),
+        ManagementMethod::ConfigGet => to_value(
+            config
+                .get(parse_call::<ConfigGetCall>(request.params)?)
+                .await,
+        ),
         ManagementMethod::ConfigValidate => {
-            let request: ConfigValidateRequest = parse_params(request.params)?;
+            let request = parse_call::<ConfigValidateCall>(request.params)?;
             let violations = config
                 .validate(request.key.as_str().to_owned(), request.value)
                 .await
                 .map_err(management_error)?;
-            Ok(serde_json::json!({
-                "valid": violations.is_empty(),
-                "violations": violations
+            product_value(Ok(ConfigValidation {
+                valid: violations.is_empty(),
+                violations: violations
                     .into_iter()
-                    .map(|violation| serde_json::json!({
-                        "key": violation.key,
-                        "message": violation.message,
-                    }))
-                    .collect::<Vec<_>>(),
+                    .map(|violation| ConfigViolation {
+                        key: violation.key,
+                        message: violation.message,
+                    })
+                    .collect(),
             }))
         }
         ManagementMethod::ConfigSet => {
-            let request: tribal_wire::management::ConfigSetRequest = parse_params(request.params)?;
+            let request = parse_call::<ConfigSetCall>(request.params)?;
             let runtime_changes = vec![tribal_wire::runtime_control::RuntimeConfigChange {
                 key: request.key.clone(),
                 value: tribal_wire::management::ConfigLiteral::new(
@@ -490,8 +492,7 @@ async fn dispatch(
             product_value(Ok(outcome))
         }
         ManagementMethod::ConfigPatch => {
-            let request: tribal_wire::management::ConfigPatchRequest =
-                parse_params(request.params)?;
+            let request = parse_call::<ConfigPatchCall>(request.params)?;
             let runtime_changes = request
                 .changes
                 .iter()
@@ -511,7 +512,9 @@ async fn dispatch(
         }
         ManagementMethod::ModelsCatalogue => product_value(product.models_catalogue().await),
         ManagementMethod::ModelsSelect => {
-            let mut outcome = product.select_model(parse_params(request.params)?).await?;
+            let mut outcome = product
+                .select_model(parse_call::<ModelsSelectCall>(request.params)?)
+                .await?;
             project_patch_effects(lifecycle, &mut outcome, Vec::new()).await;
             if patch_requires_lifecycle_update(&outcome) {
                 lifecycle.config_changed().await;
@@ -520,14 +523,14 @@ async fn dispatch(
         }
         ManagementMethod::CredentialSources => product_value(
             product
-                .credential_sources(parse_params(request.params)?)
+                .credential_sources(parse_call::<CredentialSourcesCall>(request.params)?)
                 .await,
         ),
         ManagementMethod::GraphGenesisOptions => product_value(product.genesis_options().await),
         ManagementMethod::GraphEmbeddingProfile => product_value(product.embedding_profile().await),
         ManagementMethod::GraphConfigureGenesis => {
             let mut outcome = product
-                .configure_genesis(parse_params(request.params)?)
+                .configure_genesis(parse_call::<GraphConfigureGenesisCall>(request.params)?)
                 .await?;
             project_patch_effects(lifecycle, &mut outcome, Vec::new()).await;
             if patch_requires_lifecycle_update(&outcome) {
@@ -537,16 +540,10 @@ async fn dispatch(
         }
         ManagementMethod::GraphConvergeGenesis => product_value(
             product
-                .converge_genesis(parse_params(request.params)?)
+                .converge_genesis(parse_call::<GraphConvergeGenesisCall>(request.params)?)
                 .await,
         ),
     }
-}
-
-#[derive(serde::Deserialize)]
-struct ConfigValidateRequest {
-    key: tribal_domain::ConfigFieldPath,
-    value: serde_json::Value,
 }
 
 fn lifecycle_value<T: serde::Serialize>(
@@ -589,9 +586,12 @@ async fn readiness_report(
         .map_err(|_| invalid_request("readiness observation failed"))
 }
 
-fn parse_params<T: serde::de::DeserializeOwned>(
+fn parse_call<C: ManagementCall>(
     params: Option<serde_json::Value>,
-) -> Result<T, ManagementResponseError> {
+) -> Result<C::Request, ManagementResponseError>
+where
+    C::Request: serde::de::DeserializeOwned,
+{
     serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
         .map_err(|_| invalid_request("management request parameters are invalid"))
 }

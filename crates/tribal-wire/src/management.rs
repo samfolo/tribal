@@ -17,18 +17,19 @@ pub use config_schema::{AudienceTier, ConfigFieldMeta, ConfigSchema, ReloadClass
 pub use configuration::{
     ConfigChangeEvent, ConfigChangeSource, ConfigDocument, ConfigFieldOutcome, ConfigGetRequest,
     ConfigLiteral, ConfigPatchChange, ConfigPatchOutcome, ConfigPatchRefusal, ConfigPatchRequest,
-    ConfigPersistenceObservation, ConfigPersistencePhase, ConfigSetRequest, ConfigValue,
-    ConfigWriteEffect, ConfigWriteOutcome, CredentialCapabilityInvalidReason, CredentialInput,
-    CredentialRequirement, CredentialSource, CredentialSourceKind, CredentialSources,
-    CredentialSourcesRequest, CredentialUse, CredentialUseCapabilities, EmbeddingProfileSummary,
-    EmbeddingReuseAvailability, EmbeddingReuseUnavailableReason, EndpointRequirement,
-    EndpointSelection, EndpointTransitionRefusal, GenesisConfigurationRequest,
-    GenesisConvergenceRequest, GenesisDimensionsConstraint, GenesisEmbeddingInput,
-    GenesisModelConstraint, GenesisOptions, GenesisPolicyRefusal, GenesisProviderAvailability,
-    GenesisProviderOption, GenesisUnavailableReason, GraphEmbeddingProfile, InferenceStage,
-    InvalidStageSetReason, KnownModelEntry, ManagementError, ManagementResponseError, ModelAccess,
-    ModelAvailability, ModelSelectionRequest, ModelSettingsCapability, ModelUnavailableReason,
-    ModelsCatalogue, SecretLiteral, SecretLiteralError,
+    ConfigPersistenceObservation, ConfigPersistencePhase, ConfigSetRequest, ConfigValidateRequest,
+    ConfigValidation, ConfigValue, ConfigViolation, ConfigWriteEffect, ConfigWriteOutcome,
+    CredentialCapabilityInvalidReason, CredentialInput, CredentialRequirement, CredentialSource,
+    CredentialSourceKind, CredentialSources, CredentialSourcesRequest, CredentialUse,
+    CredentialUseCapabilities, EmbeddingProfileSummary, EmbeddingReuseAvailability,
+    EmbeddingReuseUnavailableReason, EndpointRequirement, EndpointSelection,
+    EndpointTransitionRefusal, GenesisConfigurationRequest, GenesisConvergenceRequest,
+    GenesisDimensionsConstraint, GenesisEmbeddingInput, GenesisModelConstraint, GenesisOptions,
+    GenesisPolicyRefusal, GenesisProviderAvailability, GenesisProviderOption,
+    GenesisUnavailableReason, GraphEmbeddingProfile, InferenceStage, InvalidStageSetReason,
+    KnownModelEntry, ManagementError, ManagementResponseError, ModelAccess, ModelAvailability,
+    ModelSelectionRequest, ModelSettingsCapability, ModelUnavailableReason, ModelsCatalogue,
+    SecretLiteral, SecretLiteralError,
 };
 pub use envelope::{
     BootstrapShutdownRefusal, ManagementBootstrapRequest, ManagementBootstrapResponse,
@@ -66,7 +67,17 @@ pub use lifecycle::{
     StoppedProcessFailure, StoppedState, StoppingLifecycleSnapshot, StoppingPhase,
     UnconfiguredLifecycleSnapshot, UnconfiguredPhase,
 };
-pub use method::ManagementMethod;
+pub use method::{
+    CheckReportCall, ConfigGetAllCall, ConfigGetCall, ConfigPatchCall, ConfigPathCall,
+    ConfigSchemaCall, ConfigSetCall, ConfigValidateCall, CredentialProbeCall,
+    CredentialSourcesCall, DatabaseProbeCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall,
+    GraphEmbeddingProfileCall, GraphGenesisOptionsCall, LogsTailCall, ManagementCall,
+    ManagementMethod, ManagerShutdownCall, ManagerSnapshotCall, ModelsCatalogueCall,
+    ModelsSelectCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall,
+    TokenListCall,
+};
+#[cfg(feature = "schema")]
+pub use method::{ManagementCallSchema, management_call_schemas};
 pub use readiness::{
     CheckObservation, CheckSubject, ConfigDiagnosticLocation, ConfigFilePath,
     CredentialEntryMember, HealthDegradedReadinessReport, HealthDegradedVerdict, HealthVerdict,

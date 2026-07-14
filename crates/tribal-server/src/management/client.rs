@@ -11,7 +11,8 @@ use tokio::{
 };
 use tribal_wire::management::{
     BootstrapShutdownRefusal, MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest,
-    ManagementBootstrapResponse, ManagementClientHello, ManagementEvent, ManagementResponseError,
+    ManagementBootstrapResponse, ManagementCall, ManagementClientHello, ManagementEvent,
+    ManagementMethod, ManagementResponseError,
 };
 
 use super::authority::AuthorityDescriptor;
@@ -131,14 +132,27 @@ impl ManagementClient {
     }
 
     /// Calls one full-protocol method and decodes its typed result.
-    pub(crate) async fn call<T: serde::de::DeserializeOwned>(
+    pub(crate) async fn call<C>(
         &mut self,
-        method: &str,
-        params: Option<serde_json::Value>,
-    ) -> Result<T, ManagementClientError> {
+        request: &C::Request,
+    ) -> Result<C::Response, ManagementClientError>
+    where
+        C: ManagementCall,
+        C::Request: serde::Serialize,
+        C::Response: serde::de::DeserializeOwned,
+    {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
-        self.write(&ClientRequest { id, method, params }).await?;
+        let params =
+            serde_json::to_value(request).map_err(|source| ManagementClientError::Frame {
+                source: io::Error::new(io::ErrorKind::InvalidData, source),
+            })?;
+        self.write(&ClientRequest {
+            id,
+            method: C::METHOD,
+            params: (!params.is_null()).then_some(params),
+        })
+        .await?;
         loop {
             let incoming: ClientIncoming =
                 self.read().await?.ok_or(ManagementClientError::Closed)?;
@@ -213,9 +227,9 @@ impl ManagementClient {
 }
 
 #[derive(serde::Serialize)]
-struct ClientRequest<'a> {
+struct ClientRequest {
     id: u64,
-    method: &'a str,
+    method: ManagementMethod,
     #[serde(skip_serializing_if = "Option::is_none")]
     params: Option<serde_json::Value>,
 }

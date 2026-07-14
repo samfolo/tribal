@@ -6,8 +6,7 @@ use clap::{CommandFactory, Parser};
 
 use crate::{
     cli::{
-        Cli, Command, ConfigCommand, ProjectCommand, ReindexCommand, RuntimeCommand,
-        ThreadsCommand, TokenCommand,
+        Cli, Command, ConfigCommand, ProjectCommand, ReindexCommand, ThreadsCommand, TokenCommand,
     },
     commands,
     error::AppError,
@@ -80,15 +79,7 @@ impl App {
             Command::Manage { args } => {
                 commands::manage(&self.cli.global.config, &args)?;
             }
-            Command::Runtime(command) => {
-                let method = match command {
-                    RuntimeCommand::Start => "runtime.start",
-                    RuntimeCommand::Stop => "runtime.stop",
-                    RuntimeCommand::Restart => "runtime.restart",
-                    RuntimeCommand::Status => "manager.snapshot",
-                };
-                commands::runtime(&self.cli.global.config, method)?;
-            }
+            Command::Runtime(command) => commands::runtime(&self.cli.global.config, &command)?,
             Command::Project(command) => match command {
                 ProjectCommand::Register { args } => {
                     commands::project::register(&self.cli.global.config, args)?;
