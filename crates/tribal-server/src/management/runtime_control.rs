@@ -23,7 +23,7 @@ use tribal_config::{ReloadClass, TribalConfig, load_config, reload_class, valida
 use tribal_telemetry::{LogFilterHandle, LogRing};
 use tribal_wire::{
     control::ControlEvent,
-    management::{ConfigDigest, ConfigRevision, RuntimeIdentity, TokenList},
+    management::{ConfigDigest, ConfigRevision, RuntimeIdentity},
     runtime_control::{
         ManagedRuntimeStatus, RUNTIME_CONTROL_CONTRACT_VERSION, RuntimeBootstrapRefusal,
         RuntimeBootstrapRequest, RuntimeBootstrapResponse, RuntimeConfigApplyOutcome,
@@ -251,19 +251,6 @@ impl RuntimeControlClient {
             | RuntimeControlResponse::StopAccepted
             | RuntimeControlResponse::LogsSubscribed
             | RuntimeControlResponse::TokenList { .. }
-            | RuntimeControlResponse::Refused { .. } => self.unexpected_response().await,
-        }
-    }
-
-    pub(crate) async fn token_list(&self) -> Result<TokenList, RuntimeControlError> {
-        match self.request(RuntimeControlRequest::TokenList).await? {
-            RuntimeControlResponse::TokenList { list } => Ok(list),
-            RuntimeControlResponse::Status { .. }
-            | RuntimeControlResponse::Readiness { .. }
-            | RuntimeControlResponse::ApplyConfig { .. }
-            | RuntimeControlResponse::StopAccepted
-            | RuntimeControlResponse::LogsTail { .. }
-            | RuntimeControlResponse::LogsSubscribed
             | RuntimeControlResponse::Refused { .. } => self.unexpected_response().await,
         }
     }

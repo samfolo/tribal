@@ -1,7 +1,7 @@
 //! Mock implementation of [`AuthTokenRepository`].
 
 use chrono::{DateTime, Utc};
-use tribal_db::{AuthTokenRepository, NewAuthToken};
+use tribal_db::{AuthTokenInventoryRow, AuthTokenPageKey, AuthTokenRepository, NewAuthToken};
 use tribal_domain::{AuthToken, AuthTokenId, PrincipalId};
 
 use super::mock_repository;
@@ -12,6 +12,8 @@ mock_repository! {
             (new: &NewAuthToken) { new.clone() };
         find_by_hash(String => Option<AuthToken>)
             (token_hash: &str) { token_hash.to_owned() };
+        find_by_id(AuthTokenId => Option<AuthToken>)
+            (id: AuthTokenId) { id };
         find_by_principal_id(PrincipalId => Vec<AuthToken>)
             (principal_id: PrincipalId) { principal_id };
         revoke((AuthTokenId, DateTime<Utc>) => (AuthToken, bool))
@@ -21,7 +23,13 @@ mock_repository! {
         find_by_hash_prefix(String => Vec<AuthToken>)
             (prefix: &str) { prefix.to_owned() };
         revoke_all((Option<PrincipalId>, DateTime<Utc>) => u64)
-            (principal_id: Option<PrincipalId>, revoked_at: DateTime<Utc>) { (principal_id, revoked_at) }
+            (principal_id: Option<PrincipalId>, revoked_at: DateTime<Utc>) { (principal_id, revoked_at) };
+        page_high_water(() => Option<AuthTokenPageKey>)
+            () { () };
+        list_page((AuthTokenPageKey, Option<AuthTokenPageKey>, u16) => Vec<AuthTokenInventoryRow>)
+            (high_water: AuthTokenPageKey, after: Option<AuthTokenPageKey>, limit: u16) {
+                (high_water, after, limit)
+            }
     }
 }
 

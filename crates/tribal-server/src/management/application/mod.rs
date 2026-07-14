@@ -1,17 +1,21 @@
 //! Manager-private operator application façade.
 
-mod credential;
+pub(crate) mod credential;
 mod database;
 mod pagination;
 mod project;
+mod token;
 
+use credential::CredentialCoordinator;
 use database::{DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
 use project::ProjectAdministration;
+use token::TokenAdministration;
 use tribal_wire::management::{
     ConfigGetCall, ConfigPatchCall, ConfigSetCall, ConfigValidateCall, ConfigValidation,
     ConfigViolation, CredentialSourcesCall, DatabaseInitialiseCall, GraphConfigureGenesisCall,
     GraphConvergeGenesisCall, LogsTailCall, ManagementCall, ManagementError, ManagementMethod,
     ManagementResponseError, ModelsSelectCall, ProjectListCall, ProjectRegisterCall,
+    TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
 };
 
 use super::{
@@ -32,6 +36,7 @@ pub(crate) struct ManagementApplication<'a> {
     lifecycle: &'a LifecycleController,
     database: DatabaseAccess,
     projects: ProjectAdministration,
+    tokens: TokenAdministration,
 }
 
 impl<'a> ManagementApplication<'a> {
@@ -40,6 +45,7 @@ impl<'a> ManagementApplication<'a> {
         product: &'a ProductSession,
         probe: &'a ProbeService,
         lifecycle: &'a LifecycleController,
+        credentials: CredentialCoordinator,
     ) -> Self {
         let database = DatabaseAccess::new(config.clone());
         Self {
@@ -48,6 +54,7 @@ impl<'a> ManagementApplication<'a> {
             probe,
             lifecycle,
             projects: ProjectAdministration::new(database.clone()),
+            tokens: TokenAdministration::new(database.clone(), credentials),
             database,
         }
     }
@@ -70,9 +77,10 @@ impl<'a> ManagementApplication<'a> {
                 let request = parse_call::<LogsTailCall>(params)?;
                 lifecycle_value(self.lifecycle.runtime_logs_tail(request.lines).await)
             }
-            ManagementMethod::TokenList => {
-                lifecycle_value(self.lifecycle.runtime_token_list().await)
-            }
+            ManagementMethod::TokenList
+            | ManagementMethod::TokenCreate
+            | ManagementMethod::TokenRevoke
+            | ManagementMethod::TokenRevokeAll => self.token_value(method, params).await,
             ManagementMethod::CheckReport => self.readiness_value().await,
             ManagementMethod::DatabaseInitialise => self.initialise_database_value(params).await,
             ManagementMethod::ProjectRegister => self.register_project_value(params).await,
@@ -207,6 +215,47 @@ impl<'a> ManagementApplication<'a> {
         let report = self.readiness_report().await?;
         serde_json::to_value(report)
             .map_err(|_| invalid_request("readiness response encoding failed"))
+    }
+
+    async fn token_value(
+        &self,
+        method: ManagementMethod,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, ManagementResponseError> {
+        match method {
+            ManagementMethod::TokenList => {
+                let request = parse_call::<TokenListCall>(params)?;
+                response_value(self.tokens.list(request).await.map_err(token::public_error))
+            }
+            ManagementMethod::TokenCreate => {
+                let request = parse_call::<TokenCreateCall>(params)?;
+                response_value(
+                    self.tokens
+                        .create(request)
+                        .await
+                        .map_err(token::public_error),
+                )
+            }
+            ManagementMethod::TokenRevoke => {
+                let request = parse_call::<TokenRevokeCall>(params)?;
+                response_value(
+                    self.tokens
+                        .revoke(request)
+                        .await
+                        .map_err(token::public_error),
+                )
+            }
+            ManagementMethod::TokenRevokeAll => {
+                let request = parse_call::<TokenRevokeAllCall>(params)?;
+                response_value(
+                    self.tokens
+                        .revoke_all(request)
+                        .await
+                        .map_err(token::public_error),
+                )
+            }
+            _ => unreachable!("token dispatch admits only token methods"),
+        }
     }
 
     async fn initialise_database_value(

@@ -52,6 +52,33 @@ pub struct NewAuthToken {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Stable keyset position for token inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthTokenPageKey {
+    pub created_at: DateTime<Utc>,
+    pub id: AuthTokenId,
+}
+
+/// Token row joined to the principal key rendered to operators.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthTokenInventoryRow {
+    pub token: AuthToken,
+    pub principal: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct AuthTokenInventoryDbRow {
+    id: uuid::Uuid,
+    token_hash: String,
+    principal_id: uuid::Uuid,
+    scopes: Vec<String>,
+    audience: String,
+    expires_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+    revoked_at: Option<DateTime<Utc>>,
+    principal_key: String,
+}
+
 // ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
@@ -86,6 +113,13 @@ pub trait AuthTokenRepository {
         &self,
         conn: &mut PgConnection,
         token_hash: &str,
+    ) -> Result<Option<AuthToken>, DbError>;
+
+    /// Finds a token by its stable id.
+    async fn find_by_id(
+        &self,
+        conn: &mut PgConnection,
+        id: AuthTokenId,
     ) -> Result<Option<AuthToken>, DbError>;
 
     /// Finds all tokens for a principal, ordered by `created_at DESC`.
@@ -154,6 +188,21 @@ pub trait AuthTokenRepository {
         principal_id: Option<PrincipalId>,
         revoked_at: DateTime<Utc>,
     ) -> Result<u64, DbError>;
+
+    /// Captures the newest token visible at the start of an inventory walk.
+    async fn page_high_water(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Option<AuthTokenPageKey>, DbError>;
+
+    /// Lists one descending token keyset window bounded by a high water.
+    async fn list_page(
+        &self,
+        conn: &mut PgConnection,
+        high_water: AuthTokenPageKey,
+        after: Option<AuthTokenPageKey>,
+        limit: u16,
+    ) -> Result<Vec<AuthTokenInventoryRow>, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +269,23 @@ impl AuthTokenRepository for PgAuthTokenRepository {
                 source: e,
             })?;
 
+        Ok(row.as_ref().map(map_auth_token_row))
+    }
+
+    async fn find_by_id(
+        &self,
+        conn: &mut PgConnection,
+        id: AuthTokenId,
+    ) -> Result<Option<AuthToken>, DbError> {
+        let sql = format!("SELECT {COLUMNS} FROM auth_tokens WHERE id = $1");
+        let row = sqlx::query(&sql)
+            .bind(id.inner())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|source| DbError::QueryFailed {
+                context: format!("finding auth token by id {id}"),
+                source,
+            })?;
         Ok(row.as_ref().map(map_auth_token_row))
     }
 
@@ -363,6 +429,89 @@ impl AuthTokenRepository for PgAuthTokenRepository {
 
         Ok(result.rows_affected())
     }
+
+    async fn page_high_water(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Option<AuthTokenPageKey>, DbError> {
+        let row = sqlx::query!(
+            r#"
+            SELECT created_at, id
+            FROM auth_tokens
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            "#
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|source| DbError::QueryFailed {
+            context: "capturing token inventory high water".to_owned(),
+            source,
+        })?;
+        Ok(row.map(|row| AuthTokenPageKey {
+            created_at: row.created_at,
+            id: AuthTokenId::from(row.id),
+        }))
+    }
+
+    async fn list_page(
+        &self,
+        conn: &mut PgConnection,
+        high_water: AuthTokenPageKey,
+        after: Option<AuthTokenPageKey>,
+        limit: u16,
+    ) -> Result<Vec<AuthTokenInventoryRow>, DbError> {
+        let rows = match after {
+            Some(after) => {
+                sqlx::query_as!(
+                    AuthTokenInventoryDbRow,
+                    r#"
+                    SELECT t.id, t.token_hash, t.principal_id, t.scopes,
+                           t.audience, t.expires_at, t.created_at, t.revoked_at,
+                           p.principal_key
+                    FROM auth_tokens t
+                    JOIN principals p ON p.id = t.principal_id
+                    WHERE (t.created_at, t.id) <= ($1, $2)
+                      AND (t.created_at, t.id) < ($3, $4)
+                    ORDER BY t.created_at DESC, t.id DESC
+                    LIMIT $5
+                    "#,
+                    high_water.created_at,
+                    high_water.id.inner(),
+                    after.created_at,
+                    after.id.inner(),
+                    i64::from(limit),
+                )
+                .fetch_all(&mut *conn)
+                .await
+            }
+            None => {
+                sqlx::query_as!(
+                    AuthTokenInventoryDbRow,
+                    r#"
+                    SELECT t.id, t.token_hash, t.principal_id, t.scopes,
+                           t.audience, t.expires_at, t.created_at, t.revoked_at,
+                           p.principal_key
+                    FROM auth_tokens t
+                    JOIN principals p ON p.id = t.principal_id
+                    WHERE (t.created_at, t.id) <= ($1, $2)
+                    ORDER BY t.created_at DESC, t.id DESC
+                    LIMIT $3
+                    "#,
+                    high_water.created_at,
+                    high_water.id.inner(),
+                    i64::from(limit),
+                )
+                .fetch_all(&mut *conn)
+                .await
+            }
+        }
+        .map_err(|source| DbError::QueryFailed {
+            context: "listing a token inventory page".to_owned(),
+            source,
+        })?;
+        Ok(rows.into_iter().map(map_inventory_row).collect())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -396,4 +545,27 @@ fn map_auth_token_row(r: &sqlx::postgres::PgRow) -> AuthToken {
         .created_at(r.get("created_at"))
         .revoked_at(r.get("revoked_at"))
         .build()
+}
+
+fn map_inventory_row(row: AuthTokenInventoryDbRow) -> AuthTokenInventoryRow {
+    let scopes = row
+        .scopes
+        .into_iter()
+        .map(|scope| {
+            Scope::parse(&scope).unwrap_or_else(|_| panic!("{EXPECT_VALID_SCOPE_IN_DB}: {scope:?}"))
+        })
+        .collect();
+    AuthTokenInventoryRow {
+        token: AuthToken::builder()
+            .id(AuthTokenId::from(row.id))
+            .token_hash(row.token_hash)
+            .principal_id(PrincipalId::from(row.principal_id))
+            .scopes(scopes)
+            .audience(row.audience)
+            .expires_at(row.expires_at)
+            .created_at(row.created_at)
+            .revoked_at(row.revoked_at)
+            .build(),
+        principal: row.principal_key,
+    }
 }

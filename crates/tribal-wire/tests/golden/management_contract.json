@@ -7260,6 +7260,9 @@
       "server.status",
       "logs.tail",
       "token.list",
+      "token.create",
+      "token.revoke",
+      "token.revokeAll",
       "check.report",
       "database.initialise",
       "project.register",
@@ -12958,6 +12961,616 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      }
+    }
+  },
+  "Revisioned_for_TokenCreateOutcome": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Revisioned_for_TokenCreateOutcome",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/TokenCreateOutcome"
+      }
+    },
+    "definitions": {
+      "AuthTokenId": {
+        "type": "string",
+        "pattern": "^at_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "CredentialPersistenceResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "not_requested"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "persisted"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "IssuedBearerToken": {
+        "type": "string",
+        "x-cortex-swift-type": "scoped-redacted-string"
+      },
+      "Scope": {
+        "type": "string",
+        "pattern": "^tribal(?:\\.[a-z]+)*:(?:read|write|execute)$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "TokenCreateOutcome": {
+        "type": "object",
+        "required": [
+          "credential",
+          "summary",
+          "token"
+        ],
+        "properties": {
+          "credential": {
+            "$ref": "#/definitions/CredentialPersistenceResult"
+          },
+          "summary": {
+            "$ref": "#/definitions/TokenSummary"
+          },
+          "token": {
+            "$ref": "#/definitions/IssuedBearerToken"
+          }
+        }
+      },
+      "TokenState": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "active"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "expired"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "revoked_at"
+                ],
+                "properties": {
+                  "revoked_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "revoked"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "TokenSummary": {
+        "type": "object",
+        "required": [
+          "audience",
+          "created_at",
+          "expires_at",
+          "id",
+          "principal",
+          "scopes",
+          "state"
+        ],
+        "properties": {
+          "audience": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "$ref": "#/definitions/AuthTokenId"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Scope"
+            }
+          },
+          "state": {
+            "$ref": "#/definitions/TokenState"
+          }
+        }
+      }
+    }
+  },
+  "Revisioned_for_TokenPage": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Revisioned_for_TokenPage",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/TokenPage"
+      }
+    },
+    "definitions": {
+      "AuthTokenId": {
+        "type": "string",
+        "pattern": "^at_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "PageCursor": {
+        "type": "string",
+        "pattern": "^.+$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "Scope": {
+        "type": "string",
+        "pattern": "^tribal(?:\\.[a-z]+)*:(?:read|write|execute)$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "TokenPage": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/TokenSummary"
+            }
+          },
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PageCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "TokenState": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "active"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "expired"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "revoked_at"
+                ],
+                "properties": {
+                  "revoked_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "revoked"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "TokenSummary": {
+        "type": "object",
+        "required": [
+          "audience",
+          "created_at",
+          "expires_at",
+          "id",
+          "principal",
+          "scopes",
+          "state"
+        ],
+        "properties": {
+          "audience": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "$ref": "#/definitions/AuthTokenId"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Scope"
+            }
+          },
+          "state": {
+            "$ref": "#/definitions/TokenState"
+          }
+        }
+      }
+    }
+  },
+  "Revisioned_for_TokenRevokeAllOutcome": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Revisioned_for_TokenRevokeAllOutcome",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/TokenRevokeAllOutcome"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "TokenRevokeAllOutcome": {
+        "type": "object",
+        "required": [
+          "revoked"
+        ],
+        "properties": {
+          "revoked": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          }
+        }
+      }
+    }
+  },
+  "Revisioned_for_TokenRevokeOutcome": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Revisioned_for_TokenRevokeOutcome",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/TokenRevokeOutcome"
+      }
+    },
+    "definitions": {
+      "AuthTokenId": {
+        "type": "string",
+        "pattern": "^at_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "Scope": {
+        "type": "string",
+        "pattern": "^tribal(?:\\.[a-z]+)*:(?:read|write|execute)$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "TokenRevokeOutcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "token"
+                ],
+                "properties": {
+                  "token": {
+                    "$ref": "#/definitions/TokenSummary"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "revoked"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "token"
+                ],
+                "properties": {
+                  "token": {
+                    "$ref": "#/definitions/TokenSummary"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "already_revoked"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "$ref": "#/definitions/AuthTokenId"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "not_found"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "TokenState": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "active"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "expired"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "revoked_at"
+                ],
+                "properties": {
+                  "revoked_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "revoked"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "TokenSummary": {
+        "type": "object",
+        "required": [
+          "audience",
+          "created_at",
+          "expires_at",
+          "id",
+          "principal",
+          "scopes",
+          "state"
+        ],
+        "properties": {
+          "audience": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "$ref": "#/definitions/AuthTokenId"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Scope"
+            }
+          },
+          "state": {
+            "$ref": "#/definitions/TokenState"
           }
         }
       }
@@ -22020,126 +22633,158 @@
       }
     }
   },
-  "RuntimeTokenListResult": {
+  "TokenCreateRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "RuntimeTokenListResult",
-    "description": "Result of `token.list` through the manager.",
-    "oneOf": [
-      {
-        "type": "object",
-        "required": [
-          "data",
-          "outcome"
-        ],
-        "properties": {
-          "data": {
-            "type": "object",
-            "required": [
-              "list"
-            ],
-            "properties": {
-              "list": {
-                "$ref": "#/definitions/TokenList"
-              }
-            }
-          },
-          "outcome": {
-            "type": "string",
-            "enum": [
-              "available"
-            ]
-          }
-        }
-      },
-      {
-        "type": "object",
-        "required": [
-          "data",
-          "outcome"
-        ],
-        "properties": {
-          "data": {
-            "type": "object",
-            "required": [
-              "reason"
-            ],
-            "properties": {
-              "reason": {
-                "$ref": "#/definitions/RuntimeReadUnavailable"
-              }
-            }
-          },
-          "outcome": {
-            "type": "string",
-            "enum": [
-              "unavailable"
-            ]
-          }
-        }
-      }
+    "title": "TokenCreateRequest",
+    "type": "object",
+    "required": [
+      "expected_revision",
+      "persist_as_default",
+      "scopes"
     ],
-    "definitions": {
-      "RuntimeReadUnavailable": {
-        "description": "Why a runtime-owned read cannot currently be served.",
-        "type": "string",
-        "enum": [
-          "no_runtime",
-          "operation_in_progress",
-          "version_mismatch",
-          "runtime_control_unavailable",
-          "manager_terminating"
+    "properties": {
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "persist_as_default": {
+        "type": "boolean"
+      },
+      "principal": {
+        "type": [
+          "string",
+          "null"
         ]
       },
-      "TokenInfo": {
-        "description": "The non-secret metadata of one issued token.",
+      "scopes": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/Scope"
+        }
+      },
+      "ttl_hours": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint64",
+        "minimum": 0.0
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "Scope": {
+        "type": "string",
+        "pattern": "^tribal(?:\\.[a-z]+)*:(?:read|write|execute)$",
+        "x-cortex-swift-type": "validated-string"
+      }
+    }
+  },
+  "TokenListRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "TokenListRequest",
+    "type": "object",
+    "required": [
+      "page"
+    ],
+    "properties": {
+      "page": {
+        "$ref": "#/definitions/PageRequest"
+      }
+    },
+    "definitions": {
+      "PageCursor": {
+        "type": "string",
+        "pattern": "^.+$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "PageRequest": {
         "type": "object",
         "required": [
-          "created_at",
-          "principal",
-          "scopes"
+          "size"
         ],
         "properties": {
-          "created_at": {
-            "description": "When the token was issued.",
-            "type": "string",
-            "format": "date-time"
+          "after": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PageCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
-          "expires_at": {
-            "description": "When the token expires, absent for a non-expiring token.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "principal": {
-            "description": "The principal the token authenticates as.",
-            "type": "string"
-          },
-          "scopes": {
-            "description": "The scopes the token grants.",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+          "size": {
+            "$ref": "#/definitions/PageSize"
           }
         }
       },
-      "TokenList": {
-        "description": "Every issued token's metadata, the result of `token.list`.",
-        "type": "object",
-        "required": [
-          "tokens"
-        ],
-        "properties": {
-          "tokens": {
-            "description": "The issued tokens, never their secret values.",
-            "type": "array",
-            "items": {
-              "$ref": "#/definitions/TokenInfo"
-            }
-          }
-        }
+      "PageSize": {
+        "type": "integer",
+        "format": "uint16",
+        "maximum": 50.0,
+        "minimum": 1.0
+      }
+    }
+  },
+  "TokenRevokeAllRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "TokenRevokeAllRequest",
+    "type": "object",
+    "required": [
+      "expected_revision"
+    ],
+    "properties": {
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "principal": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      }
+    }
+  },
+  "TokenRevokeRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "TokenRevokeRequest",
+    "type": "object",
+    "required": [
+      "expected_revision",
+      "id"
+    ],
+    "properties": {
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "id": {
+        "$ref": "#/definitions/AuthTokenId"
+      }
+    },
+    "definitions": {
+      "AuthTokenId": {
+        "type": "string",
+        "pattern": "^at_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
       }
     }
   }

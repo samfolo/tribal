@@ -18,8 +18,11 @@ use tribal_wire::management::{
 };
 
 use super::{
-    application::ManagementApplication, lifecycle::LifecycleController, probe::ProbeService,
-    product::ProductService, worker::ConfigWorkerClient,
+    application::{ManagementApplication, credential::CredentialCoordinator},
+    lifecycle::LifecycleController,
+    probe::ProbeService,
+    product::ProductService,
+    worker::ConfigWorkerClient,
 };
 
 const SOCKET_MODE: u32 = 0o600;
@@ -41,6 +44,7 @@ pub(crate) struct ManagerSocketServices {
     product: ProductService,
     probe: ProbeService,
     lifecycle: LifecycleController,
+    credentials: CredentialCoordinator,
     shutdown: CancellationToken,
 }
 
@@ -50,6 +54,7 @@ impl ManagerSocketServices {
         product: ProductService,
         probe: ProbeService,
         lifecycle: LifecycleController,
+        credentials: CredentialCoordinator,
         shutdown: CancellationToken,
     ) -> Self {
         Self {
@@ -57,6 +62,7 @@ impl ManagerSocketServices {
             product,
             probe,
             lifecycle,
+            credentials,
             shutdown,
         }
     }
@@ -215,6 +221,7 @@ async fn handle_connection(
                 &product,
                 &services.probe,
                 &services.lifecycle,
+                services.credentials.clone(),
             ),
             shutdown: &services.shutdown,
         };
@@ -508,13 +515,21 @@ mod tests {
                     instance_id: "manager".to_owned(),
                     binary_version: "test".to_owned(),
                 },
-                ManagerSocketServices::new(
-                    config.clone(),
-                    ProductService::new(config.clone()),
-                    ProbeService::new(config),
-                    lifecycle,
-                    shutdown.clone(),
-                ),
+                {
+                    let (credentials, _credential_runtime) = CredentialCoordinator::spawn(
+                        super::super::authority::ConfigAuthorityNamespace::from_test(&format!(
+                            "test-{version}"
+                        )),
+                    );
+                    ManagerSocketServices::new(
+                        config.clone(),
+                        ProductService::new(config.clone()),
+                        ProbeService::new(config),
+                        lifecycle,
+                        credentials,
+                        shutdown.clone(),
+                    )
+                },
             ));
             let mut stream = UnixStream::connect(&path).await.expect("client connects");
             let request = ManagementBootstrapRequest::Handshake {

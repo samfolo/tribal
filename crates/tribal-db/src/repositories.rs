@@ -56,7 +56,10 @@ pub use agent_thread_record::{
     AgentThreadRecordRepository, JobTriageSubmission, NewAgentThreadRecord,
     PgAgentThreadRecordRepository,
 };
-pub use auth_token::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
+pub use auth_token::{
+    AuthTokenInventoryRow, AuthTokenPageKey, AuthTokenRepository, NewAuthToken,
+    PgAuthTokenRepository,
+};
 pub use common::cursor::encode_cursor;
 pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};
 pub use embedding_index::{

@@ -27,6 +27,12 @@ const TOKEN_BYTE_LENGTH: usize = 32;
 // Issuance
 // ---------------------------------------------------------------------------
 
+/// One-time bearer material paired with its persisted token identity.
+pub struct IssuedAuthToken {
+    pub raw: String,
+    pub token: tribal_domain::AuthToken,
+}
+
 /// Issues an auth token: generates an opaque value, persists only its
 /// SHA-256 digest bound to `principal_id`, `scopes`, `audience`, and
 /// `expires_at`, and returns the raw value for one-time delivery to the
@@ -48,6 +54,26 @@ pub async fn issue_token(
     audience: String,
     expires_at: DateTime<Utc>,
 ) -> Result<String, DbError> {
+    Ok(
+        issue_token_with_record(conn, repo, principal_id, scopes, audience, expires_at)
+            .await?
+            .raw,
+    )
+}
+
+/// Issues an auth token and returns both its one-time secret and stored record.
+///
+/// # Errors
+///
+/// Returns [`DbError`] when the token record cannot be inserted.
+pub async fn issue_token_with_record(
+    conn: &mut PgConnection,
+    repo: &(dyn AuthTokenRepository + Send + Sync),
+    principal_id: PrincipalId,
+    scopes: Vec<Scope>,
+    audience: String,
+    expires_at: DateTime<Utc>,
+) -> Result<IssuedAuthToken, DbError> {
     let raw = generate_token_value();
     let token_hash = sha256_hex(&raw);
 
@@ -59,9 +85,9 @@ pub async fn issue_token(
         .expires_at(expires_at)
         .build();
 
-    repo.insert(conn, &new).await?;
+    let token = repo.insert(conn, &new).await?;
 
-    Ok(raw)
+    Ok(IssuedAuthToken { raw, token })
 }
 
 /// Generates an opaque random value: 32 bytes encoded as base64url

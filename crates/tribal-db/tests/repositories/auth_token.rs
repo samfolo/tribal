@@ -150,6 +150,37 @@ async fn test_find_by_hash_returns_none_for_unknown() {
     assert!(found.is_none());
 }
 
+#[tokio::test]
+async fn test_find_by_id_returns_stable_token_identity() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let principal_id = setup_principal(&mut txn, "find-id").await;
+    let inserted = PgAuthTokenRepository
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(make_token_hash())
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("insert");
+
+    let found = PgAuthTokenRepository
+        .find_by_id(&mut txn, inserted.id())
+        .await
+        .expect("find by id");
+
+    assert_eq!(found, Some(inserted));
+    assert!(
+        PgAuthTokenRepository
+            .find_by_id(&mut txn, AuthTokenId::new())
+            .await
+            .expect("find missing id")
+            .is_none()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // find_by_principal_id
 // ---------------------------------------------------------------------------
@@ -664,4 +695,86 @@ async fn test_revoke_all_includes_token_expiring_at_revocation_time() {
         count, 1,
         "token expiring exactly at revocation time is still active"
     );
+}
+
+#[tokio::test]
+async fn test_inventory_uses_descending_keysets_bounded_by_high_water() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let principal_id = setup_principal(&mut txn, "inventory").await;
+    let first = PgAuthTokenRepository
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(make_token_hash())
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("insert first");
+    shift_timestamp_by_id(
+        &mut txn,
+        "auth_tokens",
+        "created_at",
+        *first.id().inner(),
+        chrono::Duration::hours(-2),
+    )
+    .await;
+    let second = PgAuthTokenRepository
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(make_token_hash())
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("insert second");
+    let high_water = PgAuthTokenRepository
+        .page_high_water(&mut txn)
+        .await
+        .expect("capture high water")
+        .expect("inventory is non-empty");
+    let later = PgAuthTokenRepository
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(make_token_hash())
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("insert later");
+    shift_timestamp_by_id(
+        &mut txn,
+        "auth_tokens",
+        "created_at",
+        *later.id().inner(),
+        chrono::Duration::hours(2),
+    )
+    .await;
+
+    let page = PgAuthTokenRepository
+        .list_page(&mut txn, high_water, None, 1)
+        .await
+        .expect("first inventory page");
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].token.id(), second.id());
+    assert_eq!(page[0].principal, "user:auth-token-inventory");
+    let after = tribal_db::AuthTokenPageKey {
+        created_at: page[0].token.created_at(),
+        id: page[0].token.id(),
+    };
+    let continuation = PgAuthTokenRepository
+        .list_page(&mut txn, high_water, Some(after), 10)
+        .await
+        .expect("continued inventory page");
+    assert_eq!(
+        continuation
+            .iter()
+            .map(|row| row.token.id())
+            .collect::<Vec<_>>(),
+        vec![first.id()]
+    );
+    assert!(continuation.iter().all(|row| row.token.id() != later.id()));
 }

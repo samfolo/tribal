@@ -1,8 +1,4 @@
 //! Namespace-bound credential durability and recovery.
-#![allow(
-    dead_code,
-    reason = "token administration consumes this durability seam in the next landing"
-)]
 
 use std::{
     fs::File,
@@ -11,13 +7,285 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tribal_db::LocalDefaultCredential;
-use tribal_domain::{AuthTokenId, BearerToken, CredentialGenerationId};
+use sqlx::Acquire as _;
+use tokio::sync::{mpsc, oneshot, watch};
+use tribal_auth::{IssuedAuthToken, issue_token_with_record};
+use tribal_db::{
+    AdvisoryLockRepository, AuthTokenRepository, DbError, LocalDefaultCredential,
+    LocalDefaultCredentialRepository, PgAdvisoryLockRepository, PgAuthTokenRepository,
+    PgLocalDefaultCredentialRepository,
+};
+use tribal_domain::{AuthTokenId, BearerToken, CredentialGenerationId, Scope};
 
-use crate::management::authority::{ConfigAuthorityNamespace, credential_paths};
+use crate::{
+    commands::common::find_or_create_principal,
+    error::AppError,
+    management::{
+        application::database::DatabaseSession,
+        authority::{ConfigAuthorityNamespace, credential_paths},
+    },
+};
 
 const OWNER_FILE_MODE: u32 = 0o600;
 const OWNER_DIRECTORY_MODE: u32 = 0o700;
+const COORDINATOR_CAPACITY: usize = 8;
+
+/// Result retained inside the coordinator until one caller receives the secret.
+pub(super) struct PersistedIssuance {
+    pub(super) raw: String,
+    pub(super) token: tribal_domain::AuthToken,
+    pub(super) principal: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(super) enum CredentialCoordinatorError {
+    #[error("credential coordinator is unavailable")]
+    Unavailable,
+    #[error("credential database connection failed: {source}")]
+    Connection {
+        #[source]
+        source: sqlx::Error,
+    },
+    #[error("credential database operation failed: {source}")]
+    Database {
+        #[source]
+        source: DbError,
+    },
+    #[error("credential principal resolution failed: {source}")]
+    Principal {
+        #[source]
+        source: AppError,
+    },
+    #[error(transparent)]
+    Store(#[from] CredentialStoreError),
+    #[error("generated bearer token failed validation")]
+    GeneratedToken,
+}
+
+struct IssueCommand {
+    session: DatabaseSession,
+    principal: String,
+    scopes: Vec<Scope>,
+    audience: String,
+    expires_at: chrono::DateTime<chrono::Utc>,
+    response: oneshot::Sender<Result<PersistedIssuance, CredentialCoordinatorError>>,
+}
+
+/// Bounded secret-bearing client for one authority's credential task.
+#[derive(Clone)]
+pub(crate) struct CredentialCoordinator {
+    sender: mpsc::Sender<IssueCommand>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialCoordinatorExit {
+    Running,
+    InputClosed,
+}
+
+/// Task ownership and terminal observation retained by `manage`.
+pub(crate) struct CredentialCoordinatorRuntime {
+    terminal: watch::Receiver<CredentialCoordinatorExit>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl CredentialCoordinator {
+    pub(crate) fn spawn(
+        namespace: ConfigAuthorityNamespace,
+    ) -> (Self, CredentialCoordinatorRuntime) {
+        let (sender, receiver) = mpsc::channel(COORDINATOR_CAPACITY);
+        let (terminal_sender, terminal) = watch::channel(CredentialCoordinatorExit::Running);
+        let task = tokio::spawn(run_coordinator(
+            namespace.clone(),
+            CredentialStore::new(namespace),
+            receiver,
+            terminal_sender,
+        ));
+        (
+            Self { sender },
+            CredentialCoordinatorRuntime { terminal, task },
+        )
+    }
+
+    #[cfg(test)]
+    fn spawn_with_root(
+        namespace: ConfigAuthorityNamespace,
+        root: &Path,
+    ) -> (Self, CredentialCoordinatorRuntime) {
+        let (sender, receiver) = mpsc::channel(COORDINATOR_CAPACITY);
+        let (terminal_sender, terminal) = watch::channel(CredentialCoordinatorExit::Running);
+        let store = CredentialStore::with_root(namespace.clone(), root);
+        let task = tokio::spawn(run_coordinator(namespace, store, receiver, terminal_sender));
+        (
+            Self { sender },
+            CredentialCoordinatorRuntime { terminal, task },
+        )
+    }
+
+    pub(super) async fn issue_persisted(
+        &self,
+        session: DatabaseSession,
+        principal: String,
+        scopes: Vec<Scope>,
+        audience: String,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(IssueCommand {
+                session,
+                principal,
+                scopes,
+                audience,
+                expires_at,
+                response,
+            })
+            .await
+            .map_err(|_| CredentialCoordinatorError::Unavailable)?;
+        receiver
+            .await
+            .map_err(|_| CredentialCoordinatorError::Unavailable)?
+    }
+}
+
+impl CredentialCoordinatorRuntime {
+    pub(crate) fn terminal(&self) -> watch::Receiver<CredentialCoordinatorExit> {
+        self.terminal.clone()
+    }
+
+    pub(crate) async fn join(self) -> Result<(), tokio::task::JoinError> {
+        self.task.await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn abort(self) {
+        self.task.abort();
+        let _ = self.task.await;
+    }
+}
+
+async fn run_coordinator(
+    namespace: ConfigAuthorityNamespace,
+    store: CredentialStore,
+    mut receiver: mpsc::Receiver<IssueCommand>,
+    terminal: watch::Sender<CredentialCoordinatorExit>,
+) {
+    while let Some(command) = receiver.recv().await {
+        let result = issue_persisted(&namespace, &store, command).await;
+        let _ = result.1.send(result.0);
+    }
+    let _ = terminal.send(CredentialCoordinatorExit::InputClosed);
+}
+
+async fn issue_persisted(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    command: IssueCommand,
+) -> (
+    Result<PersistedIssuance, CredentialCoordinatorError>,
+    oneshot::Sender<Result<PersistedIssuance, CredentialCoordinatorError>>,
+) {
+    let IssueCommand {
+        session,
+        principal,
+        scopes,
+        audience,
+        expires_at,
+        response,
+    } = command;
+    let result = issue_persisted_inner(
+        namespace, store, session, principal, scopes, audience, expires_at,
+    )
+    .await;
+    (result, response)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the issuance boundary carries the complete token grant"
+)]
+async fn issue_persisted_inner(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    session: DatabaseSession,
+    principal_key: String,
+    scopes: Vec<Scope>,
+    audience: String,
+    expires_at: chrono::DateTime<chrono::Utc>,
+) -> Result<PersistedIssuance, CredentialCoordinatorError> {
+    let mut connection = session
+        .pool
+        .acquire()
+        .await
+        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    PgAdvisoryLockRepository
+        .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
+        .await
+        .map_err(database_error)?;
+    let previous = PgLocalDefaultCredentialRepository
+        .find(&mut transaction, namespace.as_str())
+        .await
+        .map_err(database_error)?;
+    let _ = store.recover(previous.as_ref())?;
+    let principal = find_or_create_principal(&mut transaction, &principal_key)
+        .await
+        .map_err(|source| CredentialCoordinatorError::Principal { source })?;
+    let IssuedAuthToken { raw, token } = issue_token_with_record(
+        &mut transaction,
+        &PgAuthTokenRepository,
+        principal.id(),
+        scopes,
+        audience,
+        expires_at,
+    )
+    .await
+    .map_err(database_error)?;
+    let bearer = raw
+        .parse::<BearerToken>()
+        .map_err(|_| CredentialCoordinatorError::GeneratedToken)?;
+    let envelope = PersistedCredentialEnvelope {
+        namespace: namespace.clone(),
+        generation_id: CredentialGenerationId::new(),
+        token_id: token.id(),
+        auth: Auth::Bearer { token: bearer },
+    };
+    store.stage(&envelope)?;
+    if let Some(previous) = previous
+        && previous.token_id != token.id()
+    {
+        PgAuthTokenRepository
+            .revoke(&mut transaction, previous.token_id, chrono::Utc::now())
+            .await
+            .map_err(database_error)?;
+    }
+    PgLocalDefaultCredentialRepository
+        .replace(
+            &mut transaction,
+            namespace.as_str(),
+            envelope.generation_id,
+            token.id(),
+        )
+        .await
+        .map_err(database_error)?;
+    transaction
+        .commit()
+        .await
+        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    store.promote_pending()?;
+    Ok(PersistedIssuance {
+        raw,
+        token,
+        principal: principal.principal_key().to_owned(),
+    })
+}
+
+fn database_error(source: DbError) -> CredentialCoordinatorError {
+    CredentialCoordinatorError::Database { source }
+}
 
 /// Secret-bearing authentication material retained inside the manager.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +446,7 @@ impl CredentialStore {
         Ok(RecoveryDisposition::Empty)
     }
 
+    #[cfg(test)]
     pub(super) fn read_stable(
         &self,
     ) -> Result<Option<PersistedCredentialEnvelope>, CredentialStoreError> {
@@ -237,7 +506,15 @@ fn file_error(path: &Path, source: io::Error) -> CredentialStoreError {
 
 #[cfg(test)]
 mod recovery {
+    use std::sync::Arc;
+
     use chrono::Utc;
+    use tribal_db::{
+        AuthTokenRepository as _, LocalDefaultCredentialRepository as _, PgAuthTokenRepository,
+        PgLocalDefaultCredentialRepository,
+    };
+    use tribal_domain::full_access_scopes;
+    use tribal_wire::management::{ConfigDigest, ConfigRevision};
 
     use super::*;
 
@@ -253,6 +530,16 @@ mod recovery {
             auth: Auth::Bearer {
                 token: "secret-token".parse().expect("token parses"),
             },
+        }
+    }
+
+    fn session(database: &tribal_test_utils::TestDb, revision: &ConfigRevision) -> DatabaseSession {
+        DatabaseSession {
+            revision: revision.clone(),
+            config: Arc::new(tribal_config::TribalConfig::minimum_valid(
+                database.database_url(),
+            )),
+            pool: database.pool().clone(),
         }
     }
 
@@ -401,5 +688,68 @@ mod recovery {
             & 0o777;
         assert_eq!(directory_mode, OWNER_DIRECTORY_MODE);
         assert_eq!(file_mode, OWNER_FILE_MODE);
+    }
+
+    #[tokio::test]
+    async fn concurrent_persisted_issuance_converges_and_revokes_the_displaced_generation() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let root = tempfile::tempdir().expect("temporary credential root");
+        let namespace = namespace("0123456789abcdef01234567");
+        let (coordinator, runtime) =
+            CredentialCoordinator::spawn_with_root(namespace.clone(), root.path());
+        let revision = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"credential-test"));
+        let expires_at = Utc::now() + chrono::Duration::hours(1);
+
+        let first = coordinator.issue_persisted(
+            session(&database, &revision),
+            tribal_domain::LOCAL_PRINCIPAL_KEY.to_owned(),
+            full_access_scopes(),
+            "http://localhost/mcp".to_owned(),
+            expires_at,
+        );
+        let second = coordinator.issue_persisted(
+            session(&database, &revision),
+            tribal_domain::LOCAL_PRINCIPAL_KEY.to_owned(),
+            full_access_scopes(),
+            "http://localhost/mcp".to_owned(),
+            expires_at,
+        );
+        let (first, second) = tokio::join!(first, second);
+        let first = first.expect("first issuance completes");
+        let second = second.expect("second issuance completes");
+        assert_ne!(first.token.id(), second.token.id());
+        assert_ne!(first.raw, second.raw);
+
+        let mut connection = database.pool().acquire().await.unwrap();
+        let mapping = PgLocalDefaultCredentialRepository
+            .find(&mut connection, namespace.as_str())
+            .await
+            .unwrap()
+            .expect("mapping exists");
+        let first_row = PgAuthTokenRepository
+            .find_by_id(&mut connection, first.token.id())
+            .await
+            .unwrap()
+            .unwrap();
+        let second_row = PgAuthTokenRepository
+            .find_by_id(&mut connection, second.token.id())
+            .await
+            .unwrap()
+            .unwrap();
+        let mapped_is_first = mapping.token_id == first.token.id();
+        assert!(mapped_is_first || mapping.token_id == second.token.id());
+        assert_eq!(first_row.revoked_at().is_none(), mapped_is_first);
+        assert_eq!(second_row.revoked_at().is_none(), !mapped_is_first);
+        let stable = CredentialStore::with_root(namespace, root.path())
+            .read_stable()
+            .unwrap()
+            .expect("stable envelope exists");
+        assert_eq!(stable.token_id, mapping.token_id);
+
+        let mut terminal = runtime.terminal();
+        drop(coordinator);
+        runtime.join().await.unwrap();
+        terminal.changed().await.unwrap();
+        assert_eq!(*terminal.borrow(), CredentialCoordinatorExit::InputClosed);
     }
 }

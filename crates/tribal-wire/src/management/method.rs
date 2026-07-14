@@ -11,7 +11,8 @@ use super::{
     ManagerShutdownResult, ModelSelectionRequest, ModelsCatalogue, ProbeReceipt, ProjectList,
     ProjectListRequest, ProjectRegisterRequest, ProjectRegisterResult, ReadinessReport,
     RuntimeLogsTailRequest, RuntimeLogsTailResult, RuntimeRestartResult, RuntimeStartResult,
-    RuntimeStopResult, RuntimeTokenListResult,
+    RuntimeStopResult, TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest,
+    TokenRevokeAllRequest, TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
 };
 
 /// The request and response types owned by one management method.
@@ -143,8 +144,26 @@ management_calls! {
     TokenList => {
         wire: "token.list",
         call: TokenListCall,
-        request: (),
-        response: RuntimeTokenListResult,
+        request: TokenListRequest,
+        response: TokenInventory,
+    },
+    TokenCreate => {
+        wire: "token.create",
+        call: TokenCreateCall,
+        request: TokenCreateRequest,
+        response: TokenCreateResult,
+    },
+    TokenRevoke => {
+        wire: "token.revoke",
+        call: TokenRevokeCall,
+        request: TokenRevokeRequest,
+        response: TokenRevokeResult,
+    },
+    TokenRevokeAll => {
+        wire: "token.revokeAll",
+        call: TokenRevokeAllCall,
+        request: TokenRevokeAllRequest,
+        response: TokenRevokeAllResult,
     },
     CheckReport => {
         wire: "check.report",

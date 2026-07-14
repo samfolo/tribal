@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, TimeDelta, Utc};
-use sqlx::{Postgres, pool::PoolConnection};
+use sqlx::PgConnection;
 use tribal_config::{
     CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, CliOverrides, ConfigError,
     ConfigPath, Credentials, Diagnostics, MAX_TTL_HOURS, TribalConfig, ValidationError,
@@ -249,7 +249,7 @@ pub(crate) fn compute_expires_at(input: TtlInput) -> Result<DateTime<Utc>, AppEr
 ///
 /// Returns [`AppError::Database`] if the query or insert fails.
 pub(crate) async fn find_or_create_principal(
-    conn: &mut PoolConnection<Postgres>,
+    conn: &mut PgConnection,
     principal_key: &str,
 ) -> Result<Principal, AppError> {
     if let Some(existing) = PgPrincipalRepository

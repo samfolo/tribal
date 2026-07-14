@@ -23,8 +23,8 @@ use tribal_wire::{
         RestartRuntimeUnresponsivePhase, RunningLifecycleSnapshot, RunningPhase,
         RuntimeExitFailure, RuntimeIdentity, RuntimeLogsTailResult, RuntimeOperation,
         RuntimeReadUnavailable, RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult,
-        RuntimeStopTimedOutFailure, RuntimeTokenListResult, RuntimeUnresponsiveLifecycleSnapshot,
-        RuntimeUnresponsivePhase, ShutdownInProgressLifecycleSnapshot, ShutdownInProgressPhase,
+        RuntimeStopTimedOutFailure, RuntimeUnresponsiveLifecycleSnapshot, RuntimeUnresponsivePhase,
+        ShutdownInProgressLifecycleSnapshot, ShutdownInProgressPhase,
         ShutdownRuntimeUnresponsiveLifecycleSnapshot, ShutdownRuntimeUnresponsivePhase,
         StartBlockedReadinessReport, StartBlockedVerdict, StartClearReadinessReport,
         StartClearVerdict, StartOperationInProgress, StartSuperseder, StartVerdict,
@@ -85,7 +85,6 @@ enum LifecycleCommand {
         lines: u32,
         response: oneshot::Sender<RuntimeLogsTailResult>,
     },
-    RuntimeTokenList(oneshot::Sender<RuntimeTokenListResult>),
     Refresh,
     ConfigChanged,
     Readiness(ReadinessReport),
@@ -578,10 +577,6 @@ impl LifecycleController {
         receiver.await.ok()
     }
 
-    pub(crate) async fn runtime_token_list(&self) -> Option<RuntimeTokenListResult> {
-        request(&self.sender, LifecycleCommand::RuntimeTokenList).await
-    }
-
     pub(crate) async fn refresh(&self) {
         let _ = self.sender.send(LifecycleCommand::Refresh).await;
     }
@@ -908,7 +903,6 @@ impl LifecycleOwner {
             LifecycleCommand::RuntimeLogsTail { lines, response } => {
                 self.runtime_logs_read(lines, response);
             }
-            LifecycleCommand::RuntimeTokenList(response) => self.runtime_tokens_read(response),
             LifecycleCommand::Refresh => self.request_document_refresh(),
             LifecycleCommand::ConfigChanged => self.apply_config_change(),
             LifecycleCommand::Readiness(report) => self.apply_readiness(report),
@@ -1144,22 +1138,6 @@ impl LifecycleOwner {
                     },
                 },
                 Err(reason) => RuntimeLogsTailResult::Unavailable { reason },
-            };
-            let _ = response.send(result);
-        });
-    }
-
-    fn runtime_tokens_read(&mut self, response: oneshot::Sender<RuntimeTokenListResult>) {
-        let client = self.runtime_read_client();
-        self.observations.spawn(async move {
-            let result = match client {
-                Ok(client) => match client.token_list().await {
-                    Ok(list) => RuntimeTokenListResult::Available { list },
-                    Err(_) => RuntimeTokenListResult::Unavailable {
-                        reason: RuntimeReadUnavailable::RuntimeControlUnavailable,
-                    },
-                },
-                Err(reason) => RuntimeTokenListResult::Unavailable { reason },
             };
             let _ = response.send(result);
         });

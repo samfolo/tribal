@@ -18,6 +18,7 @@ use crate::{
     cli::ManageArgs,
     error::AppError,
     management::{
+        application::credential::{CredentialCoordinator, CredentialCoordinatorExit},
         authority::{
             AuthorityAcquire, AuthorityConflict, AuthorityDescriptor, AuthorityError,
             AuthorityLease, AuthorityOwnerKind,
@@ -104,6 +105,13 @@ pub(crate) enum ManageError {
         #[source]
         source: ManagementClientError,
     },
+    #[error("credential coordinator terminated unexpectedly")]
+    CredentialCoordinatorTerminated,
+    #[error("joining credential coordinator: {source}")]
+    CredentialCoordinatorJoin {
+        #[source]
+        source: tokio::task::JoinError,
+    },
 }
 
 /// Acquires or attaches to the authority and blocks while a winning manager serves.
@@ -138,6 +146,10 @@ struct PreparedAuthority {
     recovered: Option<RecoveredRuntime>,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "manager startup and ordered owner shutdown form one auditable sequence"
+)]
 async fn run_async(
     config_path: &Path,
     announce_json: bool,
@@ -214,6 +226,9 @@ async fn run_async(
     let probe = ProbeService::new(config.clone());
     observe_readiness_once(&config, &probe, &lifecycle).await;
     let product = ProductService::new(config.clone());
+    let (credentials, credential_runtime) =
+        CredentialCoordinator::spawn(lease.paths().namespace.clone());
+    let mut credential_terminal = credential_runtime.terminal();
     let config_watch_task = tokio::spawn(watch_config_file(
         config.clone(),
         lifecycle.clone(),
@@ -234,6 +249,7 @@ async fn run_async(
             product,
             probe,
             lifecycle_for_socket,
+            credentials.clone(),
             shutdown.clone(),
         ),
     ));
@@ -249,6 +265,7 @@ async fn run_async(
         close_machine_stdout(fd);
     }
     let mut lifecycle_exit = None;
+    let mut credential_exit = None;
     tokio::select! {
         () = shutdown.cancelled() => {}
         signal = tokio::signal::ctrl_c() => {
@@ -256,6 +273,13 @@ async fn run_async(
         }
         joined = &mut lifecycle_task => {
             lifecycle_exit = Some(joined.map_err(|source| ManageError::LifecycleJoin { source })?);
+        }
+        changed = credential_terminal.changed() => {
+            credential_exit = Some(if changed.is_ok() {
+                *credential_terminal.borrow()
+            } else {
+                CredentialCoordinatorExit::InputClosed
+            });
         }
     }
     shutdown.cancel();
@@ -268,6 +292,11 @@ async fn run_async(
     if let Err(error) = readiness_task.await {
         tracing::error!(%error, "readiness task failed");
     }
+    drop(credentials);
+    credential_runtime
+        .join()
+        .await
+        .map_err(|source| ManageError::CredentialCoordinatorJoin { source })?;
     drop(lifecycle);
     let lifecycle_exit = match lifecycle_exit {
         Some(exit) => exit,
@@ -278,6 +307,9 @@ async fn run_async(
     worker_runtime
         .join()
         .map_err(|_| ManageError::ConfigWorkerJoin)?;
+    if credential_exit.is_some() {
+        return Err(ManageError::CredentialCoordinatorTerminated);
+    }
     if let LifecycleExit::ConfigWorkerTerminated(exit) = lifecycle_exit {
         match exit {
             ConfigWorkerExit::InputClosed => tracing::error!("configuration worker input closed"),

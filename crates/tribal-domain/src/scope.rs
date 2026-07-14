@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 const SCOPE_ROOT: &str = "tribal";
+#[cfg(feature = "schema")]
+const SCOPE_PATTERN: &str = r"^tribal(?:\.[a-z]+)*:(?:read|write|execute)$";
 
 const INVALID_SCOPE: &str = "invalid scope";
 const EXPECT_HARDCODED_SCOPE: &str = "invariant: hard-coded scope literal is valid";
@@ -37,11 +39,34 @@ pub enum ScopeParseError {
 /// Constructed via [`Scope::parse`], [`FromStr`], or [`TryFrom<&str>`],
 /// which enforce syntax rules: exactly one colon separating a
 /// dot-segmented resource path (starting with `tribal`, lowercase
-/// ASCII only) from an operation (`read` or `write`).
+/// ASCII only) from an operation (`read`, `write`, or `execute`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "String", into = "String")]
 pub struct Scope(String);
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for Scope {
+    fn schema_name() -> String {
+        "Scope".to_owned()
+    }
+
+    fn json_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        let validation = schemars::schema::StringValidation {
+            pattern: Some(SCOPE_PATTERN.to_owned()),
+            ..Default::default()
+        };
+        let mut schema = schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            string: Some(Box::new(validation)),
+            ..Default::default()
+        };
+        schema.extensions.insert(
+            "x-cortex-swift-type".to_owned(),
+            serde_json::Value::String("validated-string".to_owned()),
+        );
+        schema.into()
+    }
+}
 
 impl Scope {
     /// Root read scope: grants read access to all resources.
