@@ -19,6 +19,7 @@ mod extraction_result;
 mod item_observation;
 mod job;
 mod knowledge_item;
+mod local_default_credential;
 mod migration;
 mod oauth_authorization_code;
 mod oauth_client;
@@ -76,6 +77,9 @@ pub use job::{JobRepository, JobStatusTransition, NewJob, PgJobRepository};
 pub use knowledge_item::{
     KnowledgeItemRepository, NewKnowledgeItem, PgKnowledgeItemRepository, SemanticSearchParams,
     SemanticSearchResponse, SemanticSearchResult,
+};
+pub use local_default_credential::{
+    LocalDefaultCredential, LocalDefaultCredentialRepository, PgLocalDefaultCredentialRepository,
 };
 pub use migration::{MigrationHeadStatus, MigrationRepository, PgMigrationRepository};
 pub use oauth_authorization_code::{

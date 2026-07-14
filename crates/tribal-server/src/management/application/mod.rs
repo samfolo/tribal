@@ -1,5 +1,6 @@
 //! Manager-private operator application façade.
 
+mod credential;
 mod database;
 mod pagination;
 mod project;

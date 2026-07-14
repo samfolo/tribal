@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO local_default_credentials\n                (authority_namespace, generation_id, token_id)\n            VALUES ($1, $2, $3)\n            ON CONFLICT (authority_namespace) DO UPDATE\n            SET generation_id = EXCLUDED.generation_id,\n                token_id = EXCLUDED.token_id,\n                updated_at = now()\n            RETURNING authority_namespace, generation_id, token_id, created_at, updated_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "authority_namespace",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "generation_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "token_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "744da1a31e92bbd27ff246ecac37c779f165ad9f1bae50679eaaf9791663cc60"
+}

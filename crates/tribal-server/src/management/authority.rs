@@ -19,6 +19,22 @@ const OWNER_FILE_MODE: u32 = 0o600;
 const OWNER_DIRECTORY_MODE: u32 = 0o700;
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
+/// Stable identity shared by every artifact for one canonical configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct ConfigAuthorityNamespace(String);
+
+impl ConfigAuthorityNamespace {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
 /// Process role holding a configuration authority lease.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +60,7 @@ pub(crate) struct AuthorityDescriptor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_field_names)] // each field names a distinct filesystem path artifact
 pub(crate) struct AuthorityPaths {
+    pub(crate) namespace: ConfigAuthorityNamespace,
     pub(crate) canonical_config_path: PathBuf,
     pub(crate) lock_path: PathBuf,
     pub(crate) descriptor_path: PathBuf,
@@ -51,6 +68,8 @@ pub(crate) struct AuthorityPaths {
     pub(crate) runtime_control_socket_path: PathBuf,
     pub(crate) custody_socket_path: PathBuf,
     pub(crate) delegated_descriptor_path: PathBuf,
+    pub(crate) stable_credential_path: PathBuf,
+    pub(crate) pending_credential_path: PathBuf,
 }
 
 /// A held lease; dropping it releases the kernel lock and owned descriptor.
@@ -104,15 +123,22 @@ impl AuthorityLease {
     pub(crate) fn acquire(config_path: &Path) -> Result<AuthorityAcquire, AuthorityError> {
         let state_base = state_base();
         let runtime_base = runtime_base();
-        Self::acquire_with_roots(config_path, &state_base, &runtime_base)
+        let config_base = config_base();
+        Self::acquire_with_roots_and_config(config_path, &state_base, &runtime_base, &config_base)
     }
 
     /// Derives the artifacts for recovery without attempting to acquire the lease.
     pub(crate) fn paths_for(config_path: &Path) -> Result<AuthorityPaths, AuthorityError> {
         let state_base = state_base();
         let runtime_base = runtime_base();
+        let config_base = config_base();
         let canonical_config_path = materialise_config(config_path)?;
-        derive_paths(&canonical_config_path, &state_base, &runtime_base)
+        derive_paths(
+            &canonical_config_path,
+            &state_base,
+            &runtime_base,
+            &config_base,
+        )
     }
 
     /// Adopts a locked descriptor inherited from a manager process.
@@ -122,8 +148,14 @@ impl AuthorityLease {
     ) -> Result<Self, AuthorityError> {
         let state_base = state_base();
         let runtime_base = runtime_base();
+        let config_base = config_base();
         let canonical_config_path = materialise_config(config_path)?;
-        let paths = derive_paths(&canonical_config_path, &state_base, &runtime_base)?;
+        let paths = derive_paths(
+            &canonical_config_path,
+            &state_base,
+            &runtime_base,
+            &config_base,
+        )?;
         Self::from_inherited_with_paths(descriptor, paths)
     }
 
@@ -174,13 +206,28 @@ impl AuthorityLease {
         Ok(clone)
     }
 
+    #[cfg(test)]
     pub(super) fn acquire_with_roots(
         config_path: &Path,
         state_base: &Path,
         runtime_base: &Path,
     ) -> Result<AuthorityAcquire, AuthorityError> {
+        Self::acquire_with_roots_and_config(config_path, state_base, runtime_base, state_base)
+    }
+
+    fn acquire_with_roots_and_config(
+        config_path: &Path,
+        state_base: &Path,
+        runtime_base: &Path,
+        config_base: &Path,
+    ) -> Result<AuthorityAcquire, AuthorityError> {
         let canonical_config_path = materialise_config(config_path)?;
-        let paths = derive_paths(&canonical_config_path, state_base, runtime_base)?;
+        let paths = derive_paths(
+            &canonical_config_path,
+            state_base,
+            runtime_base,
+            config_base,
+        )?;
         ensure_owner_directory(
             paths
                 .descriptor_path
@@ -254,6 +301,28 @@ fn runtime_base() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
+fn config_base() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::config_dir)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+pub(crate) fn credential_paths(namespace: &ConfigAuthorityNamespace) -> (PathBuf, PathBuf) {
+    credential_paths_with_base(&config_base(), namespace)
+}
+
+fn credential_paths_with_base(
+    config_base: &Path,
+    namespace: &ConfigAuthorityNamespace,
+) -> (PathBuf, PathBuf) {
+    let directory = config_base.join(TRIBAL_DIRECTORY_NAME).join("credentials");
+    (
+        directory.join(format!("{namespace}.json")),
+        directory.join(format!("{namespace}.pending")),
+    )
+}
+
 impl Drop for AuthorityLease {
     fn drop(&mut self) {
         let owns_descriptor = self
@@ -304,6 +373,7 @@ fn derive_paths(
     canonical_config_path: &Path,
     state_base: &Path,
     runtime_base: &Path,
+    config_base: &Path,
 ) -> Result<AuthorityPaths, AuthorityError> {
     let file_name = canonical_config_path
         .file_name()
@@ -315,20 +385,32 @@ fn derive_paths(
         key.push(char::from(HEX[usize::from(byte >> 4)]));
         key.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
+    let namespace = ConfigAuthorityNamespace(key);
     let state_dir = state_base
         .join(TRIBAL_DIRECTORY_NAME)
         .join("management")
-        .join(&key);
+        .join(namespace.as_str());
     let runtime_dir = runtime_base.join(TRIBAL_DIRECTORY_NAME);
+    let (stable_credential_path, pending_credential_path) =
+        credential_paths_with_base(config_base, &namespace);
     Ok(AuthorityPaths {
+        namespace: namespace.clone(),
         canonical_config_path: canonical_config_path.to_owned(),
         lock_path: canonical_config_path.with_file_name(format!(".{file_name}.authority.lock")),
         descriptor_path: state_dir.join("authority.json"),
-        socket_path: runtime_dir.join(format!("manager-{key}.sock")),
-        runtime_control_socket_path: runtime_dir.join(format!("runtime-{key}.sock")),
-        custody_socket_path: runtime_dir.join(format!("custody-{key}.sock")),
+        socket_path: runtime_dir.join(format!("manager-{namespace}.sock")),
+        runtime_control_socket_path: runtime_dir.join(format!("runtime-{namespace}.sock")),
+        custody_socket_path: runtime_dir.join(format!("custody-{namespace}.sock")),
         delegated_descriptor_path: state_dir.join("delegated-runtime.json"),
+        stable_credential_path,
+        pending_credential_path,
     })
+}
+
+impl std::fmt::Display for ConfigAuthorityNamespace {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 fn ensure_owner_directory(path: &Path) -> Result<(), AuthorityError> {
@@ -419,6 +501,34 @@ mod tests {
             .expect("second path acquisition succeeds");
         assert!(matches!(first, AuthorityAcquire::Acquired(_)));
         assert!(matches!(second, AuthorityAcquire::Acquired(_)));
+    }
+
+    #[test]
+    fn test_namespace_is_shared_by_socket_and_credential_artifacts() {
+        let temp = tempfile::tempdir().expect("temporary authority root");
+        let state = temp.path().join("state");
+        let runtime = temp.path().join("run");
+        let acquired = acquire(&temp.path().join("tribal.yaml"), &state, &runtime)
+            .expect("lease acquisition succeeds");
+        let AuthorityAcquire::Acquired(lease) = acquired else {
+            panic!("lease must be acquired");
+        };
+        let paths = lease.paths();
+        let namespace = paths.namespace.as_str();
+
+        assert!(paths.socket_path.to_string_lossy().contains(namespace));
+        assert!(
+            paths
+                .stable_credential_path
+                .to_string_lossy()
+                .contains(namespace)
+        );
+        assert!(
+            paths
+                .pending_credential_path
+                .to_string_lossy()
+                .contains(namespace)
+        );
     }
 
     #[test]
