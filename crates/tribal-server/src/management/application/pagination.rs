@@ -42,6 +42,13 @@ pub(super) enum InventoryCursorError {
         expected: ConfigRevision,
         actual: ConfigRevision,
     },
+    #[error("inventory cursor encoding failed: {source}")]
+    Encoding {
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("inventory cursor invariant failed")]
+    InternalInvariant,
 }
 
 impl InventoryCursor {
@@ -59,10 +66,11 @@ impl InventoryCursor {
         }
     }
 
-    pub(super) fn encode(&self) -> PageCursor {
-        let bytes = serde_json::to_vec(self).expect("inventory cursor is serialisable");
+    pub(super) fn encode(&self) -> Result<PageCursor, InventoryCursorError> {
+        let bytes =
+            serde_json::to_vec(self).map_err(|source| InventoryCursorError::Encoding { source })?;
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
-        PageCursor::try_from(encoded).expect("encoded cursor is non-empty")
+        PageCursor::try_from(encoded).map_err(|_| InventoryCursorError::InternalInvariant)
     }
 
     pub(super) fn decode(
@@ -106,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_refuses_cross_method_and_stale_reuse() {
+    fn test_cursor_refuses_cross_method_and_stale_reuse() {
         let current = revision(b"current");
         let cursor = InventoryCursor::new(
             InventoryMethod::ProjectList,
@@ -114,7 +122,8 @@ mod tests {
             position("high"),
             position("after"),
         )
-        .encode();
+        .encode()
+        .expect("cursor encodes");
 
         assert!(matches!(
             InventoryCursor::decode(&cursor, InventoryMethod::TokenList, &current),

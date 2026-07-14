@@ -1030,7 +1030,7 @@ mod recovery {
     }
 
     #[test]
-    fn pre_commit_pending_loses_to_matching_stable_mapping() {
+    fn test_pre_commit_pending_loses_to_matching_stable_mapping() {
         let root = tempfile::tempdir().expect("temporary credential root");
         let namespace = namespace("0123456789abcdef01234567");
         let store = CredentialStore::with_root(namespace.clone(), root.path());
@@ -1049,7 +1049,7 @@ mod recovery {
     }
 
     #[test]
-    fn committed_pending_is_promoted_after_lost_ack_or_pre_rename_crash() {
+    fn test_committed_pending_is_promoted_after_lost_ack_or_pre_rename_crash() {
         let root = tempfile::tempdir().expect("temporary credential root");
         let namespace = namespace("0123456789abcdef01234567");
         let store = CredentialStore::with_root(namespace.clone(), root.path());
@@ -1065,7 +1065,7 @@ mod recovery {
     }
 
     #[tokio::test]
-    async fn committed_replacement_reconciles_after_lost_ack() {
+    async fn test_committed_replacement_reconciles_after_lost_ack() {
         let database = tribal_test_utils::TestDb::new().await;
         let root = tempfile::tempdir().expect("temporary credential root");
         let namespace = namespace("1123456789abcdef01234567");
@@ -1128,7 +1128,7 @@ mod recovery {
     }
 
     #[tokio::test]
-    async fn committed_replacement_reconciles_after_promotion_failure() {
+    async fn test_committed_replacement_reconciles_after_promotion_failure() {
         let database = tribal_test_utils::TestDb::new().await;
         let root = tempfile::tempdir().expect("temporary credential root");
         let namespace = namespace("2123456789abcdef01234567");
@@ -1169,7 +1169,7 @@ mod recovery {
     }
 
     #[test]
-    fn distinct_namespaces_never_promote_or_remove_each_others_files() {
+    fn test_distinct_namespaces_never_promote_or_remove_each_others_files() {
         let root = tempfile::tempdir().expect("temporary credential root");
         let first_namespace = namespace("0123456789abcdef01234567");
         let second_namespace = namespace("fedcba9876543210fedcba98");
@@ -1191,7 +1191,7 @@ mod recovery {
     }
 
     #[test]
-    fn envelope_debug_never_exports_the_bearer() {
+    fn test_envelope_debug_never_exports_the_bearer() {
         let envelope = envelope(&namespace("0123456789abcdef01234567"));
         let debug = format!("{envelope:?}");
         assert!(debug.contains("<redacted>"));
@@ -1199,7 +1199,7 @@ mod recovery {
     }
 
     #[test]
-    fn concurrent_recovery_converges_on_one_stable_generation() {
+    fn test_concurrent_recovery_converges_on_one_stable_generation() {
         let root = tempfile::tempdir().expect("temporary credential root");
         let namespace = namespace("0123456789abcdef01234567");
         let store = std::sync::Arc::new(CredentialStore::with_root(namespace.clone(), root.path()));
@@ -1228,7 +1228,7 @@ mod recovery {
     }
 
     #[test]
-    fn mismatched_namespace_fails_before_pending_file_creation() {
+    fn test_mismatched_namespace_fails_before_pending_file_creation() {
         let root = tempfile::tempdir().expect("temporary credential root");
         let current_namespace = namespace("0123456789abcdef01234567");
         let store = CredentialStore::with_root(current_namespace, root.path());
@@ -1243,7 +1243,7 @@ mod recovery {
 
     #[cfg(unix)]
     #[test]
-    fn staged_envelope_and_directory_are_owner_only() {
+    fn test_staged_envelope_and_directory_are_owner_only() {
         use std::os::unix::fs::PermissionsExt as _;
 
         let root = tempfile::tempdir().expect("temporary credential root");
@@ -1271,7 +1271,7 @@ mod recovery {
     }
 
     #[tokio::test]
-    async fn concurrent_persisted_issuance_converges_and_revokes_the_displaced_generation() {
+    async fn test_concurrent_persisted_issuance_converges_and_revokes_the_displaced_generation() {
         let database = tribal_test_utils::TestDb::new().await;
         let root = tempfile::tempdir().expect("temporary credential root");
         let namespace = namespace("0123456789abcdef01234567");
@@ -1334,7 +1334,7 @@ mod recovery {
     }
 
     #[tokio::test]
-    async fn ensure_reuses_only_an_exact_live_grant() {
+    async fn test_ensure_reuses_only_an_exact_live_grant() {
         let database = tribal_test_utils::TestDb::new().await;
         let root = tempfile::tempdir().expect("temporary credential root");
         let namespace = namespace("abcdef0123456789abcdef01");

@@ -152,36 +152,35 @@ impl ProjectAdministration {
             if index == requested {
                 next = items
                     .last()
-                    .map(|item| project_cursor(&session.revision, high_water, item).encode());
+                    .map(|item| project_cursor(&session.revision, high_water, item).encode())
+                    .transpose()?;
                 break;
             }
             let candidate = summary(project);
-            items.push(candidate);
             let has_more = index + 1 < projects.len();
-            let candidate_next = has_more.then(|| {
-                project_cursor(
-                    &session.revision,
-                    high_water,
-                    items.last().expect("candidate was appended"),
-                )
-                .encode()
-            });
+            let candidate_next = if has_more {
+                Some(project_cursor(&session.revision, high_water, &candidate).encode()?)
+            } else {
+                None
+            };
+            items.push(candidate);
             let candidate_page = session.revisioned(ProjectPage {
                 items: items.clone(),
                 next: candidate_next.clone(),
             });
             if serde_json::to_vec(&candidate_page)
-                .expect("project page serialises")
+                .map_err(|source| InventoryCursorError::Encoding { source })?
                 .len()
                 > INVENTORY_RESULT_BUDGET
             {
-                let oversized = items.pop().expect("candidate was appended");
+                let oversized = items.pop().ok_or(InventoryCursorError::InternalInvariant)?;
                 if items.is_empty() {
                     return Err(ProjectAdministrationError::ItemTooLarge(oversized.id));
                 }
                 next = items
                     .last()
-                    .map(|item| project_cursor(&session.revision, high_water, item).encode());
+                    .map(|item| project_cursor(&session.revision, high_water, item).encode())
+                    .transpose()?;
                 break;
             }
             next = candidate_next;
@@ -218,6 +217,12 @@ pub(super) fn public_error(error: ProjectAdministrationError) -> ManagementRespo
         | ProjectAdministrationError::CursorPosition => ManagementResponseError {
             message: "project inventory cursor is invalid".to_owned(),
             error: ManagementError::ConfigurationInvalid { fields: Vec::new() },
+        },
+        ProjectAdministrationError::Cursor(
+            InventoryCursorError::Encoding { .. } | InventoryCursorError::InternalInvariant,
+        ) => ManagementResponseError {
+            message: "project inventory could not be encoded".to_owned(),
+            error: ManagementError::InternalInvariant,
         },
         ProjectAdministrationError::Session(DatabaseAccessError::Configuration(error)) => {
             super::super::configuration::management_error(error)

@@ -3,7 +3,7 @@
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use tribal_config::{CliOverrides, ServerCliOverrides, default_config_file_path};
 use tribal_domain::{AuthTokenId, ProjectId, ProviderKind, Scope, TaskType, is_mintable_scope};
-use tribal_wire::management::{KnownModelId, TransportKind};
+use tribal_wire::management::{CredentialSourceId, EndpointSelection, KnownModelId, TransportKind};
 
 use super::styles::STYLES;
 
@@ -263,6 +263,65 @@ pub enum InferenceStageArg {
     Relation,
 }
 
+/// One inference stage and its endpoint transition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StageEndpointArg {
+    pub stage: InferenceStageArg,
+    pub endpoint: EndpointSelection,
+}
+
+impl std::str::FromStr for StageEndpointArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (stage, endpoint) = value
+            .split_once('=')
+            .ok_or_else(|| "expected stage=preserve|provider-default|URL".to_owned())?;
+        let stage = parse_inference_stage(stage)?;
+        let endpoint = match endpoint {
+            "preserve" => EndpointSelection::Preserve,
+            "provider-default" => EndpointSelection::ProviderDefault,
+            "" => return Err("endpoint must not be empty".to_owned()),
+            value => EndpointSelection::Custom {
+                value: value.to_owned(),
+            },
+        };
+        Ok(Self { stage, endpoint })
+    }
+}
+
+/// One inference stage and a use-bound stored credential source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageCredentialSourceArg {
+    pub stage: InferenceStageArg,
+    pub source: CredentialSourceId,
+}
+
+impl std::str::FromStr for StageCredentialSourceArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (stage, source) = value
+            .split_once('=')
+            .ok_or_else(|| "expected stage=credential-source-id".to_owned())?;
+        Ok(Self {
+            stage: parse_inference_stage(stage)?,
+            source: source
+                .parse()
+                .map_err(|error| format!("invalid credential source id: {error}"))?,
+        })
+    }
+}
+
+fn parse_inference_stage(value: &str) -> Result<InferenceStageArg, String> {
+    match value {
+        "extraction" => Ok(InferenceStageArg::Extraction),
+        "triage" => Ok(InferenceStageArg::Triage),
+        "relation" => Ok(InferenceStageArg::Relation),
+        _ => Err(format!("unknown inference stage '{value}'")),
+    }
+}
+
 /// Arguments for model credential discovery.
 #[derive(Debug, Args)]
 pub struct ModelCredentialSourceArgs {
@@ -396,6 +455,14 @@ pub struct BootstrapArgs {
     )]
     pub model_selections: Vec<String>,
 
+    /// Endpoint transition in `stage=preserve|provider-default|URL` form.
+    #[arg(
+        long = "model-endpoint",
+        value_name = "STAGE=ENDPOINT",
+        help_heading = "Models"
+    )]
+    pub model_endpoints: Vec<StageEndpointArg>,
+
     /// Model credential as `stage=ENVIRONMENT_VARIABLE`; repeat by stage.
     #[arg(
         long = "model-credential-env",
@@ -403,6 +470,14 @@ pub struct BootstrapArgs {
         help_heading = "Models"
     )]
     pub model_credential_env: Vec<String>,
+
+    /// Stored credential capability in `stage=credential-source-id` form.
+    #[arg(
+        long = "model-credential-source",
+        value_name = "STAGE=SOURCE_ID",
+        help_heading = "Models"
+    )]
+    pub model_credential_sources: Vec<StageCredentialSourceArg>,
 
     /// Read one model stage's credential from stdin.
     #[arg(
@@ -434,16 +509,26 @@ pub struct BootstrapArgs {
         long = "genesis-credential-env",
         value_name = "VARIABLE",
         requires = "genesis_provider",
-        conflicts_with_all = ["genesis_credential_stdin", "genesis_reuse_stage"],
+        conflicts_with_all = ["genesis_credential_source", "genesis_credential_stdin", "genesis_reuse_stage"],
         help_heading = "Genesis"
     )]
     pub genesis_credential_env: Option<String>,
+
+    /// Stored credential capability for graph genesis.
+    #[arg(
+        long = "genesis-credential-source",
+        value_name = "SOURCE_ID",
+        requires = "genesis_provider",
+        conflicts_with_all = ["genesis_credential_env", "genesis_credential_stdin", "genesis_reuse_stage"],
+        help_heading = "Genesis"
+    )]
+    pub genesis_credential_source: Option<CredentialSourceId>,
 
     /// Read the explicit genesis credential from stdin.
     #[arg(
         long = "genesis-credential-stdin",
         requires = "genesis_provider",
-        conflicts_with_all = ["genesis_credential_env", "genesis_reuse_stage", "model_credential_stdin"],
+        conflicts_with_all = ["genesis_credential_env", "genesis_credential_source", "genesis_reuse_stage", "model_credential_stdin"],
         help_heading = "Genesis"
     )]
     pub genesis_credential_stdin: bool,
@@ -453,7 +538,7 @@ pub struct BootstrapArgs {
         long = "genesis-reuse-stage",
         value_enum,
         requires = "genesis_provider",
-        conflicts_with_all = ["genesis_credential_env", "genesis_credential_stdin"],
+        conflicts_with_all = ["genesis_credential_env", "genesis_credential_source", "genesis_credential_stdin"],
         help_heading = "Genesis"
     )]
     pub genesis_reuse_stage: Option<InferenceStageArg>,

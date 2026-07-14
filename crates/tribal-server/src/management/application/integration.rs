@@ -450,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_and_explicit_targets_resolve_without_auth_ambiguity() {
+    fn test_configured_and_explicit_targets_resolve_without_auth_ambiguity() {
         let context = StdioProjectContext::Unscoped;
         assert!(matches!(
             resolve_target(
@@ -501,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_bearer_export_refuses_stdio() {
+    fn test_configured_bearer_export_refuses_stdio() {
         let error = resolve_target(
             TransportKind::Stdio,
             McpTargetSelection::Configured {
@@ -519,7 +519,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configured_unscoped_stdio_is_ambient_project_proof() {
+    async fn test_configured_unscoped_stdio_is_ambient_project_proof() {
         let harness = Harness::new(TransportKind::Stdio).await;
         let result = harness
             .administration
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_project_stdio_uses_stable_id_and_remote_server_name() {
+    async fn test_explicit_project_stdio_uses_stable_id_and_remote_server_name() {
         let harness = Harness::new(TransportKind::Http).await;
         let remote = GitRemote::from_parts("github.com", "acme/widgets", None);
         let project = PgProjectRepository
@@ -585,7 +585,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configured_http_and_explicit_sse_render_public_oauth_entries() {
+    async fn test_configured_http_and_explicit_sse_render_public_oauth_entries() {
         let http = Harness::new(TransportKind::Http).await;
         let result = http
             .administration
@@ -620,7 +620,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persisted_bearer_export_is_scoped_and_redacted() {
+    async fn test_persisted_bearer_export_is_scoped_and_redacted() {
         let harness = Harness::new(TransportKind::Http).await;
         let session = harness
             .access
@@ -662,7 +662,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn coordinator_exit_is_a_typed_persisted_bearer_refusal() {
+    async fn test_coordinator_exit_is_a_typed_persisted_bearer_refusal() {
         let harness = Harness::new(TransportKind::Sse).await;
         let Harness {
             database,

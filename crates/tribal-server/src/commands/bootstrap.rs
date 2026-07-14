@@ -13,7 +13,10 @@ use tribal_wire::management::{
 
 use super::{config, presentation};
 use crate::{
-    cli::{BootstrapArgs, InferenceStageArg, IntegrationAuthArg},
+    cli::{
+        BootstrapArgs, InferenceStageArg, IntegrationAuthArg, StageCredentialSourceArg,
+        StageEndpointArg,
+    },
     error::AppError,
 };
 
@@ -55,6 +58,10 @@ enum BootstrapCommandError {
     ModelCredential { value: String },
     #[error("model credential for stage '{stage}' was supplied more than once")]
     DuplicateModelCredential { stage: String },
+    #[error("model endpoint for stage '{stage}' was supplied more than once")]
+    DuplicateModelEndpoint { stage: String },
+    #[error("model endpoint for stage '{stage}' has no matching model selection")]
+    OrphanModelEndpoint { stage: String },
     #[error("reading credential environment variable '{variable}': {source}")]
     CredentialEnvironment {
         variable: String,
@@ -123,11 +130,17 @@ fn request_parts(args: BootstrapArgs) -> Result<BootstrapRequestParts, AppError>
         },
         None => BootstrapStorage::Configured,
     };
-    let model_credentials =
-        model_credentials(args.model_credential_env, args.model_credential_stdin)?;
-    let model_selections = model_selections(args.model_selections, model_credentials)?;
+    let model_credentials = model_credentials(
+        args.model_credential_env,
+        args.model_credential_sources,
+        args.model_credential_stdin,
+    )?;
+    let model_endpoints = model_endpoints(args.model_endpoints)?;
+    let model_selections =
+        model_selections(args.model_selections, model_endpoints, model_credentials)?;
     let genesis_credential = genesis_credential(
         args.genesis_credential_env,
+        args.genesis_credential_source,
         args.genesis_credential_stdin,
         args.genesis_reuse_stage,
     )?;
@@ -226,6 +239,7 @@ fn request_parts(args: BootstrapArgs) -> Result<BootstrapRequestParts, AppError>
 
 fn model_selections(
     values: Vec<String>,
+    mut endpoints: BTreeMap<String, EndpointSelection>,
     mut credentials: BTreeMap<String, CredentialInput>,
 ) -> Result<Vec<ModelSelectionInput>, AppError> {
     let mut selections = Vec::new();
@@ -249,9 +263,16 @@ fn model_selections(
         selections.push(ModelSelectionInput {
             model: id,
             stages: vec![parsed_stage],
-            endpoint: EndpointSelection::Preserve,
+            endpoint: endpoints
+                .remove(stage)
+                .unwrap_or(EndpointSelection::Preserve),
             credential: credentials.remove(stage),
         });
+    }
+    if let Some((stage, _)) = endpoints.into_iter().next() {
+        return Err(command_error(BootstrapCommandError::OrphanModelEndpoint {
+            stage,
+        }));
     }
     if let Some((stage, _)) = credentials.into_iter().next() {
         return Err(command_error(BootstrapCommandError::ModelCredential {
@@ -261,8 +282,24 @@ fn model_selections(
     Ok(selections)
 }
 
+fn model_endpoints(
+    values: Vec<StageEndpointArg>,
+) -> Result<BTreeMap<String, EndpointSelection>, AppError> {
+    let mut endpoints = BTreeMap::new();
+    for value in values {
+        let stage = stage_name(value.stage).to_owned();
+        if endpoints.insert(stage.clone(), value.endpoint).is_some() {
+            return Err(command_error(
+                BootstrapCommandError::DuplicateModelEndpoint { stage },
+            ));
+        }
+    }
+    Ok(endpoints)
+}
+
 fn model_credentials(
     environment: Vec<String>,
+    sources: Vec<StageCredentialSourceArg>,
     stdin_stage: Option<InferenceStageArg>,
 ) -> Result<BTreeMap<String, CredentialInput>, AppError> {
     let mut credentials = BTreeMap::new();
@@ -281,6 +318,15 @@ fn model_credentials(
             &mut credentials,
             stage,
             credential_from_environment(variable)?,
+        )?;
+    }
+    for value in sources {
+        insert_model_credential(
+            &mut credentials,
+            stage_name(value.stage),
+            CredentialInput::Source {
+                source: value.source,
+            },
         )?;
     }
     if let Some(stage) = stdin_stage {
@@ -307,12 +353,18 @@ fn insert_model_credential(
 
 fn genesis_credential(
     environment: Option<String>,
+    source: Option<tribal_wire::management::CredentialSourceId>,
     stdin: bool,
     reuse: Option<InferenceStageArg>,
 ) -> Result<Option<BootstrapGenesisCredential>, AppError> {
     if let Some(variable) = environment {
         return credential_from_environment(&variable)
             .map(|credential| Some(BootstrapGenesisCredential::Explicit { credential }));
+    }
+    if let Some(source) = source {
+        return Ok(Some(BootstrapGenesisCredential::Explicit {
+            credential: CredentialInput::Source { source },
+        }));
     }
     if stdin {
         return credential_from_stdin()
@@ -367,7 +419,11 @@ fn stage_name(stage: InferenceStageArg) -> &'static str {
 }
 
 fn stage_value(stage: InferenceStageArg) -> InferenceStage {
-    parse_stage(stage_name(stage)).expect("CLI stages are management stages")
+    match stage {
+        InferenceStageArg::Extraction => InferenceStage::Extraction,
+        InferenceStageArg::Triage => InferenceStage::Triage,
+        InferenceStageArg::Relation => InferenceStage::Relation,
+    }
 }
 
 fn project_input(
@@ -475,6 +531,49 @@ mod tests {
             Some(BootstrapGenesisCredential::ReuseInferenceStage {
                 stage: InferenceStage::Extraction
             })
+        ));
+    }
+
+    #[test]
+    fn test_endpoint_transitions_and_stored_credentials_reach_the_wire_request() {
+        let model_source: tribal_wire::management::CredentialSourceId =
+            format!("credsrc_{}", "A".repeat(43))
+                .parse()
+                .expect("model source parses");
+        let genesis_source: tribal_wire::management::CredentialSourceId =
+            format!("credsrc_{}Q", "A".repeat(42))
+                .parse()
+                .expect("genesis source parses");
+        let parts = request_parts(BootstrapArgs {
+            model_selections: vec!["extraction=openai.gpt-4.1".to_owned()],
+            model_endpoints: vec![StageEndpointArg {
+                stage: InferenceStageArg::Extraction,
+                endpoint: EndpointSelection::ProviderDefault,
+            }],
+            model_credential_sources: vec![StageCredentialSourceArg {
+                stage: InferenceStageArg::Extraction,
+                source: model_source.clone(),
+            }],
+            genesis_provider: Some(ProviderKind::OpenAi),
+            genesis_model: Some("text-embedding-3-small".to_owned()),
+            genesis_credential_source: Some(genesis_source.clone()),
+            ..BootstrapArgs::default()
+        })
+        .expect("stored credentials project");
+
+        assert!(matches!(
+            parts.model_selections.as_slice(),
+            [ModelSelectionInput {
+                endpoint: EndpointSelection::ProviderDefault,
+                credential: Some(CredentialInput::Source { source }),
+                ..
+            }] if source == &model_source
+        ));
+        assert!(matches!(
+            parts.genesis.and_then(|genesis| genesis.credential),
+            Some(BootstrapGenesisCredential::Explicit {
+                credential: CredentialInput::Source { source }
+            }) if source == genesis_source
         ));
     }
 }

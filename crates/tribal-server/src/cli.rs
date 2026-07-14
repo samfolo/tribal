@@ -13,8 +13,8 @@ pub use command::{
     IntegrationAuthArg, IntegrationCommand, IntegrationMcpConfigArgs, ManageArgs, ManagerCommand,
     ModelCredentialSourceArgs, ModelsCommand, OutputArgs, ProjectCommand, ProjectListArgs,
     ProjectRegisterArgs, ReindexCommand, ReindexPruneArgs, ReindexRunArgs, RuntimeCommand,
-    ServeArgs, ThreadsCommand, ThreadsPruneArgs, TokenCommand, TokenCreateArgs, TokenListArgs,
-    TokenRevokeAllArgs, TokenRevokeArgs,
+    ServeArgs, StageCredentialSourceArg, StageEndpointArg, ThreadsCommand, ThreadsPruneArgs,
+    TokenCommand, TokenCreateArgs, TokenListArgs, TokenRevokeAllArgs, TokenRevokeArgs,
 };
 
 #[cfg(test)]
@@ -160,9 +160,11 @@ mod projection {
                     "--database-url",
                     "postgres://localhost/tribal",
                     "--model-selection",
-                    "extraction=ollama.default",
-                    "--model-credential-env",
-                    "extraction=OLLAMA_API_KEY",
+                    "extraction=openai.gpt-4.1",
+                    "--model-endpoint",
+                    "extraction=provider-default",
+                    "--model-credential-source",
+                    "extraction=credsrc_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                     "--genesis-provider",
                     "ollama",
                     "--genesis-model",

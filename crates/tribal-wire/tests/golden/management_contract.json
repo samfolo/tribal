@@ -8111,20 +8111,6 @@
               "code": {
                 "type": "string",
                 "enum": [
-                  "operation_timed_out"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "code"
-            ],
-            "properties": {
-              "code": {
-                "type": "string",
-                "enum": [
                   "database_unavailable"
                 ]
               }

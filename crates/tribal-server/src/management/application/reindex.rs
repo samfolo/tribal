@@ -423,7 +423,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preview_estimates_without_probe_ledger_or_durable_run() {
+    async fn test_preview_estimates_without_probe_ledger_or_durable_run() {
         let harness = Harness::new().await;
         let server = ProbeServer::start().await;
         let profiles_before = row_count(&harness.database, "embedding_profiles").await;
@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_ledgers_one_probe_and_preserves_single_flight_and_cancel_idempotence() {
+    async fn test_apply_ledgers_one_probe_and_preserves_single_flight_and_cancel_idempotence() {
         let harness = Harness::new().await;
         let server = ProbeServer::start().await;
         let mut connection = harness.database.pool().acquire().await.unwrap();
@@ -556,7 +556,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prune_preview_rolls_back_and_apply_returns_the_same_counts() {
+    async fn test_prune_preview_rolls_back_and_apply_returns_the_same_counts() {
         let harness = Harness::new().await;
         let mut connection = harness.database.pool().acquire().await.unwrap();
         let profile = PgEmbeddingProfileRepository

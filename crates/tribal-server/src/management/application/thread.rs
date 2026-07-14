@@ -309,7 +309,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preview_is_zero_effect_and_apply_is_root_bounded() {
+    async fn test_preview_is_zero_effect_and_apply_is_root_bounded() {
         let harness = Harness::new(1).await;
         let mut connection = harness.database.pool().acquire().await.unwrap();
         let first = insert_thread(&mut connection, "bounded-first", None).await;
@@ -353,7 +353,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cascade_collects_terminal_descendants_but_refuses_live_ones() {
+    async fn test_cascade_collects_terminal_descendants_but_refuses_live_ones() {
         let harness = Harness::new(10).await;
         let mut connection = harness.database.pool().acquire().await.unwrap();
         let root = insert_thread(&mut connection, "terminal-root", None).await;

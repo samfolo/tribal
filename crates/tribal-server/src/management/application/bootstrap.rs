@@ -626,7 +626,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_is_safely_rerunnable_and_hands_off_one_public_secret() {
+    async fn test_ensure_is_safely_rerunnable_and_hands_off_one_public_secret() {
         let harness = Harness::new().await;
         let first = harness
             .administration
@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn distinct_models_genesis_reuse_and_telemetry_chain_revisions() {
+    async fn test_distinct_models_genesis_reuse_and_telemetry_chain_revisions() {
         let harness = Harness::new().await;
         let mut request = harness.request();
         request.model_selections = vec![
@@ -717,7 +717,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn structural_refusals_leave_config_and_database_untouched() {
+    async fn test_structural_refusals_leave_config_and_database_untouched() {
         let harness = Harness::new().await;
         let before_tokens = harness.token_count().await;
         let mut duplicate = harness.request();
@@ -785,7 +785,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persisted_bearer_handoff_contains_the_secret_once() {
+    async fn test_persisted_bearer_handoff_contains_the_secret_once() {
         let harness = Harness::with_transport(TransportKind::Http).await;
         let mut request = harness.request();
         request.integration = McpTargetSelection::Configured {
@@ -814,7 +814,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn coordinator_exit_is_a_typed_final_credential_refusal() {
+    async fn test_coordinator_exit_is_a_typed_final_credential_refusal() {
         let mut harness = Harness::new().await;
         harness
             .credential_runtime

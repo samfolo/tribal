@@ -319,35 +319,35 @@ fn bounded_page(
         if index == requested {
             next = items
                 .last()
-                .map(|item| token_cursor(&session.revision, high_water, item).encode());
+                .map(|item| token_cursor(&session.revision, high_water, item).encode())
+                .transpose()?;
             break;
         }
-        items.push(summary(&row.token, row.principal.clone()));
+        let candidate_item = summary(&row.token, row.principal.clone());
         let has_more = index + 1 < rows.len();
-        let candidate_next = has_more.then(|| {
-            token_cursor(
-                &session.revision,
-                high_water,
-                items.last().expect("candidate was appended"),
-            )
-            .encode()
-        });
+        let candidate_next = if has_more {
+            Some(token_cursor(&session.revision, high_water, &candidate_item).encode()?)
+        } else {
+            None
+        };
+        items.push(candidate_item);
         let candidate = session.revisioned(TokenPage {
             items: items.clone(),
             next: candidate_next.clone(),
         });
         if serde_json::to_vec(&candidate)
-            .expect("token page serialises")
+            .map_err(|source| InventoryCursorError::Encoding { source })?
             .len()
             > INVENTORY_RESULT_BUDGET
         {
-            let oversized = items.pop().expect("candidate was appended");
+            let oversized = items.pop().ok_or(InventoryCursorError::InternalInvariant)?;
             if items.is_empty() {
                 return Err(TokenAdministrationError::ItemTooLarge(oversized.id));
             }
             next = items
                 .last()
-                .map(|item| token_cursor(&session.revision, high_water, item).encode());
+                .map(|item| token_cursor(&session.revision, high_water, item).encode())
+                .transpose()?;
             break;
         }
         next = candidate_next;
@@ -427,6 +427,12 @@ pub(super) fn public_error(error: TokenAdministrationError) -> ManagementRespons
             message: "token inventory cursor is invalid".to_owned(),
             error: ManagementError::ConfigurationInvalid { fields: Vec::new() },
         },
+        TokenAdministrationError::Cursor(
+            InventoryCursorError::Encoding { .. } | InventoryCursorError::InternalInvariant,
+        ) => ManagementResponseError {
+            message: "token inventory could not be encoded".to_owned(),
+            error: ManagementError::InternalInvariant,
+        },
         TokenAdministrationError::Credential { source } => {
             let failure = if matches!(source, CredentialCoordinatorError::Unavailable) {
                 AdministrationFailure::PersistedCredentialUnavailable
@@ -494,7 +500,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_list_and_stable_id_revocation_share_one_revision() {
+    async fn test_create_list_and_stable_id_revocation_share_one_revision() {
         let database = tribal_test_utils::TestDb::new().await;
         let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
         let revision = worker.resolved_snapshot().await.unwrap().revision;
@@ -598,7 +604,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_mutation_is_refused_before_database_or_coordinator_use() {
+    async fn test_stale_mutation_is_refused_before_database_or_coordinator_use() {
         let (_temp, worker, _worker_runtime) =
             config_worker("postgres://user:pass@localhost:1/unreachable");
         let (credentials, credential_runtime) = CredentialCoordinator::spawn(
@@ -626,7 +632,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unexpected_coordinator_exit_becomes_a_typed_persisted_credential_refusal() {
+    async fn test_unexpected_coordinator_exit_becomes_a_typed_persisted_credential_refusal() {
         let database = tribal_test_utils::TestDb::new().await;
         let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
         let revision = worker.resolved_snapshot().await.unwrap().revision;
@@ -657,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn token_state_prefers_terminal_revocation_over_expiry() {
+    fn test_token_state_prefers_terminal_revocation_over_expiry() {
         let now = Utc::now();
         let token = AuthToken::builder()
             .id(AuthTokenId::new())
