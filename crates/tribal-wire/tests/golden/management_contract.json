@@ -7271,6 +7271,7 @@
       "reindex.run",
       "reindex.cancel",
       "reindex.prune",
+      "threads.prune",
       "database.probe",
       "credential.probe",
       "config.getAll",
@@ -14071,6 +14072,126 @@
             }
           }
         ]
+      }
+    }
+  },
+  "Revisioned_for_ThreadPruneOutcome": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Revisioned_for_ThreadPruneOutcome",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/ThreadPruneOutcome"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "ThreadPruneApplied": {
+        "type": "object",
+        "required": [
+          "pruned",
+          "refused"
+        ],
+        "properties": {
+          "pruned": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "refused": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          }
+        }
+      },
+      "ThreadPruneOutcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "plan"
+                ],
+                "properties": {
+                  "plan": {
+                    "$ref": "#/definitions/ThreadPrunePlan"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "preview"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "result"
+                ],
+                "properties": {
+                  "result": {
+                    "$ref": "#/definitions/ThreadPruneApplied"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "applied"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ThreadPrunePlan": {
+        "type": "object",
+        "required": [
+          "eligible",
+          "refused"
+        ],
+        "properties": {
+          "eligible": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "refused": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          }
+        }
       }
     }
   },
@@ -23736,6 +23857,88 @@
                 ]
               }
             }
+          }
+        ]
+      }
+    }
+  },
+  "ThreadPruneRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ThreadPruneRequest",
+    "type": "object",
+    "required": [
+      "cascade",
+      "expected_revision",
+      "mode",
+      "older_than"
+    ],
+    "properties": {
+      "cascade": {
+        "type": "boolean"
+      },
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "mode": {
+        "$ref": "#/definitions/MutationMode"
+      },
+      "older_than": {
+        "$ref": "#/definitions/RetentionDays"
+      },
+      "stage": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/TaskType"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "MutationMode": {
+        "type": "string",
+        "enum": [
+          "preview",
+          "apply"
+        ]
+      },
+      "RetentionDays": {
+        "type": "integer",
+        "format": "uint32",
+        "maximum": 4294967295.0,
+        "minimum": 1.0
+      },
+      "TaskType": {
+        "description": "The type of a task in the ingest pipeline.",
+        "oneOf": [
+          {
+            "description": "Extract candidate knowledge items from raw input.",
+            "type": "string",
+            "enum": [
+              "extraction"
+            ]
+          },
+          {
+            "description": "Classify and process a single candidate.",
+            "type": "string",
+            "enum": [
+              "triage"
+            ]
+          },
+          {
+            "description": "Create relations across all triaged items in the batch.",
+            "type": "string",
+            "enum": [
+              "relation"
+            ]
           }
         ]
       }

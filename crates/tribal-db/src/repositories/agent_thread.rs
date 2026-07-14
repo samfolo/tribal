@@ -118,6 +118,8 @@ pub struct ThreadPruneCriteria {
     /// Include a candidate's terminal descendants in the deletion; a live
     /// descendant still refuses the whole subtree.
     pub cascade: bool,
+    /// Maximum candidate roots considered in one pass.
+    pub root_limit: u32,
 }
 
 /// What one prune pass concluded (or would conclude, for a dry run).
@@ -1048,6 +1050,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
                  SELECT id FROM agent_threads \
                  WHERE completed_at IS NOT NULL AND completed_at < $1 \
                    AND ($2::text IS NULL OR pipeline_stage = $2) \
+                 ORDER BY completed_at, id LIMIT $4 \
              ), \
              descendants AS ( \
                  SELECT c.id AS root, t.id, t.completed_at \
@@ -1062,6 +1065,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         .bind(criteria.completed_before)
         .bind(stage)
         .bind(criteria.cascade)
+        .bind(i64::from(criteria.root_limit))
         .fetch_one(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
@@ -1085,6 +1089,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
                  SELECT id FROM agent_threads \
                  WHERE completed_at IS NOT NULL AND completed_at < $1 \
                    AND ($2::text IS NULL OR pipeline_stage = $2) \
+                 ORDER BY completed_at, id LIMIT $4 \
              ), \
              descendants AS ( \
                  SELECT c.id AS root, t.id, t.completed_at \
@@ -1115,6 +1120,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         .bind(criteria.completed_before)
         .bind(stage)
         .bind(criteria.cascade)
+        .bind(i64::from(criteria.root_limit))
         .execute(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {

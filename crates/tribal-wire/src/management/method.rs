@@ -13,8 +13,9 @@ use super::{
     ProjectRegisterResult, ReadinessReport, ReindexCancelRequest, ReindexCancelResult,
     ReindexPruneRequest, ReindexPruneResult, ReindexRunRequest, ReindexRunResult,
     RuntimeLogsTailRequest, RuntimeLogsTailResult, RuntimeRestartResult, RuntimeStartResult,
-    RuntimeStopResult, TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest,
-    TokenRevokeAllRequest, TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
+    RuntimeStopResult, ThreadPruneRequest, ThreadPruneResult, TokenCreateRequest,
+    TokenCreateResult, TokenInventory, TokenListRequest, TokenRevokeAllRequest,
+    TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
 };
 
 /// The request and response types owned by one management method.
@@ -214,6 +215,12 @@ management_calls! {
         call: ReindexPruneCall,
         request: ReindexPruneRequest,
         response: ReindexPruneResult,
+    },
+    ThreadsPrune => {
+        wire: "threads.prune",
+        call: ThreadsPruneCall,
+        request: ThreadPruneRequest,
+        response: ThreadPruneResult,
     },
     DatabaseProbe => {
         wire: "database.probe",

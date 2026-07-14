@@ -6,6 +6,7 @@ mod integration;
 mod pagination;
 mod project;
 mod reindex;
+mod thread;
 mod token;
 
 use credential::CredentialCoordinator;
@@ -13,14 +14,15 @@ use database::{DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
 use integration::IntegrationAdministration;
 use project::ProjectAdministration;
 use reindex::ReindexAdministration;
+use thread::ThreadAdministration;
 use token::TokenAdministration;
 use tribal_wire::management::{
     ConfigGetCall, ConfigPatchCall, ConfigSetCall, ConfigValidateCall, ConfigValidation,
     ConfigViolation, CredentialSourcesCall, DatabaseInitialiseCall, GraphConfigureGenesisCall,
     GraphConvergeGenesisCall, IntegrationMcpConfigCall, LogsTailCall, ManagementCall,
     ManagementError, ManagementMethod, ManagementResponseError, ModelsSelectCall, ProjectListCall,
-    ProjectRegisterCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall, TokenCreateCall,
-    TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
+    ProjectRegisterCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall, ThreadsPruneCall,
+    TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
 };
 
 use super::{
@@ -44,6 +46,7 @@ pub(crate) struct ManagementApplication<'a> {
     tokens: TokenAdministration,
     integration: IntegrationAdministration,
     reindex: ReindexAdministration,
+    threads: ThreadAdministration,
 }
 
 impl<'a> ManagementApplication<'a> {
@@ -68,6 +71,7 @@ impl<'a> ManagementApplication<'a> {
                 credentials,
             ),
             reindex: ReindexAdministration::new(database.clone()),
+            threads: ThreadAdministration::new(database.clone()),
             database,
         }
     }
@@ -100,6 +104,7 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::ReindexRun
             | ManagementMethod::ReindexCancel
             | ManagementMethod::ReindexPrune => self.reindex_value(method, params).await,
+            ManagementMethod::ThreadsPrune => self.thread_value(params).await,
             ManagementMethod::DatabaseProbe => {
                 let receipt = self.probe.database().await.map_err(probe_error)?;
                 self.refresh_readiness().await?;
@@ -369,6 +374,14 @@ impl<'a> ManagementApplication<'a> {
         }
     }
 
+    async fn thread_value(
+        &self,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, ManagementResponseError> {
+        let request = parse_call::<ThreadsPruneCall>(params)?;
+        response_value(self.threads.prune(request).await.map_err(thread_error))
+    }
+
     async fn refresh_readiness(&self) -> Result<(), ManagementResponseError> {
         let report = self.readiness_report().await?;
         self.lifecycle.update_readiness(report).await;
@@ -619,6 +632,30 @@ fn reindex_error(error: reindex::ReindexAdministrationError) -> ManagementRespon
         | reindex::ReindexAdministrationError::Operation { .. } => administration_error(
             "reindex operation is unavailable",
             tribal_wire::management::AdministrationFailure::ReindexUnavailable,
+        ),
+    }
+}
+
+fn thread_error(error: thread::ThreadAdministrationError) -> ManagementResponseError {
+    match error {
+        thread::ThreadAdministrationError::Session(DatabaseAccessError::RevisionConflict {
+            expected,
+            actual,
+        }) => ManagementResponseError {
+            message: "configuration changed before thread retention".to_owned(),
+            error: ManagementError::ConfigConflict { expected, actual },
+        },
+        thread::ThreadAdministrationError::Session(DatabaseAccessError::Configuration(error)) => {
+            management_error(error)
+        }
+        thread::ThreadAdministrationError::Session(DatabaseAccessError::Connection { .. })
+        | thread::ThreadAdministrationError::Database { .. } => administration_error(
+            "thread retention database is unavailable",
+            tribal_wire::management::AdministrationFailure::DatabaseUnavailable,
+        ),
+        thread::ThreadAdministrationError::Retention => administration_error(
+            "thread retention request was refused",
+            tribal_wire::management::AdministrationFailure::ThreadRetentionRefused,
         ),
     }
 }

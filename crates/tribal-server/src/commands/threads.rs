@@ -39,6 +39,7 @@ pub(crate) fn prune(config_path: &str, args: ThreadsPruneArgs) -> Result<(), App
         completed_before: Utc::now() - Duration::days(i64::from(args.older_than_days)),
         stage: args.stage,
         cascade: args.cascade,
+        root_limit: u32::MAX,
     };
     let dry_run = args.dry_run;
     let config = prepare_config(

@@ -109,8 +109,8 @@ pub use method::{
     IntegrationMcpConfigCall, LogsTailCall, ManagementCall, ManagementMethod, ManagerShutdownCall,
     ManagerSnapshotCall, ModelsCatalogueCall, ModelsSelectCall, ProjectListCall,
     ProjectRegisterCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall, RuntimeRestartCall,
-    RuntimeStartCall, RuntimeStopCall, ServerStatusCall, TokenCreateCall, TokenListCall,
-    TokenRevokeAllCall, TokenRevokeCall,
+    RuntimeStartCall, RuntimeStopCall, ServerStatusCall, ThreadsPruneCall, TokenCreateCall,
+    TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
 };
 #[cfg(feature = "schema")]
 pub use method::{ManagementCallSchema, management_call_schemas};

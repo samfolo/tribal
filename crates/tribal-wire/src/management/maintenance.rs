@@ -100,9 +100,26 @@ pub type ReindexPruneResult = Revisioned<ReindexPruneOutcome>;
 
 /// Positive retention interval measured by the manager clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "u32", into = "u32")]
 pub struct RetentionDays(u32);
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for RetentionDays {
+    fn schema_name() -> String {
+        "RetentionDays".to_owned()
+    }
+
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        let mut schema = generator.subschema_for::<u32>();
+        let schemars::schema::Schema::Object(object) = &mut schema else {
+            unreachable!("u32 has an object schema")
+        };
+        let number = object.number.get_or_insert_with(Default::default);
+        number.minimum = Some(1.0);
+        number.maximum = Some(f64::from(u32::MAX));
+        schema
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("retention days must be greater than zero")]
@@ -175,5 +192,12 @@ mod tests {
     fn test_retention_days_rejects_zero_during_deserialisation() {
         assert!(serde_json::from_str::<RetentionDays>("0").is_err());
         assert_eq!(serde_json::from_str::<RetentionDays>("1").unwrap().get(), 1);
+        assert_eq!(
+            serde_json::from_str::<RetentionDays>("4294967295")
+                .unwrap()
+                .get(),
+            u32::MAX
+        );
+        assert!(serde_json::from_str::<RetentionDays>("4294967296").is_err());
     }
 }
