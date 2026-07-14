@@ -10,10 +10,11 @@ use super::{
     GenesisOptions, GraphEmbeddingProfile, LifecycleSnapshot, ManagedRuntimeStatusResult,
     ManagerShutdownResult, McpConfigRequest, McpConfigResult, ModelSelectionRequest,
     ModelsCatalogue, ProbeReceipt, ProjectList, ProjectListRequest, ProjectRegisterRequest,
-    ProjectRegisterResult, ReadinessReport, RuntimeLogsTailRequest, RuntimeLogsTailResult,
-    RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult, TokenCreateRequest,
-    TokenCreateResult, TokenInventory, TokenListRequest, TokenRevokeAllRequest,
-    TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
+    ProjectRegisterResult, ReadinessReport, ReindexCancelRequest, ReindexCancelResult,
+    ReindexPruneRequest, ReindexPruneResult, ReindexRunRequest, ReindexRunResult,
+    RuntimeLogsTailRequest, RuntimeLogsTailResult, RuntimeRestartResult, RuntimeStartResult,
+    RuntimeStopResult, TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest,
+    TokenRevokeAllRequest, TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
 };
 
 /// The request and response types owned by one management method.
@@ -195,6 +196,24 @@ management_calls! {
         call: IntegrationMcpConfigCall,
         request: McpConfigRequest,
         response: McpConfigResult,
+    },
+    ReindexRun => {
+        wire: "reindex.run",
+        call: ReindexRunCall,
+        request: ReindexRunRequest,
+        response: ReindexRunResult,
+    },
+    ReindexCancel => {
+        wire: "reindex.cancel",
+        call: ReindexCancelCall,
+        request: ReindexCancelRequest,
+        response: ReindexCancelResult,
+    },
+    ReindexPrune => {
+        wire: "reindex.prune",
+        call: ReindexPruneCall,
+        request: ReindexPruneRequest,
+        response: ReindexPruneResult,
     },
     DatabaseProbe => {
         wire: "database.probe",

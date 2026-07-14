@@ -7268,6 +7268,9 @@
       "project.register",
       "project.list",
       "integration.mcpConfig",
+      "reindex.run",
+      "reindex.cancel",
+      "reindex.prune",
       "database.probe",
       "credential.probe",
       "config.getAll",
@@ -13066,6 +13069,158 @@
       }
     }
   },
+  "ReindexCancelRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ReindexCancelRequest",
+    "type": "object",
+    "required": [
+      "expected_revision"
+    ],
+    "properties": {
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      }
+    }
+  },
+  "ReindexPruneRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ReindexPruneRequest",
+    "type": "object",
+    "required": [
+      "expected_revision",
+      "mode"
+    ],
+    "properties": {
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "mode": {
+        "$ref": "#/definitions/MutationMode"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "MutationMode": {
+        "type": "string",
+        "enum": [
+          "preview",
+          "apply"
+        ]
+      }
+    }
+  },
+  "ReindexRunRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ReindexRunRequest",
+    "type": "object",
+    "required": [
+      "expected_revision",
+      "mode",
+      "target"
+    ],
+    "properties": {
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "mode": {
+        "$ref": "#/definitions/MutationMode"
+      },
+      "target": {
+        "$ref": "#/definitions/GenesisEmbeddingInput"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "GenesisEmbeddingInput": {
+        "description": "Candidate embedding identity for graph genesis.",
+        "type": "object",
+        "required": [
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dimensions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/definitions/ProviderKind"
+          }
+        }
+      },
+      "MutationMode": {
+        "type": "string",
+        "enum": [
+          "preview",
+          "apply"
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      }
+    }
+  },
   "Revisioned_for_McpConfigEntry": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "Revisioned_for_McpConfigEntry",
@@ -13489,6 +13644,433 @@
             "format": "date-time"
           }
         }
+      }
+    }
+  },
+  "Revisioned_for_ReindexCancelOutcome": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Revisioned_for_ReindexCancelOutcome",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/ReindexCancelOutcome"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "ReindexCancelOutcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "run_id"
+                ],
+                "properties": {
+                  "run_id": {
+                    "$ref": "#/definitions/ReindexRunId"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "cancelled"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "no_live_run"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ReindexRunId": {
+        "type": "string",
+        "pattern": "^rrun_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-cortex-swift-type": "validated-string"
+      }
+    }
+  },
+  "Revisioned_for_ReindexPruneOutcome": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Revisioned_for_ReindexPruneOutcome",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/ReindexPruneOutcome"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "ReindexPruneCounts": {
+        "type": "object",
+        "required": [
+          "embeddings",
+          "profiles",
+          "tag_embeddings"
+        ],
+        "properties": {
+          "embeddings": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "profiles": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "tag_embeddings": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          }
+        }
+      },
+      "ReindexPruneOutcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "candidates"
+                ],
+                "properties": {
+                  "candidates": {
+                    "$ref": "#/definitions/ReindexPruneCounts"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "preview"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "deleted"
+                ],
+                "properties": {
+                  "deleted": {
+                    "$ref": "#/definitions/ReindexPruneCounts"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "applied"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Revisioned_for_ReindexRunOutcome": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Revisioned_for_ReindexRunOutcome",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/ReindexRunOutcome"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      },
+      "ReindexApplyResolution": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "resolution"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "run_id"
+                ],
+                "properties": {
+                  "run_id": {
+                    "$ref": "#/definitions/ReindexRunId"
+                  }
+                }
+              },
+              "resolution": {
+                "type": "string",
+                "enum": [
+                  "created"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "resolution"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "run_id"
+                ],
+                "properties": {
+                  "run_id": {
+                    "$ref": "#/definitions/ReindexRunId"
+                  }
+                }
+              },
+              "resolution": {
+                "type": "string",
+                "enum": [
+                  "already_live"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "resolution"
+            ],
+            "properties": {
+              "resolution": {
+                "type": "string",
+                "enum": [
+                  "unchanged"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "resolution"
+            ],
+            "properties": {
+              "resolution": {
+                "type": "string",
+                "enum": [
+                  "lock_contended"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ReindexPlan": {
+        "type": "object",
+        "required": [
+          "dimensions",
+          "estimated_items",
+          "estimated_tags",
+          "model",
+          "normalised_base_url",
+          "provider"
+        ],
+        "properties": {
+          "dimensions": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "estimated_items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "estimated_tags": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "model": {
+            "type": "string"
+          },
+          "normalised_base_url": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/definitions/ProviderKind"
+          }
+        }
+      },
+      "ReindexRunId": {
+        "type": "string",
+        "pattern": "^rrun_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ReindexRunOutcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "plan"
+                ],
+                "properties": {
+                  "plan": {
+                    "$ref": "#/definitions/ReindexPlan"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "preview"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "plan",
+                  "resolution"
+                ],
+                "properties": {
+                  "plan": {
+                    "$ref": "#/definitions/ReindexPlan"
+                  },
+                  "resolution": {
+                    "$ref": "#/definitions/ReindexApplyResolution"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "applied"
+                ]
+              }
+            }
+          }
+        ]
       }
     }
   },

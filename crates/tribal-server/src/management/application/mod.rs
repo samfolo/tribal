@@ -5,19 +5,22 @@ mod database;
 mod integration;
 mod pagination;
 mod project;
+mod reindex;
 mod token;
 
 use credential::CredentialCoordinator;
 use database::{DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
 use integration::IntegrationAdministration;
 use project::ProjectAdministration;
+use reindex::ReindexAdministration;
 use token::TokenAdministration;
 use tribal_wire::management::{
     ConfigGetCall, ConfigPatchCall, ConfigSetCall, ConfigValidateCall, ConfigValidation,
     ConfigViolation, CredentialSourcesCall, DatabaseInitialiseCall, GraphConfigureGenesisCall,
     GraphConvergeGenesisCall, IntegrationMcpConfigCall, LogsTailCall, ManagementCall,
     ManagementError, ManagementMethod, ManagementResponseError, ModelsSelectCall, ProjectListCall,
-    ProjectRegisterCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
+    ProjectRegisterCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall, TokenCreateCall,
+    TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
 };
 
 use super::{
@@ -40,6 +43,7 @@ pub(crate) struct ManagementApplication<'a> {
     projects: ProjectAdministration,
     tokens: TokenAdministration,
     integration: IntegrationAdministration,
+    reindex: ReindexAdministration,
 }
 
 impl<'a> ManagementApplication<'a> {
@@ -63,6 +67,7 @@ impl<'a> ManagementApplication<'a> {
                 database.clone(),
                 credentials,
             ),
+            reindex: ReindexAdministration::new(database.clone()),
             database,
         }
     }
@@ -73,14 +78,12 @@ impl<'a> ManagementApplication<'a> {
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, ManagementResponseError> {
         match method {
-            ManagementMethod::ManagerSnapshot => lifecycle_value(self.lifecycle.snapshot().await),
-            ManagementMethod::RuntimeStart => lifecycle_value(self.lifecycle.start().await),
-            ManagementMethod::RuntimeStop => lifecycle_value(self.lifecycle.stop().await),
-            ManagementMethod::RuntimeRestart => lifecycle_value(self.lifecycle.restart().await),
-            ManagementMethod::ManagerShutdown => lifecycle_value(self.lifecycle.shutdown().await),
-            ManagementMethod::ServerStatus => {
-                lifecycle_value(self.lifecycle.runtime_status().await)
-            }
+            ManagementMethod::ManagerSnapshot
+            | ManagementMethod::RuntimeStart
+            | ManagementMethod::RuntimeStop
+            | ManagementMethod::RuntimeRestart
+            | ManagementMethod::ManagerShutdown
+            | ManagementMethod::ServerStatus => self.lifecycle_value(method).await,
             ManagementMethod::LogsTail => {
                 let request = parse_call::<LogsTailCall>(params)?;
                 lifecycle_value(self.lifecycle.runtime_logs_tail(request.lines).await)
@@ -94,6 +97,9 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::ProjectRegister => self.register_project_value(params).await,
             ManagementMethod::ProjectList => self.list_projects_value(params).await,
             ManagementMethod::IntegrationMcpConfig => self.integration_value(params).await,
+            ManagementMethod::ReindexRun
+            | ManagementMethod::ReindexCancel
+            | ManagementMethod::ReindexPrune => self.reindex_value(method, params).await,
             ManagementMethod::DatabaseProbe => {
                 let receipt = self.probe.database().await.map_err(probe_error)?;
                 self.refresh_readiness().await?;
@@ -226,6 +232,23 @@ impl<'a> ManagementApplication<'a> {
             .map_err(|_| invalid_request("readiness response encoding failed"))
     }
 
+    async fn lifecycle_value(
+        &self,
+        method: ManagementMethod,
+    ) -> Result<serde_json::Value, ManagementResponseError> {
+        match method {
+            ManagementMethod::ManagerSnapshot => lifecycle_value(self.lifecycle.snapshot().await),
+            ManagementMethod::RuntimeStart => lifecycle_value(self.lifecycle.start().await),
+            ManagementMethod::RuntimeStop => lifecycle_value(self.lifecycle.stop().await),
+            ManagementMethod::RuntimeRestart => lifecycle_value(self.lifecycle.restart().await),
+            ManagementMethod::ManagerShutdown => lifecycle_value(self.lifecycle.shutdown().await),
+            ManagementMethod::ServerStatus => {
+                lifecycle_value(self.lifecycle.runtime_status().await)
+            }
+            _ => unreachable!("lifecycle dispatch admits only lifecycle methods"),
+        }
+    }
+
     async fn token_value(
         &self,
         method: ManagementMethod,
@@ -317,6 +340,33 @@ impl<'a> ManagementApplication<'a> {
                 .await
                 .map_err(integration_error),
         )
+    }
+
+    async fn reindex_value(
+        &self,
+        method: ManagementMethod,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, ManagementResponseError> {
+        match method {
+            ManagementMethod::ReindexRun => {
+                let request = parse_call::<ReindexRunCall>(params)?;
+                response_value(
+                    self.reindex
+                        .run(self.product, request)
+                        .await
+                        .map_err(reindex_error),
+                )
+            }
+            ManagementMethod::ReindexCancel => {
+                let request = parse_call::<ReindexCancelCall>(params)?;
+                response_value(self.reindex.cancel(request).await.map_err(reindex_error))
+            }
+            ManagementMethod::ReindexPrune => {
+                let request = parse_call::<ReindexPruneCall>(params)?;
+                response_value(self.reindex.prune(request).await.map_err(reindex_error))
+            }
+            _ => unreachable!("reindex dispatch admits only reindex methods"),
+        }
     }
 
     async fn refresh_readiness(&self) -> Result<(), ManagementResponseError> {
@@ -538,6 +588,38 @@ fn integration_error(
             let failure = integration::public_failure(&error);
             administration_error("integration configuration could not be rendered", failure)
         }
+    }
+}
+
+fn reindex_error(error: reindex::ReindexAdministrationError) -> ManagementResponseError {
+    match error {
+        reindex::ReindexAdministrationError::Public(error) => error,
+        reindex::ReindexAdministrationError::Session(DatabaseAccessError::RevisionConflict {
+            expected,
+            actual,
+        }) => ManagementResponseError {
+            message: "configuration changed before reindex administration".to_owned(),
+            error: ManagementError::ConfigConflict { expected, actual },
+        },
+        reindex::ReindexAdministrationError::Session(DatabaseAccessError::Configuration(error)) => {
+            management_error(error)
+        }
+        reindex::ReindexAdministrationError::Session(DatabaseAccessError::Connection {
+            ..
+        })
+        | reindex::ReindexAdministrationError::Database { .. }
+        | reindex::ReindexAdministrationError::Operation {
+            source: tribal_worker::ReindexOpError::Db(_),
+        } => administration_error(
+            "reindex database is unavailable",
+            tribal_wire::management::AdministrationFailure::DatabaseUnavailable,
+        ),
+        reindex::ReindexAdministrationError::Target
+        | reindex::ReindexAdministrationError::Gateway { .. }
+        | reindex::ReindexAdministrationError::Operation { .. } => administration_error(
+            "reindex operation is unavailable",
+            tribal_wire::management::AdministrationFailure::ReindexUnavailable,
+        ),
     }
 }
 

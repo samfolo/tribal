@@ -108,8 +108,9 @@ pub use method::{
     GraphConvergeGenesisCall, GraphEmbeddingProfileCall, GraphGenesisOptionsCall,
     IntegrationMcpConfigCall, LogsTailCall, ManagementCall, ManagementMethod, ManagerShutdownCall,
     ManagerSnapshotCall, ModelsCatalogueCall, ModelsSelectCall, ProjectListCall,
-    ProjectRegisterCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall,
-    TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
+    ProjectRegisterCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall, RuntimeRestartCall,
+    RuntimeStartCall, RuntimeStopCall, ServerStatusCall, TokenCreateCall, TokenListCall,
+    TokenRevokeAllCall, TokenRevokeCall,
 };
 #[cfg(feature = "schema")]
 pub use method::{ManagementCallSchema, management_call_schemas};
