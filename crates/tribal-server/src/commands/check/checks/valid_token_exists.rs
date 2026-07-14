@@ -1,21 +1,21 @@
 //! Outcome constructors and probe for the `valid_token_exists` check.
 //!
 //! Resolution order under `http` / `sse`: `--token` → `TRIBAL_AUTH_TOKEN`
-//! → `credentials.json`.  If every source is empty, the outcome turns on
-//! the onboarding mode: a URL-only surface (loopback with DCR enabled)
+//! → the credential bound to the canonical config. If every source is
+//! empty, the outcome turns on the onboarding mode: a URL-only surface
+//! (loopback with DCR enabled)
 //! skips, since a fresh client registers and authenticates via OAuth on
 //! first connect; every other surface (routable, or DCR disabled) fails,
 //! since an absent static token leaves clients no authentication path.
 //! Under `stdio`, only `--token` is consulted; an absent override yields
 //! `Skip`.
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use sqlx::PgPool;
 use tribal_auth::{AuthError, Authenticator};
 use tribal_config::{
-    Auth, CredentialsReadError, ENV_AUTH_TOKEN, TransportKind, oauth_onboarding_is_url_only,
-    read_credentials,
+    CredentialsReadError, ENV_AUTH_TOKEN, TransportKind, oauth_onboarding_is_url_only,
 };
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 
@@ -23,7 +23,12 @@ use super::{
     state::CheckState,
     types::{CheckDetail, CheckOutcome, CheckRemediation, TokenFailureReason, TokenTransport},
 };
-use crate::startup::{expected_token_audience, resolve_oauth_runtime};
+use crate::{
+    management::application::credential::{
+        CredentialStoreError, PersistedCredentialReadError, read_persisted_bearer,
+    },
+    startup::{expected_token_audience, resolve_oauth_runtime},
+};
 
 impl CheckOutcome {
     pub(in crate::commands::check) fn token_skipped_stdio() -> Self {
@@ -119,13 +124,21 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
                 .ok()
                 .and_then(|runtime| expected_token_audience(config.server.transport, &runtime));
             let onboarding_url_only = oauth_onboarding_is_url_only(config);
-            network_path(pool, token_override, expected_audience, onboarding_url_only).await
+            network_path(
+                pool,
+                &state.config_path,
+                token_override,
+                expected_audience,
+                onboarding_url_only,
+            )
+            .await
         }
     }
 }
 
 async fn network_path(
     pool: &PgPool,
+    config_path: &Path,
     token_override: Option<&str>,
     expected_audience: Option<String>,
     onboarding_url_only: bool,
@@ -138,41 +151,57 @@ async fn network_path(
     {
         return verify_against(pool, token.trim(), TokenTransport::Http, expected_audience).await;
     }
-    match read_credentials() {
-        Ok(loaded) => match loaded.credentials.auth {
-            Auth::Bearer { token } => {
-                verify_against(
-                    pool,
-                    token.as_str(),
-                    TokenTransport::Http,
-                    expected_audience,
-                )
-                .await
-            }
-        },
+    match read_persisted_bearer(config_path) {
+        Ok(resolved) => {
+            verify_against(
+                pool,
+                resolved.token.as_str(),
+                TokenTransport::Http,
+                expected_audience,
+            )
+            .await
+        }
         // No static token resolves. Under URL-only onboarding that is
         // fine: a fresh client registers and authenticates via OAuth. On
         // every other surface (routable, or DCR disabled) there is no
         // automatic registration path, so the absent token is a gap.
-        Err(CredentialsReadError::NotFound) => {
+        Err(PersistedCredentialReadError::Legacy(CredentialsReadError::NotFound)) => {
             if onboarding_url_only {
                 CheckOutcome::token_skipped_loopback_oauth()
             } else {
                 CheckOutcome::token_missing_routable()
             }
         }
-        Err(
+        Err(PersistedCredentialReadError::Legacy(
             err @ (CredentialsReadError::Malformed { .. }
             | CredentialsReadError::UnsupportedSchema { .. }),
-        ) => {
+        )) => {
             CheckOutcome::credentials_unreadable(err.to_string(), CheckRemediation::RerunBootstrap)
         }
-        Err(err @ (CredentialsReadError::Path(_) | CredentialsReadError::Read { .. })) => {
-            CheckOutcome::credentials_unreadable(
-                err.to_string(),
-                CheckRemediation::ConsultUnderlyingError,
-            )
-        }
+        Err(PersistedCredentialReadError::Legacy(
+            err @ (CredentialsReadError::Path(_) | CredentialsReadError::Read { .. }),
+        )) => CheckOutcome::credentials_unreadable(
+            err.to_string(),
+            CheckRemediation::ConsultUnderlyingError,
+        ),
+        Err(
+            error @ PersistedCredentialReadError::Namespaced {
+                source:
+                    CredentialStoreError::Encoding { .. } | CredentialStoreError::NamespaceMismatch,
+            },
+        ) => CheckOutcome::credentials_unreadable(
+            error.to_string(),
+            CheckRemediation::RerunBootstrap,
+        ),
+        Err(
+            error @ (PersistedCredentialReadError::Authority { .. }
+            | PersistedCredentialReadError::Namespaced {
+                source: CredentialStoreError::Io { .. },
+            }),
+        ) => CheckOutcome::credentials_unreadable(
+            error.to_string(),
+            CheckRemediation::ConsultUnderlyingError,
+        ),
     }
 }
 

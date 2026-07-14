@@ -24,7 +24,7 @@ use tribal_wire::management::{
     ManagementError, ManagementResponseError, ManagerLaunchDisposition, ManagerLaunchRecord,
     PageCursor, PageRequest, PageSize, ProjectList, ProjectListRequest, ProjectRegisterInput,
     ProjectRegisterOutcome, ProjectRegisterRequest, ProjectRegistrationSource, RuntimeIdentity,
-    RuntimeStartResult,
+    RuntimeStartResult, TokenCreateRequest, TokenCreateResult,
 };
 
 /// Upper bound for manager replacement and child-process observations.
@@ -351,6 +351,94 @@ async fn test_database_initialise_negotiates_v3_and_migrates_once_after_revision
     wait_for_success(&mut manager, "manager shutdown");
 }
 
+#[tokio::test]
+async fn test_direct_runtime_credentials_follow_the_canonical_config_namespace() {
+    let database = tribal_test_utils::TestDb::new().await;
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    let mut config = TribalConfig::minimum_valid(database.database_url());
+    config.server.transport = TransportKind::Http;
+    std::fs::write(&config_path, serde_yaml::to_string(&config).unwrap()).unwrap();
+    let mut manager = spawn_manager(&config_path, temp.path());
+    let announcement = continuing_announcement(read_manager_record(&mut manager));
+    let mut client = handshake(&announcement);
+    let document: ConfigDocument = call(&mut client, 1, "config.getAll", None);
+    let ConfigDocument::DurableValid { revision, .. } = document else {
+        panic!("valid configuration must expose its durable revision");
+    };
+    let created: TokenCreateResult = call(
+        &mut client,
+        2,
+        "token.create",
+        Some(
+            &serde_json::to_value(TokenCreateRequest {
+                expected_revision: revision,
+                principal: None,
+                ttl_hours: Some(1),
+                scopes: Vec::new(),
+                persist_as_default: true,
+            })
+            .unwrap(),
+        ),
+    );
+    let secret = created.value.token.expose_secret().to_owned();
+    let _: tribal_wire::management::ManagerShutdownResult =
+        call(&mut client, 3, "manager.shutdown", None);
+    wait_for_success(&mut manager, "manager shutdown after credential issuance");
+
+    let rendered = run_to_completion({
+        let mut command = tribal_command(&config_path, temp.path());
+        command
+            .arg("mcp-config")
+            .arg("--transport")
+            .arg("http")
+            .arg("--static-token");
+        command
+    });
+    assert!(rendered.status.success(), "mcp-config failed: {rendered:?}");
+    let document: serde_json::Value = serde_json::from_slice(&rendered.stdout).unwrap();
+    assert_eq!(
+        document["headers"]["Authorization"],
+        format!("Bearer {secret}")
+    );
+    let checked = run_to_completion({
+        let mut command = tribal_command(&config_path, temp.path());
+        command.arg("check").arg("--json");
+        command
+    });
+    let report: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
+    let token_status = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "valid_token_exists")
+        .and_then(|row| row["status"].as_str());
+    assert_eq!(token_status, Some("pass"));
+    assert!(
+        !temp.path().join("tribal/credentials.json").exists(),
+        "manager issuance must not create the global credential file"
+    );
+
+    let other_config_path = temp.path().join("other.yaml");
+    std::fs::write(&other_config_path, serde_yaml::to_string(&config).unwrap()).unwrap();
+    let isolated = run_to_completion({
+        let mut command = tribal_command(&other_config_path, temp.path());
+        command
+            .arg("mcp-config")
+            .arg("--transport")
+            .arg("http")
+            .arg("--static-token");
+        command
+    });
+    assert!(
+        !isolated.status.success(),
+        "a different canonical config must not consume the credential"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[allow(
     clippy::too_many_lines,
@@ -616,6 +704,7 @@ fn tribal_command(config_path: &std::path::Path, root: &std::path::Path) -> Comm
         .arg("--config")
         .arg(config_path)
         .env("HOME", root)
+        .env("XDG_CONFIG_HOME", root)
         .env("XDG_RUNTIME_DIR", root)
         .env("XDG_STATE_HOME", root);
     command

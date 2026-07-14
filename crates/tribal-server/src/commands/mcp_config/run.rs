@@ -7,9 +7,8 @@ use std::{
 
 use tribal_config::{
     Auth, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX,
-    CredentialsPermissions, LoadedCredentials, PUBLIC_MCP_URL_REQUIREMENT, TransportKind,
-    TribalConfig, is_valid_public_mcp_url, load_config, oauth_onboarding_is_url_only,
-    read_credentials,
+    CredentialsPermissions, PUBLIC_MCP_URL_REQUIREMENT, TransportKind, TribalConfig,
+    is_valid_public_mcp_url, load_config, oauth_onboarding_is_url_only,
 };
 use tribal_domain::{BearerToken, ProjectId};
 
@@ -20,6 +19,9 @@ use crate::{
         resolve_absolute_config_path,
     },
     error::AppError,
+    management::application::credential::{
+        PersistedCredentialReadError, PersistedCredentialSource, read_persisted_bearer,
+    },
     output::{McpSnippet, build_snippet_entry, resolved_advertised_url},
     startup::resolve_project,
 };
@@ -178,6 +180,7 @@ pub async fn run_async(
 ) -> Result<(), AppError> {
     let onboarding_url_only = oauth_onboarding_is_url_only(opts.config);
     let auth = resolve_auth(
+        opts.config_path,
         opts.transport,
         opts.token_strategy,
         onboarding_url_only,
@@ -250,6 +253,7 @@ async fn resolve_stdio_project(
 /// Every other network surface embeds the persisted static token.
 /// mcp-config does not consult `TRIBAL_AUTH_TOKEN`.
 fn resolve_auth(
+    config_path: &Path,
     transport: TransportKind,
     token_strategy: TokenStrategy,
     onboarding_url_only: bool,
@@ -269,7 +273,7 @@ fn resolve_auth(
             // surface) embeds the persisted static token.
             TokenStrategy::Auto if onboarding_url_only => Ok(None),
             TokenStrategy::Static | TokenStrategy::Auto => {
-                Ok(Some(read_persisted_auth(out_stderr)?))
+                Ok(Some(read_persisted_auth(config_path, out_stderr)?))
             }
         },
     }
@@ -303,28 +307,34 @@ fn bearer_from_explicit(raw: &str) -> Result<Auth, AppError> {
     Ok(Auth::Bearer { token })
 }
 
-/// Reads the persisted static token from the credentials file. Permissions
-/// drift warns on stderr but does not block.
-fn read_persisted_auth(out_stderr: &mut dyn Write) -> Result<Auth, AppError> {
-    let loaded = read_credentials().map_err(|source| AppError::Credentials { source })?;
-    let LoadedCredentials {
-        credentials,
-        path,
-        permissions,
-    } = loaded;
-
-    match permissions {
-        CredentialsPermissions::Permissive => {
-            let _ = writeln!(
-                out_stderr,
-                "{CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX}{}{CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX}",
-                path.display(),
-            );
+/// Reads the persisted static token bound to the selected config.
+fn read_persisted_auth(config_path: &Path, out_stderr: &mut dyn Write) -> Result<Auth, AppError> {
+    let resolved = read_persisted_bearer(config_path).map_err(persisted_auth_error)?;
+    if let PersistedCredentialSource::Legacy { path, permissions } = &resolved.source {
+        match permissions {
+            CredentialsPermissions::Permissive => {
+                let _ = writeln!(
+                    out_stderr,
+                    "{CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX}{}{CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX}",
+                    path.display(),
+                );
+            }
+            CredentialsPermissions::Locked | CredentialsPermissions::Unknown => {}
         }
-        CredentialsPermissions::Locked | CredentialsPermissions::Unknown => {}
     }
+    Ok(Auth::Bearer {
+        token: resolved.token,
+    })
+}
 
-    Ok(credentials.auth)
+fn persisted_auth_error(error: PersistedCredentialReadError) -> AppError {
+    match error {
+        PersistedCredentialReadError::Legacy(source) => AppError::Credentials { source },
+        source @ (PersistedCredentialReadError::Authority { .. }
+        | PersistedCredentialReadError::Namespaced { .. }) => AppError::Management {
+            source: Box::new(source),
+        },
+    }
 }
 
 /// Writes the rendered snippet to stdout. Propagates IO failures —
@@ -450,6 +460,7 @@ mod tests {
     fn test_resolve_auth_stdio_warns_when_a_token_is_requested() {
         let mut stderr = Vec::<u8>::new();
         let auth = resolve_auth(
+            Path::new("unused.yaml"),
             TransportKind::Stdio,
             TokenStrategy::Static,
             false,
@@ -465,6 +476,7 @@ mod tests {
     fn test_resolve_auth_stdio_auto_is_silent() {
         let mut stderr = Vec::<u8>::new();
         let auth = resolve_auth(
+            Path::new("unused.yaml"),
             TransportKind::Stdio,
             TokenStrategy::Auto,
             false,
@@ -481,8 +493,14 @@ mod tests {
     #[test]
     fn test_resolve_auth_url_only_auto_omits_token() {
         let mut stderr = Vec::<u8>::new();
-        let auth = resolve_auth(TransportKind::Http, TokenStrategy::Auto, true, &mut stderr)
-            .expect("url-only auth resolves");
+        let auth = resolve_auth(
+            Path::new("unused.yaml"),
+            TransportKind::Http,
+            TokenStrategy::Auto,
+            true,
+            &mut stderr,
+        )
+        .expect("url-only auth resolves");
         assert!(auth.is_none(), "URL-only onboarding embeds no token");
         assert!(stderr.is_empty());
     }
@@ -493,6 +511,7 @@ mod tests {
         // a surface where `Auto` would advertise the URL-only OAuth snippet.
         let mut stderr = Vec::<u8>::new();
         let auth = resolve_auth(
+            Path::new("unused.yaml"),
             TransportKind::Http,
             TokenStrategy::Explicit("test-bearer-token".to_owned()),
             true,
