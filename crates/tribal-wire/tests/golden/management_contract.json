@@ -7267,6 +7267,7 @@
       "database.initialise",
       "project.register",
       "project.list",
+      "integration.mcpConfig",
       "database.probe",
       "credential.probe",
       "config.getAll",
@@ -10777,6 +10778,342 @@
       }
     }
   },
+  "McpConfigRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "McpConfigRequest",
+    "type": "object",
+    "required": [
+      "expected_revision",
+      "target"
+    ],
+    "properties": {
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "target": {
+        "$ref": "#/definitions/McpTargetSelection"
+      }
+    },
+    "definitions": {
+      "AbsoluteDirectoryPath": {
+        "type": "string",
+        "pattern": "^/.*$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "ConfiguredMcpTarget": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "exposure"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "stdio_context"
+                ],
+                "properties": {
+                  "stdio_context": {
+                    "$ref": "#/definitions/StdioProjectContext"
+                  }
+                }
+              },
+              "exposure": {
+                "type": "string",
+                "enum": [
+                  "public"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "exposure"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "stdio_context"
+                ],
+                "properties": {
+                  "stdio_context": {
+                    "$ref": "#/definitions/StdioProjectContext"
+                  }
+                }
+              },
+              "exposure": {
+                "type": "string",
+                "enum": [
+                  "export_persisted_bearer"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "McpTarget": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "transport"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "context"
+                ],
+                "properties": {
+                  "context": {
+                    "$ref": "#/definitions/StdioProjectContext"
+                  }
+                }
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "stdio"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "transport"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "auth"
+                ],
+                "properties": {
+                  "auth": {
+                    "$ref": "#/definitions/NetworkIntegrationAuth"
+                  }
+                }
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "http"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "transport"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "auth"
+                ],
+                "properties": {
+                  "auth": {
+                    "$ref": "#/definitions/NetworkIntegrationAuth"
+                  }
+                }
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "sse"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "McpTargetSelection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "selection"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "policy"
+                ],
+                "properties": {
+                  "policy": {
+                    "$ref": "#/definitions/ConfiguredMcpTarget"
+                  }
+                }
+              },
+              "selection": {
+                "type": "string",
+                "enum": [
+                  "configured"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "selection"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "target"
+                ],
+                "properties": {
+                  "target": {
+                    "$ref": "#/definitions/McpTarget"
+                  }
+                }
+              },
+              "selection": {
+                "type": "string",
+                "enum": [
+                  "explicit"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "NetworkIntegrationAuth": {
+        "type": "string",
+        "enum": [
+          "o_auth",
+          "export_persisted_bearer"
+        ]
+      },
+      "ProjectId": {
+        "type": "string",
+        "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ProjectSelector": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "source"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "$ref": "#/definitions/ProjectId"
+                  }
+                }
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "id"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "source"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "directory"
+                ],
+                "properties": {
+                  "directory": {
+                    "$ref": "#/definitions/AbsoluteDirectoryPath"
+                  }
+                }
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "working_tree"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "StdioProjectContext": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "context"
+            ],
+            "properties": {
+              "context": {
+                "type": "string",
+                "enum": [
+                  "unscoped"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "context",
+              "data"
+            ],
+            "properties": {
+              "context": {
+                "type": "string",
+                "enum": [
+                  "project"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "selector"
+                ],
+                "properties": {
+                  "selector": {
+                    "$ref": "#/definitions/ProjectSelector"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
   "ModelSelectionRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ModelSelectionRequest",
@@ -12726,6 +13063,195 @@
             }
           }
         ]
+      }
+    }
+  },
+  "Revisioned_for_McpConfigEntry": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Revisioned_for_McpConfigEntry",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/McpConfigEntry"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "McpConfigEntry": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "exposure"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "document"
+                ],
+                "properties": {
+                  "document": {
+                    "$ref": "#/definitions/PublicMcpConfigDocument"
+                  }
+                }
+              },
+              "exposure": {
+                "type": "string",
+                "enum": [
+                  "public"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "exposure"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "document"
+                ],
+                "properties": {
+                  "document": {
+                    "$ref": "#/definitions/SensitiveMcpConfigDocument"
+                  }
+                }
+              },
+              "exposure": {
+                "type": "string",
+                "enum": [
+                  "persisted_bearer"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "PublicMcpConfigDocument": {
+        "type": "object",
+        "required": [
+          "entry",
+          "server_name"
+        ],
+        "properties": {
+          "entry": {
+            "$ref": "#/definitions/PublicMcpServerEntry"
+          },
+          "server_name": {
+            "type": "string"
+          }
+        }
+      },
+      "PublicMcpServerEntry": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "transport"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "args",
+                  "command"
+                ],
+                "properties": {
+                  "args": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "command": {
+                    "type": "string"
+                  }
+                }
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "stdio"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "transport"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  }
+                }
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "http"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "transport"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  }
+                }
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "sse"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "SensitiveMcpConfigDocument": {
+        "x-cortex-swift-type": "scoped-redacted-json"
       }
     }
   },

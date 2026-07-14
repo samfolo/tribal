@@ -105,11 +105,11 @@ pub use method::{
     CheckReportCall, ConfigGetAllCall, ConfigGetCall, ConfigPatchCall, ConfigPathCall,
     ConfigSchemaCall, ConfigSetCall, ConfigValidateCall, CredentialProbeCall,
     CredentialSourcesCall, DatabaseInitialiseCall, DatabaseProbeCall, GraphConfigureGenesisCall,
-    GraphConvergeGenesisCall, GraphEmbeddingProfileCall, GraphGenesisOptionsCall, LogsTailCall,
-    ManagementCall, ManagementMethod, ManagerShutdownCall, ManagerSnapshotCall,
-    ModelsCatalogueCall, ModelsSelectCall, ProjectListCall, ProjectRegisterCall,
-    RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall, TokenCreateCall,
-    TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
+    GraphConvergeGenesisCall, GraphEmbeddingProfileCall, GraphGenesisOptionsCall,
+    IntegrationMcpConfigCall, LogsTailCall, ManagementCall, ManagementMethod, ManagerShutdownCall,
+    ManagerSnapshotCall, ModelsCatalogueCall, ModelsSelectCall, ProjectListCall,
+    ProjectRegisterCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall,
+    TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
 };
 #[cfg(feature = "schema")]
 pub use method::{ManagementCallSchema, management_call_schemas};

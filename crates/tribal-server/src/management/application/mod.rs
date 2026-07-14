@@ -2,20 +2,22 @@
 
 pub(crate) mod credential;
 mod database;
+mod integration;
 mod pagination;
 mod project;
 mod token;
 
 use credential::CredentialCoordinator;
 use database::{DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
+use integration::IntegrationAdministration;
 use project::ProjectAdministration;
 use token::TokenAdministration;
 use tribal_wire::management::{
     ConfigGetCall, ConfigPatchCall, ConfigSetCall, ConfigValidateCall, ConfigValidation,
     ConfigViolation, CredentialSourcesCall, DatabaseInitialiseCall, GraphConfigureGenesisCall,
-    GraphConvergeGenesisCall, LogsTailCall, ManagementCall, ManagementError, ManagementMethod,
-    ManagementResponseError, ModelsSelectCall, ProjectListCall, ProjectRegisterCall,
-    TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
+    GraphConvergeGenesisCall, IntegrationMcpConfigCall, LogsTailCall, ManagementCall,
+    ManagementError, ManagementMethod, ManagementResponseError, ModelsSelectCall, ProjectListCall,
+    ProjectRegisterCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
 };
 
 use super::{
@@ -37,6 +39,7 @@ pub(crate) struct ManagementApplication<'a> {
     database: DatabaseAccess,
     projects: ProjectAdministration,
     tokens: TokenAdministration,
+    integration: IntegrationAdministration,
 }
 
 impl<'a> ManagementApplication<'a> {
@@ -54,7 +57,12 @@ impl<'a> ManagementApplication<'a> {
             probe,
             lifecycle,
             projects: ProjectAdministration::new(database.clone()),
-            tokens: TokenAdministration::new(database.clone(), credentials),
+            tokens: TokenAdministration::new(database.clone(), credentials.clone()),
+            integration: IntegrationAdministration::new(
+                config.clone(),
+                database.clone(),
+                credentials,
+            ),
             database,
         }
     }
@@ -85,6 +93,7 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::DatabaseInitialise => self.initialise_database_value(params).await,
             ManagementMethod::ProjectRegister => self.register_project_value(params).await,
             ManagementMethod::ProjectList => self.list_projects_value(params).await,
+            ManagementMethod::IntegrationMcpConfig => self.integration_value(params).await,
             ManagementMethod::DatabaseProbe => {
                 let receipt = self.probe.database().await.map_err(probe_error)?;
                 self.refresh_readiness().await?;
@@ -297,6 +306,19 @@ impl<'a> ManagementApplication<'a> {
         )
     }
 
+    async fn integration_value(
+        &self,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, ManagementResponseError> {
+        let request = parse_call::<IntegrationMcpConfigCall>(params)?;
+        response_value(
+            self.integration
+                .mcp_config(request)
+                .await
+                .map_err(integration_error),
+        )
+    }
+
     async fn refresh_readiness(&self) -> Result<(), ManagementResponseError> {
         let report = self.readiness_report().await?;
         self.lifecycle.update_readiness(report).await;
@@ -493,6 +515,29 @@ fn administration_error(
     ManagementResponseError {
         message: message.to_owned(),
         error: ManagementError::Administration { failure },
+    }
+}
+
+fn integration_error(
+    error: integration::IntegrationAdministrationError,
+) -> ManagementResponseError {
+    match error {
+        integration::IntegrationAdministrationError::Session(
+            DatabaseAccessError::RevisionConflict { expected, actual },
+        ) => ManagementResponseError {
+            message: "configuration changed before integration rendering".to_owned(),
+            error: ManagementError::ConfigConflict { expected, actual },
+        },
+        integration::IntegrationAdministrationError::Session(
+            DatabaseAccessError::Configuration(error),
+        )
+        | integration::IntegrationAdministrationError::Configuration(error) => {
+            management_error(error)
+        }
+        error => {
+            let failure = integration::public_failure(&error);
+            administration_error("integration configuration could not be rendered", failure)
+        }
     }
 }
 

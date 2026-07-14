@@ -135,10 +135,21 @@ struct IssueCommand {
     response: oneshot::Sender<Result<PersistedIssuance, CredentialCoordinatorError>>,
 }
 
+struct ExportCommand {
+    session: DatabaseSession,
+    audience: String,
+    response: oneshot::Sender<Result<BearerToken, CredentialCoordinatorError>>,
+}
+
+enum CredentialCommand {
+    Issue(IssueCommand),
+    Export(ExportCommand),
+}
+
 /// Bounded secret-bearing client for one authority's credential task.
 #[derive(Clone)]
 pub(crate) struct CredentialCoordinator {
-    sender: mpsc::Sender<IssueCommand>,
+    sender: mpsc::Sender<CredentialCommand>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,7 +183,7 @@ impl CredentialCoordinator {
     }
 
     #[cfg(test)]
-    fn spawn_with_root(
+    pub(super) fn spawn_with_root(
         namespace: ConfigAuthorityNamespace,
         root: &Path,
     ) -> (Self, CredentialCoordinatorRuntime) {
@@ -196,14 +207,33 @@ impl CredentialCoordinator {
     ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
         let (response, receiver) = oneshot::channel();
         self.sender
-            .send(IssueCommand {
+            .send(CredentialCommand::Issue(IssueCommand {
                 session,
                 principal,
                 scopes,
                 audience,
                 expires_at,
                 response,
-            })
+            }))
+            .await
+            .map_err(|_| CredentialCoordinatorError::Unavailable)?;
+        receiver
+            .await
+            .map_err(|_| CredentialCoordinatorError::Unavailable)?
+    }
+
+    pub(super) async fn export_persisted(
+        &self,
+        session: DatabaseSession,
+        audience: String,
+    ) -> Result<BearerToken, CredentialCoordinatorError> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(CredentialCommand::Export(ExportCommand {
+                session,
+                audience,
+                response,
+            }))
             .await
             .map_err(|_| CredentialCoordinatorError::Unavailable)?;
         receiver
@@ -231,14 +261,94 @@ impl CredentialCoordinatorRuntime {
 async fn run_coordinator(
     namespace: ConfigAuthorityNamespace,
     store: CredentialStore,
-    mut receiver: mpsc::Receiver<IssueCommand>,
+    mut receiver: mpsc::Receiver<CredentialCommand>,
     terminal: watch::Sender<CredentialCoordinatorExit>,
 ) {
     while let Some(command) = receiver.recv().await {
-        let result = issue_persisted(&namespace, &store, command).await;
-        let _ = result.1.send(result.0);
+        match command {
+            CredentialCommand::Issue(command) => {
+                let result = issue_persisted(&namespace, &store, command).await;
+                let _ = result.1.send(result.0);
+            }
+            CredentialCommand::Export(command) => {
+                let result = export_persisted(&namespace, &store, command).await;
+                let _ = result.1.send(result.0);
+            }
+        }
     }
     let _ = terminal.send(CredentialCoordinatorExit::InputClosed);
+}
+
+async fn export_persisted(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    command: ExportCommand,
+) -> (
+    Result<BearerToken, CredentialCoordinatorError>,
+    oneshot::Sender<Result<BearerToken, CredentialCoordinatorError>>,
+) {
+    let ExportCommand {
+        session,
+        audience,
+        response,
+    } = command;
+    let result = export_persisted_inner(namespace, store, session, &audience).await;
+    (result, response)
+}
+
+async fn export_persisted_inner(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    session: DatabaseSession,
+    audience: &str,
+) -> Result<BearerToken, CredentialCoordinatorError> {
+    let mut connection = session
+        .pool
+        .acquire()
+        .await
+        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    PgAdvisoryLockRepository
+        .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
+        .await
+        .map_err(database_error)?;
+    let mapping = PgLocalDefaultCredentialRepository
+        .find(&mut transaction, namespace.as_str())
+        .await
+        .map_err(database_error)?;
+    let disposition = store.recover(mapping.as_ref())?;
+    if !matches!(
+        disposition,
+        RecoveryDisposition::Stable | RecoveryDisposition::PromotedPending
+    ) {
+        return Err(CredentialCoordinatorError::Unavailable);
+    }
+    let envelope = store
+        .read_stable()?
+        .filter(|envelope| {
+            mapping
+                .as_ref()
+                .is_some_and(|mapping| mapping_matches(mapping, envelope))
+        })
+        .ok_or(CredentialCoordinatorError::Unavailable)?;
+    let token = PgAuthTokenRepository
+        .find_by_id(&mut transaction, envelope.token_id)
+        .await
+        .map_err(database_error)?
+        .filter(|token| {
+            token.revoked_at().is_none()
+                && token.expires_at() >= chrono::Utc::now()
+                && token.audience() == audience
+        })
+        .ok_or(CredentialCoordinatorError::Unavailable)?;
+    let Auth::Bearer { token: bearer } = envelope.auth;
+    if tribal_common::sha256_hex(bearer.as_str()) != token.token_hash() {
+        return Err(CredentialCoordinatorError::Unavailable);
+    }
+    Ok(bearer)
 }
 
 async fn issue_persisted(

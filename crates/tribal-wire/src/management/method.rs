@@ -8,11 +8,12 @@ use super::{
     ConfigWriteOutcome, CredentialSources, CredentialSourcesRequest, DatabaseInitialiseRequest,
     DatabaseInitialiseResult, GenesisConfigurationRequest, GenesisConvergenceRequest,
     GenesisOptions, GraphEmbeddingProfile, LifecycleSnapshot, ManagedRuntimeStatusResult,
-    ManagerShutdownResult, ModelSelectionRequest, ModelsCatalogue, ProbeReceipt, ProjectList,
-    ProjectListRequest, ProjectRegisterRequest, ProjectRegisterResult, ReadinessReport,
-    RuntimeLogsTailRequest, RuntimeLogsTailResult, RuntimeRestartResult, RuntimeStartResult,
-    RuntimeStopResult, TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest,
-    TokenRevokeAllRequest, TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
+    ManagerShutdownResult, McpConfigRequest, McpConfigResult, ModelSelectionRequest,
+    ModelsCatalogue, ProbeReceipt, ProjectList, ProjectListRequest, ProjectRegisterRequest,
+    ProjectRegisterResult, ReadinessReport, RuntimeLogsTailRequest, RuntimeLogsTailResult,
+    RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult, TokenCreateRequest,
+    TokenCreateResult, TokenInventory, TokenListRequest, TokenRevokeAllRequest,
+    TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
 };
 
 /// The request and response types owned by one management method.
@@ -188,6 +189,12 @@ management_calls! {
         call: ProjectListCall,
         request: ProjectListRequest,
         response: ProjectList,
+    },
+    IntegrationMcpConfig => {
+        wire: "integration.mcpConfig",
+        call: IntegrationMcpConfigCall,
+        request: McpConfigRequest,
+        response: McpConfigResult,
     },
     DatabaseProbe => {
         wire: "database.probe",

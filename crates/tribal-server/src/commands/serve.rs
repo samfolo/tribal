@@ -19,6 +19,7 @@ use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio_util::sync::CancellationToken;
 use tribal_auth::oauth::OAuthRuntimeConfig;
 use tribal_config::{CliShadow, TransportKind, config_warnings, load_config, validate};
+use tribal_domain::ProjectId;
 use tribal_mcp::HandlerConfig;
 
 use crate::{
@@ -45,6 +46,14 @@ const SUPERVISED_MARKER: &str = "TRIBAL_SUPERVISED";
 
 /// Inherited locked authority description for a manager-spawned runtime.
 pub(crate) const MANAGED_AUTHORITY_FD: &str = "TRIBAL_MANAGED_AUTHORITY_FD";
+
+/// Initial project context selected after command-line parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServeProjectMode {
+    Auto,
+    Unscoped,
+    Project(ProjectId),
+}
 
 /// Whether a supervisor owns this process, read from [`SUPERVISED_MARKER`].
 fn is_supervised() -> bool {
@@ -87,6 +96,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     })?;
     let mut managed_control = managed_runtime_control(&authority_lease, runtime_custody.as_ref())?;
     let (cli_overrides, cli_project) = args.into_cli_overrides();
+    let cli_project = serve_project_mode(cli_project)?.project_argument();
     let cli_shadow = CliShadow::from_overrides(&cli_overrides);
 
     let config = load_config(config_path, Some(cli_overrides), None)?;
@@ -263,6 +273,25 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     match transport_error {
         Some(err) => Err(err),
         None => shutdown_result,
+    }
+}
+
+fn serve_project_mode(project: Option<String>) -> Result<ServeProjectMode, AppError> {
+    project.map_or(Ok(ServeProjectMode::Auto), |raw| {
+        raw.parse()
+            .map(ServeProjectMode::Project)
+            .map_err(|_| AppError::ProjectResolution {
+                context: format!("invalid project ID format: {raw}"),
+            })
+    })
+}
+
+impl ServeProjectMode {
+    fn project_argument(self) -> Option<String> {
+        match self {
+            Self::Auto | Self::Unscoped => None,
+            Self::Project(id) => Some(id.to_string()),
+        }
     }
 }
 
