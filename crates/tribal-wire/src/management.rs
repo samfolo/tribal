@@ -102,8 +102,8 @@ pub use maintenance::{
     ThreadPruneRequest, ThreadPruneResult,
 };
 pub use method::{
-    CheckReportCall, ConfigGetAllCall, ConfigGetCall, ConfigPatchCall, ConfigPathCall,
-    ConfigSchemaCall, ConfigSetCall, ConfigValidateCall, CredentialProbeCall,
+    BootstrapRunCall, CheckReportCall, ConfigGetAllCall, ConfigGetCall, ConfigPatchCall,
+    ConfigPathCall, ConfigSchemaCall, ConfigSetCall, ConfigValidateCall, CredentialProbeCall,
     CredentialSourcesCall, DatabaseInitialiseCall, DatabaseProbeCall, GraphConfigureGenesisCall,
     GraphConvergeGenesisCall, GraphEmbeddingProfileCall, GraphGenesisOptionsCall,
     IntegrationMcpConfigCall, LogsTailCall, ManagementCall, ManagementMethod, ManagerShutdownCall,

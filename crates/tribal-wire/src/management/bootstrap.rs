@@ -30,9 +30,23 @@ pub struct ModelSelectionInput {
 
 /// Absolute OTLP HTTP endpoint accepted at the contract boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "String", into = "String")]
 pub struct OtlpEndpoint(String);
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for OtlpEndpoint {
+    fn schema_name() -> String {
+        "OtlpEndpoint".to_owned()
+    }
+
+    fn json_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        super::wire_id::marked_string_schema(
+            Some(r"^https?://[^@\s/?#]+(?::[0-9]+)?(?:[/?#][^\s]*)?$"),
+            "validated-string",
+            None,
+        )
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OtlpEndpointError {

@@ -54,6 +54,45 @@ pub(super) struct IntegrationAdministration {
     credentials: CredentialCoordinator,
 }
 
+pub(super) struct PreparedMcpConfig {
+    session: DatabaseSession,
+    entry: PreparedMcpEntry,
+}
+
+enum PreparedMcpEntry {
+    Public(PublicMcpConfigDocument),
+    PersistedBearer {
+        transport: TransportKind,
+        url: String,
+    },
+}
+
+impl PreparedMcpConfig {
+    pub(super) fn revision(&self) -> &tribal_wire::management::ConfigRevision {
+        &self.session.revision
+    }
+
+    pub(super) fn requires_bearer(&self) -> bool {
+        matches!(self.entry, PreparedMcpEntry::PersistedBearer { .. })
+    }
+
+    pub(super) fn render(
+        self,
+        bearer: Option<&BearerToken>,
+    ) -> Result<McpConfigResult, IntegrationAdministrationError> {
+        let entry = match self.entry {
+            PreparedMcpEntry::Public(document) => McpConfigEntry::Public { document },
+            PreparedMcpEntry::PersistedBearer { transport, url } => {
+                let bearer = bearer.ok_or(IntegrationAdministrationError::IncompatibleTarget)?;
+                McpConfigEntry::PersistedBearer {
+                    document: sensitive_network_document(transport, &url, bearer),
+                }
+            }
+        };
+        Ok(self.session.revisioned(entry))
+    }
+}
+
 impl IntegrationAdministration {
     pub(super) fn new(
         config: ConfigWorkerClient,
@@ -67,10 +106,59 @@ impl IntegrationAdministration {
         }
     }
 
+    pub(super) async fn preflight_target(
+        &self,
+        expected_revision: &tribal_wire::management::ConfigRevision,
+        selection: &McpTargetSelection,
+    ) -> Result<McpTarget, IntegrationAdministrationError> {
+        let snapshot = self.config.resolved_snapshot().await?;
+        if &snapshot.revision != expected_revision {
+            return Err(IntegrationAdministrationError::Session(
+                DatabaseAccessError::RevisionConflict {
+                    expected: expected_revision.clone(),
+                    actual: snapshot.revision,
+                },
+            ));
+        }
+        let target = resolve_target(snapshot.config.server.transport, selection.clone())?;
+        if let McpTarget::Stdio {
+            context:
+                StdioProjectContext::Project {
+                    selector: ProjectSelector::WorkingTree { directory },
+                },
+        } = &target
+        {
+            crate::git::detect_git_remote_from(Path::new(directory.as_str()))
+                .map_err(|_| IntegrationAdministrationError::ProjectSource)?;
+        }
+        Ok(target)
+    }
+
     pub(super) async fn mcp_config(
         &self,
         request: McpConfigRequest,
     ) -> Result<McpConfigResult, IntegrationAdministrationError> {
+        let prepared = self.prepare(request).await?;
+        let bearer = if prepared.requires_bearer() {
+            let audience = crate::startup::resolve_oauth_runtime(&prepared.session.config)
+                .map_err(|_| IntegrationAdministrationError::Audience)?
+                .canonical_resource;
+            Some(
+                self.credentials
+                    .export_persisted(clone_session(&prepared.session), audience)
+                    .await
+                    .map_err(|source| IntegrationAdministrationError::Credential { source })?,
+            )
+        } else {
+            None
+        };
+        prepared.render(bearer.as_ref())
+    }
+
+    pub(super) async fn prepare(
+        &self,
+        request: McpConfigRequest,
+    ) -> Result<PreparedMcpConfig, IntegrationAdministrationError> {
         let session = self
             .database
             .mutation_session(&request.expected_revision)
@@ -80,59 +168,38 @@ impl IntegrationAdministration {
             McpTarget::Stdio { context } => {
                 let config_path = self.config.path().await?;
                 let (mode, server_name) = resolve_stdio(&session, context).await?;
-                McpConfigEntry::Public {
-                    document: PublicMcpConfigDocument {
-                        server_name,
-                        entry: PublicMcpServerEntry::Stdio {
-                            command: "tribal".to_owned(),
-                            args: stdio_args(Path::new(&config_path.path), mode),
-                        },
+                PreparedMcpEntry::Public(PublicMcpConfigDocument {
+                    server_name,
+                    entry: PublicMcpServerEntry::Stdio {
+                        command: "tribal".to_owned(),
+                        args: stdio_args(Path::new(&config_path.path), mode),
                     },
-                }
-            }
-            McpTarget::Http { auth } => {
-                self.render_network(&session, TransportKind::Http, auth)
-                    .await?
-            }
-            McpTarget::Sse { auth } => {
-                self.render_network(&session, TransportKind::Sse, auth)
-                    .await?
-            }
-        };
-        Ok(session.revisioned(entry))
-    }
-
-    async fn render_network(
-        &self,
-        session: &DatabaseSession,
-        transport: TransportKind,
-        auth: NetworkIntegrationAuth,
-    ) -> Result<McpConfigEntry, IntegrationAdministrationError> {
-        let url = resolved_advertised_url(&session.config);
-        match auth {
-            NetworkIntegrationAuth::OAuth => Ok(McpConfigEntry::Public {
-                document: PublicMcpConfigDocument {
-                    server_name: "tribal".to_owned(),
-                    entry: match transport {
-                        TransportKind::Http => PublicMcpServerEntry::Http { url },
-                        TransportKind::Sse => PublicMcpServerEntry::Sse { url },
-                        TransportKind::Stdio => unreachable!("network renderer excludes stdio"),
-                    },
-                },
-            }),
-            NetworkIntegrationAuth::ExportPersistedBearer => {
-                let audience = crate::startup::resolve_oauth_runtime(&session.config)
-                    .map_err(|_| IntegrationAdministrationError::Audience)?
-                    .canonical_resource;
-                let bearer = self
-                    .credentials
-                    .export_persisted(clone_session(session), audience)
-                    .await
-                    .map_err(|source| IntegrationAdministrationError::Credential { source })?;
-                Ok(McpConfigEntry::PersistedBearer {
-                    document: sensitive_network_document(transport, &url, &bearer),
                 })
             }
+            McpTarget::Http { auth } => prepare_network(&session, TransportKind::Http, auth),
+            McpTarget::Sse { auth } => prepare_network(&session, TransportKind::Sse, auth),
+        };
+        Ok(PreparedMcpConfig { session, entry })
+    }
+}
+
+fn prepare_network(
+    session: &DatabaseSession,
+    transport: TransportKind,
+    auth: NetworkIntegrationAuth,
+) -> PreparedMcpEntry {
+    let url = resolved_advertised_url(&session.config);
+    match auth {
+        NetworkIntegrationAuth::OAuth => PreparedMcpEntry::Public(PublicMcpConfigDocument {
+            server_name: "tribal".to_owned(),
+            entry: match transport {
+                TransportKind::Http => PublicMcpServerEntry::Http { url },
+                TransportKind::Sse => PublicMcpServerEntry::Sse { url },
+                TransportKind::Stdio => unreachable!("network renderer excludes stdio"),
+            },
+        }),
+        NetworkIntegrationAuth::ExportPersistedBearer => {
+            PreparedMcpEntry::PersistedBearer { transport, url }
         }
     }
 }

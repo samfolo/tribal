@@ -246,6 +246,14 @@ impl ProductSession {
             }
         }
         if request.reuse_api_key_for_embedding {
+            if descriptor.provider != ProviderKind::OpenAi {
+                return Err(public_error(
+                    "provider credential cannot back graph embeddings",
+                    ManagementError::EmbeddingReuseRefused {
+                        reason: EmbeddingReuseUnavailableReason::ProviderUnsupported,
+                    },
+                ));
+            }
             let resolved = credential.as_ref().ok_or_else(|| {
                 public_error(
                     "embedding reuse requires an explicit credential",
@@ -277,6 +285,73 @@ impl ProductSession {
         result
     }
 
+    pub(crate) async fn preflight_model_selection(
+        &self,
+        expected_revision: &ConfigRevision,
+        model: &KnownModelId,
+        stages: &[InferenceStage],
+        endpoint: &EndpointSelection,
+        credential: Option<&CredentialInput>,
+        reuse_api_key_for_embedding: bool,
+    ) -> Result<Vec<String>, ManagementResponseError> {
+        validate_stages(stages)?;
+        let descriptor = descriptor(model)?;
+        if descriptor.provider == ProviderKind::Platform {
+            return Err(public_error(
+                "platform model transport is unavailable",
+                ManagementError::ModelUnavailable {
+                    reason: ModelUnavailableReason::PlatformEndpointUnavailable,
+                },
+            ));
+        }
+        let (values, actual) = document(self.config.document().await.map_err(management_error)?)?;
+        if &actual != expected_revision {
+            return Err(config_conflict(expected_revision.clone(), actual));
+        }
+        let use_case = CredentialUse::ModelSelection {
+            model: model.clone(),
+            stages: stages.to_vec(),
+            endpoint: endpoint.clone(),
+        };
+        self.inspect_credential(credential, &use_case, expected_revision)?;
+        let endpoints = selected_endpoints(descriptor.provider, stages, endpoint, &values)?;
+        let transition = stages.iter().zip(&endpoints).any(|(stage, endpoint)| {
+            stage_provider(&values, stage) != Some(descriptor.provider)
+                || stage_endpoint(&values, stage)
+                    .or_else(|| descriptor.provider.default_base_url().map(str::to_owned))
+                    .is_none_or(|current| endpoints_differ(&current, endpoint))
+        });
+        if transition && credential.is_none() && descriptor.provider.requires_api_key() {
+            return Err(public_error(
+                "provider or endpoint transition requires a credential",
+                ManagementError::EndpointTransitionRefused {
+                    reason: EndpointTransitionRefusal::CredentialRequired,
+                },
+            ));
+        }
+        if reuse_api_key_for_embedding {
+            if descriptor.provider != ProviderKind::OpenAi {
+                return Err(public_error(
+                    "provider credential cannot back graph embeddings",
+                    ManagementError::EmbeddingReuseRefused {
+                        reason: EmbeddingReuseUnavailableReason::ProviderUnsupported,
+                    },
+                ));
+            }
+            if credential.is_none() {
+                return Err(public_error(
+                    "embedding reuse requires an explicit credential",
+                    ManagementError::EmbeddingReuseRefused {
+                        reason: EmbeddingReuseUnavailableReason::EndpointMismatch,
+                    },
+                ));
+            }
+            let endpoint = one_endpoint(&endpoints)?;
+            let _ = reusable_connection(&values, descriptor.provider, &endpoint)?;
+        }
+        Ok(endpoints)
+    }
+
     pub(crate) async fn genesis_options(&self) -> Result<GenesisOptions, ManagementResponseError> {
         let (_, revision) = document(self.config.document().await.map_err(management_error)?)?;
         Ok(GenesisOptions {
@@ -306,15 +381,6 @@ impl ProductSession {
         let use_case = CredentialUse::Genesis {
             embedding: request.embedding.clone(),
         };
-        let mut credential = self.resolve_credential(request.credential, &use_case, &actual)?;
-        if request.embedding.provider.requires_api_key() && credential.is_none() {
-            return Err(public_error(
-                "genesis provider requires a credential",
-                ManagementError::EndpointTransitionRefused {
-                    reason: EndpointTransitionRefusal::CredentialRequired,
-                },
-            ));
-        }
         let endpoint = request
             .embedding
             .base_url
@@ -334,6 +400,18 @@ impl ProductSession {
                     },
                 )
             })?;
+        let mut credential = self.resolve_credential(request.credential, &use_case, &actual)?;
+        if request.embedding.provider.requires_api_key()
+            && credential.is_none()
+            && !existing_embedding_credential(&values, request.embedding.provider, &endpoint)?
+        {
+            return Err(public_error(
+                "genesis provider requires a credential",
+                ManagementError::EndpointTransitionRefused {
+                    reason: EndpointTransitionRefusal::CredentialRequired,
+                },
+            ));
+        }
         let mut changes = vec![
             change(
                 "init.embedding.provider",
@@ -376,6 +454,52 @@ impl ProductSession {
             self.restore(&mut credential)?;
         }
         result
+    }
+
+    pub(crate) async fn preflight_genesis(
+        &self,
+        expected_revision: &ConfigRevision,
+        embedding: &GenesisEmbeddingInput,
+        credential: Option<&CredentialInput>,
+        credential_will_exist: bool,
+    ) -> Result<(), ManagementResponseError> {
+        validate_genesis(embedding)?;
+        let (values, actual) = document(self.config.document().await.map_err(management_error)?)?;
+        if &actual != expected_revision {
+            return Err(config_conflict(expected_revision.clone(), actual));
+        }
+        let use_case = CredentialUse::Genesis {
+            embedding: embedding.clone(),
+        };
+        self.inspect_credential(credential, &use_case, expected_revision)?;
+        let endpoint = embedding
+            .base_url
+            .clone()
+            .or_else(|| embedding.provider.default_base_url().map(str::to_owned))
+            .ok_or_else(|| {
+                public_error(
+                    "provider requires an explicit endpoint",
+                    ManagementError::EndpointTransitionRefused {
+                        reason: EndpointTransitionRefusal::ProviderHasNoDefault,
+                    },
+                )
+            })?;
+        if embedding.provider.requires_api_key()
+            && credential.is_none()
+            && !credential_will_exist
+            && !existing_embedding_credential(&values, embedding.provider, &endpoint)?
+        {
+            return Err(public_error(
+                "genesis provider requires a credential",
+                ManagementError::EndpointTransitionRefused {
+                    reason: EndpointTransitionRefusal::CredentialRequired,
+                },
+            ));
+        }
+        if credential.is_some() {
+            let _ = reusable_connection(&values, embedding.provider, &endpoint)?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn embedding_profile(
@@ -559,6 +683,37 @@ impl ProductSession {
                 }))
             }
         }
+    }
+
+    fn inspect_credential(
+        &self,
+        credential: Option<&CredentialInput>,
+        use_case: &CredentialUse,
+        revision: &ConfigRevision,
+    ) -> Result<(), ManagementResponseError> {
+        let Some(CredentialInput::Source { source }) = credential else {
+            return Ok(());
+        };
+        let state = self.issuance.lock().map_err(|_| capability_state_error())?;
+        let Some(issuance) = state.as_ref() else {
+            return Err(capability_error(CredentialCapabilityInvalidReason::Unknown));
+        };
+        if &issuance.revision != revision {
+            return Err(capability_error(
+                CredentialCapabilityInvalidReason::RevisionChanged,
+            ));
+        }
+        if &issuance.use_case != use_case {
+            return Err(capability_error(
+                CredentialCapabilityInvalidReason::UseMismatch,
+            ));
+        }
+        if !issuance.grants.iter().any(|grant| &grant.id == source) {
+            return Err(capability_error(
+                CredentialCapabilityInvalidReason::Reissued,
+            ));
+        }
+        Ok(())
     }
 
     fn restore(
@@ -962,6 +1117,21 @@ fn reusable_connection(
     Ok(default)
 }
 
+fn existing_embedding_credential(
+    values: &serde_json::Value,
+    provider: ProviderKind,
+    endpoint: &str,
+) -> Result<bool, ManagementResponseError> {
+    let connection = reusable_connection(values, provider, endpoint)?;
+    Ok(values
+        .get("credentials")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|entries| entries.get(&connection))
+        .and_then(|entry| entry.get("api_key"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|secret| !secret.is_empty()))
+}
+
 fn connection_exists(values: &serde_json::Value, name: &str) -> bool {
     values
         .get("credentials")
@@ -1058,7 +1228,7 @@ fn validate_stages(stages: &[InferenceStage]) -> Result<(), ManagementResponseEr
 }
 
 fn validate_genesis(embedding: &GenesisEmbeddingInput) -> Result<(), ManagementResponseError> {
-    if !embedding.provider.supports_embedding() {
+    if !embedding.provider.supports_embedding() || embedding.provider == ProviderKind::Platform {
         return Err(public_error(
             "provider has no embedding API",
             ManagementError::GenesisPolicyRefused {

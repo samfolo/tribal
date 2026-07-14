@@ -14,7 +14,7 @@ use tribal_config::{CredentialsPermissions, CredentialsReadError};
 use tribal_db::{
     AdvisoryLockRepository, AuthTokenRepository, DbError, LocalDefaultCredential,
     LocalDefaultCredentialRepository, PgAdvisoryLockRepository, PgAuthTokenRepository,
-    PgLocalDefaultCredentialRepository,
+    PgLocalDefaultCredentialRepository, PgPrincipalRepository, PrincipalRepository,
 };
 use tribal_domain::{AuthTokenId, BearerToken, CredentialGenerationId, Scope};
 
@@ -30,12 +30,20 @@ use crate::{
 const OWNER_FILE_MODE: u32 = 0o600;
 const OWNER_DIRECTORY_MODE: u32 = 0o700;
 const COORDINATOR_CAPACITY: usize = 8;
+const CREDENTIAL_REUSE_WINDOW_MINUTES: i64 = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PersistedIssuanceOrigin {
+    Existing,
+    Issued,
+}
 
 /// Result retained inside the coordinator until one caller receives the secret.
 pub(super) struct PersistedIssuance {
     pub(super) raw: String,
     pub(super) token: tribal_domain::AuthToken,
     pub(super) principal: String,
+    pub(super) origin: PersistedIssuanceOrigin,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -141,8 +149,19 @@ struct ExportCommand {
     response: oneshot::Sender<Result<BearerToken, CredentialCoordinatorError>>,
 }
 
+struct EnsureCommand {
+    session: DatabaseSession,
+    principal: String,
+    scopes: Vec<Scope>,
+    audience: String,
+    now: chrono::DateTime<chrono::Utc>,
+    expires_at: chrono::DateTime<chrono::Utc>,
+    response: oneshot::Sender<Result<PersistedIssuance, CredentialCoordinatorError>>,
+}
+
 enum CredentialCommand {
     Issue(IssueCommand),
+    Ensure(EnsureCommand),
     Export(ExportCommand),
 }
 
@@ -240,6 +259,33 @@ impl CredentialCoordinator {
             .await
             .map_err(|_| CredentialCoordinatorError::Unavailable)?
     }
+
+    pub(super) async fn ensure_persisted(
+        &self,
+        session: DatabaseSession,
+        principal: String,
+        scopes: Vec<Scope>,
+        audience: String,
+        now: chrono::DateTime<chrono::Utc>,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(CredentialCommand::Ensure(EnsureCommand {
+                session,
+                principal,
+                scopes,
+                audience,
+                now,
+                expires_at,
+                response,
+            }))
+            .await
+            .map_err(|_| CredentialCoordinatorError::Unavailable)?;
+        receiver
+            .await
+            .map_err(|_| CredentialCoordinatorError::Unavailable)?
+    }
 }
 
 impl CredentialCoordinatorRuntime {
@@ -270,6 +316,10 @@ async fn run_coordinator(
                 let result = issue_persisted(&namespace, &store, command).await;
                 let _ = result.1.send(result.0);
             }
+            CredentialCommand::Ensure(command) => {
+                let result = ensure_persisted(&namespace, &store, command).await;
+                let _ = result.1.send(result.0);
+            }
             CredentialCommand::Export(command) => {
                 let result = export_persisted(&namespace, &store, command).await;
                 let _ = result.1.send(result.0);
@@ -277,6 +327,147 @@ async fn run_coordinator(
         }
     }
     let _ = terminal.send(CredentialCoordinatorExit::InputClosed);
+}
+
+async fn ensure_persisted(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    command: EnsureCommand,
+) -> (
+    Result<PersistedIssuance, CredentialCoordinatorError>,
+    oneshot::Sender<Result<PersistedIssuance, CredentialCoordinatorError>>,
+) {
+    let EnsureCommand {
+        session,
+        principal,
+        scopes,
+        audience,
+        now,
+        expires_at,
+        response,
+    } = command;
+    let result = ensure_persisted_inner(
+        namespace, store, session, principal, scopes, audience, now, expires_at,
+    )
+    .await;
+    (result, response)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the ensure boundary carries the complete reusable token grant"
+)]
+async fn ensure_persisted_inner(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    session: DatabaseSession,
+    principal_key: String,
+    scopes: Vec<Scope>,
+    audience: String,
+    now: chrono::DateTime<chrono::Utc>,
+    expires_at: chrono::DateTime<chrono::Utc>,
+) -> Result<PersistedIssuance, CredentialCoordinatorError> {
+    let mut connection = session
+        .pool
+        .acquire()
+        .await
+        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    PgAdvisoryLockRepository
+        .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
+        .await
+        .map_err(database_error)?;
+    let previous = PgLocalDefaultCredentialRepository
+        .find(&mut transaction, namespace.as_str())
+        .await
+        .map_err(database_error)?;
+    let disposition = store.recover(previous.as_ref())?;
+    if matches!(
+        disposition,
+        RecoveryDisposition::Stable | RecoveryDisposition::PromotedPending
+    ) && let Some(existing) = reusable_issuance(
+        store,
+        &mut transaction,
+        previous.as_ref(),
+        &principal_key,
+        &scopes,
+        &audience,
+        now,
+    )
+    .await?
+    {
+        transaction
+            .commit()
+            .await
+            .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+        return Ok(existing);
+    }
+    let issued = replace_locked(
+        namespace,
+        store,
+        &mut transaction,
+        previous,
+        principal_key,
+        scopes,
+        audience,
+        expires_at,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    store.promote_pending()?;
+    Ok(issued)
+}
+
+async fn reusable_issuance(
+    store: &CredentialStore,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    mapping: Option<&LocalDefaultCredential>,
+    principal_key: &str,
+    scopes: &[Scope],
+    audience: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<PersistedIssuance>, CredentialCoordinatorError> {
+    let Some(mapping) = mapping else {
+        return Ok(None);
+    };
+    let Some(envelope) = store
+        .read_stable()?
+        .filter(|envelope| mapping_matches(mapping, envelope))
+    else {
+        return Ok(None);
+    };
+    let Some(token) = PgAuthTokenRepository
+        .find_by_id(transaction, envelope.token_id)
+        .await
+        .map_err(database_error)?
+    else {
+        return Ok(None);
+    };
+    let principal = PgPrincipalRepository
+        .find_by_id(transaction, token.principal_id())
+        .await
+        .map_err(database_error)?;
+    let reuse_after =
+        now.checked_add_signed(chrono::Duration::minutes(CREDENTIAL_REUSE_WINDOW_MINUTES));
+    let Auth::Bearer { token: bearer } = envelope.auth;
+    let reusable = token.revoked_at().is_none()
+        && reuse_after.is_some_and(|reuse_after| token.expires_at() > reuse_after)
+        && token.audience() == audience
+        && token.scopes() == scopes
+        && principal.principal_key() == principal_key
+        && tribal_common::sha256_hex(bearer.as_str()) == token.token_hash();
+    Ok(reusable.then(|| PersistedIssuance {
+        raw: bearer.as_str().to_owned(),
+        token,
+        principal: principal.principal_key().to_owned(),
+        origin: PersistedIssuanceOrigin::Existing,
+    }))
 }
 
 async fn export_persisted(
@@ -405,11 +596,44 @@ async fn issue_persisted_inner(
         .await
         .map_err(database_error)?;
     let _ = store.recover(previous.as_ref())?;
-    let principal = find_or_create_principal(&mut transaction, &principal_key)
+    let issued = replace_locked(
+        namespace,
+        store,
+        &mut transaction,
+        previous,
+        principal_key,
+        scopes,
+        audience,
+        expires_at,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    store.promote_pending()?;
+    Ok(issued)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the replacement boundary carries the complete token grant"
+)]
+async fn replace_locked(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    previous: Option<LocalDefaultCredential>,
+    principal_key: String,
+    scopes: Vec<Scope>,
+    audience: String,
+    expires_at: chrono::DateTime<chrono::Utc>,
+) -> Result<PersistedIssuance, CredentialCoordinatorError> {
+    let principal = find_or_create_principal(transaction, &principal_key)
         .await
         .map_err(|source| CredentialCoordinatorError::Principal { source })?;
     let IssuedAuthToken { raw, token } = issue_token_with_record(
-        &mut transaction,
+        transaction,
         &PgAuthTokenRepository,
         principal.id(),
         scopes,
@@ -432,28 +656,24 @@ async fn issue_persisted_inner(
         && previous.token_id != token.id()
     {
         PgAuthTokenRepository
-            .revoke(&mut transaction, previous.token_id, chrono::Utc::now())
+            .revoke(transaction, previous.token_id, chrono::Utc::now())
             .await
             .map_err(database_error)?;
     }
     PgLocalDefaultCredentialRepository
         .replace(
-            &mut transaction,
+            transaction,
             namespace.as_str(),
             envelope.generation_id,
             token.id(),
         )
         .await
         .map_err(database_error)?;
-    transaction
-        .commit()
-        .await
-        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
-    store.promote_pending()?;
     Ok(PersistedIssuance {
         raw,
         token,
         principal: principal.principal_key().to_owned(),
+        origin: PersistedIssuanceOrigin::Issued,
     })
 }
 
@@ -924,5 +1144,70 @@ mod recovery {
         runtime.join().await.unwrap();
         terminal.changed().await.unwrap();
         assert_eq!(*terminal.borrow(), CredentialCoordinatorExit::InputClosed);
+    }
+
+    #[tokio::test]
+    async fn ensure_reuses_only_an_exact_live_grant() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let root = tempfile::tempdir().expect("temporary credential root");
+        let namespace = namespace("abcdef0123456789abcdef01");
+        let (coordinator, runtime) = CredentialCoordinator::spawn_with_root(namespace, root.path());
+        let revision = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"ensure-test"));
+        let now = Utc::now();
+        let scopes = full_access_scopes();
+
+        let first = coordinator
+            .ensure_persisted(
+                session(&database, &revision),
+                tribal_domain::LOCAL_PRINCIPAL_KEY.to_owned(),
+                scopes.clone(),
+                "http://localhost/mcp".to_owned(),
+                now,
+                now + chrono::Duration::hours(1),
+            )
+            .await
+            .expect("first ensure issues");
+        assert_eq!(first.origin, PersistedIssuanceOrigin::Issued);
+        let repeated = coordinator
+            .ensure_persisted(
+                session(&database, &revision),
+                tribal_domain::LOCAL_PRINCIPAL_KEY.to_owned(),
+                scopes.clone(),
+                "http://localhost/mcp".to_owned(),
+                now,
+                now + chrono::Duration::hours(8),
+            )
+            .await
+            .expect("exact ensure reuses");
+        assert_eq!(repeated.origin, PersistedIssuanceOrigin::Existing);
+        assert_eq!(repeated.token.id(), first.token.id());
+
+        let mut narrower = scopes;
+        narrower.pop();
+        let replaced = coordinator
+            .ensure_persisted(
+                session(&database, &revision),
+                tribal_domain::LOCAL_PRINCIPAL_KEY.to_owned(),
+                narrower,
+                "http://localhost/mcp".to_owned(),
+                now,
+                now + chrono::Duration::hours(1),
+            )
+            .await
+            .expect("scope mismatch replaces");
+        assert_eq!(replaced.origin, PersistedIssuanceOrigin::Issued);
+        assert_ne!(replaced.token.id(), first.token.id());
+        let old = PgAuthTokenRepository
+            .find_by_id(
+                &mut database.pool().acquire().await.unwrap(),
+                first.token.id(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(old.revoked_at().is_some());
+
+        drop(coordinator);
+        runtime.join().await.unwrap();
     }
 }

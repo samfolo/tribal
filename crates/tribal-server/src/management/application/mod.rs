@@ -1,5 +1,6 @@
 //! Manager-private operator application façade.
 
+mod bootstrap;
 pub(crate) mod credential;
 mod database;
 mod integration;
@@ -9,6 +10,7 @@ mod reindex;
 mod thread;
 mod token;
 
+use bootstrap::BootstrapAdministration;
 use credential::CredentialCoordinator;
 use database::{DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
 use integration::IntegrationAdministration;
@@ -17,12 +19,12 @@ use reindex::ReindexAdministration;
 use thread::ThreadAdministration;
 use token::TokenAdministration;
 use tribal_wire::management::{
-    ConfigGetCall, ConfigPatchCall, ConfigSetCall, ConfigValidateCall, ConfigValidation,
-    ConfigViolation, CredentialSourcesCall, DatabaseInitialiseCall, GraphConfigureGenesisCall,
-    GraphConvergeGenesisCall, IntegrationMcpConfigCall, LogsTailCall, ManagementCall,
-    ManagementError, ManagementMethod, ManagementResponseError, ModelsSelectCall, ProjectListCall,
-    ProjectRegisterCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall, ThreadsPruneCall,
-    TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
+    BootstrapRunCall, ConfigGetCall, ConfigPatchCall, ConfigSetCall, ConfigValidateCall,
+    ConfigValidation, ConfigViolation, CredentialSourcesCall, DatabaseInitialiseCall,
+    GraphConfigureGenesisCall, GraphConvergeGenesisCall, IntegrationMcpConfigCall, LogsTailCall,
+    ManagementCall, ManagementError, ManagementMethod, ManagementResponseError, ModelsSelectCall,
+    ProjectListCall, ProjectRegisterCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall,
+    ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
 };
 
 use super::{
@@ -76,6 +78,10 @@ impl<'a> ManagementApplication<'a> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive registry dispatch remains explicit in one match"
+    )]
     pub(crate) async fn dispatch(
         &self,
         method: ManagementMethod,
@@ -105,6 +111,7 @@ impl<'a> ManagementApplication<'a> {
             | ManagementMethod::ReindexCancel
             | ManagementMethod::ReindexPrune => self.reindex_value(method, params).await,
             ManagementMethod::ThreadsPrune => self.thread_value(params).await,
+            ManagementMethod::BootstrapRun => self.bootstrap_value(params).await,
             ManagementMethod::DatabaseProbe => {
                 let receipt = self.probe.database().await.map_err(probe_error)?;
                 self.refresh_readiness().await?;
@@ -380,6 +387,22 @@ impl<'a> ManagementApplication<'a> {
     ) -> Result<serde_json::Value, ManagementResponseError> {
         let request = parse_call::<ThreadsPruneCall>(params)?;
         response_value(self.threads.prune(request).await.map_err(thread_error))
+    }
+
+    async fn bootstrap_value(
+        &self,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, ManagementResponseError> {
+        let request = parse_call::<BootstrapRunCall>(params)?;
+        let bootstrap = BootstrapAdministration::new(
+            self.config,
+            self.lifecycle,
+            self.database.clone(),
+            self.projects.clone(),
+            self.tokens.clone(),
+            self.integration.clone(),
+        );
+        response_value(bootstrap.run(self.product, request).await)
     }
 
     async fn refresh_readiness(&self) -> Result<(), ManagementResponseError> {

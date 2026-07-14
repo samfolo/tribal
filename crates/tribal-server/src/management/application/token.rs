@@ -12,15 +12,18 @@ use tribal_domain::{
     AuthToken, AuthTokenId, LOCAL_PRINCIPAL_KEY, full_access_scopes, is_mintable_scope,
 };
 use tribal_wire::management::{
-    AdministrationFailure, CredentialPersistenceResult, InventoryItemRef, IssuedBearerToken,
-    ManagementError, ManagementResponseError, Revisioned, TokenCreateOutcome, TokenCreateRequest,
-    TokenCreateResult, TokenInventory, TokenListRequest, TokenPage, TokenRevokeAllOutcome,
-    TokenRevokeAllRequest, TokenRevokeAllResult, TokenRevokeOutcome, TokenRevokeRequest,
-    TokenRevokeResult, TokenState, TokenSummary,
+    AdministrationFailure, BootstrapTokenPolicy, ConfigRevision, CredentialPersistenceResult,
+    InventoryItemRef, IssuedBearerToken, ManagementError, ManagementResponseError, Revisioned,
+    TokenCreateOutcome, TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest,
+    TokenPage, TokenRevokeAllOutcome, TokenRevokeAllRequest, TokenRevokeAllResult,
+    TokenRevokeOutcome, TokenRevokeRequest, TokenRevokeResult, TokenState, TokenSummary,
 };
 
 use super::{
-    credential::{CredentialCoordinator, CredentialCoordinatorError, PersistedIssuance},
+    credential::{
+        CredentialCoordinator, CredentialCoordinatorError, PersistedIssuance,
+        PersistedIssuanceOrigin,
+    },
     database::{DatabaseAccess, DatabaseAccessError},
     pagination::{
         INVENTORY_RESULT_BUDGET, InventoryCursor, InventoryCursorError, InventoryMethod,
@@ -59,6 +62,12 @@ pub(super) struct TokenAdministration {
     credentials: CredentialCoordinator,
 }
 
+pub(super) struct BootstrapTokenReceipt {
+    pub(super) raw: String,
+    pub(super) summary: TokenSummary,
+    pub(super) origin: PersistedIssuanceOrigin,
+}
+
 impl TokenAdministration {
     pub(super) fn new(database: DatabaseAccess, credentials: CredentialCoordinator) -> Self {
         Self {
@@ -78,16 +87,7 @@ impl TokenAdministration {
         let principal = request
             .principal
             .unwrap_or_else(|| LOCAL_PRINCIPAL_KEY.to_owned());
-        let mut scopes = if request.scopes.is_empty() {
-            full_access_scopes()
-        } else {
-            request.scopes
-        };
-        if scopes.iter().any(|scope| !is_mintable_scope(scope)) {
-            return Err(TokenAdministrationError::Issuance);
-        }
-        scopes.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-        scopes.dedup();
+        let scopes = normalise_scopes(request.scopes)?;
         let expires_at = compute_expires_at(TtlInput::from_pair(
             request.ttl_hours,
             session.config.auth.token_ttl_hours,
@@ -125,6 +125,7 @@ impl TokenAdministration {
                     raw: issued.raw,
                     token: issued.token,
                     principal: principal.principal_key().to_owned(),
+                    origin: PersistedIssuanceOrigin::Issued,
                 },
                 CredentialPersistenceResult::NotRequested,
             )
@@ -135,6 +136,55 @@ impl TokenAdministration {
                 token: IssuedBearerToken::new(issued.raw),
                 summary: summary(&issued.token, issued.principal),
                 credential,
+            },
+        })
+    }
+
+    pub(super) async fn provision_bootstrap(
+        &self,
+        expected_revision: ConfigRevision,
+        policy: BootstrapTokenPolicy,
+    ) -> Result<Revisioned<BootstrapTokenReceipt>, TokenAdministrationError> {
+        let session = self.database.mutation_session(&expected_revision).await?;
+        let (ensure, principal, ttl_hours, scopes) = match policy {
+            BootstrapTokenPolicy::EnsureLocalCredential {
+                principal,
+                ttl_hours,
+                scopes,
+            } => (true, principal, ttl_hours, scopes),
+            BootstrapTokenPolicy::Create {
+                principal,
+                ttl_hours,
+                scopes,
+            } => (false, principal, ttl_hours, scopes),
+        };
+        let principal = principal.unwrap_or_else(|| LOCAL_PRINCIPAL_KEY.to_owned());
+        let scopes = normalise_scopes(scopes)?;
+        let expires_at = compute_expires_at(TtlInput::from_pair(
+            ttl_hours,
+            session.config.auth.token_ttl_hours,
+        ))
+        .map_err(|_| TokenAdministrationError::Issuance)?;
+        let audience = crate::startup::resolve_oauth_runtime(&session.config)
+            .map_err(|_| TokenAdministrationError::Issuance)?
+            .canonical_resource;
+        let revision = session.revision.clone();
+        let issued = if ensure {
+            self.credentials
+                .ensure_persisted(session, principal, scopes, audience, Utc::now(), expires_at)
+                .await
+        } else {
+            self.credentials
+                .issue_persisted(session, principal, scopes, audience, expires_at)
+                .await
+        }
+        .map_err(|source| TokenAdministrationError::Credential { source })?;
+        Ok(Revisioned {
+            config_revision: revision,
+            value: BootstrapTokenReceipt {
+                summary: summary(&issued.token, issued.principal),
+                raw: issued.raw,
+                origin: issued.origin,
             },
         })
     }
@@ -238,6 +288,20 @@ impl TokenAdministration {
             .map_err(repository)?;
         bounded_page(&session, high_water, &rows, request.page.size.get())
     }
+}
+
+fn normalise_scopes(
+    mut scopes: Vec<tribal_domain::Scope>,
+) -> Result<Vec<tribal_domain::Scope>, TokenAdministrationError> {
+    if scopes.is_empty() {
+        scopes = full_access_scopes();
+    }
+    if scopes.iter().any(|scope| !is_mintable_scope(scope)) {
+        return Err(TokenAdministrationError::Issuance);
+    }
+    scopes.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    scopes.dedup();
+    Ok(scopes)
 }
 
 fn bounded_page(

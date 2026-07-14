@@ -6,8 +6,8 @@ use tribal_db::{DbError, NewProject, PgProjectRepository, ProjectPageKey, Projec
 use tribal_domain::{GitRemote, Project, ProjectId};
 use tribal_wire::management::{
     AdministrationFailure, InventoryItemRef, ManagementError, ManagementResponseError, ProjectList,
-    ProjectListRequest, ProjectPage, ProjectRegisterOutcome, ProjectRegisterRequest,
-    ProjectRegisterResult, ProjectRegistrationSource, ProjectSummary,
+    ProjectListRequest, ProjectPage, ProjectRegisterInput, ProjectRegisterOutcome,
+    ProjectRegisterRequest, ProjectRegisterResult, ProjectRegistrationSource, ProjectSummary,
 };
 
 use super::{
@@ -48,6 +48,12 @@ pub(super) struct ProjectAdministration {
 impl ProjectAdministration {
     pub(super) fn new(database: DatabaseAccess) -> Self {
         Self { database }
+    }
+
+    pub(super) fn preflight(
+        project: &ProjectRegisterInput,
+    ) -> Result<(), ProjectAdministrationError> {
+        resolve_source(project.source.clone()).map(|_| ())
     }
 
     pub(super) async fn register(

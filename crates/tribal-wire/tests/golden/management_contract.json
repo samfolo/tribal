@@ -1,4 +1,944 @@
 {
+  "BootstrapRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "BootstrapRequest",
+    "type": "object",
+    "required": [
+      "expected_revision",
+      "integration",
+      "model_selections",
+      "storage",
+      "token"
+    ],
+    "properties": {
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "genesis": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/BootstrapGenesisInput"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "integration": {
+        "$ref": "#/definitions/McpTargetSelection"
+      },
+      "model_selections": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/ModelSelectionInput"
+        }
+      },
+      "project": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ProjectRegisterInput"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "storage": {
+        "$ref": "#/definitions/BootstrapStorage"
+      },
+      "telemetry": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/BootstrapTelemetryInput"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "token": {
+        "$ref": "#/definitions/BootstrapTokenPolicy"
+      }
+    },
+    "definitions": {
+      "AbsoluteDirectoryPath": {
+        "type": "string",
+        "pattern": "^/.*$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "BootstrapGenesisCredential": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "source"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "credential"
+                ],
+                "properties": {
+                  "credential": {
+                    "$ref": "#/definitions/CredentialInput"
+                  }
+                }
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "explicit"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "source"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "stage"
+                ],
+                "properties": {
+                  "stage": {
+                    "$ref": "#/definitions/InferenceStage"
+                  }
+                }
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "reuse_inference_stage"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "BootstrapGenesisInput": {
+        "type": "object",
+        "required": [
+          "embedding"
+        ],
+        "properties": {
+          "credential": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/BootstrapGenesisCredential"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "embedding": {
+            "$ref": "#/definitions/GenesisEmbeddingInput"
+          }
+        }
+      },
+      "BootstrapStorage": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "storage"
+            ],
+            "properties": {
+              "storage": {
+                "type": "string",
+                "enum": [
+                  "configured"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "storage"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "database_url"
+                ],
+                "properties": {
+                  "database_url": {
+                    "$ref": "#/definitions/SecretLiteral"
+                  }
+                }
+              },
+              "storage": {
+                "type": "string",
+                "enum": [
+                  "external"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "BootstrapTelemetryInput": {
+        "type": "object",
+        "required": [
+          "otlp_endpoint"
+        ],
+        "properties": {
+          "otlp_endpoint": {
+            "$ref": "#/definitions/OtlpEndpoint"
+          }
+        }
+      },
+      "BootstrapTokenPolicy": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "policy"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "scopes"
+                ],
+                "properties": {
+                  "principal": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/definitions/Scope"
+                    }
+                  },
+                  "ttl_hours": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "uint64",
+                    "minimum": 0.0
+                  }
+                }
+              },
+              "policy": {
+                "type": "string",
+                "enum": [
+                  "ensure_local_credential"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "policy"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "scopes"
+                ],
+                "properties": {
+                  "principal": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/definitions/Scope"
+                    }
+                  },
+                  "ttl_hours": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "uint64",
+                    "minimum": 0.0
+                  }
+                }
+              },
+              "policy": {
+                "type": "string",
+                "enum": [
+                  "create"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "ConfiguredMcpTarget": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "exposure"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "stdio_context"
+                ],
+                "properties": {
+                  "stdio_context": {
+                    "$ref": "#/definitions/StdioProjectContext"
+                  }
+                }
+              },
+              "exposure": {
+                "type": "string",
+                "enum": [
+                  "public"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "exposure"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "stdio_context"
+                ],
+                "properties": {
+                  "stdio_context": {
+                    "$ref": "#/definitions/StdioProjectContext"
+                  }
+                }
+              },
+              "exposure": {
+                "type": "string",
+                "enum": [
+                  "export_persisted_bearer"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "CredentialInput": {
+        "description": "Inline credential or manager-issued credential capability.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "$ref": "#/definitions/SecretLiteral"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "literal"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "source"
+                ],
+                "properties": {
+                  "source": {
+                    "$ref": "#/definitions/CredentialSourceId"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "source"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "CredentialSourceId": {
+        "type": "string",
+        "pattern": "^credsrc_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "credsrc_",
+        "x-cortex-swift-type": "redacted-canonical-base64url-32"
+      },
+      "EndpointSelection": {
+        "description": "Requested endpoint transition for model selection.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "preserve"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "provider_default"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "custom"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "GenesisEmbeddingInput": {
+        "description": "Candidate embedding identity for graph genesis.",
+        "type": "object",
+        "required": [
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dimensions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/definitions/ProviderKind"
+          }
+        }
+      },
+      "GitRemote": {
+        "description": "Protocol-agnostic git remote identity.\n\nStores the canonical `host/path` form (e.g. `github.com/user/repo`), stripping the transport scheme and `.git` suffix. Two remotes that point to the same repository — regardless of whether they use SSH, HTTPS, or SCP syntax — produce the same `GitRemote` value.\n\nNon-standard ports are preserved in the canonical form as `host:port/path` since different ports may serve different content.\n\nAll major git hosts (GitHub, GitLab, Bitbucket, Gitea) treat organisation and repository names as case-insensitive, so the canonical form is fully lowercased.\n\n# Construction\n\nParse any common git remote URL format via [`FromStr`]:\n\n```text git@github.com:user/repo.git   → github.com/user/repo https://github.com/user/repo   → github.com/user/repo ssh://git@github.com/user/repo → github.com/user/repo ```\n\nOr build from already-parsed components via [`GitRemote::from_parts`].",
+        "type": "object",
+        "required": [
+          "canonical"
+        ],
+        "properties": {
+          "canonical": {
+            "type": "string"
+          }
+        }
+      },
+      "InferenceStage": {
+        "description": "Inference configuration stage.",
+        "type": "string",
+        "enum": [
+          "extraction",
+          "triage",
+          "relation"
+        ]
+      },
+      "KnownModelId": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "McpTarget": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "transport"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "context"
+                ],
+                "properties": {
+                  "context": {
+                    "$ref": "#/definitions/StdioProjectContext"
+                  }
+                }
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "stdio"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "transport"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "auth"
+                ],
+                "properties": {
+                  "auth": {
+                    "$ref": "#/definitions/NetworkIntegrationAuth"
+                  }
+                }
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "http"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "transport"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "auth"
+                ],
+                "properties": {
+                  "auth": {
+                    "$ref": "#/definitions/NetworkIntegrationAuth"
+                  }
+                }
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "sse"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "McpTargetSelection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "selection"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "policy"
+                ],
+                "properties": {
+                  "policy": {
+                    "$ref": "#/definitions/ConfiguredMcpTarget"
+                  }
+                }
+              },
+              "selection": {
+                "type": "string",
+                "enum": [
+                  "configured"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "selection"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "target"
+                ],
+                "properties": {
+                  "target": {
+                    "$ref": "#/definitions/McpTarget"
+                  }
+                }
+              },
+              "selection": {
+                "type": "string",
+                "enum": [
+                  "explicit"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ModelSelectionInput": {
+        "type": "object",
+        "required": [
+          "endpoint",
+          "model",
+          "stages"
+        ],
+        "properties": {
+          "credential": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CredentialInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "endpoint": {
+            "$ref": "#/definitions/EndpointSelection"
+          },
+          "model": {
+            "$ref": "#/definitions/KnownModelId"
+          },
+          "stages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/InferenceStage"
+            }
+          }
+        }
+      },
+      "NetworkIntegrationAuth": {
+        "type": "string",
+        "enum": [
+          "o_auth",
+          "export_persisted_bearer"
+        ]
+      },
+      "OtlpEndpoint": {
+        "type": "string",
+        "pattern": "^https?://[^@\\s/?#]+(?::[0-9]+)?(?:[/?#][^\\s]*)?$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ProjectId": {
+        "type": "string",
+        "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ProjectRegisterInput": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "default_branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "$ref": "#/definitions/ProjectRegistrationSource"
+          }
+        }
+      },
+      "ProjectRegistrationSource": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "source"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "directory"
+                ],
+                "properties": {
+                  "directory": {
+                    "$ref": "#/definitions/AbsoluteDirectoryPath"
+                  }
+                }
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "working_tree"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "source"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "remote"
+                ],
+                "properties": {
+                  "remote": {
+                    "$ref": "#/definitions/GitRemote"
+                  }
+                }
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "git_remote"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProjectSelector": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "source"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "$ref": "#/definitions/ProjectId"
+                  }
+                }
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "id"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "source"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "directory"
+                ],
+                "properties": {
+                  "directory": {
+                    "$ref": "#/definitions/AbsoluteDirectoryPath"
+                  }
+                }
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "working_tree"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProviderKind": {
+        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+        "oneOf": [
+          {
+            "description": "Local `Ollama` instance.",
+            "type": "string",
+            "enum": [
+              "ollama"
+            ]
+          },
+          {
+            "description": "`Anthropic` cloud API.",
+            "type": "string",
+            "enum": [
+              "anthropic"
+            ]
+          },
+          {
+            "description": "`OpenAI` cloud API.",
+            "type": "string",
+            "enum": [
+              "openai"
+            ]
+          },
+          {
+            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
+            "type": "string",
+            "enum": [
+              "platform"
+            ]
+          }
+        ]
+      },
+      "Scope": {
+        "type": "string",
+        "pattern": "^tribal(?:\\.[a-z]+)*:(?:read|write|execute)$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "SecretLiteral": {
+        "type": "string",
+        "pattern": "^\\S+$",
+        "x-cortex-swift-type": "redacted-validated-string"
+      },
+      "StdioProjectContext": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "context"
+            ],
+            "properties": {
+              "context": {
+                "type": "string",
+                "enum": [
+                  "unscoped"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "context",
+              "data"
+            ],
+            "properties": {
+              "context": {
+                "type": "string",
+                "enum": [
+                  "project"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "selector"
+                ],
+                "properties": {
+                  "selector": {
+                    "$ref": "#/definitions/ProjectSelector"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
   "ConfigDocument": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ConfigDocument",
@@ -7272,6 +8212,7 @@
       "reindex.cancel",
       "reindex.prune",
       "threads.prune",
+      "bootstrap.run",
       "database.probe",
       "credential.probe",
       "config.getAll",
@@ -13219,6 +14160,550 @@
             ]
           }
         ]
+      }
+    }
+  },
+  "Revisioned_for_BootstrapOutcome": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Revisioned_for_BootstrapOutcome",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/BootstrapOutcome"
+      }
+    },
+    "definitions": {
+      "AuthTokenId": {
+        "type": "string",
+        "pattern": "^at_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "BootstrapHandoff": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "exposure"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "credential",
+                  "integration"
+                ],
+                "properties": {
+                  "credential": {
+                    "$ref": "#/definitions/BootstrapPublicCredential"
+                  },
+                  "integration": {
+                    "$ref": "#/definitions/PublicMcpConfigDocument"
+                  }
+                }
+              },
+              "exposure": {
+                "type": "string",
+                "enum": [
+                  "public"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "exposure"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "credential",
+                  "integration",
+                  "origin"
+                ],
+                "properties": {
+                  "credential": {
+                    "$ref": "#/definitions/TokenSummary"
+                  },
+                  "integration": {
+                    "$ref": "#/definitions/SensitiveMcpConfigDocument"
+                  },
+                  "origin": {
+                    "$ref": "#/definitions/CredentialOrigin"
+                  }
+                }
+              },
+              "exposure": {
+                "type": "string",
+                "enum": [
+                  "persisted_bearer"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "BootstrapOutcome": {
+        "type": "object",
+        "required": [
+          "database",
+          "handoff"
+        ],
+        "properties": {
+          "database": {
+            "$ref": "#/definitions/DatabaseInitialiseOutcome"
+          },
+          "handoff": {
+            "$ref": "#/definitions/BootstrapHandoff"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ProjectRegisterOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "BootstrapPublicCredential": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "summary"
+                ],
+                "properties": {
+                  "summary": {
+                    "$ref": "#/definitions/TokenSummary"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "existing"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "summary",
+                  "token"
+                ],
+                "properties": {
+                  "summary": {
+                    "$ref": "#/definitions/TokenSummary"
+                  },
+                  "token": {
+                    "$ref": "#/definitions/IssuedBearerToken"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "issued"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-cortex-base64url-prefix": "cfg_",
+        "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "CredentialOrigin": {
+        "type": "string",
+        "enum": [
+          "existing",
+          "issued"
+        ]
+      },
+      "DatabaseInitialiseOutcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "initialised"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "already_initialised"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "GitRemote": {
+        "description": "Protocol-agnostic git remote identity.\n\nStores the canonical `host/path` form (e.g. `github.com/user/repo`), stripping the transport scheme and `.git` suffix. Two remotes that point to the same repository — regardless of whether they use SSH, HTTPS, or SCP syntax — produce the same `GitRemote` value.\n\nNon-standard ports are preserved in the canonical form as `host:port/path` since different ports may serve different content.\n\nAll major git hosts (GitHub, GitLab, Bitbucket, Gitea) treat organisation and repository names as case-insensitive, so the canonical form is fully lowercased.\n\n# Construction\n\nParse any common git remote URL format via [`FromStr`]:\n\n```text git@github.com:user/repo.git   → github.com/user/repo https://github.com/user/repo   → github.com/user/repo ssh://git@github.com/user/repo → github.com/user/repo ```\n\nOr build from already-parsed components via [`GitRemote::from_parts`].",
+        "type": "object",
+        "required": [
+          "canonical"
+        ],
+        "properties": {
+          "canonical": {
+            "type": "string"
+          }
+        }
+      },
+      "IssuedBearerToken": {
+        "type": "string",
+        "x-cortex-swift-type": "scoped-redacted-string"
+      },
+      "ProjectId": {
+        "type": "string",
+        "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "ProjectRegisterOutcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "project"
+                ],
+                "properties": {
+                  "project": {
+                    "$ref": "#/definitions/ProjectSummary"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "registered"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "project"
+                ],
+                "properties": {
+                  "project": {
+                    "$ref": "#/definitions/ProjectSummary"
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "already_registered"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProjectSummary": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "default_branch",
+          "git_remote",
+          "id",
+          "name",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "default_branch": {
+            "type": "string"
+          },
+          "git_remote": {
+            "$ref": "#/definitions/GitRemote"
+          },
+          "id": {
+            "$ref": "#/definitions/ProjectId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PublicMcpConfigDocument": {
+        "type": "object",
+        "required": [
+          "entry",
+          "server_name"
+        ],
+        "properties": {
+          "entry": {
+            "$ref": "#/definitions/PublicMcpServerEntry"
+          },
+          "server_name": {
+            "type": "string"
+          }
+        }
+      },
+      "PublicMcpServerEntry": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "transport"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "args",
+                  "command"
+                ],
+                "properties": {
+                  "args": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "command": {
+                    "type": "string"
+                  }
+                }
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "stdio"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "transport"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  }
+                }
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "http"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "transport"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  }
+                }
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "sse"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "Scope": {
+        "type": "string",
+        "pattern": "^tribal(?:\\.[a-z]+)*:(?:read|write|execute)$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "SensitiveMcpConfigDocument": {
+        "x-cortex-swift-type": "scoped-redacted-json"
+      },
+      "TokenState": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "active"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "expired"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "revoked_at"
+                ],
+                "properties": {
+                  "revoked_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "revoked"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "TokenSummary": {
+        "type": "object",
+        "required": [
+          "audience",
+          "created_at",
+          "expires_at",
+          "id",
+          "principal",
+          "scopes",
+          "state"
+        ],
+        "properties": {
+          "audience": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "$ref": "#/definitions/AuthTokenId"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Scope"
+            }
+          },
+          "state": {
+            "$ref": "#/definitions/TokenState"
+          }
+        }
       }
     }
   },

@@ -3,18 +3,18 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ConfigDocument, ConfigFilePath, ConfigGetRequest, ConfigPatchOutcome, ConfigPatchRequest,
-    ConfigSchema, ConfigSetRequest, ConfigValidateRequest, ConfigValidation, ConfigValue,
-    ConfigWriteOutcome, CredentialSources, CredentialSourcesRequest, DatabaseInitialiseRequest,
-    DatabaseInitialiseResult, GenesisConfigurationRequest, GenesisConvergenceRequest,
-    GenesisOptions, GraphEmbeddingProfile, LifecycleSnapshot, ManagedRuntimeStatusResult,
-    ManagerShutdownResult, McpConfigRequest, McpConfigResult, ModelSelectionRequest,
-    ModelsCatalogue, ProbeReceipt, ProjectList, ProjectListRequest, ProjectRegisterRequest,
-    ProjectRegisterResult, ReadinessReport, ReindexCancelRequest, ReindexCancelResult,
-    ReindexPruneRequest, ReindexPruneResult, ReindexRunRequest, ReindexRunResult,
-    RuntimeLogsTailRequest, RuntimeLogsTailResult, RuntimeRestartResult, RuntimeStartResult,
-    RuntimeStopResult, ThreadPruneRequest, ThreadPruneResult, TokenCreateRequest,
-    TokenCreateResult, TokenInventory, TokenListRequest, TokenRevokeAllRequest,
+    BootstrapRequest, BootstrapResult, ConfigDocument, ConfigFilePath, ConfigGetRequest,
+    ConfigPatchOutcome, ConfigPatchRequest, ConfigSchema, ConfigSetRequest, ConfigValidateRequest,
+    ConfigValidation, ConfigValue, ConfigWriteOutcome, CredentialSources, CredentialSourcesRequest,
+    DatabaseInitialiseRequest, DatabaseInitialiseResult, GenesisConfigurationRequest,
+    GenesisConvergenceRequest, GenesisOptions, GraphEmbeddingProfile, LifecycleSnapshot,
+    ManagedRuntimeStatusResult, ManagerShutdownResult, McpConfigRequest, McpConfigResult,
+    ModelSelectionRequest, ModelsCatalogue, ProbeReceipt, ProjectList, ProjectListRequest,
+    ProjectRegisterRequest, ProjectRegisterResult, ReadinessReport, ReindexCancelRequest,
+    ReindexCancelResult, ReindexPruneRequest, ReindexPruneResult, ReindexRunRequest,
+    ReindexRunResult, RuntimeLogsTailRequest, RuntimeLogsTailResult, RuntimeRestartResult,
+    RuntimeStartResult, RuntimeStopResult, ThreadPruneRequest, ThreadPruneResult,
+    TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest, TokenRevokeAllRequest,
     TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
 };
 
@@ -221,6 +221,12 @@ management_calls! {
         call: ThreadsPruneCall,
         request: ThreadPruneRequest,
         response: ThreadPruneResult,
+    },
+    BootstrapRun => {
+        wire: "bootstrap.run",
+        call: BootstrapRunCall,
+        request: BootstrapRequest,
+        response: BootstrapResult,
     },
     DatabaseProbe => {
         wire: "database.probe",
