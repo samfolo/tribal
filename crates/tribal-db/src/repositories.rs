@@ -83,7 +83,7 @@ pub use oauth_authorization_code::{
 };
 pub use oauth_client::{NewOauthClient, OauthClientRepository, PgOauthClientRepository};
 pub use principal::{NewPrincipal, PgPrincipalRepository, PrincipalRepository};
-pub use project::{NewProject, PgProjectRepository, ProjectRepository};
+pub use project::{NewProject, PgProjectRepository, ProjectPageKey, ProjectRepository};
 pub use prompt_version::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
 pub use reference::{NewReference, PgReferenceRepository, ReferenceRepository};
 pub use reindex_quarantine::{

@@ -8,7 +8,8 @@ use super::{
     ConfigWriteOutcome, CredentialSources, CredentialSourcesRequest, DatabaseInitialiseRequest,
     DatabaseInitialiseResult, GenesisConfigurationRequest, GenesisConvergenceRequest,
     GenesisOptions, GraphEmbeddingProfile, LifecycleSnapshot, ManagedRuntimeStatusResult,
-    ManagerShutdownResult, ModelSelectionRequest, ModelsCatalogue, ProbeReceipt, ReadinessReport,
+    ManagerShutdownResult, ModelSelectionRequest, ModelsCatalogue, ProbeReceipt, ProjectList,
+    ProjectListRequest, ProjectRegisterRequest, ProjectRegisterResult, ReadinessReport,
     RuntimeLogsTailRequest, RuntimeLogsTailResult, RuntimeRestartResult, RuntimeStartResult,
     RuntimeStopResult, RuntimeTokenListResult,
 };
@@ -156,6 +157,18 @@ management_calls! {
         call: DatabaseInitialiseCall,
         request: DatabaseInitialiseRequest,
         response: DatabaseInitialiseResult,
+    },
+    ProjectRegister => {
+        wire: "project.register",
+        call: ProjectRegisterCall,
+        request: ProjectRegisterRequest,
+        response: ProjectRegisterResult,
+    },
+    ProjectList => {
+        wire: "project.list",
+        call: ProjectListCall,
+        request: ProjectListRequest,
+        response: ProjectList,
     },
     DatabaseProbe => {
         wire: "database.probe",

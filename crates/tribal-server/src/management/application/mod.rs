@@ -1,13 +1,16 @@
 //! Manager-private operator application façade.
 
 mod database;
+mod pagination;
+mod project;
 
 use database::{DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
+use project::ProjectAdministration;
 use tribal_wire::management::{
     ConfigGetCall, ConfigPatchCall, ConfigSetCall, ConfigValidateCall, ConfigValidation,
     ConfigViolation, CredentialSourcesCall, DatabaseInitialiseCall, GraphConfigureGenesisCall,
     GraphConvergeGenesisCall, LogsTailCall, ManagementCall, ManagementError, ManagementMethod,
-    ManagementResponseError, ModelsSelectCall,
+    ManagementResponseError, ModelsSelectCall, ProjectListCall, ProjectRegisterCall,
 };
 
 use super::{
@@ -27,6 +30,7 @@ pub(crate) struct ManagementApplication<'a> {
     probe: &'a ProbeService,
     lifecycle: &'a LifecycleController,
     database: DatabaseAccess,
+    projects: ProjectAdministration,
 }
 
 impl<'a> ManagementApplication<'a> {
@@ -36,12 +40,14 @@ impl<'a> ManagementApplication<'a> {
         probe: &'a ProbeService,
         lifecycle: &'a LifecycleController,
     ) -> Self {
+        let database = DatabaseAccess::new(config.clone());
         Self {
             config,
             product,
             probe,
             lifecycle,
-            database: DatabaseAccess::new(config.clone()),
+            projects: ProjectAdministration::new(database.clone()),
+            database,
         }
     }
 
@@ -68,6 +74,8 @@ impl<'a> ManagementApplication<'a> {
             }
             ManagementMethod::CheckReport => self.readiness_value().await,
             ManagementMethod::DatabaseInitialise => self.initialise_database_value(params).await,
+            ManagementMethod::ProjectRegister => self.register_project_value(params).await,
+            ManagementMethod::ProjectList => self.list_projects_value(params).await,
             ManagementMethod::DatabaseProbe => {
                 let receipt = self.probe.database().await.map_err(probe_error)?;
                 self.refresh_readiness().await?;
@@ -210,6 +218,32 @@ impl<'a> ManagementApplication<'a> {
                 .initialise(request)
                 .await
                 .map_err(database_initialise_error),
+        )
+    }
+
+    async fn register_project_value(
+        &self,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, ManagementResponseError> {
+        let request = parse_call::<ProjectRegisterCall>(params)?;
+        response_value(
+            self.projects
+                .register(request)
+                .await
+                .map_err(project::public_error),
+        )
+    }
+
+    async fn list_projects_value(
+        &self,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, ManagementResponseError> {
+        let request = parse_call::<ProjectListCall>(params)?;
+        response_value(
+            self.projects
+                .list(request)
+                .await
+                .map_err(project::public_error),
         )
     }
 

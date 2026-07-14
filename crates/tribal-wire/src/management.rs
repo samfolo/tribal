@@ -107,8 +107,8 @@ pub use method::{
     CredentialSourcesCall, DatabaseInitialiseCall, DatabaseProbeCall, GraphConfigureGenesisCall,
     GraphConvergeGenesisCall, GraphEmbeddingProfileCall, GraphGenesisOptionsCall, LogsTailCall,
     ManagementCall, ManagementMethod, ManagerShutdownCall, ManagerSnapshotCall,
-    ModelsCatalogueCall, ModelsSelectCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall,
-    ServerStatusCall, TokenListCall,
+    ModelsCatalogueCall, ModelsSelectCall, ProjectListCall, ProjectRegisterCall,
+    RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall, TokenListCall,
 };
 #[cfg(feature = "schema")]
 pub use method::{ManagementCallSchema, management_call_schemas};

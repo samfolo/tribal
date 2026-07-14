@@ -43,7 +43,7 @@ pub use repositories::{
     PgReindexTaskRepository, PgRelationRepository, PgRetrievalFeedbackRepository,
     PgStandingRepository, PgSystemFingerprintRepository, PgTagEmbeddingRepository,
     PgTagRegistryRepository, PgTaskRepository, PgTokenUsageRepository, PgTriageResultRepository,
-    PgTriageSimilarItemDecisionRepository, PrincipalRepository, ProjectRepository,
+    PgTriageSimilarItemDecisionRepository, PrincipalRepository, ProjectPageKey, ProjectRepository,
     PromptVersionRepository, ReclaimOutcome, ReferenceRepository, ReindexQuarantineRepository,
     ReindexRunRepository, ReindexTaskRepository, ReindexTaskStateCount, RelationRepository,
     RetrievalFeedbackRepository, SemanticSearchParams, SemanticSearchResponse,

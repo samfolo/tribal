@@ -70,9 +70,19 @@ pub enum ProjectRegistrationSource {
 
 /// An absolute path whose filesystem meaning remains manager-owned.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "String", into = "String")]
 pub struct AbsoluteDirectoryPath(String);
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for AbsoluteDirectoryPath {
+    fn schema_name() -> String {
+        "AbsoluteDirectoryPath".to_owned()
+    }
+
+    fn json_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        super::wire_id::marked_string_schema(Some(r"^/.*$"), "validated-string", None)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AbsoluteDirectoryPathError {
@@ -147,9 +157,26 @@ pub struct ProjectSummary {
 
 /// Requested inventory page size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "u16", into = "u16")]
 pub struct PageSize(u16);
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for PageSize {
+    fn schema_name() -> String {
+        "PageSize".to_owned()
+    }
+
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        let mut schema = generator.subschema_for::<u16>();
+        let schemars::schema::Schema::Object(object) = &mut schema else {
+            unreachable!("u16 has an object schema")
+        };
+        let number = object.number.get_or_insert_with(Default::default);
+        number.minimum = Some(1.0);
+        number.maximum = Some(f64::from(Self::MAX));
+        schema
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("page size must be between 1 and {max}", max = PageSize::MAX)]
@@ -184,9 +211,19 @@ impl From<PageSize> for u16 {
 
 /// Opaque continuation token issued by an inventory method.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "String", into = "String")]
 pub struct PageCursor(String);
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for PageCursor {
+    fn schema_name() -> String {
+        "PageCursor".to_owned()
+    }
+
+    fn json_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        super::wire_id::marked_string_schema(Some(r"^.+$"), "validated-string", None)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("page cursor is empty")]

@@ -10,8 +10,11 @@ use std::{
 };
 
 use tribal_config::{TransportKind, TribalConfig};
-use tribal_db::{MigrationHeadStatus, MigrationRepository, PrincipalRepository};
-use tribal_domain::LOCAL_PRINCIPAL_KEY;
+use tribal_db::{
+    MigrationHeadStatus, MigrationRepository, NewProject, PgProjectRepository, PrincipalRepository,
+    ProjectRepository,
+};
+use tribal_domain::{GitRemote, LOCAL_PRINCIPAL_KEY};
 use tribal_test_utils::duration::POLL_INTERVAL;
 use tribal_wire::management::{
     ConfigDigest, ConfigDocument, ConfigFieldPath, ConfigLiteral, ConfigRevision, ConfigSetRequest,
@@ -19,7 +22,9 @@ use tribal_wire::management::{
     DatabaseInitialiseResult, LifecycleSnapshot, MANAGEMENT_CONTRACT_VERSION,
     ManagementBootstrapRequest, ManagementBootstrapResponse, ManagementClientHello,
     ManagementError, ManagementResponseError, ManagerLaunchDisposition, ManagerLaunchRecord,
-    RuntimeIdentity, RuntimeStartResult,
+    PageCursor, PageRequest, PageSize, ProjectList, ProjectListRequest, ProjectRegisterInput,
+    ProjectRegisterOutcome, ProjectRegisterRequest, ProjectRegistrationSource, RuntimeIdentity,
+    RuntimeStartResult,
 };
 
 /// Upper bound for manager replacement and child-process observations.
@@ -344,6 +349,265 @@ async fn test_database_initialise_negotiates_v3_and_migrates_once_after_revision
     let _: tribal_wire::management::ManagerShutdownResult =
         call(&mut client, 5, "manager.shutdown", None);
     wait_for_success(&mut manager, "manager shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one process journey keeps pagination evidence in causal order"
+)]
+async fn test_project_pagination_is_revision_bound_bounded_and_high_water_stable() {
+    let database = tribal_test_utils::TestDb::new().await;
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    let config = TribalConfig::minimum_valid(database.database_url());
+    std::fs::write(
+        &config_path,
+        serde_yaml::to_string(&config).expect("config serialises"),
+    )
+    .expect("config writes");
+
+    let mut manager = spawn_manager(&config_path, temp.path());
+    let announcement = continuing_announcement(read_manager_record(&mut manager));
+    let mut client = handshake(&announcement);
+    let document: ConfigDocument = call(&mut client, 1, "config.getAll", None);
+    let ConfigDocument::DurableValid { revision, .. } = document else {
+        panic!("valid configuration must expose its durable revision");
+    };
+
+    let stale = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"stale"));
+    let stale_error = call_error(
+        &mut client,
+        2,
+        "project.register",
+        Some(&serde_json::to_value(project_request(&stale, "stale")).expect("request serialises")),
+    );
+    assert!(matches!(
+        stale_error.error,
+        ManagementError::ConfigConflict { expected, actual }
+            if expected == stale && actual == revision
+    ));
+    let mut connection = database.raw_connection().await.expect("database connects");
+    assert!(
+        PgProjectRepository
+            .list(&mut connection)
+            .await
+            .expect("projects list")
+            .is_empty()
+    );
+    drop(connection);
+
+    let mut seeded = Vec::new();
+    for (id, suffix) in [(3, "one"), (4, "two"), (5, "three")] {
+        let result: tribal_wire::management::ProjectRegisterResult = call(
+            &mut client,
+            id,
+            "project.register",
+            Some(
+                &serde_json::to_value(project_request(&revision, suffix))
+                    .expect("request serialises"),
+            ),
+        );
+        assert_eq!(result.config_revision, revision);
+        let ProjectRegisterOutcome::Registered { project } = result.value else {
+            panic!("first registration must insert");
+        };
+        seeded.push(project.id);
+    }
+    let duplicate: tribal_wire::management::ProjectRegisterResult = call(
+        &mut client,
+        6,
+        "project.register",
+        Some(&serde_json::to_value(project_request(&revision, "one")).expect("request serialises")),
+    );
+    assert!(matches!(
+        duplicate.value,
+        ProjectRegisterOutcome::AlreadyRegistered { .. }
+    ));
+
+    let first: ProjectList = call(
+        &mut client,
+        7,
+        "project.list",
+        Some(
+            &serde_json::to_value(ProjectListRequest {
+                page: PageRequest {
+                    size: PageSize::try_from(2).expect("page size is valid"),
+                    after: None,
+                },
+            })
+            .expect("request serialises"),
+        ),
+    );
+    assert_eq!(first.config_revision, revision);
+    assert_eq!(first.value.items.len(), 2);
+    assert!(serde_json::to_vec(&first).expect("page serialises").len() < 64 * 1024);
+    let first_cursor = first.value.next.clone().expect("first page continues");
+
+    thread::sleep(Duration::from_millis(2));
+    let later: tribal_wire::management::ProjectRegisterResult = call(
+        &mut client,
+        8,
+        "project.register",
+        Some(
+            &serde_json::to_value(project_request(&revision, "later")).expect("request serialises"),
+        ),
+    );
+    let later_id = match later.value {
+        ProjectRegisterOutcome::Registered { project } => project.id,
+        ProjectRegisterOutcome::AlreadyRegistered { .. } => unreachable!("remote is new"),
+    };
+    let second: ProjectList = call(
+        &mut client,
+        9,
+        "project.list",
+        Some(
+            &serde_json::to_value(ProjectListRequest {
+                page: PageRequest {
+                    size: PageSize::try_from(2).expect("page size is valid"),
+                    after: Some(first_cursor.clone()),
+                },
+            })
+            .expect("request serialises"),
+        ),
+    );
+    assert_eq!(second.value.items.len(), 1);
+    assert!(second.value.next.is_none());
+    let walked: Vec<_> = first
+        .value
+        .items
+        .iter()
+        .chain(&second.value.items)
+        .map(|project| project.id)
+        .collect();
+    assert_eq!(walked.len(), 3);
+    assert_eq!(
+        walked
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3
+    );
+    assert!(!walked.contains(&later_id));
+    assert!(seeded.iter().all(|id| walked.contains(id)));
+
+    let malformed = PageCursor::try_from("not-base64".to_owned()).expect("cursor is non-empty");
+    let malformed_error = call_error(
+        &mut client,
+        10,
+        "project.list",
+        Some(
+            &serde_json::to_value(ProjectListRequest {
+                page: PageRequest {
+                    size: PageSize::try_from(2).expect("page size is valid"),
+                    after: Some(malformed),
+                },
+            })
+            .expect("request serialises"),
+        ),
+    );
+    assert!(matches!(
+        malformed_error.error,
+        ManagementError::ConfigurationInvalid { .. }
+    ));
+
+    let change: ConfigWriteOutcome = call(
+        &mut client,
+        11,
+        "config.set",
+        Some(
+            &serde_json::to_value(ConfigSetRequest {
+                key: ConfigFieldPath::parse("logging.level").expect("field path is valid"),
+                value: ConfigLiteral::new(serde_json::json!("debug")),
+                expected_revision: revision.clone(),
+            })
+            .expect("request serialises"),
+        ),
+    );
+    let stale_cursor_error = call_error(
+        &mut client,
+        12,
+        "project.list",
+        Some(
+            &serde_json::to_value(ProjectListRequest {
+                page: PageRequest {
+                    size: PageSize::try_from(2).expect("page size is valid"),
+                    after: Some(first_cursor),
+                },
+            })
+            .expect("request serialises"),
+        ),
+    );
+    assert!(matches!(
+        stale_cursor_error.error,
+        ManagementError::ConfigConflict { expected, actual }
+            if expected == revision && actual == change.revision
+    ));
+
+    let mut connection = database
+        .raw_connection()
+        .await
+        .expect("database reconnects");
+    PgProjectRepository
+        .insert(
+            &mut connection,
+            &NewProject::builder()
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    "cortex/oversized-project",
+                    None,
+                ))
+                .name("x".repeat(70 * 1024))
+                .default_branch("main".to_owned())
+                .schema_version(1)
+                .settings(serde_json::json!({}))
+                .build(),
+        )
+        .await
+        .expect("oversized project inserts");
+    drop(connection);
+    let oversized_error = call_error(
+        &mut client,
+        13,
+        "project.list",
+        Some(
+            &serde_json::to_value(ProjectListRequest {
+                page: PageRequest {
+                    size: PageSize::try_from(1).expect("page size is valid"),
+                    after: None,
+                },
+            })
+            .expect("request serialises"),
+        ),
+    );
+    assert!(matches!(
+        oversized_error.error,
+        ManagementError::Administration {
+            failure: tribal_wire::management::AdministrationFailure::InventoryItemTooLarge {
+                item: tribal_wire::management::InventoryItemRef::Project(_),
+            }
+        }
+    ));
+
+    let _: tribal_wire::management::ManagerShutdownResult =
+        call(&mut client, 14, "manager.shutdown", None);
+    wait_for_success(&mut manager, "manager shutdown");
+}
+
+fn project_request(revision: &ConfigRevision, suffix: &str) -> ProjectRegisterRequest {
+    ProjectRegisterRequest {
+        expected_revision: revision.clone(),
+        project: ProjectRegisterInput {
+            source: ProjectRegistrationSource::GitRemote {
+                remote: GitRemote::from_parts("github.com", &format!("cortex/{suffix}"), None),
+            },
+            name: None,
+            default_branch: None,
+        },
+    }
 }
 
 fn tribal_command(config_path: &std::path::Path, root: &std::path::Path) -> Command {

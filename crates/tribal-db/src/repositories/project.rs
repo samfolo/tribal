@@ -6,6 +6,7 @@
 //! absence is a valid outcome in project resolution flows.
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
 use tribal_domain::{GitRemote, Project, ProjectId};
 use typed_builder::TypedBuilder;
@@ -15,6 +16,19 @@ use crate::DbError;
 const SCHEMA_VERSION_EXCEEDS_I32: &str = "schema_version exceeds i32::MAX";
 const SCHEMA_VERSION_OVERFLOW: &str = "negative schema_version in database — data corruption";
 const GIT_REMOTE_PARSE: &str = "stored git_remote must be valid";
+
+#[derive(sqlx::FromRow)]
+struct ProjectRow {
+    id: uuid::Uuid,
+    git_remote: String,
+    name: String,
+    default_branch: String,
+    project_type: Option<String>,
+    schema_version: i32,
+    settings: serde_json::Value,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
 
 /// Input for creating a new project.
 ///
@@ -36,6 +50,13 @@ pub struct NewProject {
     pub schema_version: u32,
     /// Project-specific configuration (JSONB).
     pub settings: serde_json::Value,
+}
+
+/// Stable keyset position for project inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectPageKey {
+    pub created_at: DateTime<Utc>,
+    pub id: ProjectId,
 }
 
 /// Data access operations for projects.
@@ -88,6 +109,21 @@ pub trait ProjectRepository {
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
     async fn list(&self, conn: &mut PgConnection) -> Result<Vec<Project>, DbError>;
+
+    /// Captures the newest row visible at the start of an inventory walk.
+    async fn page_high_water(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Option<ProjectPageKey>, DbError>;
+
+    /// Lists one descending keyset window bounded by a captured high water.
+    async fn list_page(
+        &self,
+        conn: &mut PgConnection,
+        high_water: ProjectPageKey,
+        after: Option<ProjectPageKey>,
+        limit: u16,
+    ) -> Result<Vec<Project>, DbError>;
 }
 
 /// Postgres implementation of [`ProjectRepository`].
@@ -226,6 +262,99 @@ impl ProjectRepository for PgProjectRepository {
                     .settings(r.settings)
                     .created_at(r.created_at)
                     .updated_at(r.updated_at)
+                    .build()
+            })
+            .collect())
+    }
+
+    async fn page_high_water(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Option<ProjectPageKey>, DbError> {
+        let row = sqlx::query!(
+            r#"
+            SELECT created_at, id
+            FROM projects
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            "#
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|source| DbError::QueryFailed {
+            context: "capturing project inventory high water".to_owned(),
+            source,
+        })?;
+        Ok(row.map(|row| ProjectPageKey {
+            created_at: row.created_at,
+            id: ProjectId::from(row.id),
+        }))
+    }
+
+    async fn list_page(
+        &self,
+        conn: &mut PgConnection,
+        high_water: ProjectPageKey,
+        after: Option<ProjectPageKey>,
+        limit: u16,
+    ) -> Result<Vec<Project>, DbError> {
+        let rows = match after {
+            Some(after) => {
+                sqlx::query_as!(
+                    ProjectRow,
+                    r"
+                    SELECT * FROM projects
+                    WHERE (created_at, id) <= ($1, $2)
+                      AND (created_at, id) < ($3, $4)
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT $5
+                    ",
+                    high_water.created_at,
+                    high_water.id.inner(),
+                    after.created_at,
+                    after.id.inner(),
+                    i64::from(limit),
+                )
+                .fetch_all(&mut *conn)
+                .await
+            }
+            None => {
+                sqlx::query_as!(
+                    ProjectRow,
+                    r"
+                    SELECT * FROM projects
+                    WHERE (created_at, id) <= ($1, $2)
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT $3
+                    ",
+                    high_water.created_at,
+                    high_water.id.inner(),
+                    i64::from(limit),
+                )
+                .fetch_all(&mut *conn)
+                .await
+            }
+        }
+        .map_err(|source| DbError::QueryFailed {
+            context: "listing a project inventory page".to_owned(),
+            source,
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                Project::builder()
+                    .id(ProjectId::from(row.id))
+                    .git_remote(row.git_remote.parse::<GitRemote>().expect(GIT_REMOTE_PARSE))
+                    .name(row.name)
+                    .default_branch(row.default_branch)
+                    .project_type(row.project_type)
+                    .schema_version(
+                        u32::try_from(row.schema_version).expect(SCHEMA_VERSION_OVERFLOW),
+                    )
+                    .settings(row.settings)
+                    .created_at(row.created_at)
+                    .updated_at(row.updated_at)
                     .build()
             })
             .collect())

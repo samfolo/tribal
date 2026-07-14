@@ -24,7 +24,7 @@ use super::{
 
 const SOCKET_MODE: u32 = 0o600;
 const SOCKET_DIRECTORY_MODE: u32 = 0o700;
-const MAX_FRAME_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_CONNECTIONS: usize = 32;
 
 /// Identity a bound management socket presents during handshake.
