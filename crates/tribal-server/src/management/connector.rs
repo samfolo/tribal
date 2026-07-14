@@ -16,8 +16,7 @@ use super::client::{ManagementClient, ManagementClientError};
 
 const MAX_LAUNCH_RECORD_BYTES: usize = 64 * 1024;
 const LAUNCH_RECORD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
-const RECOVERING_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
-const RECOVERING_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+const ATTACH_EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Launches or discovers the manager for one configuration path.
 #[derive(Debug, Clone)]
@@ -117,17 +116,7 @@ impl ManagerConnector {
     ///
     /// Returns an error when launch is refused or a compatible manager cannot be attached.
     pub async fn connect(self) -> Result<ManagerConnection, ManagerConnectorError> {
-        let deadline = tokio::time::Instant::now() + RECOVERING_RETRY_WINDOW;
-        loop {
-            match self.connect_once().await {
-                Err(ManagerConnectorError::LaunchRefused {
-                    failure: ManagerLaunchFailure::AuthorityRecovering { .. },
-                }) if tokio::time::Instant::now() < deadline => {
-                    tokio::time::sleep(RECOVERING_RETRY_INTERVAL).await;
-                }
-                result => return result,
-            }
-        }
+        self.connect_once().await
     }
 
     async fn connect_once(&self) -> Result<ManagerConnection, ManagerConnectorError> {
@@ -135,7 +124,8 @@ impl ManagerConnector {
         command
             .arg("--config")
             .arg(&self.config_path)
-            .arg("manage")
+            .arg("manager")
+            .arg("run")
             .arg("--announce-json")
             .envs(self.environment.iter().cloned())
             .stdin(Stdio::null())
@@ -187,14 +177,12 @@ impl ManagerConnector {
         let client = match ManagementClient::connect_announcement(&announcement).await {
             Ok(client) => client,
             Err(source) => {
-                if disposition == ManagerLaunchDisposition::ManagerContinues
-                    && child
-                        .try_wait()
-                        .map_err(|source| ManagerConnectorError::Launch { source })?
-                        .is_some()
-                {
-                    reap_child(child);
-                    return Err(ManagerConnectorError::ManagerDisappeared);
+                if disposition == ManagerLaunchDisposition::ManagerContinues {
+                    match tokio::time::timeout(ATTACH_EXIT_GRACE, child.wait()).await {
+                        Ok(Ok(_)) => return Err(ManagerConnectorError::ManagerDisappeared),
+                        Ok(Err(source)) => return Err(ManagerConnectorError::Launch { source }),
+                        Err(_) => {}
+                    }
                 }
                 reap_child(child);
                 return Err(ManagerConnectorError::Attach { source });

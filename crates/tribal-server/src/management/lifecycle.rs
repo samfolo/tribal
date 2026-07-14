@@ -3045,8 +3045,10 @@ fn prepare_child(
     );
     command
         .arg("serve")
+        .arg("--unscoped")
         .arg("--config")
         .arg(config_path)
+        .env_remove(tribal_config::ENV_PROJECT_ID)
         .env(MANAGED_AUTHORITY_FD, fd.to_string())
         .env(MANAGED_RUNTIME_INSTANCE_ID, &runtime_instance_id)
         .env(MANAGED_MANAGER_INSTANCE_ID, manager_instance_id)

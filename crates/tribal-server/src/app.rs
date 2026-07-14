@@ -6,8 +6,8 @@ use clap::{CommandFactory, Parser};
 
 use crate::{
     cli::{
-        Cli, Command, ConfigCommand, DatabaseCommand, ProjectCommand, ReindexCommand,
-        ThreadsCommand, TokenCommand,
+        Cli, Command, ConfigCommand, DatabaseCommand, ManagerCommand, ProjectCommand,
+        ReindexCommand, ThreadsCommand, TokenCommand,
     },
     commands,
     error::AppError,
@@ -74,12 +74,15 @@ impl App {
             Command::Setup { args } => {
                 commands::setup(&self.cli.global.config, args)?;
             }
-            Command::Serve { args } => {
-                commands::serve(&self.cli.global.config, args)?;
-            }
-            Command::Manage { args } => {
-                commands::manage(&self.cli.global.config, &args)?;
-            }
+            Command::Serve { args } => run_async(commands::serve(&self.cli.global.config, args))?,
+            Command::Manager(command) => match command {
+                ManagerCommand::Run { args } => {
+                    run_async(commands::manage(&self.cli.global.config, &args))?;
+                }
+                ManagerCommand::Shutdown => {
+                    run_async(commands::manage_shutdown(&self.cli.global.config))?;
+                }
+            },
             Command::Runtime(command) => commands::runtime(&self.cli.global.config, &command)?,
             Command::Database(command) => match command {
                 DatabaseCommand::Initialise => {
@@ -151,4 +154,12 @@ impl App {
 
         Ok(())
     }
+}
+
+fn run_async(future: impl Future<Output = Result<(), AppError>>) -> Result<(), AppError> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|source| AppError::Runtime { source })?
+        .block_on(future)
 }

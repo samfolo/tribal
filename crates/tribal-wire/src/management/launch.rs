@@ -1,4 +1,4 @@
-//! Bounded machine records emitted by `tribal manage --announce-json`.
+//! Bounded machine records emitted by `tribal manager run --announce-json`.
 
 use serde::{Deserialize, Serialize};
 

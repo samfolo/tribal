@@ -84,7 +84,7 @@ fn supervised_from(value: Option<&str>) -> bool {
 ///
 /// Returns an [`AppError`] if any startup phase fails or if the worker
 /// dies unexpectedly during operation.
-pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
+pub(crate) async fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let authority_lease = acquire_runtime_authority(Path::new(config_path))?;
     let cancellation_token = CancellationToken::new();
     let runtime_custody = RuntimeCustodyGuard::bootstrap_from_environment(
@@ -95,8 +95,8 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         source: Box::new(source),
     })?;
     let mut managed_control = managed_runtime_control(&authority_lease, runtime_custody.as_ref())?;
-    let (cli_overrides, cli_project) = args.into_cli_overrides();
-    let cli_project = serve_project_mode(cli_project)?.project_argument();
+    let mode = serve_project_mode(args.project.clone(), args.unscoped)?;
+    let (cli_overrides, _) = args.into_cli_overrides();
     let cli_shadow = CliShadow::from_overrides(&cli_overrides);
 
     let config = load_config(config_path, Some(cli_overrides), None)?;
@@ -108,22 +108,12 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     // subscribe from this one channel.
     let (control_events, _) = tokio::sync::broadcast::channel(control::EVENT_BUS_CAPACITY);
 
-    // The OTLP gRPC exporter needs a reactor for init and for
-    // background batch export.  This runtime lives for the duration
-    // of the serve command so export tasks have a live executor.
-    let telemetry_rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .map_err(|source| AppError::Runtime { source })?;
-
-    let (telemetry_guard, metrics, log_ring, log_filter) = telemetry_rt.block_on(async {
+    let (telemetry_guard, metrics, log_ring, log_filter) =
         tribal_telemetry::init_subscriber_with_log_bridge(
             &config.logging,
             &config.telemetry,
             control_events.clone(),
-        )
-    })?;
+        )?;
 
     // Surfaced now that the subscriber is live: inert or surprising config
     // that validation admits but the operator may not have intended.
@@ -133,14 +123,16 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 
     let transport = config.server.transport;
 
-    let handle = orchestration::start_server(
-        &config,
-        cli_project,
-        cancellation_token.clone(),
-        Some(telemetry_guard),
-        metrics,
-        Some(control_events.clone()),
-    )?;
+    let handle = tokio::task::block_in_place(|| {
+        orchestration::start_server_with_mode(
+            &config,
+            mode,
+            cancellation_token.clone(),
+            Some(telemetry_guard),
+            metrics,
+            Some(control_events.clone()),
+        )
+    })?;
 
     let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
 
@@ -153,7 +145,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     // can cancel the token without dropping the transport future.  This
     // lets axum's graceful shutdown drain active connections before the
     // server exits.
-    let transport_error: Option<AppError> = handle.main_runtime().block_on(async {
+    let transport_error: Option<AppError> = async {
         // The local control plane serves alongside the MCP transport for the
         // whole run; it binds best-effort and never blocks MCP from serving.
         let expanded_config_path =
@@ -265,18 +257,25 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         };
         join_companion_tasks(runtime_control_task, control_task, config_watcher_task).await;
         transport_result
-    });
+    }
+    .await;
 
     // Prefer the transport error over the shutdown result — a bind
     // failure is more informative than a clean worker shutdown.
-    let shutdown_result = handle.shutdown();
+    let shutdown_result = tokio::task::block_in_place(|| handle.shutdown());
     match transport_error {
         Some(err) => Err(err),
         None => shutdown_result,
     }
 }
 
-fn serve_project_mode(project: Option<String>) -> Result<ServeProjectMode, AppError> {
+fn serve_project_mode(
+    project: Option<String>,
+    unscoped: bool,
+) -> Result<ServeProjectMode, AppError> {
+    if unscoped {
+        return Ok(ServeProjectMode::Unscoped);
+    }
     project.map_or(Ok(ServeProjectMode::Auto), |raw| {
         raw.parse()
             .map(ServeProjectMode::Project)
@@ -284,15 +283,6 @@ fn serve_project_mode(project: Option<String>) -> Result<ServeProjectMode, AppEr
                 context: format!("invalid project ID format: {raw}"),
             })
     })
-}
-
-impl ServeProjectMode {
-    fn project_argument(self) -> Option<String> {
-        match self {
-            Self::Auto | Self::Unscoped => None,
-            Self::Project(id) => Some(id.to_string()),
-        }
-    }
 }
 
 async fn join_companion_tasks(
@@ -578,6 +568,24 @@ mod tests {
                 "{falsy:?} does not claim supervision"
             );
         }
+    }
+
+    #[test]
+    fn test_serve_project_mode_preserves_all_three_modes() {
+        let project = ProjectId::new();
+        assert_eq!(
+            serve_project_mode(None, false).expect("auto mode resolves"),
+            ServeProjectMode::Auto
+        );
+        assert_eq!(
+            serve_project_mode(None, true).expect("unscoped mode resolves"),
+            ServeProjectMode::Unscoped
+        );
+        assert_eq!(
+            serve_project_mode(Some(project.to_string()), false).expect("project mode resolves"),
+            ServeProjectMode::Project(project)
+        );
+        assert!(serve_project_mode(Some("not-a-project".to_owned()), false).is_err());
     }
 
     #[tokio::test]

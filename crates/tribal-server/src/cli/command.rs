@@ -122,13 +122,9 @@ pub enum Command {
         args: ServeArgs,
     },
 
-    /// Run the runtime-independent local management authority.
-    #[command(display_order = 3)]
-    Manage {
-        /// Arguments for the management authority.
-        #[command(flatten)]
-        args: ManageArgs,
-    },
+    /// Control the runtime-independent local management authority.
+    #[command(subcommand, display_order = 3)]
+    Manager(ManagerCommand),
 
     /// Control the runtime owned by the current management authority.
     #[command(subcommand, display_order = 4)]
@@ -176,7 +172,20 @@ pub enum Command {
     Threads(ThreadsCommand),
 }
 
-/// Arguments for `tribal manage`.
+/// Manager process and lifecycle subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ManagerCommand {
+    /// Run the local management authority in the foreground.
+    Run {
+        /// Arguments for the management authority.
+        #[command(flatten)]
+        args: ManageArgs,
+    },
+    /// Shut down the manager for the configured path.
+    Shutdown,
+}
+
+/// Arguments for `tribal manager run`.
 #[derive(Debug, Args)]
 pub struct ManageArgs {
     /// Emit one bounded machine-readable launch record to stdout.
@@ -211,9 +220,8 @@ pub enum DatabaseCommand {
 /// Arguments for the `serve` subcommand.
 ///
 /// Transport and bind-address environment variables (`TRIBAL_TRANSPORT`,
-/// `TRIBAL_BIND_ADDRESS`) are handled by the configuration loading layer,
-/// not by clap. Only `--project` retains its `env` attribute because it is
-/// session-scoped rather than a configuration value.
+/// `TRIBAL_BIND_ADDRESS`) are handled by the configuration loading layer.
+/// Ambient project selection is resolved only after explicit process mode.
 #[derive(Debug, Args)]
 pub struct ServeArgs {
     /// Transport protocol for the MCP server.
@@ -225,8 +233,12 @@ pub struct ServeArgs {
     pub bind: Option<String>,
 
     /// Project ID (`proj_`-prefixed) to scope the session to.
-    #[arg(long, env = "TRIBAL_PROJECT_ID", help_heading = "Session")]
+    #[arg(long, help_heading = "Session")]
     pub project: Option<String>,
+
+    /// Disable ambient and working-tree project selection.
+    #[arg(long, conflicts_with = "project", help_heading = "Session")]
+    pub unscoped: bool,
 }
 
 impl ServeArgs {
@@ -1040,7 +1052,7 @@ impl McpConfigArgs {
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
-    use tribal_config::{DEFAULT_BIND_ADDRESS, ENV_CONFIG_PATH, ENV_PROJECT_ID, TransportKind};
+    use tribal_config::{DEFAULT_BIND_ADDRESS, ENV_CONFIG_PATH, TransportKind};
 
     use super::*;
 
@@ -1092,14 +1104,16 @@ mod tests {
             if args.transport.is_none()
             && args.project.is_none()
             && args.bind.is_none()
+            && !args.unscoped
         ));
     }
 
     #[test]
-    fn test_manage_parses_the_bounded_announcement_mode() {
+    fn test_manager_run_parses_the_bounded_announcement_mode() {
         let cli = Cli::try_parse_from([
             "tribal",
-            "manage",
+            "manager",
+            "run",
             "--announce-json",
             "--config",
             "/tmp/tribal.yaml",
@@ -1107,13 +1121,22 @@ mod tests {
         .expect("manage arguments parse");
         assert!(matches!(
             cli.command,
-            Some(Command::Manage {
+            Some(Command::Manager(ManagerCommand::Run {
                 args: ManageArgs {
                     announce_json: true
                 }
-            })
+            }))
         ));
         assert_eq!(cli.global.config, "/tmp/tribal.yaml");
+    }
+
+    #[test]
+    fn test_manager_group_exposes_only_run_and_shutdown() {
+        for command in ["run", "shutdown"] {
+            Cli::try_parse_from(["tribal", "manager", command]).expect("manager command parses");
+        }
+        assert!(Cli::try_parse_from(["tribal", "manage"]).is_err());
+        assert!(Cli::try_parse_from(["tribal", "manager", "status"]).is_err());
     }
 
     #[test]
@@ -1167,6 +1190,21 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_serve_unscoped_conflicts_with_project() {
+        assert!(Cli::try_parse_from(["tribal", "serve", "--unscoped"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "tribal",
+                "serve",
+                "--unscoped",
+                "--project",
+                "proj_00000000-0000-0000-0000-000000000000",
+            ])
+            .is_err()
+        );
+    }
+
     // -- into_cli_overrides -------------------------------------------------
 
     #[test]
@@ -1175,6 +1213,7 @@ mod tests {
             transport: None,
             bind: None,
             project: None,
+            unscoped: false,
         };
         let (overrides, project) = args.into_cli_overrides();
         assert!(overrides.server.is_none());
@@ -1187,6 +1226,7 @@ mod tests {
             transport: Some(TransportKind::Sse),
             bind: None,
             project: Some("proj_abc".into()),
+            unscoped: false,
         };
         let (overrides, project) = args.into_cli_overrides();
         let server = overrides.server.unwrap();
@@ -1201,6 +1241,7 @@ mod tests {
             transport: None,
             bind: Some(DEFAULT_BIND_ADDRESS.into()),
             project: None,
+            unscoped: false,
         };
         let (overrides, _) = args.into_cli_overrides();
         let server = overrides.server.unwrap();
@@ -1214,6 +1255,7 @@ mod tests {
             transport: Some(TransportKind::Http),
             bind: Some(DEFAULT_BIND_ADDRESS.into()),
             project: None,
+            unscoped: false,
         };
         let (overrides, _) = args.into_cli_overrides();
         let server = overrides.server.unwrap();
@@ -1938,10 +1980,8 @@ mod tests {
         );
     }
 
-    /// Verifies that the clap `env` attribute on `serve --project` matches
-    /// [`ENV_PROJECT_ID`].
     #[test]
-    fn test_project_env_matches_constant() {
+    fn test_serve_project_is_explicit_only() {
         let cmd = Cli::command();
         let serve = cmd
             .get_subcommands()
@@ -1951,10 +1991,7 @@ mod tests {
             .get_arguments()
             .find(|a| a.get_id() == "project")
             .expect("--project arg must exist");
-        assert_eq!(
-            arg.get_env().expect("--project must have env").to_str(),
-            Some(ENV_PROJECT_ID),
-        );
+        assert!(arg.get_env().is_none());
     }
 }
 

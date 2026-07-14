@@ -13,7 +13,7 @@ use std::{
 };
 
 use fs2::FileExt as _;
-use tribal::{ManagerConnector, ManagerConnectorError, ManagementClientError};
+use tribal::{ManagementClientError, ManagerConnector, ManagerConnectorError};
 use tribal_config::{TransportKind, TribalConfig};
 use tribal_db::{
     MigrationHeadStatus, MigrationRepository, NewProject, PgProjectRepository, PrincipalRepository,
@@ -21,6 +21,10 @@ use tribal_db::{
 };
 use tribal_domain::{GitRemote, LOCAL_PRINCIPAL_KEY};
 use tribal_test_utils::duration::POLL_INTERVAL;
+use tribal_wire::control::{
+    CONTROL_CONTRACT_VERSION, ClientHello, ControlRequest, ControlResponse, JsonRpcVersion,
+    RequestId, ResponseResult, ServerHello, ServerStatus,
+};
 use tribal_wire::management::{
     ConfigDigest, ConfigDocument, ConfigFieldPath, ConfigLiteral, ConfigRevision, ConfigSetRequest,
     ConfigWriteOutcome, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
@@ -35,6 +39,138 @@ use tribal_wire::management::{
 
 /// Upper bound for manager replacement and child-process observations.
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(20);
+
+#[test]
+fn manager_shutdown_projection() {
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    std::fs::write(&config_path, "database: [").expect("invalid config writes");
+    let mut manager = spawn_manager(&config_path, temp.path());
+    let announcement = continuing_announcement(read_manager_record(&mut manager));
+
+    let output = run_to_completion({
+        let mut command = tribal_command(&config_path, temp.path());
+        command.arg("manager").arg("shutdown");
+        command
+    });
+    assert!(
+        output.status.success(),
+        "shutdown projection failed: {output:?}"
+    );
+    serde_json::from_slice::<tribal_wire::management::ManagerShutdownResult>(&output.stdout)
+        .expect("shutdown result remains typed");
+    wait_for_success(&mut manager, "manager shutdown projection");
+    assert!(!Path::new(&announcement.socket_path).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn startup_serve_project_mode_process_matrix() {
+    let database = tribal_test_utils::TestDb::new().await;
+    let mut connection = database.raw_connection().await.expect("database connects");
+    let ambient = PgProjectRepository
+        .insert(&mut connection, &new_project("ambient", "cortex/ambient"))
+        .await
+        .expect("ambient project inserts");
+    let repository_project = PgProjectRepository
+        .insert(
+            &mut connection,
+            &new_project("repository", "cortex/serve-mode"),
+        )
+        .await
+        .expect("repository project inserts");
+    drop(connection);
+
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary process root");
+    let repository = temp.path().join("repository");
+    initialise_git_repository(&repository);
+
+    for transport in [TransportKind::Http, TransportKind::Sse] {
+        let root = temp.path().join(format!("managed-{transport}"));
+        std::fs::create_dir_all(&root).expect("managed root creates");
+        let config_path = root.join("tribal.yaml");
+        write_server_config(&config_path, database.database_url(), transport);
+        let mut manager = manager_command(&config_path, &root)
+            .env("TRIBAL_PROJECT_ID", ambient.id().to_string())
+            .current_dir(&repository)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("manager spawns");
+        let announcement = continuing_announcement(read_manager_record(&mut manager));
+        let mut client = handshake(&announcement);
+        wait_for_start_clear(&mut client);
+        let started: RuntimeStartResult = call(&mut client, 1, "runtime.start", None);
+        assert!(
+            matches!(started, RuntimeStartResult::Started { .. }),
+            "managed {transport} runtime starts: {started:?}"
+        );
+        let status = control_status(&root, &format!("managed {transport}"));
+        assert_eq!(status.transport, transport.to_string());
+        assert!(
+            status.project.is_none(),
+            "managed {transport} ignores ambient and repository project context"
+        );
+        let _: tribal_wire::management::ManagerShutdownResult =
+            call(&mut client, 2, "manager.shutdown", None);
+        wait_for_success(&mut manager, "managed project-mode shutdown");
+    }
+
+    for (name, arguments, ambient_project, expected) in [
+        (
+            "auto",
+            Vec::new(),
+            None,
+            Some(repository_project.id().to_string()),
+        ),
+        (
+            "unscoped",
+            vec!["--unscoped".to_owned()],
+            Some(ambient.id().to_string()),
+            None,
+        ),
+        (
+            "project",
+            vec!["--project".to_owned(), ambient.id().to_string()],
+            Some(repository_project.id().to_string()),
+            Some(ambient.id().to_string()),
+        ),
+    ] {
+        let root = temp.path().join(format!("direct-{name}"));
+        std::fs::create_dir_all(&root).expect("direct root creates");
+        let config_path = root.join("tribal.yaml");
+        write_server_config(&config_path, database.database_url(), TransportKind::Http);
+        let mut command = tribal_command(&config_path, &root);
+        command
+            .arg("serve")
+            .args(arguments)
+            .current_dir(&repository)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        match ambient_project {
+            Some(project) => {
+                command.env("TRIBAL_PROJECT_ID", project);
+            }
+            None => {
+                command.env_remove("TRIBAL_PROJECT_ID");
+            }
+        }
+        let mut server = command.spawn().expect("direct server spawns");
+        let status = control_status(&root, &format!("direct {name}"));
+        assert_eq!(
+            status.project.as_ref().map(|project| project.id.clone()),
+            expected,
+            "direct {name} preserves its parsed project mode"
+        );
+        server.kill().expect("direct server stops");
+        let _ = server.wait();
+    }
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn connector_concurrent_first_launch() {
@@ -88,7 +224,8 @@ async fn connector_concurrent_first_launch() {
         .await
         .expect("manager shutdown succeeds");
     assert!(
-        poll_until(|| (!Path::new(&first.announcement().socket_path).exists()).then_some(())).is_some(),
+        poll_until(|| (!Path::new(&first.announcement().socket_path).exists()).then_some(()))
+            .is_some(),
         "manager socket must disappear after shutdown"
     );
 }
@@ -181,7 +318,8 @@ async fn connector_recovering_authority_conflict() {
 #[ignore = "process helper entered only by connector_recovering_authority_conflict"]
 fn connector_recovering_lock_holder() {
     let lock_path = PathBuf::from(std::env::var_os("CONNECTOR_LOCK_PATH").expect("lock path set"));
-    let ready_path = PathBuf::from(std::env::var_os("CONNECTOR_READY_PATH").expect("ready path set"));
+    let ready_path =
+        PathBuf::from(std::env::var_os("CONNECTOR_READY_PATH").expect("ready path set"));
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -264,10 +402,7 @@ async fn connector_manager_disappears_before_attach() {
     else {
         panic!("connector must reject vanished manager");
     };
-    assert!(matches!(
-        error,
-        ManagerConnectorError::ManagerDisappeared
-    ));
+    assert!(matches!(error, ManagerConnectorError::ManagerDisappeared));
 }
 
 #[test]
@@ -946,23 +1081,153 @@ fn tribal_command(config_path: &std::path::Path, root: &std::path::Path) -> Comm
         .env("HOME", root)
         .env("XDG_CONFIG_HOME", root)
         .env("XDG_RUNTIME_DIR", root)
-        .env("XDG_STATE_HOME", root);
+        .env("XDG_STATE_HOME", root)
+        .env("TMPDIR", root);
     command
 }
 
 fn manager_command(config_path: &std::path::Path, root: &std::path::Path) -> Command {
     let mut command = tribal_command(config_path, root);
-    command.arg("manage").arg("--announce-json");
+    command.arg("manager").arg("run").arg("--announce-json");
     command
 }
 
-fn connector(config_path: &Path, root: &Path) -> ManagerConnector {
-    ["HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "XDG_STATE_HOME"]
+fn new_project(name: &str, path: &str) -> NewProject {
+    NewProject::builder()
+        .git_remote(GitRemote::from_parts("github.com", path, None))
+        .name(name.to_owned())
+        .default_branch("main".to_owned())
+        .schema_version(1)
+        .settings(serde_json::json!({}))
+        .build()
+}
+
+fn initialise_git_repository(path: &Path) {
+    std::fs::create_dir_all(path).expect("repository directory creates");
+    assert!(
+        Command::new("git")
+            .arg("init")
+            .arg("--quiet")
+            .arg(path)
+            .status()
+            .expect("git init runs")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .arg("remote")
+            .arg("add")
+            .arg("origin")
+            .arg("https://github.com/cortex/serve-mode.git")
+            .status()
+            .expect("git remote runs")
+            .success()
+    );
+}
+
+fn write_server_config(path: &Path, database_url: &str, transport: TransportKind) {
+    let mut config = TribalConfig::minimum_valid(database_url);
+    config.server.transport = transport;
+    config.server.bind_address = Some("127.0.0.1:0".to_owned());
+    std::fs::write(
+        path,
+        serde_yaml::to_string(&config).expect("config serialises"),
+    )
+    .expect("config writes");
+}
+
+fn control_status(root: &Path, context: &str) -> ServerStatus {
+    let descriptor = poll_until(|| {
+        [
+            root.join("tribal/control.json"),
+            root.join("Library/Application Support/tribal/control.json"),
+        ]
         .into_iter()
-        .fold(
-            ManagerConnector::with_executable(env!("CARGO_BIN_EXE_tribal"), config_path),
-            |connector, key| connector.environment(key, root),
-        )
+        .find_map(|path| {
+            std::fs::read(path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        })
+    })
+    .unwrap_or_else(|| panic!("control descriptor appears for {context}"));
+    let socket_path = descriptor["socket_path"]
+        .as_str()
+        .expect("control descriptor names its socket");
+    let stream =
+        poll_until(|| UnixStream::connect(socket_path).ok()).expect("control socket accepts");
+    let mut reader = BufReader::new(stream);
+    write_control_frame(
+        reader.get_mut(),
+        &ClientHello {
+            protocol_version: CONTROL_CONTRACT_VERSION,
+        },
+    );
+    let hello: ServerHello = read_control_frame(&mut reader);
+    assert_eq!(hello.protocol_version, CONTROL_CONTRACT_VERSION);
+    write_control_frame(
+        reader.get_mut(),
+        &ControlRequest {
+            jsonrpc: JsonRpcVersion,
+            id: RequestId(1),
+            method: "server.status".to_owned(),
+            params: None,
+        },
+    );
+    let response: ControlResponse = loop {
+        let frame: serde_json::Value = read_control_frame(&mut reader);
+        if frame.get("id") == Some(&serde_json::json!(1)) {
+            break serde_json::from_value(frame).expect("control response decodes");
+        }
+    };
+    let ResponseResult::Success { result } = response.outcome else {
+        panic!("server.status must succeed");
+    };
+    serde_json::from_value(result).expect("server status decodes")
+}
+
+fn write_control_frame(stream: &mut UnixStream, value: &impl serde::Serialize) {
+    let body = serde_json::to_vec(value).expect("control frame serialises");
+    write!(stream, "Content-Length: {}\r\n\r\n", body.len()).expect("control header writes");
+    stream.write_all(&body).expect("control body writes");
+    stream.flush().expect("control frame flushes");
+}
+
+fn read_control_frame<T: serde::de::DeserializeOwned>(reader: &mut BufReader<UnixStream>) -> T {
+    let mut content_length = None;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("control header reads");
+        if line == "\r\n" {
+            break;
+        }
+        if let Some(value) = line.strip_prefix("Content-Length: ") {
+            content_length = Some(
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .expect("content length parses"),
+            );
+        }
+    }
+    let mut body = vec![0; content_length.expect("content length is present")];
+    reader.read_exact(&mut body).expect("control body reads");
+    serde_json::from_slice(&body).expect("control frame decodes")
+}
+
+fn connector(config_path: &Path, root: &Path) -> ManagerConnector {
+    [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_RUNTIME_DIR",
+        "XDG_STATE_HOME",
+    ]
+    .into_iter()
+    .fold(
+        ManagerConnector::with_executable(env!("CARGO_BIN_EXE_tribal"), config_path),
+        |connector, key| connector.environment(key, root),
+    )
 }
 
 fn authority_descriptors(root: &Path) -> Vec<serde_json::Value> {
@@ -994,7 +1259,11 @@ fn fake_announcement(
     }
 }
 
-fn write_fake_launcher(root: &Path, announcement: &ManagerAnnouncement, remain_alive: bool) -> PathBuf {
+fn write_fake_launcher(
+    root: &Path,
+    announcement: &ManagerAnnouncement,
+    remain_alive: bool,
+) -> PathBuf {
     let path = root.join(if remain_alive {
         "incompatible-manager"
     } else {
@@ -1007,7 +1276,11 @@ fn write_fake_launcher(root: &Path, announcement: &ManagerAnnouncement, remain_a
     let encoded = serde_json::to_string(&record)
         .expect("launch record serialises")
         .replace('\'', "'\\''");
-    let tail = if remain_alive { "sleep 2\n" } else { "exit 0\n" };
+    let tail = if remain_alive {
+        "sleep 2\n"
+    } else {
+        "exit 0\n"
+    };
     std::fs::write(
         &path,
         format!("#!/bin/sh\nprintf '%s' '{encoded}'\nexec 1>&-\n{tail}"),

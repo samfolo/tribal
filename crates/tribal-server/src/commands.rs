@@ -25,7 +25,7 @@ pub(crate) mod token;
 pub(crate) use self::{
     bootstrap::run as bootstrap,
     check::{CheckConfigSource, CheckReportOptions, run as check, run_report_async},
-    manage::run as manage,
+    manage::{run as manage, shutdown as manage_shutdown},
     mcp_config::run as mcp_config,
     runtime::run as runtime,
     serve::run as serve,

@@ -26,12 +26,13 @@ use tribal_wire::control::ControlEvent;
 use tribal_worker::{Worker, WorkerError};
 
 use crate::{
+    commands::serve::ServeProjectMode,
     error::AppError,
     startup::{
         CatalogueCredentialResolver, POOL_NAME_MCP, POOL_NAME_WORKER, build_provider_registry,
         check_first_run, completion_stage_specs, create_pool_with_retry, ensure_prompt_files,
         generate_instance_id, init_prompt_watcher, load_prompts, load_prompts_embedded,
-        probe_startup_providers, provision_genesis, read_active_profile, resolve_project,
+        probe_startup_providers, provision_genesis, read_active_profile, resolve_project_mode,
         run_migrations, validate_embedding_identity,
     },
 };
@@ -198,6 +199,32 @@ pub fn start_server(
     metrics: Arc<dyn MetricsRecorder>,
     control_events: Option<broadcast::Sender<ControlEvent>>,
 ) -> Result<ServerHandle, AppError> {
+    let project_mode = match cli_project {
+        Some(raw) => {
+            ServeProjectMode::Project(raw.parse().map_err(|_| AppError::ProjectResolution {
+                context: format!("invalid project ID format: {raw}"),
+            })?)
+        }
+        None => ServeProjectMode::Auto,
+    };
+    start_server_with_mode(
+        config,
+        project_mode,
+        cancellation_token,
+        telemetry_guard,
+        metrics,
+        control_events,
+    )
+}
+
+pub(crate) fn start_server_with_mode(
+    config: &TribalConfig,
+    project_mode: ServeProjectMode,
+    cancellation_token: CancellationToken,
+    telemetry_guard: Option<TelemetryGuard>,
+    metrics: Arc<dyn MetricsRecorder>,
+    control_events: Option<broadcast::Sender<ControlEvent>>,
+) -> Result<ServerHandle, AppError> {
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
     // -- Main runtime --------------------------------------------------------
@@ -210,7 +237,7 @@ pub fn start_server(
 
     let (state, worker) = match main_rt.block_on(bootstrap(
         config,
-        cli_project,
+        project_mode,
         cancellation_token.clone(),
         Arc::clone(&job_state_txs),
         metrics.clone(),
@@ -335,7 +362,7 @@ pub fn start_server(
 /// project resolution, `AppState` assembly, and `Worker` construction.
 async fn bootstrap(
     config: &TribalConfig,
-    cli_project: Option<String>,
+    project_mode: ServeProjectMode,
     cancellation_token: CancellationToken,
     job_state_txs: JobStateTxs,
     metrics: Arc<dyn MetricsRecorder>,
@@ -423,7 +450,7 @@ async fn bootstrap(
 
     // -- Project resolution --------------------------------------------------
 
-    let resolved_project = resolve_project(&pool_mcp, cli_project).await?;
+    let resolved_project = resolve_project_mode(&pool_mcp, project_mode).await?;
 
     // -- Worker construction -------------------------------------------------
     // Worker is built before AppState so shared values can be cloned for the

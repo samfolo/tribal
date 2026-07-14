@@ -1,4 +1,4 @@
-//! `tribal manage`: acquire or attach to one per-config authority.
+//! `tribal manager`: run or stop one per-config authority.
 
 use std::{
     io::{self, Write},
@@ -11,7 +11,8 @@ use tokio_util::sync::CancellationToken;
 use tribal_wire::management::{
     AuthorityUnavailableReason, ConfigDocument, ConfigFilePath, ConfigRevision,
     ConflictingRuntimeIdentity, MANAGEMENT_CONTRACT_VERSION, ManagerAnnouncement,
-    ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord, ManagerStartupFailure,
+    ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord, ManagerShutdownCall,
+    ManagerStartupFailure,
 };
 
 use crate::{
@@ -25,6 +26,7 @@ use crate::{
         },
         client::{ManagementClient, ManagementClientError},
         configuration::ConfigAuthority,
+        connector::{ManagerConnector, ManagerConnectorError},
         custody::{CustodyError, PendingRecovery},
         lifecycle::{LifecycleController, LifecycleExit, LifecycleStartError, RecoveredRuntime},
         probe::ProbeService,
@@ -36,6 +38,8 @@ use crate::{
 };
 
 const MAX_LAUNCH_RECORD_BYTES: usize = 64 * 1024;
+const INITIAL_PUBLICATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+const INITIAL_PUBLICATION_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 const REPLACEMENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(12);
 const REPLACEMENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
@@ -59,11 +63,6 @@ pub(crate) enum ManageError {
     },
     #[error("manager launch failed")]
     LaunchFailed,
-    #[error("creating management runtime: {source}")]
-    Runtime {
-        #[source]
-        source: io::Error,
-    },
     #[error("registering management shutdown signal: {source}")]
     Signal {
         #[source]
@@ -105,6 +104,11 @@ pub(crate) enum ManageError {
         #[source]
         source: ManagementClientError,
     },
+    #[error("management connector failed: {source}")]
+    Connector {
+        #[source]
+        source: ManagerConnectorError,
+    },
     #[error("credential coordinator terminated unexpectedly")]
     CredentialCoordinatorTerminated,
     #[error("joining credential coordinator: {source}")]
@@ -115,23 +119,43 @@ pub(crate) enum ManageError {
 }
 
 /// Acquires or attaches to the authority and blocks while a winning manager serves.
-pub(crate) fn run(config_path: &str, args: &ManageArgs) -> Result<(), AppError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|source| ManageError::Runtime { source })?;
+pub(crate) async fn run(config_path: &str, args: &ManageArgs) -> Result<(), AppError> {
     let stdout = io::stdout();
     let stdout_fd = stdout.as_raw_fd();
     let mut writer = stdout.lock();
-    let outcome = runtime.block_on(run_async(
+    let outcome = run_async(
         Path::new(config_path),
         args.announce_json,
         &mut writer,
         args.announce_json.then_some(stdout_fd),
         CancellationToken::new(),
-    ));
+    )
+    .await;
     drop(writer);
     outcome.map(|_| ()).map_err(AppError::from)
+}
+
+/// Shuts down the compatible manager for one configuration path.
+pub(crate) async fn shutdown(config_path: &str) -> Result<(), AppError> {
+    let mut connection = ManagerConnector::new(config_path)
+        .map_err(|source| ManageError::Connector { source })?
+        .connect()
+        .await
+        .map_err(|source| ManageError::Connector { source })?;
+    let result = connection
+        .client_mut()
+        .call::<ManagerShutdownCall>(&())
+        .await
+        .map_err(|source| ManageError::Client { source })?;
+    let stdout = io::stdout();
+    let mut writer = stdout.lock();
+    serde_json::to_writer(&mut writer, &result).map_err(|source| ManageError::Output {
+        source: io::Error::new(io::ErrorKind::InvalidData, source),
+    })?;
+    writer
+        .write_all(b"\n")
+        .map_err(|source| ManageError::Output { source })?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,6 +409,11 @@ async fn prepare_authority(
         AuthorityAcquire::Occupied(AuthorityConflict::Recovering {
             canonical_config_path,
         }) => {
+            let paths = AuthorityLease::paths_for(config_path)
+                .map_err(|source| ManageError::Authority { source })?;
+            if !paths.delegated_descriptor_path.exists() {
+                return await_initial_publication(config_path, writer, announce_json).await;
+            }
             let (lease, listener, recovered) = recover_or_report(
                 config_path,
                 instance_id,
@@ -406,6 +435,59 @@ async fn prepare_authority(
         }
     };
     Ok(Some(prepared))
+}
+
+async fn await_initial_publication(
+    config_path: &Path,
+    writer: &mut impl Write,
+    announce_json: bool,
+) -> Result<Option<PreparedAuthority>, ManageError> {
+    let deadline = tokio::time::Instant::now() + INITIAL_PUBLICATION_DEADLINE;
+    loop {
+        tokio::time::sleep(INITIAL_PUBLICATION_POLL_INTERVAL).await;
+        let acquire = AuthorityLease::acquire(config_path)
+            .map_err(|source| ManageError::Authority { source })?;
+        match acquire {
+            AuthorityAcquire::Occupied(AuthorityConflict::Manager(descriptor)) => {
+                if ManagementClient::connect(&descriptor).await.is_ok() {
+                    let record = conflict_record(AuthorityConflict::Manager(descriptor));
+                    emit_if_requested(writer, announce_json, &record)?;
+                    return Ok(None);
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    let record = authority_unavailable_record(
+                        &descriptor.canonical_config_path,
+                        AuthorityUnavailableReason::LeaseOwnerUnreachable,
+                    );
+                    emit_if_requested(writer, announce_json, &record)?;
+                    return Err(ManageError::LaunchFailed);
+                }
+            }
+            AuthorityAcquire::Acquired(lease) => {
+                let listener = bind_or_report(&lease, writer, announce_json).await?;
+                return Ok(Some(PreparedAuthority {
+                    lease,
+                    listener,
+                    recovered: None,
+                }));
+            }
+            AuthorityAcquire::Occupied(AuthorityConflict::Recovering {
+                canonical_config_path,
+            }) if tokio::time::Instant::now() >= deadline => {
+                let record = conflict_record(AuthorityConflict::Recovering {
+                    canonical_config_path,
+                });
+                emit_if_requested(writer, announce_json, &record)?;
+                return Err(ManageError::LaunchFailed);
+            }
+            AuthorityAcquire::Occupied(AuthorityConflict::Recovering { .. }) => {}
+            AuthorityAcquire::Occupied(conflict) => {
+                let record = conflict_record(conflict);
+                emit_if_requested(writer, announce_json, &record)?;
+                return Err(ManageError::LaunchFailed);
+            }
+        }
+    }
 }
 
 async fn watch_config_file(
