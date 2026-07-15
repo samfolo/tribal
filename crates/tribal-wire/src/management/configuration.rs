@@ -482,6 +482,8 @@ pub enum GraphEmbeddingProfile {
     Active {
         profile: EmbeddingProfileSummary,
         profile_revision: EmbeddingProfileRevision,
+        connection: Option<ProviderConnectionName>,
+        configured: GenesisEmbeddingInput,
         genesis_drift: Option<String>,
     },
     Unknown {

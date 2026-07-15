@@ -293,6 +293,7 @@ impl ProductSession {
     ) -> Result<ProcessingProfileSnapshot, ManagementResponseError> {
         let snapshot = self.snapshot(operation).await?;
         Ok(ProcessingProfileSnapshot {
+            effective: wire_custom_processing(snapshot.config.custom_processing_settings())?,
             profile: wire_processing(snapshot.config.processing_profile())?,
             revision: snapshot.revision,
         })
@@ -327,28 +328,45 @@ impl ProductSession {
         let snapshot = self.snapshot(operation).await?;
         ensure_revision(&request.expected_revision, &snapshot.revision)?;
         let defaults = TribalConfig::default();
+        let mut candidate = snapshot.config.as_ref().clone();
         let changes = match request.scope {
-            SettingsResetScope::Processing => vec![
-                serialised_change("inference", &defaults.inference)?,
-                serialised_change("agents", &defaults.agents)?,
-            ],
+            SettingsResetScope::Processing => {
+                candidate.inference = defaults.inference;
+                candidate.agents = defaults.agents;
+                vec![
+                    serialised_change("inference", &candidate.inference)?,
+                    serialised_change("agents", &candidate.agents)?,
+                ]
+            }
             SettingsResetScope::ProcessingStage { stage } => {
-                let (name, inference, agent) = match stage {
+                let name = match stage {
+                    InferenceStage::Extraction => {
+                        candidate.inference.extraction = defaults.inference.extraction;
+                        candidate.agents.extraction = defaults.agents.extraction;
+                        "extraction"
+                    }
+                    InferenceStage::Triage => {
+                        candidate.inference.triage = defaults.inference.triage;
+                        candidate.agents.triage = defaults.agents.triage;
+                        "triage"
+                    }
+                    InferenceStage::Relation => {
+                        candidate.inference.relation = defaults.inference.relation;
+                        candidate.agents.relation = defaults.agents.relation;
+                        "relation"
+                    }
+                };
+                let (inference, agent) = match stage {
                     InferenceStage::Extraction => (
-                        "extraction",
-                        &defaults.inference.extraction,
-                        &defaults.agents.extraction,
+                        &candidate.inference.extraction,
+                        &candidate.agents.extraction,
                     ),
-                    InferenceStage::Triage => (
-                        "triage",
-                        &defaults.inference.triage,
-                        &defaults.agents.triage,
-                    ),
-                    InferenceStage::Relation => (
-                        "relation",
-                        &defaults.inference.relation,
-                        &defaults.agents.relation,
-                    ),
+                    InferenceStage::Triage => {
+                        (&candidate.inference.triage, &candidate.agents.triage)
+                    }
+                    InferenceStage::Relation => {
+                        (&candidate.inference.relation, &candidate.agents.relation)
+                    }
                 };
                 vec![
                     serialised_change(&format!("inference.{name}"), inference)?,
@@ -358,6 +376,8 @@ impl ProductSession {
         };
         Ok(SettingsResetPreview {
             changes,
+            effective: wire_custom_processing(candidate.custom_processing_settings())?,
+            profile: wire_processing(candidate.processing_profile())?,
             revision: snapshot.revision,
         })
     }
@@ -368,18 +388,8 @@ impl ProductSession {
     ) -> Result<GenesisOptions, ManagementResponseError> {
         let snapshot = self.snapshot(operation).await?;
         let config = snapshot.config.as_ref();
-        let genesis = &config.init.embedding;
-        let recommended_connection = config
-            .provider_connections
-            .require(&genesis.connection)
-            .map_err(|_| invalid_contract())?;
         Ok(GenesisOptions {
-            recommended: GenesisEmbeddingInput {
-                connection: genesis.connection.clone(),
-                provider: recommended_connection.provider(),
-                model: genesis.model.clone(),
-                dimensions: genesis.dimensions,
-            },
+            recommended: configured_embedding(config)?,
             connections: config
                 .provider_connections
                 .iter()
@@ -421,11 +431,19 @@ impl ProductSession {
             return Ok(session.revisioned(GraphEmbeddingProfile::NoProfile));
         };
         let summary = profile_summary(&profile);
+        let connection = session
+            .config
+            .provider_connections
+            .resolve(summary.provider, &summary.base_url)
+            .map(|(name, _)| name.clone());
+        let configured = configured_embedding(&session.config)?;
         let genesis_drift = genesis_differs(&session.config, &summary)
             .then(|| "configuration differs from the active embedding profile".to_owned());
         Ok(session.revisioned(GraphEmbeddingProfile::Active {
             profile: summary,
             profile_revision: profile_revision(&profile)?,
+            connection,
+            configured,
             genesis_drift,
         }))
     }
@@ -989,6 +1007,13 @@ fn wire_processing(
         .map_err(|_| invalid_contract())
 }
 
+fn wire_custom_processing(
+    settings: tribal_config::CustomProcessingSettings,
+) -> Result<tribal_wire::management::CustomProcessingSettings, ManagementResponseError> {
+    serde_json::from_value(serde_json::to_value(settings).map_err(|_| invalid_contract())?)
+        .map_err(|_| invalid_contract())
+}
+
 pub(super) fn config_processing(
     profile: ProcessingProfile,
 ) -> Result<ConfigProcessingProfile, ManagementResponseError> {
@@ -1172,6 +1197,22 @@ fn profile_summary(profile: &tribal_domain::EmbeddingProfile) -> EmbeddingProfil
     }
 }
 
+fn configured_embedding(
+    config: &TribalConfig,
+) -> Result<GenesisEmbeddingInput, ManagementResponseError> {
+    let embedding = &config.init.embedding;
+    let connection = config
+        .provider_connections
+        .require(&embedding.connection)
+        .map_err(|_| invalid_contract())?;
+    Ok(GenesisEmbeddingInput {
+        connection: embedding.connection.clone(),
+        provider: connection.provider(),
+        model: embedding.model.clone(),
+        dimensions: embedding.dimensions,
+    })
+}
+
 fn profile_revision(
     profile: &tribal_domain::EmbeddingProfile,
 ) -> Result<EmbeddingProfileRevision, ManagementResponseError> {
@@ -1300,5 +1341,30 @@ mod tests {
             config_processing(wire).expect("config projection succeeds"),
             raw
         );
+    }
+
+    #[test]
+    fn test_effective_processing_wire_projection_is_exact() {
+        let mut config = TribalConfig::minimum_valid("postgres://localhost/tribal");
+        config.inference.extraction.temperature = Some(0.2);
+        let raw = config.custom_processing_settings();
+
+        let wire = wire_custom_processing(raw.clone()).expect("wire projection succeeds");
+        let rebuilt: tribal_config::CustomProcessingSettings =
+            serde_json::from_value(serde_json::to_value(wire).expect("wire profile serialises"))
+                .expect("config profile deserialises");
+
+        assert_eq!(rebuilt, raw);
+    }
+
+    #[test]
+    fn test_configured_embedding_projection_names_the_actual_genesis_connection() {
+        let config = TribalConfig::minimum_valid("postgres://localhost/tribal");
+
+        let configured = configured_embedding(&config).expect("valid config projects");
+
+        assert_eq!(configured.connection, config.init.embedding.connection);
+        assert_eq!(configured.model, config.init.embedding.model);
+        assert_eq!(configured.dimensions, config.init.embedding.dimensions);
     }
 }

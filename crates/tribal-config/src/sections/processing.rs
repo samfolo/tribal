@@ -147,6 +147,25 @@ pub enum VerifiedStageExecutionSettings {
 }
 
 impl TribalConfig {
+    /// Projects the effective settings for every processing stage.
+    #[must_use]
+    pub fn custom_processing_settings(&self) -> CustomProcessingSettings {
+        CustomProcessingSettings {
+            extraction: ExtractionStageSettings {
+                model: stage_model(&self.inference.extraction),
+                execution: extraction_execution(&self.agents.extraction),
+            },
+            triage: VerifiedStageSettings {
+                model: stage_model(&self.inference.triage),
+                execution: verified_execution(&self.agents.triage),
+            },
+            relation: VerifiedStageSettings {
+                model: stage_model(&self.inference.relation),
+                execution: verified_execution(&self.agents.relation),
+            },
+        }
+    }
+
     /// Projects the effective inference and agent settings into one complete profile.
     #[must_use]
     pub fn processing_profile(&self) -> ProcessingProfile {
@@ -157,20 +176,7 @@ impl TribalConfig {
             return ProcessingProfile::HigherQuality { model };
         }
         ProcessingProfile::Custom {
-            settings: Box::new(CustomProcessingSettings {
-                extraction: ExtractionStageSettings {
-                    model: stage_model(&self.inference.extraction),
-                    execution: extraction_execution(&self.agents.extraction),
-                },
-                triage: VerifiedStageSettings {
-                    model: stage_model(&self.inference.triage),
-                    execution: verified_execution(&self.agents.triage),
-                },
-                relation: VerifiedStageSettings {
-                    model: stage_model(&self.inference.relation),
-                    execution: verified_execution(&self.agents.relation),
-                },
-            }),
+            settings: Box::new(self.custom_processing_settings()),
         }
     }
 
@@ -297,7 +303,7 @@ fn verified_execution(stage: &StageAgentConfig) -> VerifiedStageExecutionSetting
             max_total_tokens: stage.max_total_tokens,
         },
         ExecutorChoice::Loop => VerifiedStageExecutionSettings::HigherQuality {
-            verifier: stage.verifier,
+            verifier: Some(stage.verifier_enabled(true)),
             max_total_tokens: stage.max_total_tokens,
             max_turns: stage.max_turns,
             execution_deadline_seconds: stage.execution_deadline_seconds,
@@ -424,5 +430,47 @@ mod tests {
         rebuilt.apply_processing_profile(expected.clone());
 
         assert_eq!(rebuilt.processing_profile(), expected);
+    }
+
+    #[test]
+    fn test_custom_projection_is_the_effective_profile_payload() {
+        let mut config = TribalConfig::default();
+        config.inference.extraction.temperature = Some(0.2);
+        config.agents.triage.executor = ExecutorChoice::Loop;
+        config.agents.triage.verifier = Some(false);
+
+        let effective = config.custom_processing_settings();
+
+        assert_eq!(effective.extraction.model.temperature, Some(0.2));
+        assert!(matches!(
+            effective.triage.execution,
+            VerifiedStageExecutionSettings::HigherQuality {
+                verifier: Some(false),
+                ..
+            }
+        ));
+        assert_eq!(
+            config.processing_profile(),
+            ProcessingProfile::Custom {
+                settings: Box::new(effective)
+            }
+        );
+    }
+
+    #[test]
+    fn test_custom_projection_resolves_the_loop_verifier_default() {
+        let mut config = TribalConfig::default();
+        config.agents.triage.executor = ExecutorChoice::Loop;
+        config.inference.triage.temperature = Some(0.2);
+
+        let effective = config.custom_processing_settings();
+
+        assert!(matches!(
+            effective.triage.execution,
+            VerifiedStageExecutionSettings::HigherQuality {
+                verifier: Some(true),
+                ..
+            }
+        ));
     }
 }

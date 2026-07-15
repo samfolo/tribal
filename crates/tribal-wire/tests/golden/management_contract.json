@@ -13397,10 +13397,14 @@
     "title": "ProcessingProfileSnapshot",
     "type": "object",
     "required": [
+      "effective",
       "profile",
       "revision"
     ],
     "properties": {
+      "effective": {
+        "$ref": "#/definitions/CustomProcessingSettings"
+      },
       "profile": {
         "$ref": "#/definitions/ProcessingProfile"
       },
@@ -17228,6 +17232,34 @@
           }
         }
       },
+      "GenesisEmbeddingInput": {
+        "description": "Connection-backed embedding identity for graph genesis.",
+        "type": "object",
+        "required": [
+          "connection",
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "connection": {
+            "$ref": "#/definitions/ProviderConnectionName"
+          },
+          "dimensions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/definitions/ProviderKind"
+          }
+        }
+      },
       "GraphEmbeddingProfile": {
         "description": "Active graph embedding identity and drift classification.",
         "oneOf": [
@@ -17255,10 +17287,24 @@
               "data": {
                 "type": "object",
                 "required": [
+                  "configured",
                   "profile",
                   "profile_revision"
                 ],
                 "properties": {
+                  "configured": {
+                    "$ref": "#/definitions/GenesisEmbeddingInput"
+                  },
+                  "connection": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/ProviderConnectionName"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "genesis_drift": {
                     "type": [
                       "string",
@@ -17308,6 +17354,11 @@
             }
           }
         ]
+      },
+      "ProviderConnectionName": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$",
+        "x-cortex-swift-type": "validated-string"
       },
       "ProviderKind": {
         "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
@@ -27990,6 +28041,8 @@
     "type": "object",
     "required": [
       "changes",
+      "effective",
+      "profile",
       "revision"
     ],
     "properties": {
@@ -27998,6 +28051,12 @@
         "items": {
           "$ref": "#/definitions/ConfigPatchChange"
         }
+      },
+      "effective": {
+        "$ref": "#/definitions/CustomProcessingSettings"
+      },
+      "profile": {
+        "$ref": "#/definitions/ProcessingProfile"
       },
       "revision": {
         "$ref": "#/definitions/ConfigRevision"
@@ -28033,6 +28092,297 @@
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-cortex-base64url-prefix": "cfg_",
         "x-cortex-swift-type": "canonical-base64url-32"
+      },
+      "CustomProcessingSettings": {
+        "type": "object",
+        "required": [
+          "extraction",
+          "relation",
+          "triage"
+        ],
+        "properties": {
+          "extraction": {
+            "$ref": "#/definitions/ExtractionStageSettings"
+          },
+          "relation": {
+            "$ref": "#/definitions/VerifiedStageSettings"
+          },
+          "triage": {
+            "$ref": "#/definitions/VerifiedStageSettings"
+          }
+        }
+      },
+      "ExtractionStageSettings": {
+        "type": "object",
+        "required": [
+          "execution",
+          "model"
+        ],
+        "properties": {
+          "execution": {
+            "$ref": "#/definitions/StageExecutionSettings"
+          },
+          "model": {
+            "$ref": "#/definitions/StageModelSettings"
+          }
+        }
+      },
+      "PresetModelSettings": {
+        "type": "object",
+        "required": [
+          "connection",
+          "model"
+        ],
+        "properties": {
+          "connection": {
+            "$ref": "#/definitions/ProviderConnectionName"
+          },
+          "model": {
+            "type": "string"
+          }
+        }
+      },
+      "ProcessingProfile": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "model",
+              "profile"
+            ],
+            "properties": {
+              "model": {
+                "$ref": "#/definitions/PresetModelSettings"
+              },
+              "profile": {
+                "type": "string",
+                "enum": [
+                  "efficient"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "model",
+              "profile"
+            ],
+            "properties": {
+              "model": {
+                "$ref": "#/definitions/PresetModelSettings"
+              },
+              "profile": {
+                "type": "string",
+                "enum": [
+                  "higher_quality"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "profile",
+              "settings"
+            ],
+            "properties": {
+              "profile": {
+                "type": "string",
+                "enum": [
+                  "custom"
+                ]
+              },
+              "settings": {
+                "$ref": "#/definitions/CustomProcessingSettings"
+              }
+            }
+          }
+        ]
+      },
+      "ProviderConnectionName": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$",
+        "x-cortex-swift-type": "validated-string"
+      },
+      "StageExecutionSettings": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "max_total_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0.0
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "efficient"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "execution_deadline_seconds": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint32",
+                "minimum": 0.0
+              },
+              "max_total_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0.0
+              },
+              "max_turns": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint32",
+                "minimum": 0.0
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "higher_quality"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "StageModelSettings": {
+        "type": "object",
+        "required": [
+          "connection",
+          "model"
+        ],
+        "properties": {
+          "connection": {
+            "$ref": "#/definitions/ProviderConnectionName"
+          },
+          "max_output_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "model": {
+            "type": "string"
+          },
+          "temperature": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          }
+        }
+      },
+      "VerifiedStageExecutionSettings": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "max_total_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0.0
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "efficient"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "execution_deadline_seconds": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint32",
+                "minimum": 0.0
+              },
+              "max_total_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0.0
+              },
+              "max_turns": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint32",
+                "minimum": 0.0
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "higher_quality"
+                ]
+              },
+              "verifier": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "VerifiedStageSettings": {
+        "type": "object",
+        "required": [
+          "execution",
+          "model"
+        ],
+        "properties": {
+          "execution": {
+            "$ref": "#/definitions/VerifiedStageExecutionSettings"
+          },
+          "model": {
+            "$ref": "#/definitions/StageModelSettings"
+          }
+        }
       }
     }
   },

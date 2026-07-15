@@ -484,6 +484,7 @@ pub enum VerifiedStageExecutionSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProcessingProfileSnapshot {
+    pub effective: CustomProcessingSettings,
     pub profile: ProcessingProfile,
     pub revision: ConfigRevision,
 }
@@ -535,6 +536,8 @@ pub struct SettingsResetPreviewRequest {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SettingsResetPreview {
     pub changes: Vec<ConfigPatchChange>,
+    pub effective: CustomProcessingSettings,
+    pub profile: ProcessingProfile,
     pub revision: ConfigRevision,
 }
 
