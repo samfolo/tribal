@@ -782,6 +782,8 @@ pub(super) enum RecoveryDisposition {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CredentialStoreError {
+    #[error("credential envelope path has no parent: '{}'", path.display())]
+    ParentlessPath { path: PathBuf },
     #[error("credential envelope I/O failed at '{}': {source}", path.display())]
     Io {
         path: PathBuf,
@@ -834,10 +836,7 @@ impl CredentialStore {
         envelope: &PersistedCredentialEnvelope,
     ) -> Result<(), CredentialStoreError> {
         self.validate_namespace(envelope)?;
-        let parent = self
-            .pending_path
-            .parent()
-            .expect("credential path has a parent");
+        let parent = parent_directory(&self.pending_path)?;
         std::fs::create_dir_all(parent).map_err(|source| file_error(parent, source))?;
         #[cfg(unix)]
         {
@@ -868,10 +867,7 @@ impl CredentialStore {
                 io::Error::other("injected pending promotion failure"),
             ));
         }
-        let parent = self
-            .stable_path
-            .parent()
-            .expect("credential path has a parent");
+        let parent = parent_directory(&self.stable_path)?;
         std::fs::rename(&self.pending_path, &self.stable_path)
             .map_err(|source| file_error(&self.pending_path, source))?;
         File::open(parent)
@@ -954,6 +950,13 @@ impl CredentialStore {
             Err(source) => Err(file_error(path, source)),
         }
     }
+}
+
+fn parent_directory(path: &Path) -> Result<&Path, CredentialStoreError> {
+    path.parent()
+        .ok_or_else(|| CredentialStoreError::ParentlessPath {
+            path: path.to_path_buf(),
+        })
 }
 
 fn mapping_matches(

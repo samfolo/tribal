@@ -183,7 +183,8 @@ async fn network_path(
         Err(
             error @ (PersistedCredentialReadError::Authority { .. }
             | PersistedCredentialReadError::Namespaced {
-                source: CredentialStoreError::Io { .. },
+                source:
+                    CredentialStoreError::Io { .. } | CredentialStoreError::ParentlessPath { .. },
             }),
         ) => CheckOutcome::credentials_unreadable(
             error.to_string(),

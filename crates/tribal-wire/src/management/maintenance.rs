@@ -111,12 +111,11 @@ impl schemars::JsonSchema for RetentionDays {
 
     fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
         let mut schema = generator.subschema_for::<u32>();
-        let schemars::schema::Schema::Object(object) = &mut schema else {
-            unreachable!("u32 has an object schema")
-        };
-        let number = object.number.get_or_insert_with(Default::default);
-        number.minimum = Some(1.0);
-        number.maximum = Some(f64::from(u32::MAX));
+        if let schemars::schema::Schema::Object(object) = &mut schema {
+            let number = object.number.get_or_insert_with(Default::default);
+            number.minimum = Some(1.0);
+            number.maximum = Some(f64::from(u32::MAX));
+        }
         schema
     }
 }
