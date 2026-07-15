@@ -2,8 +2,9 @@
 
 use std::str::FromStr as _;
 
-use chrono::Utc;
+use chrono::{TimeDelta, Utc};
 use tribal_auth::issue_token_with_record;
+use tribal_config::MAX_TTL_HOURS;
 use tribal_db::{
     AuthTokenInventoryRow, AuthTokenPageKey, AuthTokenRepository, DbError, PgAuthTokenRepository,
     PgPrincipalRepository, PrincipalRepository,
@@ -24,14 +25,11 @@ use super::{
         CredentialCoordinator, CredentialCoordinatorError, PersistedIssuance,
         PersistedIssuanceOrigin,
     },
-    database::{DatabaseAccess, DatabaseAccessError},
+    database::{DatabaseAccess, DatabaseAccessError, find_or_create_principal},
     pagination::{
         INVENTORY_RESULT_BUDGET, InventoryCursor, InventoryCursorError, InventoryMethod,
         InventoryPosition,
     },
-};
-use crate::management::application::support::{
-    TtlInput, compute_expires_at, find_or_create_principal,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -90,11 +88,8 @@ impl TokenAdministration {
             .principal
             .unwrap_or_else(|| LOCAL_PRINCIPAL_KEY.to_owned());
         let scopes = normalise_scopes(request.scopes)?;
-        let expires_at = compute_expires_at(TtlInput::from_pair(
-            request.ttl_hours,
-            session.config.auth.token_ttl_hours,
-        ))
-        .map_err(|_| TokenAdministrationError::Issuance)?;
+        let expires_at =
+            compute_expires_at(request.ttl_hours, session.config.auth.token_ttl_hours)?;
         let audience = crate::startup::resolve_oauth_runtime(&session.config)
             .map_err(|_| TokenAdministrationError::Issuance)?
             .canonical_resource;
@@ -111,7 +106,7 @@ impl TokenAdministration {
             let mut connection = session.pool.acquire().await.map_err(connection_error)?;
             let principal = find_or_create_principal(&mut connection, &principal)
                 .await
-                .map_err(|_| TokenAdministrationError::Issuance)?;
+                .map_err(repository)?;
             let issued = issue_token_with_record(
                 &mut connection,
                 &PgAuthTokenRepository,
@@ -162,11 +157,7 @@ impl TokenAdministration {
         };
         let principal = principal.unwrap_or_else(|| LOCAL_PRINCIPAL_KEY.to_owned());
         let scopes = normalise_scopes(scopes)?;
-        let expires_at = compute_expires_at(TtlInput::from_pair(
-            ttl_hours,
-            session.config.auth.token_ttl_hours,
-        ))
-        .map_err(|_| TokenAdministrationError::Issuance)?;
+        let expires_at = compute_expires_at(ttl_hours, session.config.auth.token_ttl_hours)?;
         let audience = crate::startup::resolve_oauth_runtime(&session.config)
             .map_err(|_| TokenAdministrationError::Issuance)?
             .canonical_resource;
@@ -304,6 +295,21 @@ fn normalise_scopes(
     scopes.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     scopes.dedup();
     Ok(scopes)
+}
+
+fn compute_expires_at(
+    requested_hours: Option<u64>,
+    configured_hours: u64,
+) -> Result<chrono::DateTime<Utc>, TokenAdministrationError> {
+    let hours = requested_hours.unwrap_or(configured_hours);
+    if hours == 0 || hours > MAX_TTL_HOURS {
+        return Err(TokenAdministrationError::Issuance);
+    }
+    let hours = i64::try_from(hours).map_err(|_| TokenAdministrationError::Issuance)?;
+    let lifetime = TimeDelta::try_hours(hours).ok_or(TokenAdministrationError::Issuance)?;
+    Utc::now()
+        .checked_add_signed(lifetime)
+        .ok_or(TokenAdministrationError::Issuance)
 }
 
 fn bounded_page(

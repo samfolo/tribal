@@ -7,13 +7,15 @@ mod integration;
 mod pagination;
 mod project;
 mod reindex;
-pub(crate) mod support;
 mod thread;
 mod token;
 
 use bootstrap::BootstrapAdministration;
 use credential::CredentialCoordinator;
-pub(crate) use database::DatabaseSession;
+pub(crate) use database::{
+    COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DATABASE_COMMAND_DEFAULTS,
+    DatabaseSession,
+};
 use database::{DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
 use integration::IntegrationAdministration;
 use project::ProjectAdministration;
@@ -602,6 +604,9 @@ fn database_initialise_error(error: DatabaseInitialiseError) -> ManagementRespon
             "database migration failed",
             tribal_wire::management::AdministrationFailure::DatabaseMigrationFailed,
         ),
+        DatabaseInitialiseError::EmptyMigrationCatalogue => {
+            internal_error("compiled database migration catalogue is empty")
+        }
         DatabaseInitialiseError::Session(DatabaseAccessError::Connection { .. })
         | DatabaseInitialiseError::MigrationState { .. }
         | DatabaseInitialiseError::MigrationConnection { .. }

@@ -300,7 +300,7 @@ mod tests {
 
     use super::*;
     use crate::management::{
-        application::support::find_or_create_principal,
+        application::database::find_or_create_principal,
         configuration::ConfigAuthority,
         product::{ProductService, ProductSession},
         worker::{self, ConfigWorkerRuntime},

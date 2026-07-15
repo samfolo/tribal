@@ -13,9 +13,7 @@ use super::{
     state::CheckState,
     types::{CheckDetail, CheckOutcome, CheckRemediation},
 };
-use crate::management::application::support::{
-    COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS,
-};
+use crate::management::application::{COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS};
 
 /// Pool-name tag passed to [`create_pool`] for tracing.
 const POOL_NAME: &str = "check";

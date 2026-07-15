@@ -4,9 +4,10 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use sqlx::PgPool;
 use tribal_config::TribalConfig;
 use tribal_db::{
-    MigrationHeadStatus, MigrationRepository, PgMigrationRepository, PrincipalRepository,
+    DbError, MigrationHeadStatus, MigrationRepository, NewPrincipal, PgMigrationRepository,
+    PgPrincipalRepository, PrincipalRepository,
 };
-use tribal_domain::LOCAL_PRINCIPAL_KEY;
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, Principal};
 use tribal_wire::management::{
     ConfigRevision, DatabaseInitialiseOutcome, DatabaseInitialiseRequest, DatabaseInitialiseResult,
     Revisioned,
@@ -16,14 +17,14 @@ use super::super::{
     configuration::{ConfigAuthorityError, ResolvedConfigSnapshot},
     worker::ConfigWorkerClient,
 };
-use crate::{
-    management::application::support::{
-        COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, find_or_create_principal,
-    },
-    startup::run_migrations,
-};
+use crate::startup::run_migrations;
 
 const POOL_NAME: &str = "management";
+const DEFAULT_DATABASE_URL: &str = "postgresql://tribal:tribal@localhost:5432/tribal";
+pub(crate) const DATABASE_COMMAND_DEFAULTS: [(&str, &str); 1] =
+    [("database.url", DEFAULT_DATABASE_URL)];
+pub(crate) const COMMAND_POOL_MAX_CONNECTIONS: u32 = 1;
+pub(crate) const COMMAND_STATEMENT_TIMEOUT_MS: u64 = 30_000;
 
 type PoolFuture = Pin<Box<dyn Future<Output = Result<PgPool, tribal_db::DbError>> + Send>>;
 type PoolFactory = Arc<dyn Fn(Arc<TribalConfig>) -> PoolFuture + Send + Sync>;
@@ -100,8 +101,10 @@ pub(crate) enum DatabaseInitialiseError {
     #[error("local principal initialisation failed: {source}")]
     Principal {
         #[source]
-        source: crate::error::AppError,
+        source: DbError,
     },
+    #[error("compiled database migration catalogue is empty")]
+    EmptyMigrationCatalogue,
 }
 
 impl DatabaseAccess {
@@ -171,7 +174,7 @@ impl DatabaseAccess {
         let expected_head = tribal_db::MIGRATOR
             .iter()
             .last()
-            .expect("compiled migrations are non-empty")
+            .ok_or(DatabaseInitialiseError::EmptyMigrationCatalogue)?
             .version;
         let mut connection = session
             .pool
@@ -196,9 +199,7 @@ impl DatabaseAccess {
         let principal_existed = tribal_db::PgPrincipalRepository
             .find_by_key(&mut connection, LOCAL_PRINCIPAL_KEY)
             .await
-            .map_err(|source| DatabaseInitialiseError::Principal {
-                source: crate::error::AppError::Database { source },
-            })?
+            .map_err(|source| DatabaseInitialiseError::Principal { source })?
             .is_some();
         find_or_create_principal(&mut connection, LOCAL_PRINCIPAL_KEY)
             .await
@@ -211,6 +212,33 @@ impl DatabaseAccess {
                 DatabaseInitialiseOutcome::Initialised
             };
         Ok(session.revisioned(outcome).into())
+    }
+}
+
+pub(super) async fn find_or_create_principal(
+    connection: &mut sqlx::PgConnection,
+    principal_key: &str,
+) -> Result<Principal, DbError> {
+    if let Some(principal) = PgPrincipalRepository
+        .find_by_key(&mut *connection, principal_key)
+        .await?
+    {
+        return Ok(principal);
+    }
+
+    let new = NewPrincipal::builder()
+        .principal_key(principal_key.to_owned())
+        .build();
+    match PgPrincipalRepository.insert(&mut *connection, &new).await {
+        Ok(principal) => Ok(principal),
+        Err(DbError::UniqueViolation { .. }) => PgPrincipalRepository
+            .find_by_key(connection, principal_key)
+            .await?
+            .ok_or_else(|| DbError::NotFound {
+                entity: "principal",
+                id: principal_key.to_owned(),
+            }),
+        Err(source) => Err(source),
     }
 }
 

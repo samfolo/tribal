@@ -355,8 +355,7 @@ pub(super) fn public_failure(error: &IntegrationAdministrationError) -> Administ
         | IntegrationAdministrationError::Credential {
             source:
                 CredentialCoordinatorError::Connection { .. }
-                | CredentialCoordinatorError::Database { .. }
-                | CredentialCoordinatorError::Principal { .. },
+                | CredentialCoordinatorError::Database { .. },
         } => AdministrationFailure::DatabaseUnavailable,
         IntegrationAdministrationError::Session(_)
         | IntegrationAdministrationError::Configuration(_)

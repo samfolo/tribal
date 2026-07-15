@@ -19,12 +19,9 @@ use tribal_db::{
 };
 use tribal_domain::{AuthTokenId, BearerToken, CredentialGenerationId, Scope};
 
-use crate::{
-    error::AppError,
-    management::{
-        application::{database::DatabaseSession, support::find_or_create_principal},
-        authority::{AuthorityError, AuthorityLease, ConfigAuthorityNamespace, credential_paths},
-    },
+use crate::management::{
+    application::database::{DatabaseSession, find_or_create_principal},
+    authority::{AuthorityError, AuthorityLease, ConfigAuthorityNamespace, credential_paths},
 };
 
 const OWNER_FILE_MODE: u32 = 0o600;
@@ -64,11 +61,6 @@ pub(super) enum CredentialCoordinatorError {
     Database {
         #[source]
         source: DbError,
-    },
-    #[error("credential principal resolution failed: {source}")]
-    Principal {
-        #[source]
-        source: AppError,
     },
     #[error(transparent)]
     Store(#[from] CredentialStoreError),
@@ -611,7 +603,7 @@ async fn replace_locked(
 ) -> Result<StagedIssuance, CredentialCoordinatorError> {
     let principal = find_or_create_principal(transaction, &principal_key)
         .await
-        .map_err(|source| CredentialCoordinatorError::Principal { source })?;
+        .map_err(database_error)?;
     let IssuedAuthToken { raw, token } = issue_token_with_record(
         transaction,
         &PgAuthTokenRepository,

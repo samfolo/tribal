@@ -8,7 +8,7 @@ use super::{
     state::CheckState,
     types::{CheckDetail, CheckOutcome, CheckRemediation},
 };
-use crate::management::application::support::DATABASE_COMMAND_DEFAULTS;
+use crate::management::application::DATABASE_COMMAND_DEFAULTS;
 
 impl CheckOutcome {
     /// Constructs the outcome for a successful config load from `path`.
