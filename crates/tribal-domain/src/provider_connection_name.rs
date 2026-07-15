@@ -40,6 +40,12 @@ impl fmt::Display for ProviderConnectionName {
     }
 }
 
+impl std::borrow::Borrow<str> for ProviderConnectionName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 impl FromStr for ProviderConnectionName {
     type Err = ProviderConnectionNameError;
 

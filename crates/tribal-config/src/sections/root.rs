@@ -3,10 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AgentsConfig, auth::AuthConfig, credential_catalogue::CredentialCatalogue,
-    database::DatabaseConfig, discovery::DiscoveryConfig, exploration::ExplorationConfig,
-    inference::InferenceConfig, init::InitConfig, limits::LimitsConfig, logging::LoggingConfig,
-    oauth::OAuthConfig, prompts::PromptsConfig, server::ServerConfig, telemetry::TelemetryConfig,
+    AgentsConfig, auth::AuthConfig, database::DatabaseConfig, discovery::DiscoveryConfig,
+    exploration::ExplorationConfig, inference::InferenceConfig, init::InitConfig,
+    limits::LimitsConfig, logging::LoggingConfig, oauth::OAuthConfig, prompts::PromptsConfig,
+    provider_connections::ProviderConnections, server::ServerConfig, telemetry::TelemetryConfig,
     worker::WorkerConfig,
 };
 
@@ -66,9 +66,9 @@ pub struct TribalConfig {
     #[serde(default)]
     pub init: InitConfig,
 
-    /// Named embedding credential connections, resolved by endpoint.
+    /// Reusable model-provider connections.
     #[serde(default)]
-    pub credentials: CredentialCatalogue,
+    pub provider_connections: ProviderConnections,
 
     /// Per-stage inference settings.
     #[serde(default)]
@@ -138,7 +138,7 @@ impl Default for TribalConfig {
             worker: WorkerConfig::default(),
             agents: AgentsConfig::default(),
             init: InitConfig::default(),
-            credentials: CredentialCatalogue::default(),
+            provider_connections: ProviderConnections::default(),
             inference: InferenceConfig::default(),
             limits: LimitsConfig::default(),
             prompts: PromptsConfig::default(),

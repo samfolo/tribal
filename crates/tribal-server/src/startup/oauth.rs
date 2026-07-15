@@ -54,16 +54,24 @@ pub fn resolve_oauth_runtime(config: &TribalConfig) -> Result<OAuthRuntimeConfig
     let fallback_resource = Url::parse(&format!("http://{host}:{port}{MCP_RESOURCE_PATH}"))
         .expect("loopback resource URL is well-formed by construction");
 
-    OAuthRuntimeConfig::build(&config.oauth, &fallback_issuer, &fallback_resource).map_err(
-        |source| match source {
-            OAuthRuntimeConfigError::IssuerUrlMalformed { input } => AppError::ConfigInvariant {
-                reason: format!("oauth.issuer_url is not a valid URL: {input:?}"),
-            },
-            OAuthRuntimeConfigError::ResourceUrlMalformed { input } => AppError::ConfigInvariant {
-                reason: format!("oauth.resource_url is not a valid URL: {input:?}"),
-            },
-        },
+    let dcr_enabled = matches!(
+        tribal_config::client_registration_mode(config),
+        tribal_config::ClientRegistrationMode::Automatic,
+    );
+    OAuthRuntimeConfig::build(
+        &config.oauth,
+        &fallback_issuer,
+        &fallback_resource,
+        dcr_enabled,
     )
+    .map_err(|source| match source {
+        OAuthRuntimeConfigError::IssuerUrlMalformed { input } => AppError::ConfigInvariant {
+            reason: format!("oauth.issuer_url is not a valid URL: {input:?}"),
+        },
+        OAuthRuntimeConfigError::ResourceUrlMalformed { input } => AppError::ConfigInvariant {
+            reason: format!("oauth.resource_url is not a valid URL: {input:?}"),
+        },
+    })
 }
 
 /// The bearer-token audience a token must carry to be accepted under

@@ -19,28 +19,17 @@ use crate::TribalConfig;
 #[derive(Debug, Clone, Copy)]
 pub enum SecretField {
     DatabaseUrl,
-    ExtractionApiKey,
-    TriageApiKey,
-    RelationApiKey,
 }
 
 impl SecretField {
     /// All secret fields. Used by [`redact_secrets`] and tests.
-    pub const ALL: &[Self] = &[
-        Self::DatabaseUrl,
-        Self::ExtractionApiKey,
-        Self::TriageApiKey,
-        Self::RelationApiKey,
-    ];
+    pub const ALL: &[Self] = &[Self::DatabaseUrl];
 
     /// The YAML dot-path for this field in serialised `TribalConfig`.
     #[must_use]
     pub fn path(self) -> &'static str {
         match self {
             Self::DatabaseUrl => "database.url",
-            Self::ExtractionApiKey => "inference.extraction.api_key",
-            Self::TriageApiKey => "inference.triage.api_key",
-            Self::RelationApiKey => "inference.relation.api_key",
         }
     }
 }
@@ -52,16 +41,8 @@ impl SecretField {
     /// The exhaustive match ensures a new variant without a
     /// corresponding mutation arm is a compile error.
     fn plant_sentinel(self, config: &mut TribalConfig, value: &str) {
-        let key = || {
-            value
-                .parse::<tribal_domain::ApiKey>()
-                .expect("sentinel value must be a valid api key")
-        };
         match self {
             Self::DatabaseUrl => config.database.url = value.to_owned(),
-            Self::ExtractionApiKey => config.inference.extraction.api_key = Some(key()),
-            Self::TriageApiKey => config.inference.triage.api_key = Some(key()),
-            Self::RelationApiKey => config.inference.relation.api_key = Some(key()),
         }
     }
 
@@ -78,7 +59,7 @@ impl SecretField {
 #[must_use]
 pub fn is_secret_key(key: &str) -> bool {
     SecretField::ALL.iter().any(|field| field.path() == key)
-        || (key.starts_with("credentials.")
+        || (key.starts_with("provider_connections.")
             && key.ends_with(".api_key")
             && key.matches('.').count() == 2)
 }
@@ -98,9 +79,9 @@ pub fn redact_secrets(yaml: &str) -> String {
         redact_path(&mut value, field.path());
     }
 
-    // The credential catalogue is a map of arbitrary connection names, so its
+    // Provider connections are keyed by arbitrary names, so their
     // secret paths cannot be a static `SecretField` list; walk the map.
-    redact_credentials_catalogue(&mut value);
+    redact_provider_connections(&mut value);
 
     serde_yaml::to_string(&value).unwrap_or_else(|_| yaml.to_owned())
 }
@@ -131,13 +112,10 @@ fn redact_path(root: &mut serde_yaml::Value, path: &str) {
     }
 }
 
-/// Redacts every `credentials.<name>.api_key` in the catalogue map.
-///
-/// The catalogue keys are arbitrary connection names, so unlike the static
-/// [`SecretField`] paths this walks the map and redacts each entry's key.
-fn redact_credentials_catalogue(root: &mut serde_yaml::Value) {
+/// Redacts every `provider_connections.<name>.api_key`.
+fn redact_provider_connections(root: &mut serde_yaml::Value) {
     let Some(catalogue) = root
-        .get_mut("credentials")
+        .get_mut("provider_connections")
         .and_then(serde_yaml::Value::as_mapping_mut)
     else {
         return;
@@ -171,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn test_redacts_all_api_keys() {
+    fn test_removed_stage_api_keys_are_not_treated_as_live_secrets() {
         let yaml = "\
 inference:
   extraction:
@@ -182,24 +160,19 @@ inference:
     api_key: sk-secret-relation
 ";
         let redacted = redact_secrets(yaml);
-        assert!(
-            !redacted.contains("sk-secret-extraction"),
-            "got: {redacted}"
-        );
-        assert!(!redacted.contains("sk-secret-triage"), "got: {redacted}");
-        assert!(!redacted.contains("sk-secret-relation"), "got: {redacted}");
+        assert_eq!(redacted.trim(), yaml.trim());
     }
 
     #[test]
-    fn test_redacts_every_catalogue_entry_api_key() {
+    fn test_redacts_every_provider_connection_api_key() {
         let yaml = "\
-credentials:
+provider_connections:
   openai_default:
-    provider_kind: openai
+    provider: openai
     base_url: https://api.openai.com/v1
     api_key: sk-secret-one
   ollama_staged:
-    provider_kind: ollama
+    provider: ollama
     base_url: http://localhost:11434
     api_key: sk-secret-two
 ";
@@ -212,7 +185,7 @@ credentials:
 
     #[test]
     fn test_preserves_null_values() {
-        let yaml = "inference:\n  relation:\n    api_key: null\n";
+        let yaml = "provider_connections:\n  openai_default:\n    api_key: null\n";
         let redacted = redact_secrets(yaml);
         assert!(redacted.contains("null"), "got: {redacted}");
         assert!(!redacted.contains(REDACTED), "got: {redacted}");

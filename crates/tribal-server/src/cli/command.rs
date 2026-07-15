@@ -2,8 +2,11 @@
 
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use tribal_config::{CliOverrides, ServerCliOverrides, default_config_file_path};
-use tribal_domain::{AuthTokenId, ProjectId, ProviderKind, Scope, TaskType, is_mintable_scope};
-use tribal_wire::management::{CredentialSourceId, EndpointSelection, KnownModelId, TransportKind};
+use tribal_domain::{
+    AuthTokenId, ProjectId, ProviderConnectionName, ProviderKind, Scope, TaskType,
+    is_mintable_scope,
+};
+use tribal_wire::management::TransportKind;
 
 use super::styles::STYLES;
 
@@ -131,12 +134,16 @@ pub enum Command {
     #[command(subcommand, display_order = 5)]
     Models(ModelsCommand),
 
-    /// Discover credentials for an exact product operation.
+    /// Manage reusable inference and embedding provider connections.
     #[command(subcommand, display_order = 6)]
-    Credential(CredentialCommand),
+    Providers(ProvidersCommand),
+
+    /// Inspect and select the processing profile.
+    #[command(subcommand, display_order = 7)]
+    Processing(ProcessingCommand),
 
     /// Inspect graph configuration choices.
-    #[command(subcommand, display_order = 7)]
+    #[command(subcommand, display_order = 8)]
     Graph(GraphCommand),
 
     /// Manage the configured database.
@@ -232,200 +239,88 @@ pub enum ModelsCommand {
     },
 }
 
-/// Credential capability discovery subcommands.
+/// Provider-connection administration subcommands.
 #[derive(Debug, Subcommand)]
-pub enum CredentialCommand {
-    /// List stored sources compatible with an exact use.
-    #[command(subcommand)]
-    Sources(CredentialSourcesCommand),
-}
-
-/// Use-bound credential source queries.
-#[derive(Debug, Subcommand)]
-pub enum CredentialSourcesCommand {
-    /// Discover sources for a curated model selection.
-    Model {
+pub enum ProvidersCommand {
+    /// List configured connections and supported providers.
+    List {
         #[command(flatten)]
-        args: ModelCredentialSourceArgs,
+        output: OutputArgs,
     },
-    /// Discover sources for graph genesis.
-    Genesis {
+    /// Create or update one named connection.
+    Upsert {
         #[command(flatten)]
-        args: GenesisCredentialSourceArgs,
+        args: ProviderUpsertArgs,
+    },
+    /// Remove one unused connection.
+    Remove {
+        /// Stable connection name.
+        name: ProviderConnectionName,
+        #[command(flatten)]
+        output: OutputArgs,
+    },
+    /// Test one stored connection without changing it.
+    Probe {
+        /// Stable connection name.
+        name: ProviderConnectionName,
+        #[command(flatten)]
+        output: OutputArgs,
     },
 }
 
-/// Inference stage accepted at the command boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum InferenceStageArg {
-    Extraction,
-    Triage,
-    Relation,
-}
-
-impl InferenceStageArg {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Extraction => "extraction",
-            Self::Triage => "triage",
-            Self::Relation => "relation",
-        }
-    }
-}
-
-impl std::str::FromStr for InferenceStageArg {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        <Self as ValueEnum>::from_str(value, false)
-            .map_err(|_| format!("unknown inference stage '{value}'"))
-    }
-}
-
-impl From<InferenceStageArg> for tribal_wire::management::InferenceStage {
-    fn from(value: InferenceStageArg) -> Self {
-        match value {
-            InferenceStageArg::Extraction => Self::Extraction,
-            InferenceStageArg::Triage => Self::Triage,
-            InferenceStageArg::Relation => Self::Relation,
-        }
-    }
-}
-
-/// One inference stage and its curated model.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StageModelArg {
-    pub stage: InferenceStageArg,
-    pub model: KnownModelId,
-}
-
-impl std::str::FromStr for StageModelArg {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (stage, model) = value
-            .split_once('=')
-            .ok_or_else(|| "expected stage=model-id".to_owned())?;
-        Ok(Self {
-            stage: stage.parse()?,
-            model: KnownModelId::parse(model)
-                .map_err(|error| format!("invalid model id: {error}"))?,
-        })
-    }
-}
-
-/// One inference stage and its endpoint transition.
-#[derive(Debug, Clone, PartialEq)]
-pub struct StageEndpointArg {
-    pub stage: InferenceStageArg,
-    pub endpoint: EndpointSelection,
-}
-
-impl std::str::FromStr for StageEndpointArg {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (stage, endpoint) = value
-            .split_once('=')
-            .ok_or_else(|| "expected stage=preserve|provider-default|URL".to_owned())?;
-        let stage = stage.parse()?;
-        let endpoint = match endpoint {
-            "preserve" => EndpointSelection::Preserve,
-            "provider-default" => EndpointSelection::ProviderDefault,
-            "" => return Err("endpoint must not be empty".to_owned()),
-            value => EndpointSelection::Custom {
-                value: value.to_owned(),
-            },
-        };
-        Ok(Self { stage, endpoint })
-    }
-}
-
-/// One inference stage and a use-bound stored credential source.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StageCredentialSourceArg {
-    pub stage: InferenceStageArg,
-    pub source: CredentialSourceId,
-}
-
-impl std::str::FromStr for StageCredentialSourceArg {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (stage, source) = value
-            .split_once('=')
-            .ok_or_else(|| "expected stage=credential-source-id".to_owned())?;
-        Ok(Self {
-            stage: stage.parse()?,
-            source: source
-                .parse()
-                .map_err(|error| format!("invalid credential source id: {error}"))?,
-        })
-    }
-}
-
-/// One inference stage and the environment variable carrying its credential.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StageEnvironmentCredentialArg {
-    pub stage: InferenceStageArg,
-    pub variable: String,
-}
-
-impl std::str::FromStr for StageEnvironmentCredentialArg {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (stage, variable) = value
-            .split_once('=')
-            .ok_or_else(|| "expected stage=environment-variable".to_owned())?;
-        if variable.is_empty() {
-            return Err("environment variable must not be empty".to_owned());
-        }
-        Ok(Self {
-            stage: stage.parse()?,
-            variable: variable.to_owned(),
-        })
-    }
-}
-
-/// Arguments for model credential discovery.
+/// Arguments for `providers upsert`.
 #[derive(Debug, Args)]
-pub struct ModelCredentialSourceArgs {
-    /// Curated model identity from `tribal models list`.
+pub struct ProviderUpsertArgs {
+    /// Stable connection name referenced by Pipeline and Graph.
+    pub name: ProviderConnectionName,
+    /// Provider protocol served by the connection.
     #[arg(long)]
-    pub model: KnownModelId,
-    /// Stage receiving the selected model; repeat for multiple stages.
-    #[arg(long, value_enum, required = true)]
-    pub stage: Vec<InferenceStageArg>,
-    /// Use the provider's default endpoint instead of preserving the current one.
-    #[arg(long, conflicts_with = "endpoint")]
-    pub provider_default: bool,
-    /// Select a custom endpoint.
-    #[arg(long, value_name = "URL")]
-    pub endpoint: Option<String>,
-    /// Output selection.
-    #[command(flatten)]
-    pub output: OutputArgs,
-}
-
-/// Arguments for genesis credential discovery.
-#[derive(Debug, Args)]
-pub struct GenesisCredentialSourceArgs {
-    /// Embedding provider.
-    #[arg(long, value_parser = clap::value_parser!(ProviderKind))]
     pub provider: ProviderKind,
-    /// Embedding model.
+    /// Provider endpoint base URL.
     #[arg(long)]
-    pub model: String,
-    /// Embedding output dimensions.
-    #[arg(long)]
-    pub dimensions: Option<u32>,
-    /// Embedding endpoint base URL.
-    #[arg(long = "base-url")]
     pub base_url: Option<String>,
+    /// Environment variable containing a replacement API key.
+    #[arg(long, value_name = "VARIABLE", conflicts_with_all = ["api_key_stdin", "clear_api_key"])]
+    pub api_key_env: Option<String>,
+    /// Read a replacement API key from stdin.
+    #[arg(long, conflicts_with_all = ["api_key_env", "clear_api_key"])]
+    pub api_key_stdin: bool,
+    /// Remove the stored API key.
+    #[arg(long, conflicts_with_all = ["api_key_env", "api_key_stdin"])]
+    pub clear_api_key: bool,
     /// Output selection.
     #[command(flatten)]
     pub output: OutputArgs,
+}
+
+/// Processing-profile subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ProcessingCommand {
+    /// Show the effective processing profile.
+    Show {
+        #[command(flatten)]
+        output: OutputArgs,
+    },
+    /// Select a preset processing profile.
+    Set {
+        /// Preset profile to select.
+        profile: ProcessingPresetArg,
+        /// Named provider connection used by every stage in the preset.
+        #[arg(long)]
+        connection: ProviderConnectionName,
+        /// Model identifier used by every stage in the preset.
+        #[arg(long)]
+        model: String,
+        #[command(flatten)]
+        output: OutputArgs,
+    },
+}
+
+/// Preset profiles exposed by the human CLI.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ProcessingPresetArg {
+    Efficient,
+    HigherQuality,
 }
 
 /// Graph discovery subcommands.
@@ -513,47 +408,6 @@ pub struct BootstrapArgs {
     #[arg(long = "database-url", help_heading = "Storage")]
     pub database_url: Option<String>,
 
-    /// Curated model assignment in `stage=model-id` form; repeat as needed.
-    #[arg(
-        long = "model-selection",
-        value_name = "STAGE=MODEL",
-        help_heading = "Models"
-    )]
-    pub model_selections: Vec<StageModelArg>,
-
-    /// Endpoint transition in `stage=preserve|provider-default|URL` form.
-    #[arg(
-        long = "model-endpoint",
-        value_name = "STAGE=ENDPOINT",
-        help_heading = "Models"
-    )]
-    pub model_endpoints: Vec<StageEndpointArg>,
-
-    /// Model credential as `stage=ENVIRONMENT_VARIABLE`; repeat by stage.
-    #[arg(
-        long = "model-credential-env",
-        value_name = "STAGE=VARIABLE",
-        help_heading = "Models"
-    )]
-    pub model_credential_env: Vec<StageEnvironmentCredentialArg>,
-
-    /// Stored credential capability in `stage=credential-source-id` form.
-    #[arg(
-        long = "model-credential-source",
-        value_name = "STAGE=SOURCE_ID",
-        help_heading = "Models"
-    )]
-    pub model_credential_sources: Vec<StageCredentialSourceArg>,
-
-    /// Read one model stage's credential from stdin.
-    #[arg(
-        long = "model-credential-stdin",
-        value_enum,
-        conflicts_with = "genesis_credential_stdin",
-        help_heading = "Models"
-    )]
-    pub model_credential_stdin: Option<InferenceStageArg>,
-
     /// Embedding provider for graph genesis.
     #[arg(long, requires = "genesis_model", help_heading = "Genesis")]
     pub genesis_provider: Option<ProviderKind>,
@@ -575,39 +429,19 @@ pub struct BootstrapArgs {
         long = "genesis-credential-env",
         value_name = "VARIABLE",
         requires = "genesis_provider",
-        conflicts_with_all = ["genesis_credential_source", "genesis_credential_stdin", "genesis_reuse_stage"],
+        conflicts_with = "genesis_credential_stdin",
         help_heading = "Genesis"
     )]
     pub genesis_credential_env: Option<String>,
-
-    /// Stored credential capability for graph genesis.
-    #[arg(
-        long = "genesis-credential-source",
-        value_name = "SOURCE_ID",
-        requires = "genesis_provider",
-        conflicts_with_all = ["genesis_credential_env", "genesis_credential_stdin", "genesis_reuse_stage"],
-        help_heading = "Genesis"
-    )]
-    pub genesis_credential_source: Option<CredentialSourceId>,
 
     /// Read the explicit genesis credential from stdin.
     #[arg(
         long = "genesis-credential-stdin",
         requires = "genesis_provider",
-        conflicts_with_all = ["genesis_credential_env", "genesis_credential_source", "genesis_reuse_stage", "model_credential_stdin"],
+        conflicts_with = "genesis_credential_env",
         help_heading = "Genesis"
     )]
     pub genesis_credential_stdin: bool,
-
-    /// Reuse the selected inference stage credential for genesis.
-    #[arg(
-        long = "genesis-reuse-stage",
-        value_enum,
-        requires = "genesis_provider",
-        conflicts_with_all = ["genesis_credential_env", "genesis_credential_source", "genesis_credential_stdin"],
-        help_heading = "Genesis"
-    )]
-    pub genesis_reuse_stage: Option<InferenceStageArg>,
 
     /// Absolute OTLP endpoint to persist.
     #[arg(long, help_heading = "Telemetry")]
@@ -881,9 +715,9 @@ pub enum ReindexCommand {
 /// Arguments for `reindex run`.
 #[derive(Debug, Args)]
 pub struct ReindexRunArgs {
-    /// Target embedding provider.
-    #[arg(long, value_parser = clap::value_parser!(ProviderKind), help_heading = "Reindex")]
-    pub provider: ProviderKind,
+    /// Configured provider connection backing the target embedding profile.
+    #[arg(long, help_heading = "Reindex")]
+    pub connection: ProviderConnectionName,
 
     /// Target embedding model.
     #[arg(long, help_heading = "Reindex")]
@@ -893,11 +727,6 @@ pub struct ReindexRunArgs {
     /// dimension is resolved.
     #[arg(long, help_heading = "Reindex")]
     pub dimensions: Option<u32>,
-
-    /// Target endpoint base URL. When omitted, the provider's canonical
-    /// endpoint is used.
-    #[arg(long = "base-url", help_heading = "Reindex")]
-    pub base_url: Option<String>,
 
     /// Apply the migration; omission previews it without mutation.
     #[arg(long, help_heading = "Reindex")]

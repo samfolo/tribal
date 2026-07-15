@@ -16,8 +16,7 @@ use tribal_wire::management::{
     ConfigDigest, ConfigDocument, ConfigFieldOutcome, ConfigFilePath, ConfigGetRequest,
     ConfigLiteral, ConfigPatchOutcome, ConfigPatchRefusal, ConfigPatchRequest,
     ConfigPersistenceObservation, ConfigPersistencePhase, ConfigRevision, ConfigSetRequest,
-    ConfigValue, ConfigWriteEffect, ConfigWriteOutcome, CredentialSourceKind, InferenceStage,
-    ManagementError, ManagementResponseError,
+    ConfigValue, ConfigWriteEffect, ConfigWriteOutcome, ManagementError, ManagementResponseError,
 };
 
 /// Maximum time spent proving a stable filesystem winner under raw-file races.
@@ -114,26 +113,6 @@ impl std::fmt::Debug for ConfigCheckSnapshot {
     }
 }
 
-/// Secret-bearing credential origin retained only inside the manager process.
-pub(crate) struct CredentialMaterial {
-    pub(crate) kind: CredentialSourceKind,
-    pub(crate) provider: tribal_domain::ProviderKind,
-    pub(crate) base_url: Option<String>,
-    pub(crate) secret: zeroize::Zeroizing<String>,
-}
-
-impl std::fmt::Debug for CredentialMaterial {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("CredentialMaterial")
-            .field("kind", &self.kind)
-            .field("provider", &self.provider)
-            .field("base_url", &self.base_url)
-            .field("secret", &"<redacted>")
-            .finish()
-    }
-}
-
 /// Failure reading, validating, or atomically mutating configuration.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ConfigAuthorityError {
@@ -186,87 +165,28 @@ impl ConfigAuthority {
         }
     }
 
-    /// Validates one field candidate without persistence.
-    pub(crate) fn validate_value(
+    /// Validates one complete patch without persistence.
+    pub(crate) fn validate_patch(
         &self,
-        key: &str,
-        value: serde_json::Value,
-    ) -> Result<Vec<tribal_config::ConfigViolation>, ConfigAuthorityError> {
+        request: &tribal_wire::management::ConfigValidatePatchRequest,
+    ) -> Result<(ConfigRevision, Vec<tribal_config::ConfigViolation>), ConfigAuthorityError> {
         let proven = self.stable_winner()?;
+        check_revision(&request.expected_revision, &proven.revision)?;
         let config = Self::load_valid(&proven)?;
-        Ok(tribal_config::validate_write(&config, key, value))
-    }
-
-    /// Reads configured credential origins without projecting their values to the wire.
-    pub(crate) fn credential_materials(
-        &self,
-    ) -> Result<Vec<CredentialMaterial>, ConfigAuthorityError> {
-        let proven = self.stable_winner()?;
-        let config = Self::load_valid(&proven)?;
-        let value =
-            serde_json::to_value(&config).map_err(|source| ConfigAuthorityError::Invalid {
-                message: source.to_string(),
-            })?;
-        let mut materials = Vec::new();
-        for (name, stage) in [
-            ("extraction", InferenceStage::Extraction),
-            ("triage", InferenceStage::Triage),
-            ("relation", InferenceStage::Relation),
-        ] {
-            let Some(entry) = value
-                .get("inference")
-                .and_then(|inference| inference.get(name))
-            else {
-                continue;
-            };
-            let Some(secret) = entry.get("api_key").and_then(serde_json::Value::as_str) else {
-                continue;
-            };
-            let Some(provider) = entry
-                .get("provider")
-                .cloned()
-                .and_then(|provider| serde_json::from_value(provider).ok())
-            else {
-                continue;
-            };
-            materials.push(CredentialMaterial {
-                kind: CredentialSourceKind::InferenceStage { stage },
-                provider,
-                base_url: entry
-                    .get("base_url")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-                    .or_else(|| provider.default_base_url().map(str::to_owned)),
-                secret: zeroize::Zeroizing::new(secret.to_owned()),
-            });
-        }
-        if let Some(entries) = value
-            .get("credentials")
-            .and_then(serde_json::Value::as_object)
-        {
-            for (name, entry) in entries {
-                let Some(secret) = entry.get("api_key").and_then(serde_json::Value::as_str) else {
-                    continue;
-                };
-                let Some(provider) = entry
-                    .get("provider_kind")
-                    .cloned()
-                    .and_then(|provider| serde_json::from_value(provider).ok())
-                else {
-                    continue;
-                };
-                materials.push(CredentialMaterial {
-                    kind: CredentialSourceKind::EmbeddingConnection { name: name.clone() },
-                    provider,
-                    base_url: entry
-                        .get("base_url")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned),
-                    secret: zeroize::Zeroizing::new(secret.to_owned()),
-                });
-            }
-        }
-        Ok(materials)
+        let changes = request
+            .changes
+            .iter()
+            .map(|change| {
+                (
+                    change.key.as_str().to_owned(),
+                    change.value.expose_sensitive().clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok((
+            proven.revision,
+            tribal_config::validate_patch(&config, &changes),
+        ))
     }
 
     /// Returns a parsed configuration and the revision proven from the same bytes.

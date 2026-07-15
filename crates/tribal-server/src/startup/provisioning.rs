@@ -193,7 +193,13 @@ async fn insert_genesis(
     conn: &mut PgConnection,
     config: &TribalConfig,
 ) -> Result<EmbeddingProfile, AppError> {
-    let provider = config.init.embedding.provider;
+    let connection = config
+        .provider_connections
+        .require(&config.init.embedding.connection)
+        .map_err(|source| AppError::ConfigInvariant {
+            reason: source.to_string(),
+        })?;
+    let provider = connection.provider();
     let base_url = genesis_base_url(config)?;
     let normalised_base_url =
         normalise_endpoint_url(&base_url).map_err(|e| AppError::ConfigInvariant {
@@ -232,12 +238,15 @@ async fn insert_genesis(
 /// configured URL, else the provider's built-in default, erroring when the
 /// provider has no local endpoint.
 fn genesis_base_url(config: &TribalConfig) -> Result<String, AppError> {
-    let provider = config.init.embedding.provider;
-    config
-        .init
-        .embedding
-        .base_url
-        .as_deref()
+    let connection = config
+        .provider_connections
+        .require(&config.init.embedding.connection)
+        .map_err(|source| AppError::ConfigInvariant {
+            reason: source.to_string(),
+        })?;
+    let provider = connection.provider();
+    connection
+        .base_url()
         .or_else(|| provider.default_base_url())
         .map(ToOwned::to_owned)
         .ok_or_else(|| AppError::ProviderSetup {
@@ -254,14 +263,19 @@ fn database_error(source: tribal_db::DbError) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use tribal_domain::ProviderKind;
+    use tribal_domain::ProviderConnectionName;
 
     use super::*;
 
     #[test]
     fn test_genesis_base_url_refuses_a_provider_with_no_local_endpoint() {
         let mut config = TribalConfig::default();
-        config.init.embedding.provider = ProviderKind::Platform;
+        config.provider_connections.insert(
+            ProviderConnectionName::parse("platform_default").unwrap(),
+            tribal_config::ProviderConnectionConfig::Platform {},
+        );
+        config.init.embedding.connection =
+            ProviderConnectionName::parse("platform_default").unwrap();
         let err = genesis_base_url(&config).expect_err("platform has no local endpoint");
         assert!(
             matches!(err, AppError::ProviderSetup { .. }),

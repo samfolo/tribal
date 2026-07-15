@@ -4,7 +4,32 @@
 //! configurable with its own provider, model, and parameters.
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::{ApiKey, ProviderKind};
+use tribal_domain::ProviderConnectionName;
+
+use super::provider_connections::default_provider_connection_name;
+
+/// One configured inference stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferenceStage {
+    /// Memory extraction.
+    Extraction,
+    /// Triage classification.
+    Triage,
+    /// Relation classification.
+    Relation,
+}
+
+impl InferenceStage {
+    /// Returns the stage's configuration section path.
+    #[must_use]
+    pub const fn config_path(self) -> &'static str {
+        match self {
+            Self::Extraction => "inference.extraction",
+            Self::Triage => "inference.triage",
+            Self::Relation => "inference.relation",
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Constants — extraction
@@ -34,26 +59,16 @@ fn default_small_model() -> String {
 
 /// Configuration for a single inference stage.
 ///
-/// When `base_url` is `None`, the provider implementation supplies its
-/// own default URL.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StageInferenceConfig {
-    /// LLM provider.
-    #[serde(default)]
-    pub provider: ProviderKind,
+    /// Reusable provider connection.
+    #[serde(default = "default_provider_connection_name")]
+    pub connection: ProviderConnectionName,
 
     /// Model name.
     pub model: String,
-
-    /// Base URL for the provider API.
-    #[serde(default)]
-    pub base_url: Option<String>,
-
-    /// API key for cloud providers.
-    #[serde(default)]
-    pub api_key: Option<ApiKey>,
 
     /// Sampling temperature. `None` uses the provider default.
     #[serde(default)]
@@ -100,16 +115,26 @@ impl Default for InferenceConfig {
     }
 }
 
+impl InferenceConfig {
+    /// Iterates all stages in pipeline order.
+    pub fn stages(&self) -> impl Iterator<Item = (InferenceStage, &StageInferenceConfig)> {
+        [
+            (InferenceStage::Extraction, &self.extraction),
+            (InferenceStage::Triage, &self.triage),
+            (InferenceStage::Relation, &self.relation),
+        ]
+        .into_iter()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Stage defaults
 // ---------------------------------------------------------------------------
 
 fn default_extraction() -> StageInferenceConfig {
     StageInferenceConfig {
-        provider: ProviderKind::default(),
+        connection: default_provider_connection_name(),
         model: default_extraction_model(),
-        base_url: None,
-        api_key: None,
         temperature: None,
         max_tokens: None,
     }
@@ -117,10 +142,8 @@ fn default_extraction() -> StageInferenceConfig {
 
 fn default_triage() -> StageInferenceConfig {
     StageInferenceConfig {
-        provider: ProviderKind::default(),
+        connection: default_provider_connection_name(),
         model: default_small_model(),
-        base_url: None,
-        api_key: None,
         temperature: None,
         max_tokens: None,
     }
@@ -128,10 +151,8 @@ fn default_triage() -> StageInferenceConfig {
 
 fn default_relation() -> StageInferenceConfig {
     StageInferenceConfig {
-        provider: ProviderKind::default(),
+        connection: default_provider_connection_name(),
         model: default_small_model(),
-        base_url: None,
-        api_key: None,
         temperature: None,
         max_tokens: None,
     }
@@ -148,7 +169,7 @@ mod tests {
     #[test]
     fn test_extraction_defaults() {
         let config = default_extraction();
-        assert_eq!(config.provider, ProviderKind::Ollama);
+        assert_eq!(config.connection.as_str(), "ollama_default");
         assert_eq!(config.model, DEFAULT_EXTRACTION_MODEL);
         assert_eq!(config.temperature, None);
         assert_eq!(config.max_tokens, None);

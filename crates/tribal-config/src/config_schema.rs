@@ -134,23 +134,17 @@ const RESTART_KEYS: &[&str] = &[
     "exploration.default_limit",
     "exploration.max_depth",
     "exploration.max_limit",
-    "inference.extraction.api_key",
-    "inference.extraction.base_url",
+    "inference.extraction.connection",
     "inference.extraction.max_tokens",
     "inference.extraction.model",
-    "inference.extraction.provider",
     "inference.extraction.temperature",
-    "inference.relation.api_key",
-    "inference.relation.base_url",
+    "inference.relation.connection",
     "inference.relation.max_tokens",
     "inference.relation.model",
-    "inference.relation.provider",
     "inference.relation.temperature",
-    "inference.triage.api_key",
-    "inference.triage.base_url",
+    "inference.triage.connection",
     "inference.triage.max_tokens",
     "inference.triage.model",
-    "inference.triage.provider",
     "inference.triage.temperature",
     "logging.file_directory",
     "logging.file_rotation",
@@ -159,7 +153,6 @@ const RESTART_KEYS: &[&str] = &[
     "logging.output",
     "oauth.access_token_ttl_hours",
     "oauth.authorization_code_ttl_seconds",
-    "oauth.dcr_enabled",
     "oauth.issuer_url",
     "oauth.resource_url",
     "prompts.source",
@@ -196,10 +189,9 @@ const RESTART_KEYS: &[&str] = &[
 /// would lie about the active vector geometry unless the value converges with
 /// the active profile.
 pub const GENESIS_KEYS: &[&str] = &[
-    "init.embedding.base_url",
+    "init.embedding.connection",
     "init.embedding.dimensions",
     "init.embedding.model",
-    "init.embedding.provider",
 ];
 
 /// Every fixed configuration leaf that reloads live, without a restart.
@@ -231,22 +223,20 @@ const MACHINE_GROUP: &str = "machine";
 const PRIMARY_KEYS: &[&str] = &[
     "database.url",
     "inference.extraction.model",
-    "inference.extraction.provider",
+    "inference.extraction.connection",
     "inference.relation.model",
-    "inference.relation.provider",
+    "inference.relation.connection",
     "inference.triage.model",
-    "inference.triage.provider",
-    "init.embedding.base_url",
+    "inference.triage.connection",
+    "init.embedding.connection",
     "init.embedding.dimensions",
     "init.embedding.model",
-    "init.embedding.provider",
 ];
 
 const STANDARD_KEYS: &[&str] = &[
     "auth.token_ttl_hours",
     "oauth.access_token_ttl_hours",
     "oauth.authorization_code_ttl_seconds",
-    "oauth.dcr_enabled",
     "oauth.issuer_url",
     "oauth.resource_url",
 ];
@@ -273,16 +263,10 @@ const ADVANCED_KEYS: &[&str] = &[
     "exploration.default_limit",
     "exploration.max_depth",
     "exploration.max_limit",
-    "inference.extraction.api_key",
-    "inference.extraction.base_url",
     "inference.extraction.max_tokens",
     "inference.extraction.temperature",
-    "inference.relation.api_key",
-    "inference.relation.base_url",
     "inference.relation.max_tokens",
     "inference.relation.temperature",
-    "inference.triage.api_key",
-    "inference.triage.base_url",
     "inference.triage.max_tokens",
     "inference.triage.temperature",
     "logging.file_directory",
@@ -345,32 +329,25 @@ const CONNECTION_GROUP_KEYS: &[&str] = &[
 
 #[cfg(feature = "schema")]
 const MODELS_GROUP_KEYS: &[&str] = &[
-    "inference.extraction.api_key",
-    "inference.extraction.base_url",
+    "inference.extraction.connection",
     "inference.extraction.max_tokens",
     "inference.extraction.model",
-    "inference.extraction.provider",
     "inference.extraction.temperature",
-    "inference.relation.api_key",
-    "inference.relation.base_url",
+    "inference.relation.connection",
     "inference.relation.max_tokens",
     "inference.relation.model",
-    "inference.relation.provider",
     "inference.relation.temperature",
-    "inference.triage.api_key",
-    "inference.triage.base_url",
+    "inference.triage.connection",
     "inference.triage.max_tokens",
     "inference.triage.model",
-    "inference.triage.provider",
     "inference.triage.temperature",
 ];
 
 #[cfg(feature = "schema")]
 const GRAPH_GROUP_KEYS: &[&str] = &[
-    "init.embedding.base_url",
+    "init.embedding.connection",
     "init.embedding.dimensions",
     "init.embedding.model",
-    "init.embedding.provider",
 ];
 
 #[cfg(feature = "schema")]
@@ -378,7 +355,6 @@ const AUTH_GROUP_KEYS: &[&str] = &[
     "auth.token_ttl_hours",
     "oauth.access_token_ttl_hours",
     "oauth.authorization_code_ttl_seconds",
-    "oauth.dcr_enabled",
     "oauth.issuer_url",
     "oauth.resource_url",
 ];
@@ -795,10 +771,9 @@ mod classifier_tests {
         assert_eq!(
             GENESIS_KEYS,
             &[
-                "init.embedding.base_url",
+                "init.embedding.connection",
                 "init.embedding.dimensions",
                 "init.embedding.model",
-                "init.embedding.provider",
             ],
         );
     }
@@ -913,7 +888,7 @@ mod tests {
         );
         assert_eq!(field("init.embedding.model").group, "graph");
         assert_eq!(
-            field("inference.triage.api_key").tier,
+            field("inference.triage.max_tokens").tier,
             AudienceTier::Advanced
         );
         assert_eq!(field("server.transport").tier, AudienceTier::Hidden);
@@ -997,15 +972,17 @@ mod tests {
         })
     }
 
-    /// The dynamic catalogue is keyed by arbitrary connection names, so it
-    /// contributes no fixed leaf; its secrets are marked structurally, in the
-    /// `CredentialEntry` value schema, not in the overlay.
+    /// Provider connections are keyed by arbitrary names, so they contribute
+    /// no fixed leaf; their secrets are marked structurally, in the
+    /// connection value schema, not in the overlay.
     #[test]
     fn test_dynamic_maps_contribute_no_leaves() {
         let leaves = leaf_paths(&structural_schema());
         assert!(
-            !leaves.iter().any(|leaf| leaf.starts_with("credentials.")),
-            "the credential catalogue map must not enumerate fixed leaves",
+            !leaves
+                .iter()
+                .any(|leaf| leaf.starts_with("provider_connections.")),
+            "the provider connection map must not enumerate fixed leaves",
         );
         assert!(
             !leaves

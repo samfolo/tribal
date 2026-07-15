@@ -4,10 +4,13 @@ use std::{sync::Arc, time::SystemTime};
 
 use tokio::sync::Mutex;
 use tribal_config::TribalConfig;
-use tribal_domain::ProviderKind;
+use tribal_domain::ProviderConnectionName;
+use tribal_inference::known_models;
 use tribal_wire::management::{
-    CheckName, CheckResult, ConfigDigest, ConfigDocument, ConfigRevision, ProbeOutcome,
-    ProbeReceipt, ProbeReceiptFreshness, ProbeSubject, ProviderProbeCapability,
+    CandidateProviderProbeObservation, CheckName, CheckResult, ConfigDigest, ConfigDocument,
+    ConfigRevision, DatabaseProbeRequest, DatabaseProbeTarget, ProbeOutcome, ProbeReceipt,
+    ProbeReceiptFreshness, ProbeSubject, ProviderConnectionProbeReceipt, ProviderProbeCapability,
+    ProviderProbeRequest, ProviderProbeResponse, ProviderProbeTarget,
 };
 
 use super::{
@@ -19,10 +22,16 @@ use super::{
 pub(crate) struct ProbeService {
     config: ConfigWorkerClient,
     receipts: Arc<Mutex<Vec<StoredReceipt>>>,
+    provider_receipts: Arc<Mutex<Vec<StoredProviderReceipt>>>,
 }
 
 struct StoredReceipt {
     receipt: ProbeReceipt,
+    input_digest: ConfigDigest,
+}
+
+struct StoredProviderReceipt {
+    receipt: ProviderConnectionProbeReceipt,
     input_digest: ConfigDigest,
 }
 
@@ -56,6 +65,11 @@ pub(crate) enum ProbeError {
     },
     #[error("the requested probe produced no typed observation")]
     MissingObservation,
+    #[error("configuration changed during the probe")]
+    RevisionConflict {
+        expected: ConfigRevision,
+        actual: ConfigRevision,
+    },
 }
 
 impl std::fmt::Debug for ProbeService {
@@ -69,53 +83,162 @@ impl ProbeService {
         Self {
             config,
             receipts: Arc::new(Mutex::new(Vec::new())),
+            provider_receipts: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    /// Runs the named database probe and retains its revision-bound result.
-    pub(crate) async fn database(&self) -> Result<ProbeReceipt, ProbeError> {
-        let snapshot = self.config.probe_snapshot().await?;
+    /// Runs a stored or candidate database probe under a before/after revision fence.
+    pub(crate) async fn database(
+        &self,
+        request: DatabaseProbeRequest,
+    ) -> Result<ProbeReceipt, ProbeError> {
+        let stored = self.config.probe_snapshot().await?;
+        ensure_revision(&request.expected_revision, &stored.revision)?;
+        let mut snapshot = stored;
+        let retain = matches!(request.target, DatabaseProbeTarget::Stored);
+        if let DatabaseProbeTarget::Candidate { url } = request.target {
+            url.expose_secret()
+                .clone_into(&mut snapshot.config.database.url);
+        }
         let result = run_report(&snapshot, false)
             .await?
             .into_iter()
             .find(|result| result_name(result) == CheckName::DatabaseReachable)
             .ok_or(ProbeError::MissingObservation)?;
         let subject = ProbeSubject::Database;
-        self.retain(&snapshot, subject.clone(), probe_outcome(result))
-            .await?;
-        self.receipts()
-            .await?
-            .into_iter()
-            .find(|receipt| receipt.subject == subject)
-            .ok_or(ProbeError::MissingObservation)
+        let outcome = probe_outcome(result);
+        ensure_revision(
+            &request.expected_revision,
+            &self.config.probe_snapshot().await?.revision,
+        )?;
+        if retain {
+            self.retain(&snapshot, subject.clone(), outcome).await?;
+            return self
+                .receipts()
+                .await?
+                .into_iter()
+                .find(|receipt| receipt.subject == subject)
+                .ok_or(ProbeError::MissingObservation);
+        }
+        Ok(ProbeReceipt {
+            observed_at_unix_ms: observed_at_unix_ms()?,
+            revision: request.expected_revision,
+            subject,
+            result: outcome,
+            freshness: ProbeReceiptFreshness::Current,
+        })
     }
 
-    /// Runs only explicitly enabled provider checks and retains each result.
-    pub(crate) async fn credentials(&self) -> Result<Vec<ProbeReceipt>, ProbeError> {
-        let snapshot = self.config.probe_snapshot().await?;
-        let mut subjects = Vec::new();
-        for result in run_report(&snapshot, true).await? {
-            let check = result_name(&result);
-            let Some((capability, provider)) = provider_for(check, &snapshot.config) else {
-                continue;
-            };
-            let subject = ProbeSubject::Provider {
-                capability,
-                provider,
-            };
-            self.retain(&snapshot, subject.clone(), probe_outcome(result))
-                .await?;
-            subjects.push(subject);
-        }
-        if subjects.is_empty() {
-            return Err(ProbeError::MissingObservation);
-        }
-        Ok(self
-            .receipts()
+    /// Probes one stored or candidate provider connection without persisting candidates.
+    pub(crate) async fn provider(
+        &self,
+        request: ProviderProbeRequest,
+    ) -> Result<ProviderProbeResponse, ProbeError> {
+        let mut snapshot = self.config.probe_snapshot().await?;
+        ensure_revision(&request.expected_revision, &snapshot.revision)?;
+        let (name, provider, retain) = match request.target {
+            ProviderProbeTarget::Stored { name } => {
+                let connection = snapshot
+                    .config
+                    .provider_connections
+                    .get(name.as_str())
+                    .ok_or(ProbeError::MissingObservation)?;
+                (name, connection.provider(), true)
+            }
+            ProviderProbeTarget::Candidate {
+                existing,
+                connection,
+            } => {
+                let name = existing.unwrap_or_else(|| {
+                    ProviderConnectionName::parse("probe_candidate")
+                        .expect("probe candidate name is valid")
+                });
+                let current = snapshot.config.provider_connections.get(name.as_str());
+                let connection = super::product::provider_input(connection, current)
+                    .map_err(|_| ProbeError::MissingObservation)?;
+                let provider = connection.provider();
+                snapshot
+                    .config
+                    .provider_connections
+                    .insert(name.clone(), connection);
+                (name, provider, false)
+            }
+        };
+        let model = known_models()
+            .iter()
+            .find(|model| model.provider == provider)
+            .map(|model| model.model.to_owned())
+            .ok_or(ProbeError::MissingObservation)?;
+        snapshot.config.inference.extraction.connection = name.clone();
+        snapshot.config.inference.extraction.model = model;
+        let result = run_report(&snapshot, true)
             .await?
             .into_iter()
-            .filter(|receipt| subjects.contains(&receipt.subject))
-            .collect())
+            .find(|result| result_name(result) == CheckName::ProviderExtraction)
+            .ok_or(ProbeError::MissingObservation)?;
+        let outcome = probe_outcome(result);
+        ensure_revision(
+            &request.expected_revision,
+            &self.config.probe_snapshot().await?.revision,
+        )?;
+        if retain {
+            let receipt = ProviderConnectionProbeReceipt {
+                connection: name.clone(),
+                provider,
+                observed_at_unix_ms: observed_at_unix_ms()?,
+                revision: request.expected_revision,
+                result: outcome,
+                freshness: ProbeReceiptFreshness::Current,
+            };
+            self.retain_provider(&snapshot, receipt).await?;
+            let receipt = self
+                .provider_receipts()
+                .await?
+                .into_iter()
+                .find(|receipt| receipt.connection == name && receipt.provider == provider)
+                .ok_or(ProbeError::MissingObservation)?;
+            Ok(ProviderProbeResponse::Stored { receipt })
+        } else {
+            Ok(ProviderProbeResponse::Candidate {
+                observation: CandidateProviderProbeObservation {
+                    observed_at_unix_ms: observed_at_unix_ms()?,
+                    validated_against_revision: request.expected_revision,
+                    result: outcome,
+                },
+            })
+        }
+    }
+
+    /// Projects named provider evidence against current exact connection inputs.
+    pub(crate) async fn provider_receipts(
+        &self,
+    ) -> Result<Vec<ProviderConnectionProbeReceipt>, ProbeError> {
+        let current = self.config.probe_snapshot().await?;
+        let stored = self.provider_receipts.lock().await;
+        let mut receipts = stored
+            .iter()
+            .map(|stored| {
+                let mut receipt = stored.receipt.clone();
+                receipt.freshness = match current
+                    .config
+                    .provider_connections
+                    .get(receipt.connection.as_str())
+                {
+                    Some(connection)
+                        if provider_connection_digest(&receipt.connection, connection)?
+                            == stored.input_digest =>
+                    {
+                        ProbeReceiptFreshness::Current
+                    }
+                    Some(_) | None => ProbeReceiptFreshness::Stale {
+                        current_revision: Some(current.revision.clone()),
+                    },
+                };
+                Ok(receipt)
+            })
+            .collect::<Result<Vec<_>, ProbeError>>()?;
+        receipts.sort_by(|left, right| left.connection.as_str().cmp(right.connection.as_str()));
+        Ok(receipts)
     }
 
     /// Projects retained evidence against the current relevant inputs.
@@ -186,6 +309,58 @@ impl ProbeService {
         }
         Ok(())
     }
+
+    async fn retain_provider(
+        &self,
+        snapshot: &ConfigProbeSnapshot,
+        receipt: ProviderConnectionProbeReceipt,
+    ) -> Result<(), ProbeError> {
+        let connection = snapshot
+            .config
+            .provider_connections
+            .get(receipt.connection.as_str())
+            .ok_or(ProbeError::MissingObservation)?;
+        let stored = StoredProviderReceipt {
+            input_digest: provider_connection_digest(&receipt.connection, connection)?,
+            receipt,
+        };
+        let mut receipts = self.provider_receipts.lock().await;
+        if let Some(existing) = receipts.iter_mut().find(|existing| {
+            existing.receipt.connection == stored.receipt.connection
+                && existing.receipt.provider == stored.receipt.provider
+        }) {
+            *existing = stored;
+        } else {
+            receipts.push(stored);
+        }
+        Ok(())
+    }
+}
+
+fn ensure_revision(expected: &ConfigRevision, actual: &ConfigRevision) -> Result<(), ProbeError> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(ProbeError::RevisionConflict {
+            expected: expected.clone(),
+            actual: actual.clone(),
+        })
+    }
+}
+
+fn observed_at_unix_ms() -> Result<u64, ProbeError> {
+    Ok(u64::try_from(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_millis(),
+    )?)
+}
+
+fn provider_connection_digest(
+    name: &ProviderConnectionName,
+    connection: &tribal_config::ProviderConnectionConfig,
+) -> Result<ConfigDigest, ProbeError> {
+    digest(&(name, connection))
 }
 
 async fn run_report(
@@ -207,39 +382,6 @@ async fn run_report(
     Ok(output.checks)
 }
 
-fn provider_for(
-    check: CheckName,
-    config: &TribalConfig,
-) -> Option<(ProviderProbeCapability, ProviderKind)> {
-    match check {
-        CheckName::ProviderEmbedding => Some((
-            ProviderProbeCapability::Embedding,
-            config.init.embedding.provider,
-        )),
-        CheckName::ProviderExtraction => Some((
-            ProviderProbeCapability::Extraction,
-            config.inference.extraction.provider,
-        )),
-        CheckName::ProviderTriage => Some((
-            ProviderProbeCapability::Triage,
-            config.inference.triage.provider,
-        )),
-        CheckName::ProviderRelation => Some((
-            ProviderProbeCapability::Relation,
-            config.inference.relation.provider,
-        )),
-        CheckName::ConfigParse
-        | CheckName::ConfigValidate
-        | CheckName::DatabaseReachable
-        | CheckName::MigrationsCurrent
-        | CheckName::ProjectResolution
-        | CheckName::ValidTokenExists
-        | CheckName::AdvertisedUrlReachable
-        | CheckName::BinaryUniqueness
-        | CheckName::EmbeddingProfile => None,
-    }
-}
-
 fn subject_digest(
     subject: &ProbeSubject,
     config: &TribalConfig,
@@ -249,19 +391,34 @@ fn subject_digest(
         ProbeSubject::Provider {
             capability: ProviderProbeCapability::Embedding,
             ..
-        } => digest(&(&config.init.embedding, &config.credentials)),
+        } => digest(&(&config.init.embedding, &config.provider_connections)),
         ProbeSubject::Provider {
             capability: ProviderProbeCapability::Extraction,
             ..
-        } => digest(&config.inference.extraction),
+        } => digest(&(
+            &config.inference.extraction,
+            config
+                .provider_connections
+                .get(config.inference.extraction.connection.as_str()),
+        )),
         ProbeSubject::Provider {
             capability: ProviderProbeCapability::Triage,
             ..
-        } => digest(&config.inference.triage),
+        } => digest(&(
+            &config.inference.triage,
+            config
+                .provider_connections
+                .get(config.inference.triage.connection.as_str()),
+        )),
         ProbeSubject::Provider {
             capability: ProviderProbeCapability::Relation,
             ..
-        } => digest(&config.inference.relation),
+        } => digest(&(
+            &config.inference.relation,
+            config
+                .provider_connections
+                .get(config.inference.relation.connection.as_str()),
+        )),
     }
 }
 
@@ -364,19 +521,23 @@ mod tests {
         let mut config = TribalConfig::minimum_valid("postgres://user:pass@localhost:5432/tribal");
         let subject = ProbeSubject::Provider {
             capability: ProviderProbeCapability::Extraction,
-            provider: config.inference.extraction.provider,
+            provider: config
+                .provider_connections
+                .get(config.inference.extraction.connection.as_str())
+                .unwrap()
+                .provider(),
         };
         let original = subject_digest(&subject, &config).expect("provider digest computes");
 
         config.inference.triage.model = "unrelated".to_owned();
         config.init.embedding.model = "also-unrelated".to_owned();
-        config.credentials = serde_json::from_value(serde_json::json!({
-            "embedding": {
-                "provider_kind": "openai",
-                "base_url": "https://api.openai.com/v1"
-            }
-        }))
-        .expect("credential catalogue parses");
+        config.provider_connections.insert(
+            tribal_domain::ProviderConnectionName::parse("unrelated").unwrap(),
+            tribal_config::ProviderConnectionConfig::OpenAi {
+                base_url: "https://api.openai.com/v1".to_owned(),
+                api_key: Some("sk-test".parse().unwrap()),
+            },
+        );
         assert_eq!(
             subject_digest(&subject, &config).expect("unrelated digest computes"),
             original,

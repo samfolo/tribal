@@ -555,6 +555,7 @@ mod tests {
                 &OAuthConfig::default(),
                 &Url::parse("http://127.0.0.1:8080").unwrap(),
                 &Url::parse(RESOURCE).unwrap(),
+                true,
             )
             .unwrap(),
         );

@@ -3,10 +3,7 @@
 //! Each [`ValidationError`] variant maps to either a targeted hint or
 //! its own [`Display`](std::fmt::Display) text (the catch-all echo).
 
-use tribal_config::{
-    ConfigError, Diagnostics, ProviderStage, ValidationError, standard_env_var_name, validate,
-};
-use tribal_domain::ProviderKind;
+use tribal_config::{ConfigError, Diagnostics, ValidationError, standard_env_var_name, validate};
 
 use super::{
     skip_rules::SkipMask,
@@ -51,8 +48,13 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
     match error {
         ValidationError::BindAddressStdioConflict => Some(STDIO_CONFLICT_HINT.into()),
         ValidationError::BindAddressMalformed { .. } => Some(MALFORMED_ADDRESS_HINT.into()),
-        ValidationError::MissingApiKey { stage, provider } => Some(api_key_hint(*stage, *provider)),
-        ValidationError::MissingBaseUrl { stage, .. } => Some(base_url_hint(*stage)),
+        ValidationError::ProviderConnectionMissing { field, connection } => Some(format!(
+            "define `provider_connections.{connection}` or point `{field}` at an existing connection"
+        )),
+        ValidationError::ProviderConnectionCredentialMissing {
+            connection,
+            provider,
+        } => Some(provider_key_hint(connection.as_str(), *provider)),
         ValidationError::Empty { .. }
         | ValidationError::ContainsWhitespace { .. }
         | ValidationError::BelowMin { .. }
@@ -60,35 +62,27 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
         | ValidationError::OutOfRange { .. }
         | ValidationError::FieldOrdering { .. }
         | ValidationError::DerivedFloor { .. }
-        | ValidationError::EmbeddingProviderUnsupported { .. }
+        | ValidationError::ProviderConnectionUnsupported { .. }
         | ValidationError::PlatformProviderNotLocal { .. }
         | ValidationError::UrlMalformed { .. }
         | ValidationError::UrlUnsupportedForm { .. }
-        | ValidationError::NonLoopbackDcrConflict
-        | ValidationError::InvalidCredentialName { .. }
-        | ValidationError::DuplicateCredentialEndpoint { .. }
+        | ValidationError::DuplicateProviderConnectionEndpoint { .. }
         | ValidationError::TelemetryFileExportRequiresEnabled
         | ValidationError::LogFilterMalformed { .. } => None,
     }
 }
 
-/// Renders the hint for a [`ValidationError::MissingApiKey`], naming
-/// the field path and every env var that satisfies it.
-fn api_key_hint(stage: ProviderStage, provider: ProviderKind) -> String {
-    let path = stage.api_key_path();
-    let figment = path.env_var();
+/// Names the connection field and every conventional environment override.
+fn provider_key_hint(connection: &str, provider: tribal_domain::ProviderKind) -> String {
+    let path = format!("provider_connections.{connection}.api_key");
+    let figment = format!(
+        "TRIBAL_PROVIDER_CONNECTIONS__{}__API_KEY",
+        connection.to_uppercase()
+    );
     match standard_env_var_name(provider) {
         Some(standard) => format!("set `{path}` or export `{figment}` / `{standard}`"),
         None => format!("set `{path}` or export `{figment}`"),
     }
-}
-
-/// Renders the hint for a [`ValidationError::MissingBaseUrl`], naming
-/// the field path and its config-cascade environment variable.
-fn base_url_hint(stage: ProviderStage) -> String {
-    let path = stage.base_url_path();
-    let figment = path.env_var();
-    format!("set `{path}` or export `{figment}`")
 }
 
 /// Validates the parsed config currently on `state` and, on failure,
@@ -125,7 +119,8 @@ pub(in crate::management::operator_check) async fn act(state: &mut CheckState) -
 
 #[cfg(test)]
 mod tests {
-    use tribal_config::{ConfigPath, Diagnostics, ProviderStage, ValidationError};
+    use tribal_config::{ConfigPath, Diagnostics, ValidationError};
+    use tribal_domain::{ProviderConnectionName, ProviderKind};
 
     use super::*;
 
@@ -141,10 +136,11 @@ mod tests {
 
     #[test]
     fn test_config_validate_failed_with_api_key_error_has_targeted_hint() {
-        let diagnostics = Diagnostics::from(vec![ValidationError::MissingApiKey {
-            stage: ProviderStage::Triage,
-            provider: ProviderKind::OpenAi,
-        }]);
+        let diagnostics =
+            Diagnostics::from(vec![ValidationError::ProviderConnectionCredentialMissing {
+                connection: ProviderConnectionName::parse("openai_primary").unwrap(),
+                provider: ProviderKind::OpenAi,
+            }]);
         let outcome = CheckOutcome::config_validate_failed(diagnostics);
 
         assert!(matches!(
@@ -154,17 +150,17 @@ mod tests {
                 remediation: CheckRemediation::FixConfigInvariant { hints },
             } if stored.len() == 1
                 && hints.len() == 1
-                && hints[0].contains("inference.triage.api_key")
-                && hints[0].contains("TRIBAL_INFERENCE__TRIAGE__API_KEY")
+                && hints[0].contains("provider_connections.openai_primary.api_key")
+                && hints[0].contains("TRIBAL_PROVIDER_CONNECTIONS__OPENAI_PRIMARY__API_KEY")
                 && hints[0].contains("OPENAI_API_KEY"),
         ));
     }
 
     #[test]
-    fn test_config_validate_failed_with_base_url_error_has_targeted_hint() {
-        let diagnostics = Diagnostics::from(vec![ValidationError::MissingBaseUrl {
-            stage: ProviderStage::Extraction,
-            provider: ProviderKind::Platform,
+    fn test_config_validate_failed_with_missing_reference_has_targeted_hint() {
+        let diagnostics = Diagnostics::from(vec![ValidationError::ProviderConnectionMissing {
+            field: ConfigPath::from_static("inference.extraction.connection"),
+            connection: ProviderConnectionName::parse("managed").unwrap(),
         }]);
         let outcome = CheckOutcome::config_validate_failed(diagnostics);
 
@@ -175,8 +171,8 @@ mod tests {
                 remediation: CheckRemediation::FixConfigInvariant { hints },
             } if stored.len() == 1
                 && hints.len() == 1
-                && hints[0].contains("inference.extraction.base_url")
-                && hints[0].contains("TRIBAL_INFERENCE__EXTRACTION__BASE_URL"),
+                && hints[0].contains("inference.extraction.connection")
+                && hints[0].contains("provider_connections.managed"),
         ));
     }
 
@@ -236,8 +232,8 @@ mod tests {
             ValidationError::Empty {
                 field: ConfigPath::from_static("database.url"),
             },
-            ValidationError::MissingApiKey {
-                stage: ProviderStage::Triage,
+            ValidationError::ProviderConnectionCredentialMissing {
+                connection: ProviderConnectionName::parse("openai_primary").unwrap(),
                 provider: ProviderKind::OpenAi,
             },
             ValidationError::BelowMin {
@@ -255,7 +251,7 @@ mod tests {
                 ..
             } if hints.len() == 3
                 && hints[0] == "database.url must not be empty"
-                && hints[1].contains("inference.triage.api_key")
+                && hints[1].contains("provider_connections.openai_primary.api_key")
                 && hints[2] == "auth.token_ttl_hours must be greater than zero",
         ));
     }

@@ -207,6 +207,60 @@ pub fn validate_write(config: &TribalConfig, key: &str, value: Value) -> Vec<Con
     }
 }
 
+/// Checks a complete patch against the whole configuration invariant set.
+///
+/// Each relationship violation is projected onto every participating field.
+/// An empty result means the patch is acceptable.
+#[must_use]
+pub fn validate_patch(config: &TribalConfig, changes: &[(String, Value)]) -> Vec<ConfigViolation> {
+    let mut tree = match serde_json::to_value(config) {
+        Ok(tree) => tree,
+        Err(source) => {
+            return vec![ConfigViolation {
+                key: String::new(),
+                message: source.to_string(),
+            }];
+        }
+    };
+    for (key, value) in changes {
+        if let Err(message) = apply_value(&mut tree, key, value.clone()) {
+            return vec![ConfigViolation {
+                key: key.clone(),
+                message,
+            }];
+        }
+    }
+    let candidate: TribalConfig = match serde_json::from_value(tree) {
+        Ok(candidate) => candidate,
+        Err(source) => {
+            return vec![ConfigViolation {
+                key: String::new(),
+                message: source.to_string(),
+            }];
+        }
+    };
+    match validate(&candidate) {
+        Ok(()) => Vec::new(),
+        Err(ConfigError::ValidationFailed { diagnostics }) => diagnostics
+            .iter()
+            .flat_map(|diagnostic| {
+                diagnostic
+                    .fields()
+                    .into_iter()
+                    .map(|field| ConfigViolation {
+                        key: field.as_str().to_owned(),
+                        message: diagnostic.to_string(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect(),
+        Err(other) => vec![ConfigViolation {
+            key: String::new(),
+            message: other.to_string(),
+        }],
+    }
+}
+
 /// The resolved configuration with `value` applied at `key`, checked against
 /// the whole invariant set — or every reason the write is unacceptable.
 fn validated_candidate(
@@ -505,10 +559,10 @@ pub fn repair_patch(
 }
 
 fn persistence_entry(config: &TribalConfig, key: &str, value: Value) -> (String, Value) {
-    let Some(connection) = credential_connection_name(key) else {
+    let Some(connection) = provider_connection_name(key) else {
         return (key.to_owned(), value);
     };
-    let entry_key = format!("credentials.{connection}");
+    let entry_key = format!("provider_connections.{connection}");
     let tree = serde_json::to_value(config).expect("a resolved config serialises to JSON");
     match lookup(&tree, &entry_key) {
         Some(entry) => (entry_key, entry.clone()),
@@ -516,9 +570,9 @@ fn persistence_entry(config: &TribalConfig, key: &str, value: Value) -> (String,
     }
 }
 
-fn credential_connection_name(key: &str) -> Option<&str> {
+fn provider_connection_name(key: &str) -> Option<&str> {
     let mut segments = key.split('.');
-    (segments.next()? == "credentials")
+    (segments.next()? == "provider_connections")
         .then(|| segments.next())
         .flatten()
 }
@@ -740,7 +794,7 @@ fn non_object_error(key: &str) -> String {
 #[allow(clippy::result_large_err)]
 mod tests {
     use serde_json::json;
-    use tribal_domain::ProviderKind;
+    use tribal_domain::ProviderConnectionName;
 
     use super::*;
     use crate::DatabaseCliOverrides;
@@ -768,13 +822,14 @@ mod tests {
     }
 
     #[test]
-    fn test_get_all_redacts_both_static_and_catalogue_secrets() {
+    fn test_get_all_redacts_database_and_provider_secrets() {
         let mut config = base_config();
-        config.inference.extraction.api_key = Some("sk-static-secret".parse().unwrap());
-        config.credentials.insert(
-            "openai_default".to_owned(),
-            serde_yaml::from_str("provider_kind: openai\nbase_url: https://api.openai.com\napi_key: sk-catalogue-secret")
-                .unwrap(),
+        config.provider_connections.insert(
+            ProviderConnectionName::parse("openai_default").unwrap(),
+            crate::ProviderConnectionConfig::OpenAi {
+                base_url: "https://api.openai.com/v1".to_owned(),
+                api_key: Some("sk-provider-secret".parse().unwrap()),
+            },
         );
 
         let document = get_all(&config).to_string();
@@ -783,12 +838,8 @@ mod tests {
             "db url leaked: {document}"
         );
         assert!(
-            !document.contains("sk-static-secret"),
-            "static key leaked: {document}"
-        );
-        assert!(
-            !document.contains("sk-catalogue-secret"),
-            "catalogue key leaked: {document}"
+            !document.contains("sk-provider-secret"),
+            "provider key leaked: {document}"
         );
     }
 
@@ -990,20 +1041,22 @@ mod tests {
     }
 
     #[test]
-    fn test_set_allows_dynamic_credential_paths_that_validate() {
+    fn test_set_allows_dynamic_provider_connection_paths_that_validate() {
         figment::Jail::expect_with(|jail| {
             let mut config = base_config();
-            config.credentials.insert(
-                "openai_default".to_owned(),
-                serde_yaml::from_str("provider_kind: openai\nbase_url: https://api.openai.com\n")
-                    .unwrap(),
+            config.provider_connections.insert(
+                ProviderConnectionName::parse("openai_default").unwrap(),
+                crate::ProviderConnectionConfig::OpenAi {
+                    base_url: "https://api.openai.com/v1".to_owned(),
+                    api_key: None,
+                },
             );
             let path = jail.directory().join("tribal.yaml");
 
             let persisted = set(
                 &config,
                 &path,
-                "credentials.openai_default.api_key",
+                "provider_connections.openai_default.api_key",
                 json!("sk-dynamic-secret"),
                 &CliShadow::default(),
             )
@@ -1011,33 +1064,32 @@ mod tests {
 
             assert_eq!(persisted.effect, WriteEffect::NeedsRestart);
             let reloaded = crate::load_config(path.to_str().unwrap(), None, None).unwrap();
-            let (_, entry) = reloaded
-                .credentials
-                .resolve(ProviderKind::OpenAi, "https://api.openai.com:443")
-                .expect("the credential entry resolves");
-            assert_eq!(
-                entry.api_key.as_ref().unwrap().as_str(),
-                "sk-dynamic-secret"
-            );
+            let entry = reloaded
+                .provider_connections
+                .get("openai_default")
+                .expect("the provider connection resolves");
+            assert_eq!(entry.api_key().unwrap().as_str(), "sk-dynamic-secret");
             Ok(())
         });
     }
 
     #[test]
-    fn test_set_rejects_dynamic_credential_paths_that_violate_catalogue_rules() {
+    fn test_set_rejects_dynamic_provider_paths_that_violate_connection_rules() {
         figment::Jail::expect_with(|jail| {
             let mut config = base_config();
-            config.credentials.insert(
-                "openai_default".to_owned(),
-                serde_yaml::from_str("provider_kind: openai\nbase_url: https://api.openai.com\n")
-                    .unwrap(),
+            config.provider_connections.insert(
+                ProviderConnectionName::parse("openai_default").unwrap(),
+                crate::ProviderConnectionConfig::OpenAi {
+                    base_url: "https://api.openai.com/v1".to_owned(),
+                    api_key: None,
+                },
             );
             let path = jail.directory().join("tribal.yaml");
 
             let error = set(
                 &config,
                 &path,
-                "credentials.openai_default.base_url",
+                "provider_connections.openai_default.base_url",
                 json!("not a url"),
                 &CliShadow::default(),
             )
@@ -1046,7 +1098,7 @@ mod tests {
             assert!(matches!(error, SetError::Rejected { .. }));
             assert!(
                 !path.exists(),
-                "a catalogue-invalid write never touches the file",
+                "a connection-invalid write never touches the file",
             );
             Ok(())
         });

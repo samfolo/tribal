@@ -25,7 +25,7 @@ use url::Url;
 fn test_oauth_runtime() -> Arc<OAuthRuntimeConfig> {
     let issuer = Url::parse("http://127.0.0.1:8080").unwrap();
     let resource = Url::parse(TEST_CANONICAL_RESOURCE).unwrap();
-    Arc::new(OAuthRuntimeConfig::build(&OAuthConfig::default(), &issuer, &resource).unwrap())
+    Arc::new(OAuthRuntimeConfig::build(&OAuthConfig::default(), &issuer, &resource, true).unwrap())
 }
 
 // ---------------------------------------------------------------------------

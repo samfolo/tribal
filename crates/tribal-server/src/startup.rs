@@ -25,7 +25,7 @@ pub(crate) use prompts::{
     PromptTemplateLocation, ensure_prompt_files, load_prompts, load_prompts_embedded,
 };
 pub(crate) use providers::{
-    CatalogueCredentialResolver, build_command_registry, build_provider_registry,
+    ProviderConnectionCredentialResolver, build_command_registry, build_provider_registry,
     completion_stage_specs, probe_startup_providers, validate_embedding_identity,
 };
 pub(crate) use provisioning::{provision_genesis, read_active_profile};

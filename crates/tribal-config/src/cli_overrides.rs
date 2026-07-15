@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use tribal_domain::{ProviderKind, TransportKind};
+use tribal_domain::{ProviderConnectionName, TransportKind};
 
 // ---------------------------------------------------------------------------
 // Top-level overrides
@@ -39,16 +39,9 @@ pub struct CliOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<TelemetryCliOverrides>,
 
-    /// Credential catalogue skeleton, synthesised only during persistence.
-    ///
-    /// No CLI flag populates this; [`crate::render_persisted_config`] fills it
-    /// with the genesis `<provider>_default` connection whenever the resolved
-    /// genesis provider requires a key, independent of whether that seed came
-    /// from a CLI flag, the environment, or YAML, so the runtime has a
-    /// catalogue entry to resolve the credential into. The key itself is never
-    /// persisted.
+    /// Provider connections, with credentials omitted during persistence.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub credentials: Option<BTreeMap<String, PersistedCredentialEntry>>,
+    pub provider_connections: Option<BTreeMap<ProviderConnectionName, PersistedProviderConnection>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -87,25 +80,27 @@ pub struct InitCliOverrides {
 /// `init.embedding`.
 #[derive(Debug, Clone, Serialize)]
 pub struct EmbeddingCliOverrides {
-    /// Provider override from `--embedding-provider`.
+    /// Provider connection override.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<ProviderKind>,
+    pub connection: Option<ProviderConnectionName>,
 
     /// Model name override from `--embedding-model`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
 
-/// A persisted credential-catalogue entry skeleton: the endpoint identity
-/// without its key. Serialise-only; the runtime deserialises it back into a
-/// [`crate::CredentialEntry`] whose `api_key` defaults to absent.
+/// A persisted provider connection with its credential omitted.
 #[derive(Debug, Clone, Serialize)]
-pub struct PersistedCredentialEntry {
-    /// The provider kind this connection serves.
-    pub provider_kind: ProviderKind,
-
-    /// The endpoint base URL.
-    pub base_url: String,
+#[serde(tag = "provider", rename_all = "lowercase")]
+pub enum PersistedProviderConnection {
+    /// Ollama endpoint.
+    Ollama { base_url: String },
+    /// Anthropic endpoint.
+    Anthropic { base_url: String },
+    /// OpenAI-compatible endpoint.
+    OpenAi { base_url: String },
+    /// Tribal managed provider.
+    Platform {},
 }
 
 /// Inference-stage CLI flag overrides.
@@ -127,9 +122,9 @@ pub struct InferenceCliOverrides {
 /// Per-stage inference CLI flag overrides.
 #[derive(Debug, Clone, Serialize)]
 pub struct InferenceStageCliOverrides {
-    /// Provider override.
+    /// Provider connection override.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<ProviderKind>,
+    pub connection: Option<ProviderConnectionName>,
 
     /// Model name override.
     #[serde(skip_serializing_if = "Option::is_none")]

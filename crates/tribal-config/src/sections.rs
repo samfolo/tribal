@@ -2,7 +2,6 @@
 
 mod agents;
 mod auth;
-mod credential_catalogue;
 mod database;
 mod discovery;
 mod exploration;
@@ -26,10 +25,6 @@ pub use agents::{
     StageAgentConfig,
 };
 pub use auth::{AuthConfig, MAX_TTL_HOURS};
-pub use credential_catalogue::{
-    CredentialCatalogue, CredentialEntry, MissingApiKey, MissingApiKeyKind,
-    is_valid_connection_name,
-};
 pub use database::DatabaseConfig;
 pub use discovery::{
     DEFAULT_LIMIT as DEFAULT_DISCOVERY_LIMIT, DEFAULT_MAX_LIMIT as DEFAULT_DISCOVERY_MAX_LIMIT,
@@ -41,7 +36,7 @@ pub use exploration::{
     DEFAULT_MAX_DEPTH as DEFAULT_EXPLORATION_MAX_DEPTH,
     DEFAULT_MAX_LIMIT as DEFAULT_EXPLORATION_MAX_LIMIT, ExplorationConfig,
 };
-pub use inference::{InferenceConfig, StageInferenceConfig};
+pub use inference::{InferenceConfig, InferenceStage, StageInferenceConfig};
 pub use init::{
     DEFAULT_DIMENSIONS as DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_MODEL as DEFAULT_EMBEDDING_MODEL,
     InitConfig, InitEmbeddingConfig,
@@ -49,10 +44,10 @@ pub use init::{
 pub use limits::{LimitsConfig, ProviderLimitsConfig};
 pub use logging::{LogFormat, LogOutput, LoggingConfig};
 pub use oauth::{
-    DEFAULT_ACCESS_TOKEN_TTL_HOURS, DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS,
+    ClientRegistrationMode, DEFAULT_ACCESS_TOKEN_TTL_HOURS, DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS,
     MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
     MIN_AUTHORIZATION_CODE_TTL_SECONDS, OAuthConfig, advertised_oauth_host,
-    oauth_onboarding_is_url_only, oauth_surface_is_routable,
+    client_registration_mode, oauth_onboarding_is_url_only, oauth_surface_is_routable,
 };
 pub use processing::{
     CustomProcessingSettings, ExtractionStageSettings, PresetModelSettings, ProcessingProfile,
@@ -61,7 +56,7 @@ pub use processing::{
 };
 pub use prompts::{PromptSource, PromptsConfig};
 pub use provider_connections::{
-    ConnectionInitEmbeddingConfig, ConnectionStageInferenceConfig, ProviderConnectionConfig,
+    DEFAULT_PROVIDER_CONNECTION_NAME, ProviderConnectionConfig, ProviderConnectionResolutionError,
     ProviderConnectionUsage, ProviderConnectionViolation, ProviderConnections,
 };
 pub use root::{TribalConfig, VERSION};

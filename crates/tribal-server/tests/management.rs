@@ -255,12 +255,14 @@ async fn connector_concurrent_first_launch() {
         .client_mut()
         .call::<tribal_wire::management::ManagerSnapshotCall>(&())
         .await
-        .expect("first connector calls manager");
+        .expect("first connector calls manager")
+        .lifecycle;
     let second_snapshot: LifecycleSnapshot = second
         .client_mut()
         .call::<tribal_wire::management::ManagerSnapshotCall>(&())
         .await
-        .expect("second connector calls manager");
+        .expect("second connector calls manager")
+        .lifecycle;
     assert_eq!(
         first_snapshot.header.manager_instance_id,
         second_snapshot.header.manager_instance_id

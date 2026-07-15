@@ -33,7 +33,9 @@ use super::{
 };
 use crate::{
     error::AppError,
-    startup::{CatalogueCredentialResolver, build_command_registry, completion_stage_specs},
+    startup::{
+        ProviderConnectionCredentialResolver, build_command_registry, completion_stage_specs,
+    },
 };
 
 impl CheckOutcome {
@@ -98,15 +100,15 @@ pub(in crate::management::operator_check) async fn act(
     let (provider, result) = match target {
         ProviderStage::Embedding => probe_live_embedding(state, &gateway).await,
         ProviderStage::Extraction => (
-            config(state).inference.extraction.provider,
+            configured_provider(config(state), target),
             probe_inference_stage(&gateway, TaskType::Extraction).await,
         ),
         ProviderStage::Triage => (
-            config(state).inference.triage.provider,
+            configured_provider(config(state), target),
             probe_inference_stage(&gateway, TaskType::Triage).await,
         ),
         ProviderStage::Relation => (
-            config(state).inference.relation.provider,
+            configured_provider(config(state), target),
             probe_inference_stage(&gateway, TaskType::Relation).await,
         ),
     };
@@ -139,10 +141,13 @@ fn build_check_gateway(
         Some(pool) => Arc::new(PgLedgerSink::new(pool, noop_recorder())),
         None => Arc::new(NoopLedgerSink),
     };
+    let stage_specs = completion_stage_specs(config)?;
     let gateway = InferenceGateway::new(
         registry,
-        &completion_stage_specs(config),
-        Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
+        &stage_specs,
+        Arc::new(ProviderConnectionCredentialResolver::new(
+            config.provider_connections.clone(),
+        )),
         sink,
     )
     .map_err(|e| AppError::ProviderSetup {
@@ -154,12 +159,17 @@ fn build_check_gateway(
 /// Names the provider a probe would have exercised, for failures that
 /// happen before any probe runs (the gateway itself failed to build).
 fn configured_provider(config: &TribalConfig, target: ProviderStage) -> ProviderKind {
-    match target {
-        ProviderStage::Embedding => config.init.embedding.provider,
-        ProviderStage::Extraction => config.inference.extraction.provider,
-        ProviderStage::Triage => config.inference.triage.provider,
-        ProviderStage::Relation => config.inference.relation.provider,
-    }
+    let name = match target {
+        ProviderStage::Embedding => &config.init.embedding.connection,
+        ProviderStage::Extraction => &config.inference.extraction.connection,
+        ProviderStage::Triage => &config.inference.triage.connection,
+        ProviderStage::Relation => &config.inference.relation.connection,
+    };
+    config
+        .provider_connections
+        .require(name)
+        .expect("config validation preflight resolves provider references")
+        .provider()
 }
 
 /// 10s bounds a blackholed provider without choking slow cloud probes: the
@@ -205,7 +215,12 @@ async fn probe_live_embedding(
         Some(target) => target,
         None => match genesis_embedding_target(config(state)) {
             Ok(target) => target,
-            Err(error) => return (config(state).init.embedding.provider, Err(error)),
+            Err(error) => {
+                return (
+                    configured_provider(config(state), ProviderStage::Embedding),
+                    Err(error),
+                );
+            }
         },
     };
 
@@ -244,11 +259,13 @@ async fn read_active_profile(pool: &PgPool) -> Option<EmbeddingProfile> {
 /// provisioning does.
 fn genesis_embedding_target(config: &TribalConfig) -> Result<EmbeddingTarget, String> {
     let init = &config.init.embedding;
-    let provider = init.provider;
-    let base_url = init
-        .base_url
-        .as_deref()
-        .or_else(|| provider.default_base_url())
+    let connection = config
+        .provider_connections
+        .require(&init.connection)
+        .map_err(|error| error.to_string())?;
+    let provider = connection.provider();
+    let base_url = connection
+        .base_url()
         .ok_or_else(|| format!("{provider} requires a base URL and has no default"))?;
     let dimensions =
         resolve_dimensions(provider, &init.model, init.dimensions).map_err(|e| e.to_string())?;

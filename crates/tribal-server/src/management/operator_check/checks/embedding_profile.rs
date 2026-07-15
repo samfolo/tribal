@@ -7,7 +7,7 @@
 //! profile is informational state, never a warning, because the seed is stale
 //! by design once a corpus exists.
 
-use tribal_config::{InitEmbeddingConfig, MissingApiKeyKind};
+use tribal_config::{InitEmbeddingConfig, ProviderConnectionResolutionError, ProviderConnections};
 use tribal_db::{
     EmbeddingProfileRepository, PgEmbeddingProfileRepository, PgReindexQuarantineRepository,
     PgReindexRunRepository, ReindexQuarantineRepository, ReindexRunRepository,
@@ -45,22 +45,26 @@ impl CheckOutcome {
     pub(in crate::management::operator_check) fn embedding_credential_unresolved(
         provider: ProviderKind,
         base_url: String,
-        kind: MissingApiKeyKind,
+        source: ProviderConnectionResolutionError,
     ) -> Self {
-        // The detail names the endpoint either way; the remediation differs by
-        // whether an entry exists to fill: add the connection, or set the key
-        // on the one that is already there.
-        let remediation = match kind {
-            MissingApiKeyKind::NoMatchingEntry => {
+        let remediation = match &source {
+            ProviderConnectionResolutionError::MissingCredential {
+                connection,
+                provider,
+            } => CheckRemediation::SetEmbeddingCredentialKey {
+                connection: connection.clone(),
+                provider: *provider,
+            },
+            ProviderConnectionResolutionError::MissingConnection { .. }
+            | ProviderConnectionResolutionError::MissingEndpoint { .. } => {
                 CheckRemediation::AddEmbeddingCredential { provider }
             }
-            MissingApiKeyKind::EmptyKey => CheckRemediation::SetEmbeddingCredentialKey { provider },
         };
         Self::Fail {
             detail: CheckDetail::EmbeddingCredentialUnresolved {
                 provider,
                 base_url,
-                kind,
+                source,
             },
             remediation,
         }
@@ -112,16 +116,16 @@ pub(in crate::management::operator_check) async fn act(state: &mut CheckState) -
         Err(err) => return CheckOutcome::embedding_profile_query_failed(err.to_string()),
     };
 
-    // The active provider's credential must resolve through the catalogue, or
+    // The active provider's credential must resolve through a named connection, or
     // the next server boot fails closed.
     if let Err(missing) = config
-        .credentials
-        .resolve_api_key(active.provider_kind(), active.normalised_base_url())
+        .provider_connections
+        .resolve_endpoint_api_key(active.provider_kind(), active.normalised_base_url())
     {
         return CheckOutcome::embedding_credential_unresolved(
-            missing.provider,
-            missing.base_url,
-            missing.kind,
+            active.provider_kind(),
+            active.normalised_base_url().to_owned(),
+            missing,
         );
     }
 
@@ -143,7 +147,11 @@ pub(in crate::management::operator_check) async fn act(state: &mut CheckState) -
     }
 
     // Genesis-vs-active divergence is informational state, never a warning.
-    let genesis_drift = genesis_drift(&config.init.embedding, &active);
+    let genesis_drift = genesis_drift(
+        &config.init.embedding,
+        &config.provider_connections,
+        &active,
+    );
 
     CheckOutcome::embedding_profile_live(
         active.provider_kind(),
@@ -162,19 +170,23 @@ pub(in crate::management::operator_check) async fn act(state: &mut CheckState) -
 /// if it cannot be canonicalised (an unparseable seed is itself a divergence
 /// worth surfacing). A genesis dimension of `None` pins nothing, so it never
 /// counts as a dimension divergence.
-fn genesis_drift(genesis: &InitEmbeddingConfig, active: &EmbeddingProfile) -> Option<String> {
-    let genesis_base_url = genesis
-        .base_url
-        .as_deref()
-        .or_else(|| genesis.provider.default_base_url())
-        .unwrap_or_default();
+fn genesis_drift(
+    genesis: &InitEmbeddingConfig,
+    connections: &ProviderConnections,
+    active: &EmbeddingProfile,
+) -> Option<String> {
+    let Ok(connection) = connections.require(&genesis.connection) else {
+        return Some(format!("missing connection {}", genesis.connection));
+    };
+    let provider = connection.provider();
+    let genesis_base_url = connection.base_url().unwrap_or_default();
     let genesis_normalised = normalise_endpoint_url(genesis_base_url);
     let endpoint_differs = match &genesis_normalised {
         Ok(normalised) => normalised != active.normalised_base_url(),
         Err(_) => genesis_base_url != active.normalised_base_url(),
     };
 
-    let diverges = genesis.provider != active.provider_kind()
+    let diverges = provider != active.provider_kind()
         || genesis.model != active.model()
         || endpoint_differs
         || genesis.dimensions.is_some_and(|d| d != active.dimensions());
@@ -188,15 +200,40 @@ fn genesis_drift(genesis: &InitEmbeddingConfig, active: &EmbeddingProfile) -> Op
         .map_or_else(|| "native".to_owned(), |d| format!("{d}d"));
     Some(format!(
         "{}/{} at {endpoint} ({dimensions})",
-        genesis.provider, genesis.model
+        provider, genesis.model
     ))
 }
 
 #[cfg(test)]
 mod tests {
+    use tribal_config::ProviderConnectionConfig;
+    use tribal_domain::ProviderConnectionName;
     use tribal_test_utils::an_embedding_profile;
 
     use super::*;
+
+    fn name(raw: &str) -> ProviderConnectionName {
+        ProviderConnectionName::parse(raw).expect("fixture connection name is valid")
+    }
+
+    fn ollama_genesis(dimensions: Option<u32>) -> InitEmbeddingConfig {
+        InitEmbeddingConfig {
+            connection: name("ollama_default"),
+            model: "nomic-embed-text:v1.5".to_owned(),
+            dimensions,
+        }
+    }
+
+    fn ollama_connections(base_url: &str) -> ProviderConnections {
+        [(
+            name("ollama_default"),
+            ProviderConnectionConfig::Ollama {
+                base_url: base_url.to_owned(),
+            },
+        )]
+        .into_iter()
+        .collect()
+    }
 
     #[test]
     fn test_pending_is_a_pass() {
@@ -251,12 +288,8 @@ mod tests {
     #[test]
     fn test_genesis_drift_reports_endpoint_and_dimension_axes_after_a_migration() {
         // Genesis: Ollama at the default host, dimension pinned to 768.
-        let genesis = InitEmbeddingConfig {
-            provider: ProviderKind::Ollama,
-            model: "nomic-embed-text:v1.5".to_owned(),
-            dimensions: Some(768),
-            base_url: Some("http://localhost:11434".to_owned()),
-        };
+        let genesis = ollama_genesis(Some(768));
+        let connections = ollama_connections("http://localhost:11434");
         // Active: same provider and model, migrated to a new host and dimension.
         let active = an_embedding_profile()
             .provider_kind(ProviderKind::Ollama)
@@ -265,7 +298,7 @@ mod tests {
             .dimensions(1024)
             .build();
 
-        let drift = genesis_drift(&genesis, &active)
+        let drift = genesis_drift(&genesis, &connections, &active)
             .expect("a same-model endpoint and dimension migration must report drift");
         assert!(drift.contains("ollama/nomic-embed-text:v1.5"), "{drift}");
         assert!(drift.contains("localhost:11434"), "endpoint axis: {drift}");
@@ -274,12 +307,8 @@ mod tests {
 
     #[test]
     fn test_genesis_drift_is_absent_when_every_axis_matches() {
-        let genesis = InitEmbeddingConfig {
-            provider: ProviderKind::Ollama,
-            model: "nomic-embed-text:v1.5".to_owned(),
-            dimensions: Some(768),
-            base_url: Some("http://localhost:11434".to_owned()),
-        };
+        let genesis = ollama_genesis(Some(768));
+        let connections = ollama_connections("http://localhost:11434");
         let active = an_embedding_profile()
             .provider_kind(ProviderKind::Ollama)
             .model("nomic-embed-text:v1.5".to_owned())
@@ -287,19 +316,15 @@ mod tests {
             .dimensions(768)
             .build();
 
-        assert!(genesis_drift(&genesis, &active).is_none());
+        assert!(genesis_drift(&genesis, &connections, &active).is_none());
     }
 
     #[test]
     fn test_genesis_drift_ignores_an_unpinned_genesis_dimension() {
         // A genesis dimension of None pins nothing, so the active dimension on
         // its own is not a divergence.
-        let genesis = InitEmbeddingConfig {
-            provider: ProviderKind::Ollama,
-            model: "nomic-embed-text:v1.5".to_owned(),
-            dimensions: None,
-            base_url: Some("http://localhost:11434".to_owned()),
-        };
+        let genesis = ollama_genesis(None);
+        let connections = ollama_connections("http://localhost:11434");
         let active = an_embedding_profile()
             .provider_kind(ProviderKind::Ollama)
             .model("nomic-embed-text:v1.5".to_owned())
@@ -307,7 +332,7 @@ mod tests {
             .dimensions(1024)
             .build();
 
-        assert!(genesis_drift(&genesis, &active).is_none());
+        assert!(genesis_drift(&genesis, &connections, &active).is_none());
     }
 
     #[test]
@@ -315,7 +340,10 @@ mod tests {
         let outcome = CheckOutcome::embedding_credential_unresolved(
             ProviderKind::OpenAi,
             "https://api.openai.com:443".into(),
-            MissingApiKeyKind::NoMatchingEntry,
+            ProviderConnectionResolutionError::MissingEndpoint {
+                provider: ProviderKind::OpenAi,
+                normalised_base_url: "https://api.openai.com:443".into(),
+            },
         );
         let (detail, remediation) = match outcome {
             CheckOutcome::Fail {
@@ -325,7 +353,7 @@ mod tests {
             other => panic!("expected a fail, got {other:?}"),
         };
         assert!(detail.render().contains("https://api.openai.com:443"));
-        assert!(detail.render().contains("no catalogue entry matches"));
+        assert!(detail.render().contains("no provider connection owns"));
         assert!(matches!(
             remediation,
             CheckRemediation::AddEmbeddingCredential {
@@ -340,7 +368,10 @@ mod tests {
         let outcome = CheckOutcome::embedding_credential_unresolved(
             ProviderKind::OpenAi,
             "https://api.openai.com:443".into(),
-            MissingApiKeyKind::EmptyKey,
+            ProviderConnectionResolutionError::MissingCredential {
+                connection: name("openai_default"),
+                provider: ProviderKind::OpenAi,
+            },
         );
         let (detail, remediation) = match outcome {
             CheckOutcome::Fail {
@@ -349,11 +380,12 @@ mod tests {
             } => (detail, remediation),
             other => panic!("expected a fail, got {other:?}"),
         };
-        assert!(detail.render().contains("empty api_key"));
+        assert!(detail.render().contains("no usable API key"));
         assert!(matches!(
             remediation,
             CheckRemediation::SetEmbeddingCredentialKey {
                 provider: ProviderKind::OpenAi,
+                ..
             },
         ));
         let rendered = remediation.render();
@@ -362,7 +394,7 @@ mod tests {
             "should point at the existing entry: {rendered}",
         );
         assert!(
-            rendered.contains("credentials.openai_default.api_key"),
+            rendered.contains("provider_connections.openai_default.api_key"),
             "{rendered}"
         );
     }

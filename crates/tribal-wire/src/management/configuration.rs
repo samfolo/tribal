@@ -3,11 +3,11 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::{AuthTokenId, ConfigFieldPath, ProjectId, ProviderKind};
-
-use super::{
-    ConfigDigest, ConfigRevision, CredentialSourceId, EmbeddingProfileRevision, KnownModelId,
+use tribal_domain::{
+    AuthTokenId, ConfigFieldPath, ProjectId, ProviderConnectionName, ProviderKind,
 };
+
+use super::{ConfigDigest, ConfigRevision, EmbeddingProfileRevision, KnownModelId};
 
 /// Observable effect of a successful configuration write.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -61,36 +61,6 @@ pub enum ConfigDocument {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ConfigGetRequest {
     pub key: ConfigFieldPath,
-}
-
-/// Proposed configuration value checked without persistence.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ConfigValidateRequest {
-    /// The dotted field path being checked.
-    pub key: ConfigFieldPath,
-    /// The candidate JSON value.
-    pub value: serde_json::Value,
-}
-
-/// One configuration rule violated by a candidate value.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ConfigViolation {
-    /// The dotted field path that violates the rule.
-    pub key: String,
-    /// The operator-facing violation detail.
-    pub message: String,
-}
-
-/// Validation result for a proposed configuration value.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ConfigValidation {
-    /// Whether the candidate satisfies every configuration rule.
-    pub valid: bool,
-    /// Every violated rule, empty for a valid candidate.
-    pub violations: Vec<ConfigViolation>,
 }
 
 /// Arbitrary configuration JSON with constant-redacted formatting.
@@ -304,132 +274,6 @@ pub enum InferenceStage {
     Relation,
 }
 
-/// Atomic model-selection request.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ModelSelectionRequest {
-    pub model: KnownModelId,
-    pub stages: Vec<InferenceStage>,
-    pub endpoint: EndpointSelection,
-    pub credential: Option<CredentialInput>,
-    pub reuse_api_key_for_embedding: bool,
-    pub expected_revision: ConfigRevision,
-}
-
-/// Requested endpoint transition for model selection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum EndpointSelection {
-    Preserve,
-    ProviderDefault,
-    Custom { value: String },
-}
-
-/// Inline credential or manager-issued credential capability.
-#[derive(PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum CredentialInput {
-    Literal { value: SecretLiteral },
-    Source { source: CredentialSourceId },
-}
-
-impl fmt::Debug for CredentialInput {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Literal { .. } => formatter.write_str("Literal { value: <redacted> }"),
-            Self::Source { source } => formatter.debug_tuple("Source").field(source).finish(),
-        }
-    }
-}
-
-/// Request for use-bound credential capabilities.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct CredentialSourcesRequest {
-    pub use_case: CredentialUse,
-    pub expected_revision: ConfigRevision,
-}
-
-/// Operation to which a credential capability is bound.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum CredentialUse {
-    ModelSelection {
-        model: KnownModelId,
-        stages: Vec<InferenceStage>,
-        endpoint: EndpointSelection,
-    },
-    Genesis {
-        embedding: GenesisEmbeddingInput,
-    },
-}
-
-/// One opaque credential capability.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct CredentialSource {
-    pub id: CredentialSourceId,
-    pub kind: CredentialSourceKind,
-}
-
-/// Durable configuration origin referenced by a capability.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum CredentialSourceKind {
-    InferenceStage { stage: InferenceStage },
-    EmbeddingConnection { name: String },
-}
-
-/// Available credential capabilities for one exact request context.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct CredentialSources {
-    pub sources: Vec<CredentialSource>,
-    pub capabilities: CredentialUseCapabilities,
-    pub revision: ConfigRevision,
-}
-
-/// Additional actions permitted by a credential capability set.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum CredentialUseCapabilities {
-    ModelSelection {
-        embedding_reuse: EmbeddingReuseAvailability,
-    },
-    Genesis,
-}
-
-/// Whether an inference key can also back an embedding connection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "state", content = "data", rename_all = "snake_case")]
-pub enum EmbeddingReuseAvailability {
-    AvailableExisting {
-        connection: String,
-    },
-    AvailableCreate {
-        connection: String,
-    },
-    Unavailable {
-        reason: EmbeddingReuseUnavailableReason,
-    },
-}
-
-/// Reason embedding-key reuse is unavailable.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "reason", content = "data", rename_all = "snake_case")]
-pub enum EmbeddingReuseUnavailableReason {
-    ProviderUnsupported,
-    EndpointMismatch,
-    ConnectionNameConflict { connection: String },
-}
-
 /// One curated model choice and its current capability classification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -441,6 +285,8 @@ pub struct KnownModelEntry {
     pub access: ModelAccess,
     pub availability: ModelAvailability,
     pub settings: ModelSettingsCapability,
+    /// Compatible configured connections, in canonical name order.
+    pub connections: Vec<ProviderConnectionName>,
 }
 
 /// Curated model choices under one configuration revision.
@@ -483,7 +329,6 @@ pub enum ModelUnavailableReason {
 pub struct ModelSettingsCapability {
     pub credential: CredentialRequirement,
     pub endpoint: EndpointRequirement,
-    pub api_key_embedding_reuse: bool,
 }
 
 /// Credential input required by a product action.
@@ -509,19 +354,20 @@ pub enum EndpointRequirement {
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GenesisConfigurationRequest {
-    pub embedding: GenesisEmbeddingInput,
-    pub credential: Option<CredentialInput>,
+    pub connection: ProviderConnectionName,
+    pub model: String,
+    pub dimensions: Option<u32>,
     pub expected_revision: ConfigRevision,
 }
 
-/// Candidate embedding identity for graph genesis.
+/// Connection-backed embedding identity for graph genesis.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GenesisEmbeddingInput {
+    pub connection: ProviderConnectionName,
     pub provider: ProviderKind,
     pub model: String,
     pub dimensions: Option<u32>,
-    pub base_url: Option<String>,
 }
 
 /// Revision-checked request to converge config on the active profile.
@@ -537,14 +383,15 @@ pub struct GenesisConvergenceRequest {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GenesisOptions {
     pub recommended: GenesisEmbeddingInput,
-    pub providers: Vec<GenesisProviderOption>,
+    pub connections: Vec<GenesisConnectionOption>,
     pub revision: ConfigRevision,
 }
 
-/// Genesis capability for one provider.
+/// Genesis capability for one configured connection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct GenesisProviderOption {
+pub struct GenesisConnectionOption {
+    pub connection: ProviderConnectionName,
     pub provider: ProviderKind,
     pub availability: GenesisProviderAvailability,
 }
@@ -554,15 +401,8 @@ pub struct GenesisProviderOption {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", content = "data", rename_all = "snake_case")]
 pub enum GenesisProviderAvailability {
-    Available {
-        credential: CredentialRequirement,
-        endpoint: EndpointRequirement,
-        model: GenesisModelConstraint,
-        dimensions: GenesisDimensionsConstraint,
-    },
-    Unavailable {
-        reason: GenesisUnavailableReason,
-    },
+    Available { models: GenesisModelOptions },
+    Unavailable { reason: GenesisUnavailableReason },
 }
 
 /// Reason a provider cannot establish graph genesis.
@@ -572,22 +412,55 @@ pub enum GenesisProviderAvailability {
 pub enum GenesisUnavailableReason {
     NoEmbeddingApi,
     ManagedGatewayTransport,
+    CredentialMissing,
 }
 
-/// Validation rule for a genesis model name.
+/// Models served for one configured embedding connection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum GenesisModelOptions {
+    Catalogue {
+        models: Vec<EmbeddingModelOption>,
+        allow_other: bool,
+        constraint: GenesisModelConstraint,
+    },
+    Freeform {
+        constraint: GenesisModelConstraint,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct EmbeddingModelOption {
+    pub model: String,
+    pub display_name: String,
+    pub dimensions: EmbeddingDimensions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum GenesisModelConstraint {
     NonEmptyNoWhitespace,
 }
 
-/// Validation rule for genesis embedding dimensions.
+/// Dimension choices served for one embedding model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum GenesisDimensionsConstraint {
-    OptionalRange { min: u32, max: u32 },
+pub enum EmbeddingDimensions {
+    Fixed {
+        value: u32,
+    },
+    Native {
+        resolved: Option<u32>,
+    },
+    Selectable {
+        default: Option<u32>,
+        min: u32,
+        max: u32,
+    },
 }
 
 /// Stable summary of a graph's active embedding profile.
@@ -662,27 +535,8 @@ pub enum ManagementError {
         expected: EmbeddingProfileRevision,
         actual: EmbeddingProfileRevision,
     },
-    CredentialCapabilityInvalid {
-        reason: CredentialCapabilityInvalidReason,
-    },
-    CredentialSourceUnavailable,
-    CredentialConnectionConflict {
-        connection: String,
-    },
-    EndpointTransitionRefused {
-        reason: EndpointTransitionRefusal,
-    },
     ConfigPatchRefused {
         reason: ConfigPatchRefusal,
-    },
-    UnknownModel {
-        id: KnownModelId,
-    },
-    InvalidStageSet {
-        reason: InvalidStageSetReason,
-    },
-    EmbeddingReuseRefused {
-        reason: EmbeddingReuseUnavailableReason,
     },
     ConfigPersistenceUnavailable {
         phase: ConfigPersistencePhase,
@@ -690,6 +544,15 @@ pub enum ManagementError {
     },
     ModelUnavailable {
         reason: ModelUnavailableReason,
+    },
+    ProviderConnectionNotFound {
+        name: ProviderConnectionName,
+    },
+    ProviderConnectionRemovalRefused {
+        reason: super::ProviderConnectionRemovalRefusal,
+    },
+    ProviderCredentialMutationRefused {
+        reason: super::CredentialMutationRefusal,
     },
     GenesisPolicyRefused {
         reason: GenesisPolicyRefusal,
@@ -729,31 +592,6 @@ pub enum AdministrationFailure {
     ThreadRetentionRefused,
 }
 
-/// Reason a credential capability cannot be consumed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialCapabilityInvalidReason {
-    WrongConnection,
-    ManagerReplaced,
-    RevisionChanged,
-    Reissued,
-    Consumed,
-    UseMismatch,
-    Unknown,
-}
-
-/// Reason an endpoint transition is unsafe or incomplete.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum EndpointTransitionRefusal {
-    ProviderChangeRequiresEndpoint,
-    ProviderHasNoDefault,
-    CredentialFanoutHasMultipleEndpoints,
-    CredentialRequired,
-}
-
 /// Structural reason an atomic patch is refused.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -769,15 +607,6 @@ pub enum ConfigPatchRefusal {
     },
     MixedHotAndNonHot,
     MultipleHotFields,
-}
-
-/// Structural reason an inference-stage set is invalid.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "reason", content = "data", rename_all = "snake_case")]
-pub enum InvalidStageSetReason {
-    Empty,
-    Duplicate { stage: InferenceStage },
 }
 
 /// Point at which durable configuration persistence became uncertain.
@@ -836,16 +665,14 @@ mod tests {
         assert!(!format!("{secret:?}").contains(sentinel));
 
         let request = GenesisConfigurationRequest {
-            embedding: GenesisEmbeddingInput {
-                provider: ProviderKind::OpenAi,
-                model: "text-embedding-3-small".to_owned(),
-                dimensions: None,
-                base_url: None,
-            },
-            credential: Some(CredentialInput::Literal { value: secret }),
+            connection: ProviderConnectionName::parse("openai_default")
+                .expect("fixture connection name is valid"),
+            model: "text-embedding-3-small".to_owned(),
+            dimensions: None,
             expected_revision: revision(),
         };
-        assert!(!format!("{request:?}").contains(sentinel));
+        assert!(!format!("{secret:?}").contains(sentinel));
+        assert!(format!("{request:?}").contains("openai_default"));
     }
 
     #[test]

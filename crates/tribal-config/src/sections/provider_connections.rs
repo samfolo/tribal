@@ -3,7 +3,13 @@
 use std::collections::{BTreeMap, btree_map::Entry};
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tribal_domain::{ApiKey, ProviderConnectionName, ProviderKind, normalise_endpoint_url};
+
+use super::{InferenceStage, InitEmbeddingConfig, StageInferenceConfig};
+
+/// Canonical local connection shipped in the default configuration.
+pub const DEFAULT_PROVIDER_CONNECTION_NAME: &str = "ollama_default";
 
 /// One reusable provider endpoint and credential.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,10 +72,24 @@ impl ProviderConnectionConfig {
             Self::Ollama { .. } | Self::Platform {} => None,
         }
     }
+
+    fn fill_missing_api_key(&mut self, api_key: ApiKey) {
+        match self {
+            Self::Anthropic { api_key: slot, .. } | Self::OpenAi { api_key: slot, .. }
+                if slot.is_none() =>
+            {
+                *slot = Some(api_key);
+            }
+            Self::Ollama { .. }
+            | Self::Platform {}
+            | Self::Anthropic { .. }
+            | Self::OpenAi { .. } => {}
+        }
+    }
 }
 
 /// Provider connections keyed by their stable names.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct ProviderConnections(BTreeMap<ProviderConnectionName, ProviderConnectionConfig>);
@@ -77,7 +97,7 @@ pub struct ProviderConnections(BTreeMap<ProviderConnectionName, ProviderConnecti
 impl ProviderConnections {
     /// Returns a named connection.
     #[must_use]
-    pub fn get(&self, name: &ProviderConnectionName) -> Option<&ProviderConnectionConfig> {
+    pub fn get(&self, name: &str) -> Option<&ProviderConnectionConfig> {
         self.0.get(name)
     }
 
@@ -88,6 +108,11 @@ impl ProviderConnections {
         connection: ProviderConnectionConfig,
     ) -> Option<ProviderConnectionConfig> {
         self.0.insert(name, connection)
+    }
+
+    /// Removes a named connection.
+    pub fn remove(&mut self, name: &ProviderConnectionName) -> Option<ProviderConnectionConfig> {
+        self.0.remove(name)
     }
 
     /// Iterates connections in name order.
@@ -109,25 +134,118 @@ impl ProviderConnections {
         self.0.len()
     }
 
+    /// Resolves a unique provider endpoint to its named connection.
+    #[must_use]
+    pub fn resolve(
+        &self,
+        provider: ProviderKind,
+        normalised_base_url: &str,
+    ) -> Option<(&ProviderConnectionName, &ProviderConnectionConfig)> {
+        self.0.iter().find(|(_, connection)| {
+            connection.provider() == provider
+                && connection
+                    .base_url()
+                    .and_then(|value| normalise_endpoint_url(value).ok())
+                    .as_deref()
+                    == Some(normalised_base_url)
+        })
+    }
+
+    /// Resolves the API key for a named connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderConnectionResolutionError`] when the connection is missing or
+    /// its provider requires an absent credential.
+    pub fn resolve_api_key(
+        &self,
+        name: &ProviderConnectionName,
+    ) -> Result<&str, ProviderConnectionResolutionError> {
+        let Some(connection) = self.get(name.as_str()) else {
+            return Err(ProviderConnectionResolutionError::MissingConnection {
+                connection: name.clone(),
+            });
+        };
+        let api_key = connection.api_key().map_or("", ApiKey::as_str);
+        if connection.provider().requires_api_key() && api_key.is_empty() {
+            return Err(ProviderConnectionResolutionError::MissingCredential {
+                connection: name.clone(),
+                provider: connection.provider(),
+            });
+        }
+        Ok(api_key)
+    }
+
+    /// Resolves a connection by its stable name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderConnectionResolutionError::MissingConnection`] when
+    /// the name is not present.
+    pub fn require(
+        &self,
+        name: &ProviderConnectionName,
+    ) -> Result<&ProviderConnectionConfig, ProviderConnectionResolutionError> {
+        self.get(name.as_str()).ok_or_else(|| {
+            ProviderConnectionResolutionError::MissingConnection {
+                connection: name.clone(),
+            }
+        })
+    }
+
+    /// Resolves an active endpoint's credential through its unique connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderConnectionResolutionError`] when no connection owns
+    /// the endpoint or its required credential is absent.
+    pub fn resolve_endpoint_api_key(
+        &self,
+        provider: ProviderKind,
+        normalised_base_url: &str,
+    ) -> Result<&str, ProviderConnectionResolutionError> {
+        let Some((name, connection)) = self.resolve(provider, normalised_base_url) else {
+            return Err(ProviderConnectionResolutionError::MissingEndpoint {
+                provider,
+                normalised_base_url: normalised_base_url.to_owned(),
+            });
+        };
+        let key = connection.api_key().map_or("", ApiKey::as_str);
+        if provider.requires_api_key() && key.is_empty() {
+            return Err(ProviderConnectionResolutionError::MissingCredential {
+                connection: name.clone(),
+                provider,
+            });
+        }
+        Ok(key)
+    }
+
+    /// Supplies a conventional credential only to its canonical connection.
+    pub fn fill_missing_key(&mut self, name: &str, api_key: ApiKey) {
+        if let Some(connection) = self.0.get_mut(name) {
+            connection.fill_missing_api_key(api_key);
+        }
+    }
+
     /// Validates endpoints, credentials, and every supplied reference.
     #[must_use]
     pub fn violations(
         &self,
-        stages: &[ConnectionStageInferenceConfig],
-        genesis: &ConnectionInitEmbeddingConfig,
+        stages: &[(InferenceStage, &StageInferenceConfig)],
+        genesis: &InitEmbeddingConfig,
     ) -> Vec<ProviderConnectionViolation> {
         let mut violations = self.connection_violations();
 
-        for stage in stages {
-            if self.get(&stage.connection).is_none() {
+        for (stage, config) in stages {
+            if self.get(config.connection.as_str()).is_none() {
                 violations.push(ProviderConnectionViolation::MissingReference {
-                    connection: stage.connection.clone(),
-                    usage: ProviderConnectionUsage::Inference,
+                    connection: config.connection.clone(),
+                    usage: ProviderConnectionUsage::Inference { stage: *stage },
                 });
             }
         }
 
-        match self.get(&genesis.connection) {
+        match self.get(genesis.connection.as_str()) {
             None => violations.push(ProviderConnectionViolation::MissingReference {
                 connection: genesis.connection.clone(),
                 usage: ProviderConnectionUsage::GenesisEmbedding,
@@ -188,6 +306,19 @@ impl ProviderConnections {
     }
 }
 
+impl Default for ProviderConnections {
+    fn default() -> Self {
+        [(
+            default_provider_connection_name(),
+            ProviderConnectionConfig::Ollama {
+                base_url: ProviderKind::DEFAULT_OLLAMA_BASE_URL.to_owned(),
+            },
+        )]
+        .into_iter()
+        .collect()
+    }
+}
+
 impl FromIterator<(ProviderConnectionName, ProviderConnectionConfig)> for ProviderConnections {
     fn from_iter<T: IntoIterator<Item = (ProviderConnectionName, ProviderConnectionConfig)>>(
         iter: T,
@@ -196,44 +327,70 @@ impl FromIterator<(ProviderConnectionName, ProviderConnectionConfig)> for Provid
     }
 }
 
-/// Inference settings that refer to one reusable connection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct ConnectionStageInferenceConfig {
-    /// Provider connection name.
-    pub connection: ProviderConnectionName,
-    /// Model identifier.
-    pub model: String,
-    /// Sampling temperature.
-    #[serde(default)]
-    pub temperature: Option<f64>,
-    /// Per-call output-token ceiling.
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
+/// Failure resolving a named provider connection or credential.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ProviderConnectionResolutionError {
+    /// A named connection is absent.
+    #[error("provider connection '{connection}' does not exist")]
+    MissingConnection {
+        /// Requested connection.
+        connection: ProviderConnectionName,
+    },
+    /// No connection owns an active provider endpoint.
+    #[error("no provider connection owns {provider} endpoint '{normalised_base_url}'")]
+    MissingEndpoint {
+        /// Active provider.
+        provider: ProviderKind,
+        /// Canonical endpoint identity.
+        normalised_base_url: String,
+    },
+    /// A credential-bearing connection has no usable key.
+    #[error("provider connection '{connection}' has no usable API key for {provider}")]
+    MissingCredential {
+        /// Requested connection.
+        connection: ProviderConnectionName,
+        /// Connection provider.
+        provider: ProviderKind,
+    },
 }
 
-/// Genesis embedding settings that refer to one reusable connection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct ConnectionInitEmbeddingConfig {
-    /// Provider connection name.
-    pub connection: ProviderConnectionName,
-    /// Embedding model identifier.
-    pub model: String,
-    /// Requested dimensions, or the model's native dimensions when absent.
-    #[serde(default)]
-    pub dimensions: Option<u32>,
+pub(crate) fn default_provider_connection_name() -> ProviderConnectionName {
+    ProviderConnectionName::parse(DEFAULT_PROVIDER_CONNECTION_NAME)
+        .expect("the canonical default connection name is valid")
 }
 
 /// The role for which a provider connection is referenced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderConnectionUsage {
     /// Completion inference.
-    Inference,
+    Inference {
+        /// Referencing stage.
+        stage: InferenceStage,
+    },
     /// Genesis embedding.
     GenesisEmbedding,
+}
+
+impl ProviderConnectionUsage {
+    /// Returns the config field holding the reference.
+    #[must_use]
+    pub fn connection_path(self) -> crate::ConfigPath {
+        match self {
+            Self::Inference { stage } => {
+                crate::ConfigPath::child(stage.config_path(), "connection")
+            }
+            Self::GenesisEmbedding => crate::ConfigPath::from_static("init.embedding.connection"),
+        }
+    }
+
+    /// Returns the capability required by this use.
+    #[must_use]
+    pub const fn capability(self) -> &'static str {
+        match self {
+            Self::Inference { .. } => "completion",
+            Self::GenesisEmbedding => "embedding",
+        }
+    }
 }
 
 /// A violation of the reusable-connection contract.
@@ -285,6 +442,7 @@ pub enum ProviderConnectionViolation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{InitEmbeddingConfig, StageInferenceConfig};
 
     fn name(raw: &str) -> ProviderConnectionName {
         ProviderConnectionName::parse(raw).expect("fixture name is valid")
@@ -296,8 +454,8 @@ mod tests {
         }
     }
 
-    fn genesis(connection: &str) -> ConnectionInitEmbeddingConfig {
-        ConnectionInitEmbeddingConfig {
+    fn genesis(connection: &str) -> InitEmbeddingConfig {
+        InitEmbeddingConfig {
             connection: name(connection),
             model: "nomic-embed-text:v1.5".to_owned(),
             dimensions: None,
@@ -353,19 +511,22 @@ mod tests {
         )]
         .into_iter()
         .collect::<ProviderConnections>();
-        let stages = [ConnectionStageInferenceConfig {
+        let stage = StageInferenceConfig {
             connection: name("missing"),
             model: "model".to_owned(),
             temperature: None,
             max_tokens: None,
-        }];
+        };
+        let stages = [(InferenceStage::Extraction, &stage)];
 
         assert_eq!(
             connections.violations(&stages, &genesis("anthropic_default")),
             vec![
                 ProviderConnectionViolation::MissingReference {
                     connection: name("missing"),
-                    usage: ProviderConnectionUsage::Inference,
+                    usage: ProviderConnectionUsage::Inference {
+                        stage: InferenceStage::Extraction,
+                    },
                 },
                 ProviderConnectionViolation::UnsupportedCapability {
                     connection: name("anthropic_default"),
@@ -373,6 +534,18 @@ mod tests {
                     usage: ProviderConnectionUsage::GenesisEmbedding,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn test_default_contains_the_canonical_local_connection() {
+        let connections = ProviderConnections::default();
+        assert_eq!(connections.len(), 1);
+        assert_eq!(
+            connections
+                .get(DEFAULT_PROVIDER_CONNECTION_NAME)
+                .map(ProviderConnectionConfig::provider),
+            Some(ProviderKind::Ollama)
         );
     }
 

@@ -8,7 +8,7 @@ use figment::{
     providers::{Env, Format, Serialized, Yaml},
 };
 use serde_json::Value as JsonValue;
-use tribal_domain::{ApiKey, ProviderKind, normalise_endpoint_url};
+use tribal_domain::{ApiKey, ProviderKind};
 
 use crate::{
     CliOverrides, LoggingConfig, TelemetryConfig, TribalConfig,
@@ -16,7 +16,7 @@ use crate::{
         ALIAS_ENV_VARS, ENV_NESTED_SEPARATOR, ENV_PREFIX, public_mcp_url_override,
         standard_env_var_name,
     },
-    error::{ConfigError, RemovedEmbeddingSource},
+    error::{ConfigError, RemovedProviderShapeSource},
     sections::PromptSource,
 };
 
@@ -41,7 +41,7 @@ const KNOWN_SECTIONS: &[&str] = &[
     "oauth.",
     "worker.",
     "init.",
-    "credentials.",
+    "provider_connections.",
     "inference.",
     "limits.",
     "prompts.",
@@ -82,8 +82,8 @@ pub fn load_config(
 ) -> Result<TribalConfig, ConfigError> {
     let expanded_path = shellexpand::tilde(config_path);
 
-    if let Some(detected) = detect_removed_embedding_shape(expanded_path.as_ref()) {
-        return Err(ConfigError::RemovedEmbeddingShape { detected });
+    if let Some(detected) = detect_removed_provider_shape(expanded_path.as_ref()) {
+        return Err(ConfigError::RemovedProviderShape { detected });
     }
 
     let figment = base_figment(command_defaults).merge(Yaml::file(expanded_path.as_ref()));
@@ -105,9 +105,9 @@ pub fn load_config_from_yaml(
     command_defaults: Option<&[(&str, &str)]>,
 ) -> Result<TribalConfig, ConfigError> {
     if let Some(detected) =
-        detect_removed_embedding_env().or_else(|| detect_removed_embedding_shape_in(yaml))
+        detect_removed_provider_env().or_else(|| detect_removed_provider_shape_in(yaml))
     {
-        return Err(ConfigError::RemovedEmbeddingShape { detected });
+        return Err(ConfigError::RemovedProviderShape { detected });
     }
 
     let figment = base_figment(command_defaults).merge(Yaml::string(yaml));
@@ -202,44 +202,95 @@ fn insert_nested(map: &mut serde_json::Map<String, JsonValue>, parts: &[&str], v
     }
 }
 
-/// Env-var prefix for the removed top-level `embedding` section. The live
-/// genesis seed is `TRIBAL_INIT__EMBEDDING__*`, so the trailing `__` here is
-/// load-bearing: it matches only the removed flat shape, never the nested one.
-const REMOVED_EMBEDDING_ENV_PREFIX: &str = "TRIBAL_EMBEDDING__";
+/// Removed provider-bearing environment paths.
+const REMOVED_PROVIDER_ENV_PATHS: &[&str] = &[
+    "TRIBAL_EMBEDDING__",
+    "TRIBAL_CREDENTIALS__",
+    "TRIBAL_INIT__EMBEDDING__PROVIDER",
+    "TRIBAL_INIT__EMBEDDING__BASE_URL",
+    "TRIBAL_INIT__EMBEDDING__API_KEY",
+    "TRIBAL_INFERENCE__EXTRACTION__PROVIDER",
+    "TRIBAL_INFERENCE__EXTRACTION__BASE_URL",
+    "TRIBAL_INFERENCE__EXTRACTION__API_KEY",
+    "TRIBAL_INFERENCE__TRIAGE__PROVIDER",
+    "TRIBAL_INFERENCE__TRIAGE__BASE_URL",
+    "TRIBAL_INFERENCE__TRIAGE__API_KEY",
+    "TRIBAL_INFERENCE__RELATION__PROVIDER",
+    "TRIBAL_INFERENCE__RELATION__BASE_URL",
+    "TRIBAL_INFERENCE__RELATION__API_KEY",
+];
 
-/// Top-level YAML key for the removed flat `embedding` section.
-const REMOVED_EMBEDDING_YAML_KEY: &str = "embedding";
-
-/// Detects the removed flat `embedding` config shape, if present.
-///
-/// Returns the first removed input found: a `TRIBAL_EMBEDDING__*` environment
-/// variable, or a top-level `embedding:` mapping in the YAML config file. An
-/// unreadable or malformed YAML file is left for the figment loader to report
-/// as a parse error; this check only fires on an unambiguous removed shape.
-fn detect_removed_embedding_shape(yaml_path: &str) -> Option<RemovedEmbeddingSource> {
-    if let Some(detected) = detect_removed_embedding_env() {
+/// Detects a removed provider-bearing config shape, if present.
+fn detect_removed_provider_shape(yaml_path: &str) -> Option<RemovedProviderShapeSource> {
+    if let Some(detected) = detect_removed_provider_env() {
         return Some(detected);
     }
 
     let contents = std::fs::read_to_string(yaml_path).ok()?;
-    detect_removed_embedding_shape_in(&contents)
+    detect_removed_provider_shape_in(&contents)
 }
 
-fn detect_removed_embedding_env() -> Option<RemovedEmbeddingSource> {
+fn detect_removed_provider_env() -> Option<RemovedProviderShapeSource> {
     std::env::vars_os().find_map(|(key, _)| {
         let key = key.to_string_lossy();
-        key.starts_with(REMOVED_EMBEDDING_ENV_PREFIX)
-            .then(|| RemovedEmbeddingSource::EnvVar {
+        REMOVED_PROVIDER_ENV_PATHS
+            .iter()
+            .any(|removed| key.starts_with(removed))
+            .then(|| RemovedProviderShapeSource::EnvVar {
                 name: key.into_owned(),
             })
     })
 }
 
-fn detect_removed_embedding_shape_in(yaml: &str) -> Option<RemovedEmbeddingSource> {
+fn detect_removed_provider_shape_in(yaml: &str) -> Option<RemovedProviderShapeSource> {
     let mapping: serde_yaml::Mapping = serde_yaml::from_str(yaml).ok()?;
-    mapping
-        .contains_key(serde_yaml::Value::from(REMOVED_EMBEDDING_YAML_KEY))
-        .then_some(RemovedEmbeddingSource::YamlSection)
+    for path in ["embedding", "credentials"] {
+        if mapping.contains_key(serde_yaml::Value::from(path)) {
+            return Some(RemovedProviderShapeSource::YamlPath {
+                path: path.to_owned(),
+            });
+        }
+    }
+
+    for path in [
+        "init.embedding.provider",
+        "init.embedding.base_url",
+        "init.embedding.api_key",
+        "inference.extraction.provider",
+        "inference.extraction.base_url",
+        "inference.extraction.api_key",
+        "inference.triage.provider",
+        "inference.triage.base_url",
+        "inference.triage.api_key",
+        "inference.relation.provider",
+        "inference.relation.base_url",
+        "inference.relation.api_key",
+    ] {
+        if yaml_mapping_contains_path(&mapping, path) {
+            return Some(RemovedProviderShapeSource::YamlPath {
+                path: path.to_owned(),
+            });
+        }
+    }
+    None
+}
+
+fn yaml_mapping_contains_path(mapping: &serde_yaml::Mapping, path: &str) -> bool {
+    let mut current = mapping;
+    let mut segments = path.split('.').peekable();
+    while let Some(segment) = segments.next() {
+        let Some(value) = current.get(serde_yaml::Value::from(segment)) else {
+            return false;
+        };
+        if segments.peek().is_none() {
+            return true;
+        }
+        let Some(nested) = value.as_mapping() else {
+            return false;
+        };
+        current = nested;
+    }
+    false
 }
 
 /// Restores `used_temp_dir_fallback` flags lost during serde roundtripping.
@@ -267,76 +318,30 @@ fn resolve_public_mcp_url(config: &mut TribalConfig) {
     config.server.public_mcp_url = public_mcp_url_override();
 }
 
-/// Populates `api_key` for any cloud-provider stage where prior cascade
-/// layers left it `None`, using the env var returned by
-/// [`standard_env_var_name`](crate::env::standard_env_var_name).
-///
-/// The OS env lookup is opportunistic: a missing, non-Unicode, or
-/// malformed value (empty, whitespace-bearing) leaves `api_key` as
-/// `None`, which then triggers the existing `validate_api_key_presence`
-/// error if no usable key emerged from any layer. Empty or
-/// whitespace-bearing values supplied through YAML or `TRIBAL_*__API_KEY`
-/// fail at deserialise time instead, courtesy of [`ApiKey`]'s strict
-/// `FromStr` impl.
+/// Supplies conventional cloud credentials only to their canonical names.
 fn apply_standard_env_var_fallback(config: &mut TribalConfig) {
-    apply_genesis_credential_fallback(config);
-    apply_stage_fallback(
-        &mut config.inference.extraction.api_key,
-        config.inference.extraction.provider,
-    );
-    apply_stage_fallback(
-        &mut config.inference.triage.api_key,
-        config.inference.triage.provider,
-    );
-    apply_stage_fallback(
-        &mut config.inference.relation.api_key,
-        config.inference.relation.provider,
-    );
-}
-
-fn apply_stage_fallback(api_key: &mut Option<ApiKey>, provider: ProviderKind) {
-    if api_key.is_none()
-        && provider.requires_api_key()
-        && let Some(name) = standard_env_var_name(provider)
-        && let Some(parsed) = std::env::var(name).ok().and_then(|v| v.parse().ok())
-    {
-        *api_key = Some(parsed);
-    }
-}
-
-/// Supplies the genesis embedding endpoint's catalogue key from the bare
-/// provider environment variable when neither an in-file value nor
-/// `TRIBAL_CREDENTIALS__<NAME>__API_KEY` did, mirroring the per-stage
-/// inference fallback. Scoped to the entry matching the `init.embedding`
-/// endpoint, so a second same-kind endpoint staged for a migration is never
-/// filled from a shared bare variable.
-fn apply_genesis_credential_fallback(config: &mut TribalConfig) {
-    let provider = config.init.embedding.provider;
-    if !provider.requires_api_key() {
-        return;
-    }
-    let Some(name) = standard_env_var_name(provider) else {
-        return;
-    };
-    let Some(key) = std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<ApiKey>().ok())
-    else {
-        return;
-    };
-    let Some(base_url) = config
-        .init
-        .embedding
-        .base_url
-        .clone()
-        .or_else(|| provider.default_base_url().map(ToOwned::to_owned))
-    else {
-        return;
-    };
-    if let Ok(normalised) = normalise_endpoint_url(&base_url) {
-        config
-            .credentials
-            .fill_missing_key(provider, &normalised, key);
+    for (provider, connection) in [
+        (ProviderKind::OpenAi, "openai_default"),
+        (ProviderKind::Anthropic, "anthropic_default"),
+    ] {
+        let Some(env_name) = standard_env_var_name(provider) else {
+            continue;
+        };
+        let Some(key) = std::env::var(env_name)
+            .ok()
+            .and_then(|value| value.parse::<ApiKey>().ok())
+        else {
+            continue;
+        };
+        if config
+            .provider_connections
+            .get(connection)
+            .is_some_and(|candidate| candidate.provider() == provider)
+        {
+            config
+                .provider_connections
+                .fill_missing_key(connection, key);
+        }
     }
 }
 
@@ -363,7 +368,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, ENV_PUBLIC_MCP_URL,
+        ENV_OPENAI_API_KEY, ENV_PUBLIC_MCP_URL,
         cli_overrides::{
             DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
             InferenceStageCliOverrides, InitCliOverrides, ServerCliOverrides,
@@ -564,74 +569,77 @@ prompts:
     }
 
     #[test]
-    fn test_removed_embedding_yaml_shape_names_the_new_sections() {
+    fn test_removed_provider_yaml_shape_names_the_new_sections() {
         Jail::expect_with(|jail| {
             jail.create_file("tribal.yaml", "embedding:\n  api_key: sk-old\n")?;
 
             let path = jail.directory().join("tribal.yaml");
             let result = load_config(path.to_str().unwrap(), None, None);
             let message = match result {
-                Err(ConfigError::RemovedEmbeddingShape { detected }) => {
-                    assert_eq!(detected, RemovedEmbeddingSource::YamlSection);
-                    ConfigError::RemovedEmbeddingShape { detected }.to_string()
+                Err(ConfigError::RemovedProviderShape { detected }) => {
+                    assert_eq!(
+                        detected,
+                        RemovedProviderShapeSource::YamlPath {
+                            path: "embedding".to_owned(),
+                        },
+                    );
+                    ConfigError::RemovedProviderShape { detected }.to_string()
                 }
-                other => panic!("expected RemovedEmbeddingShape, got {other:?}"),
+                other => panic!("expected RemovedProviderShape, got {other:?}"),
             };
             assert!(
                 message.contains("init.embedding"),
                 "message must name init.embedding: {message}",
             );
             assert!(
-                message.contains("credentials"),
-                "message must name the credentials catalogue: {message}",
+                message.contains("provider_connections"),
+                "message must name provider connections: {message}",
             );
             Ok(())
         });
     }
 
     #[test]
-    fn test_removed_embedding_env_var_names_the_new_sections() {
+    fn test_removed_provider_env_var_names_the_new_sections() {
         Jail::expect_with(|jail| {
             jail.set_env("TRIBAL_EMBEDDING__API_KEY", "sk-old");
 
             let path = jail.directory().join("tribal.yaml");
             let result = load_config(path.to_str().unwrap(), None, None);
             let message = match result {
-                Err(ConfigError::RemovedEmbeddingShape { detected }) => {
+                Err(ConfigError::RemovedProviderShape { detected }) => {
                     assert_eq!(
                         detected,
-                        RemovedEmbeddingSource::EnvVar {
+                        RemovedProviderShapeSource::EnvVar {
                             name: "TRIBAL_EMBEDDING__API_KEY".to_owned(),
                         },
                     );
-                    ConfigError::RemovedEmbeddingShape { detected }.to_string()
+                    ConfigError::RemovedProviderShape { detected }.to_string()
                 }
-                other => panic!("expected RemovedEmbeddingShape, got {other:?}"),
+                other => panic!("expected RemovedProviderShape, got {other:?}"),
             };
             assert!(
                 message.contains("init.embedding"),
                 "message must name init.embedding: {message}",
             );
             assert!(
-                message.contains("credentials"),
-                "message must name the credentials catalogue: {message}",
+                message.contains("provider_connections"),
+                "message must name provider connections: {message}",
             );
             Ok(())
         });
     }
 
     #[test]
-    fn test_live_init_embedding_env_var_is_not_flagged_as_removed_shape() {
+    fn test_live_init_embedding_connection_env_var_is_not_flagged() {
         Jail::expect_with(|jail| {
-            // The nested genesis seed is the live shape and must not trip the
-            // removed-shape detector.
-            jail.set_env("TRIBAL_INIT__EMBEDDING__PROVIDER", "openai");
+            jail.set_env("TRIBAL_INIT__EMBEDDING__CONNECTION", "ollama_default");
 
             let path = jail.directory().join("tribal.yaml");
             let result = load_config(path.to_str().unwrap(), None, None);
             assert!(
-                !matches!(result, Err(ConfigError::RemovedEmbeddingShape { .. })),
-                "the live TRIBAL_INIT__EMBEDDING__* shape must not be flagged: {result:?}",
+                !matches!(result, Err(ConfigError::RemovedProviderShape { .. })),
+                "the live connection reference must not be flagged: {result:?}",
             );
             Ok(())
         });
@@ -827,30 +835,26 @@ prompts:
         });
     }
 
-    // -- Standard provider env-var fallback (closes #144) --------------------
+    // -- Conventional provider credentials ----------------------------------
 
-    /// A `credentials:` catalogue declaring the genesis endpoint with an
-    /// `openai` provider and the canonical base URL, plus an `init.embedding`
-    /// seed pointing at that endpoint. The trailing `api_key` line is
-    /// appended by each test that wants an in-file key.
-    fn openai_genesis_yaml(api_key_line: &str) -> String {
+    fn openai_connections_yaml(api_key_line: &str) -> String {
         format!(
-            "init:\n  embedding:\n    provider: openai\n\
-             credentials:\n  openai_default:\n    provider_kind: openai\n    \
-             base_url: https://api.openai.com\n{api_key_line}",
+            "provider_connections:\n  openai_default:\n    provider: openai\n    \
+             base_url: https://api.openai.com/v1\n{api_key_line}\
+             init:\n  embedding:\n    connection: openai_default\n",
         )
     }
 
-    fn openai_endpoint() -> String {
-        normalise_endpoint_url(ProviderKind::OpenAi.default_base_url().unwrap()).unwrap()
+    fn connection_name(value: &str) -> tribal_domain::ProviderConnectionName {
+        tribal_domain::ProviderConnectionName::parse(value).unwrap()
     }
 
     #[test]
-    fn test_openai_api_key_fallback_file_wins() {
+    fn test_connection_api_key_in_file_wins_over_conventional_env() {
         Jail::expect_with(|jail| {
             jail.create_file(
                 "tribal.yaml",
-                &openai_genesis_yaml("    api_key: from-file\n"),
+                &openai_connections_yaml("    api_key: from-file\n"),
             )?;
             jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
 
@@ -858,8 +862,8 @@ prompts:
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(
                 config
-                    .credentials
-                    .resolve_api_key(ProviderKind::OpenAi, &openai_endpoint())
+                    .provider_connections
+                    .resolve_api_key(&connection_name("openai_default"))
                     .unwrap(),
                 "from-file",
             );
@@ -868,11 +872,11 @@ prompts:
     }
 
     #[test]
-    fn test_tribal_env_api_key_beats_standard_env() {
+    fn test_nested_connection_env_beats_conventional_env() {
         Jail::expect_with(|jail| {
-            jail.create_file("tribal.yaml", &openai_genesis_yaml(""))?;
+            jail.create_file("tribal.yaml", &openai_connections_yaml(""))?;
             jail.set_env(
-                "TRIBAL_CREDENTIALS__OPENAI_DEFAULT__API_KEY",
+                "TRIBAL_PROVIDER_CONNECTIONS__OPENAI_DEFAULT__API_KEY",
                 "from-tribal-env",
             );
             jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
@@ -881,8 +885,8 @@ prompts:
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(
                 config
-                    .credentials
-                    .resolve_api_key(ProviderKind::OpenAi, &openai_endpoint())
+                    .provider_connections
+                    .resolve_api_key(&connection_name("openai_default"))
                     .unwrap(),
                 "from-tribal-env",
             );
@@ -891,155 +895,75 @@ prompts:
     }
 
     #[test]
-    fn test_openai_api_key_fills_the_genesis_connection() {
+    fn test_conventional_env_fills_only_canonical_connection() {
         Jail::expect_with(|jail| {
-            jail.create_file("tribal.yaml", &openai_genesis_yaml(""))?;
+            let yaml = "provider_connections:\n  openai_default:\n    provider: openai\n    \
+                        base_url: https://api.openai.com/v1\n  openai_secondary:\n    \
+                        provider: openai\n    base_url: https://openai.example/v1\ninit:\n  \
+                        embedding:\n    connection: openai_default\n";
+            jail.create_file("tribal.yaml", &yaml)?;
             jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(
                 config
-                    .credentials
-                    .resolve_api_key(ProviderKind::OpenAi, &openai_endpoint())
+                    .provider_connections
+                    .resolve_api_key(&connection_name("openai_default"))
                     .unwrap(),
                 "from-standard-env",
             );
+            assert!(
+                config
+                    .provider_connections
+                    .resolve_api_key(&connection_name("openai_secondary"))
+                    .is_err(),
+            );
             Ok(())
         });
     }
 
     #[test]
-    fn test_empty_standard_env_var_leaves_the_genesis_connection_unresolved() {
+    fn test_empty_conventional_env_leaves_connection_unresolved() {
         Jail::expect_with(|jail| {
-            jail.create_file("tribal.yaml", &openai_genesis_yaml(""))?;
-            // Docker compose's `${OPENAI_API_KEY:-}` emits an empty value
-            // when the host env var is unset; the fallback must treat that
-            // as "no key reachable" so the catalogue resolves fail-closed.
+            jail.create_file("tribal.yaml", &openai_connections_yaml(""))?;
             jail.set_env(ENV_OPENAI_API_KEY, "");
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert!(
                 config
-                    .credentials
-                    .resolve_api_key(ProviderKind::OpenAi, &openai_endpoint())
+                    .provider_connections
+                    .resolve_api_key(&connection_name("openai_default"))
                     .is_err(),
-                "an empty standard env var must not satisfy the genesis credential",
             );
             Ok(())
         });
     }
 
-    #[test]
-    fn test_mixed_provider_mixed_stage_fallback() {
-        Jail::expect_with(|jail| {
-            jail.create_file(
-                "tribal.yaml",
-                &format!(
-                    "{}inference:\n  triage:\n    provider: anthropic\n",
-                    openai_genesis_yaml(""),
-                ),
-            )?;
-            jail.set_env(ENV_OPENAI_API_KEY, "openai-key");
-            jail.set_env(ENV_ANTHROPIC_API_KEY, "anthropic-key");
-
-            let path = jail.directory().join("tribal.yaml");
-            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
-            assert_eq!(
-                config
-                    .credentials
-                    .resolve_api_key(ProviderKind::OpenAi, &openai_endpoint())
-                    .unwrap(),
-                "openai-key",
-            );
-            assert_eq!(
-                config.inference.triage.api_key.as_ref().map(ApiKey::as_str),
-                Some("anthropic-key"),
-            );
-            Ok(())
-        });
-    }
+    // -- Connection / telemetry CLI overrides -------------------------------
 
     #[test]
-    fn test_no_key_providers_ignore_all_standard_env_vars() {
-        Jail::expect_with(|jail| {
-            // Set every standard env var that any provider exposes, so the
-            // sweep below covers each `ProviderKind` against the full set.
-            for kind in ProviderKind::ALL {
-                if let Some(name) = standard_env_var_name(kind) {
-                    jail.set_env(name, "should-be-ignored");
-                }
-            }
-
-            // For every provider that does not require an API key, the
-            // fallback must leave the inference stages as `None` and never
-            // synthesise or fill a genesis catalogue key.
-            for provider in ProviderKind::ALL
-                .into_iter()
-                .filter(|k| !k.requires_api_key())
-            {
-                let yaml = format!(
-                    "\
-init:
-  embedding:
-    provider: {provider}
-inference:
-  extraction:
-    provider: {provider}
-  triage:
-    provider: {provider}
-  relation:
-    provider: {provider}
-"
-                );
-                jail.create_file("tribal.yaml", &yaml)?;
-                let path = jail.directory().join("tribal.yaml");
-                let config = load_config(path.to_str().unwrap(), None, None).unwrap();
-
-                assert!(
-                    config.credentials.is_empty(),
-                    "{provider} genesis synthesised a catalogue key from a standard env var",
-                );
-                let stages = [
-                    ("inference.extraction", &config.inference.extraction.api_key),
-                    ("inference.triage", &config.inference.triage.api_key),
-                    ("inference.relation", &config.inference.relation.api_key),
-                ];
-                for (label, api_key) in stages {
-                    assert!(
-                        api_key.is_none(),
-                        "{provider} at {label} consumed a standard env var, got {api_key:?}",
-                    );
-                }
-            }
-            Ok(())
-        });
-    }
-
-    // -- Provider / Telemetry CliOverrides cascade ---------------------------
-
-    #[test]
-    fn test_provider_cli_overrides_cascade() {
+    fn test_connection_reference_cli_overrides_cascade() {
         Jail::expect_with(|jail| {
             let overrides = CliOverrides {
                 init: Some(InitCliOverrides {
                     embedding: Some(EmbeddingCliOverrides {
-                        provider: Some(ProviderKind::OpenAi),
+                        connection: Some(connection_name("openai_default")),
                         model: Some("text-embedding-3-small".into()),
                     }),
                 }),
                 inference: Some(InferenceCliOverrides {
                     extraction: Some(InferenceStageCliOverrides {
-                        provider: Some(ProviderKind::Anthropic),
+                        connection: Some(connection_name("anthropic_primary")),
                         model: Some("claude-opus-4".into()),
                     }),
                     triage: Some(InferenceStageCliOverrides {
-                        provider: Some(ProviderKind::OpenAi),
+                        connection: Some(connection_name("openai_default")),
                         model: Some("gpt-5".into()),
                     }),
                     relation: Some(InferenceStageCliOverrides {
-                        provider: Some(ProviderKind::Anthropic),
+                        connection: Some(connection_name("anthropic_primary")),
                         model: Some("claude-haiku-5".into()),
                     }),
                 }),
@@ -1049,16 +973,22 @@ inference:
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), Some(overrides), None).unwrap();
 
-            assert_eq!(config.init.embedding.provider, ProviderKind::OpenAi);
+            assert_eq!(config.init.embedding.connection.as_str(), "openai_default");
             assert_eq!(config.init.embedding.model, "text-embedding-3-small");
             assert_eq!(
-                config.inference.extraction.provider,
-                ProviderKind::Anthropic,
+                config.inference.extraction.connection.as_str(),
+                "anthropic_primary",
             );
             assert_eq!(config.inference.extraction.model, "claude-opus-4");
-            assert_eq!(config.inference.triage.provider, ProviderKind::OpenAi);
+            assert_eq!(
+                config.inference.triage.connection.as_str(),
+                "openai_default"
+            );
             assert_eq!(config.inference.triage.model, "gpt-5");
-            assert_eq!(config.inference.relation.provider, ProviderKind::Anthropic);
+            assert_eq!(
+                config.inference.relation.connection.as_str(),
+                "anthropic_primary",
+            );
             assert_eq!(config.inference.relation.model, "claude-haiku-5");
             Ok(())
         });

@@ -8,14 +8,12 @@ mod styles;
 
 pub use command::{
     BootstrapArgs, CheckArgs, Cli, Command, ConfigCommand, ConfigGetArgs, ConfigSetArgs,
-    ConfigShowArgs, ConfigValidateArgs, CredentialCommand, CredentialSourcesCommand,
-    DatabaseCommand, GenesisCredentialSourceArgs, GraphCommand, InferenceStageArg,
-    IntegrationAuthArg, IntegrationCommand, IntegrationMcpConfigArgs, ManageArgs, ManagerCommand,
-    ModelCredentialSourceArgs, ModelsCommand, OutputArgs, ProjectCommand, ProjectListArgs,
-    ProjectRegisterArgs, ReindexCommand, ReindexPruneArgs, ReindexRunArgs, RuntimeCommand,
-    ServeArgs, StageCredentialSourceArg, StageEndpointArg, StageEnvironmentCredentialArg,
-    StageModelArg, ThreadsCommand, ThreadsPruneArgs, TokenCommand, TokenCreateArgs, TokenListArgs,
-    TokenRevokeAllArgs, TokenRevokeArgs,
+    ConfigShowArgs, ConfigValidateArgs, DatabaseCommand, GraphCommand, IntegrationAuthArg,
+    IntegrationCommand, IntegrationMcpConfigArgs, ManageArgs, ManagerCommand, ModelsCommand,
+    OutputArgs, ProcessingCommand, ProcessingPresetArg, ProjectCommand, ProjectListArgs,
+    ProjectRegisterArgs, ProviderUpsertArgs, ProvidersCommand, ReindexCommand, ReindexPruneArgs,
+    ReindexRunArgs, RuntimeCommand, ServeArgs, ThreadsCommand, ThreadsPruneArgs, TokenCommand,
+    TokenCreateArgs, TokenListArgs, TokenRevokeAllArgs, TokenRevokeArgs,
 };
 
 #[cfg(test)]
@@ -23,10 +21,7 @@ mod tests {
     mod core {
         use clap::Parser as _;
 
-        use super::super::{
-            Cli, Command, CredentialCommand, CredentialSourcesCommand, GraphCommand,
-            InferenceStageArg, ModelsCommand, RuntimeCommand,
-        };
+        use super::super::{Cli, Command, GraphCommand, ModelsCommand, RuntimeCommand};
 
         #[test]
         fn catalogue_parses_every_core_projection() {
@@ -42,6 +37,29 @@ mod tests {
                 vec!["tribal", "config", "path"],
                 vec!["tribal", "check", "--providers", "--json"],
                 vec!["tribal", "models", "list", "--json"],
+                vec!["tribal", "providers", "list", "--json"],
+                vec!["tribal", "providers", "probe", "ollama_default", "--json"],
+                vec![
+                    "tribal",
+                    "providers",
+                    "upsert",
+                    "ollama_default",
+                    "--provider",
+                    "ollama",
+                    "--base-url",
+                    "http://localhost:11434",
+                ],
+                vec![
+                    "tribal",
+                    "processing",
+                    "set",
+                    "efficient",
+                    "--connection",
+                    "ollama_default",
+                    "--model",
+                    "qwen3:8b",
+                ],
+                vec!["tribal", "processing", "show", "--json"],
                 vec!["tribal", "graph", "genesis-options", "--json"],
             ] {
                 Cli::try_parse_from(args).expect("core projection parses");
@@ -57,51 +75,6 @@ mod tests {
             ] {
                 assert!(Cli::try_parse_from(args).is_err());
             }
-        }
-
-        #[test]
-        fn discovery_arguments_project_typed_context() {
-            let model = Cli::try_parse_from([
-                "tribal",
-                "credential",
-                "sources",
-                "model",
-                "--model",
-                "openai.default",
-                "--stage",
-                "extraction",
-                "--provider-default",
-                "--json",
-            ])
-            .expect("model credential query parses");
-            assert!(matches!(
-                model.command,
-                Some(Command::Credential(CredentialCommand::Sources(
-                    CredentialSourcesCommand::Model { args }
-                ))) if args.stage == vec![InferenceStageArg::Extraction]
-                    && args.provider_default
-                    && args.output.json
-            ));
-
-            let genesis = Cli::try_parse_from([
-                "tribal",
-                "credential",
-                "sources",
-                "genesis",
-                "--provider",
-                "openai",
-                "--model",
-                "text-embedding-3-small",
-                "--dimensions",
-                "1536",
-            ])
-            .expect("genesis credential query parses");
-            assert!(matches!(
-                genesis.command,
-                Some(Command::Credential(CredentialCommand::Sources(
-                    CredentialSourcesCommand::Genesis { args }
-                ))) if args.dimensions == Some(1536)
-            ));
         }
 
         #[test]
@@ -160,18 +133,10 @@ mod tests {
                     "bootstrap",
                     "--database-url",
                     "postgres://localhost/tribal",
-                    "--model-selection",
-                    "extraction=openai.gpt-4.1",
-                    "--model-endpoint",
-                    "extraction=provider-default",
-                    "--model-credential-source",
-                    "extraction=credsrc_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                     "--genesis-provider",
                     "ollama",
                     "--genesis-model",
                     "nomic-embed-text",
-                    "--genesis-reuse-stage",
-                    "extraction",
                     "--json",
                 ],
             ] {
@@ -262,8 +227,8 @@ mod tests {
                     "tribal",
                     "reindex",
                     "run",
-                    "--provider",
-                    "ollama",
+                    "--connection",
+                    "ollama_default",
                     "--model",
                     "nomic",
                 ],
@@ -271,8 +236,8 @@ mod tests {
                     "tribal",
                     "reindex",
                     "run",
-                    "--provider",
-                    "ollama",
+                    "--connection",
+                    "ollama_default",
                     "--model",
                     "nomic",
                     "--apply",
@@ -304,8 +269,8 @@ mod tests {
                     "tribal",
                     "reindex",
                     "run",
-                    "--provider",
-                    "ollama",
+                    "--connection",
+                    "ollama_default",
                     "--model",
                     "nomic",
                     "--dry-run",
@@ -343,8 +308,8 @@ mod tests {
                 "tribal",
                 "reindex",
                 "run",
-                "--provider",
-                "ollama",
+                "--connection",
+                "ollama_default",
                 "--model",
                 "nomic",
                 "--apply",
@@ -387,13 +352,14 @@ mod tests {
                     "bootstrap",
                     "check",
                     "config",
-                    "credential",
                     "database",
                     "graph",
                     "integration",
                     "manager",
                     "models",
+                    "processing",
                     "project",
+                    "providers",
                     "reindex",
                     "runtime",
                     "serve",
@@ -406,7 +372,8 @@ mod tests {
                 ("runtime", &["restart", "start", "status", "stop"]),
                 ("config", &["get", "path", "set", "show", "validate"]),
                 ("models", &["list"]),
-                ("credential", &["sources"]),
+                ("providers", &["list", "probe", "remove", "upsert"]),
+                ("processing", &["set", "show"]),
                 ("graph", &["genesis-options"]),
                 ("database", &["initialise"]),
                 ("project", &["list", "register"]),
@@ -421,16 +388,6 @@ mod tests {
                     .expect("catalogued group exists");
                 assert_eq!(names(group), set(expected), "group {}", group.get_name());
             }
-            let credential = command
-                .get_subcommands()
-                .find(|candidate| candidate.get_name() == "credential")
-                .and_then(|group| {
-                    group
-                        .get_subcommands()
-                        .find(|candidate| candidate.get_name() == "sources")
-                })
-                .expect("credential sources exists");
-            assert_eq!(names(credential), set(&["genesis", "model"]));
             assert_no_aliases(&command);
         }
 

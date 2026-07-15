@@ -74,41 +74,6 @@
         },
         "type": "object"
       },
-      "CredentialEntry": {
-        "additionalProperties": false,
-        "description": "One named connection: an endpoint plus its credential.",
-        "properties": {
-          "api_key": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/ApiKey"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "The API key for the endpoint.\n\nOptional so a catalogue entry can name an endpoint whose secret is supplied only through the environment override; an absent or empty key is the fail-closed condition when the entry backs the active profile."
-          },
-          "base_url": {
-            "description": "The endpoint base URL, stored verbatim and normalised at resolution.",
-            "type": "string"
-          },
-          "provider_kind": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/ProviderKind"
-              }
-            ],
-            "description": "The provider kind this connection serves."
-          }
-        },
-        "required": [
-          "base_url",
-          "provider_kind"
-        ],
-        "type": "object"
-      },
       "DatabaseConfig": {
         "additionalProperties": false,
         "description": "Configuration for the database connection pools.\n\nLoaded from the application YAML configuration file.  The `url` field is required; all other fields have sensible defaults for local development.\n\nTwo pools are created from this configuration: one for MCP read-path queries and one for worker write-path transactions.  Pool-specific settings (max connections, statement timeout) are selected by the startup sequence based on the pool name.",
@@ -290,11 +255,9 @@
               }
             ],
             "default": {
-              "api_key": null,
-              "base_url": null,
+              "connection": "ollama_default",
               "max_tokens": null,
               "model": "llama3.1:70b",
-              "provider": "ollama",
               "temperature": null
             },
             "description": "Extraction stage configuration."
@@ -306,11 +269,9 @@
               }
             ],
             "default": {
-              "api_key": null,
-              "base_url": null,
+              "connection": "ollama_default",
               "max_tokens": null,
               "model": "llama3.1:8b",
-              "provider": "ollama",
               "temperature": null
             },
             "description": "Relation classification stage configuration."
@@ -322,11 +283,9 @@
               }
             ],
             "default": {
-              "api_key": null,
-              "base_url": null,
+              "connection": "ollama_default",
               "max_tokens": null,
               "model": "llama3.1:8b",
-              "provider": "ollama",
               "temperature": null
             },
             "description": "Triage stage configuration."
@@ -345,10 +304,9 @@
               }
             ],
             "default": {
-              "base_url": null,
+              "connection": "ollama_default",
               "dimensions": null,
-              "model": "nomic-embed-text:v1.5",
-              "provider": "ollama"
+              "model": "nomic-embed-text:v1.5"
             },
             "description": "Genesis embedding identity."
           }
@@ -357,15 +315,16 @@
       },
       "InitEmbeddingConfig": {
         "additionalProperties": false,
-        "description": "The genesis embedding identity used to seed the first profile.\n\nCarries no credential: the runtime resolves the active provider's credential through the credential catalogue, keyed by `(provider_kind, normalised_base_url)`, because after a migration the active provider can differ from this genesis provider and the runtime must follow the active one. `dimensions` is optional: `None` resolves through the embedding service's native-dimension chain at provisioning.",
+        "description": "The genesis embedding identity used to seed the first profile.",
         "properties": {
-          "base_url": {
-            "default": null,
-            "description": "Base URL for the provider API.\n\nWhen `None`, the provider supplies its own default.",
-            "type": [
-              "string",
-              "null"
-            ]
+          "connection": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ProviderConnectionName"
+              }
+            ],
+            "default": "ollama_default",
+            "description": "Reusable embedding-provider connection."
           },
           "dimensions": {
             "default": null,
@@ -381,15 +340,6 @@
             "default": "nomic-embed-text:v1.5",
             "description": "Genesis embedding model name.",
             "type": "string"
-          },
-          "provider": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/ProviderKind"
-              }
-            ],
-            "default": "ollama",
-            "description": "Genesis embedding provider."
           }
         },
         "type": "object"
@@ -530,11 +480,6 @@
             "minimum": 0.0,
             "type": "integer"
           },
-          "dcr_enabled": {
-            "default": true,
-            "description": "Whether the DCR `/register` endpoint is enabled.",
-            "type": "boolean"
-          },
           "issuer_url": {
             "default": null,
             "description": "Canonical authorisation-server issuer URL. Derived from the server bind address when omitted.",
@@ -619,38 +564,118 @@
         },
         "type": "object"
       },
-      "ProviderKind": {
-        "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
+      "ProviderConnectionConfig": {
+        "description": "One reusable provider endpoint and credential.",
         "oneOf": [
           {
-            "description": "Local `Ollama` instance.",
-            "enum": [
-              "ollama"
+            "additionalProperties": false,
+            "description": "A local or remotely hosted Ollama endpoint.",
+            "properties": {
+              "base_url": {
+                "description": "Provider base URL.",
+                "type": "string"
+              },
+              "provider": {
+                "enum": [
+                  "ollama"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "base_url",
+              "provider"
             ],
-            "type": "string"
+            "type": "object"
           },
           {
-            "description": "`Anthropic` cloud API.",
-            "enum": [
-              "anthropic"
+            "additionalProperties": false,
+            "description": "An Anthropic endpoint.",
+            "properties": {
+              "api_key": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/ApiKey"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Provider credential."
+              },
+              "base_url": {
+                "description": "Provider base URL.",
+                "type": "string"
+              },
+              "provider": {
+                "enum": [
+                  "anthropic"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "base_url",
+              "provider"
             ],
-            "type": "string"
+            "type": "object"
           },
           {
-            "description": "`OpenAI` cloud API.",
-            "enum": [
-              "openai"
+            "additionalProperties": false,
+            "description": "An OpenAI-compatible endpoint.",
+            "properties": {
+              "api_key": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/ApiKey"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Provider credential."
+              },
+              "base_url": {
+                "description": "Provider base URL.",
+                "type": "string"
+              },
+              "provider": {
+                "enum": [
+                  "openai"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "base_url",
+              "provider"
             ],
-            "type": "string"
+            "type": "object"
           },
           {
-            "description": "Tribal's managed platform. A metered provider whose transport is the control-plane gateway, not a raw HTTP endpoint — so it authenticates with the platform credential and has no built-in base URL or request path of its own.",
-            "enum": [
-              "platform"
+            "additionalProperties": false,
+            "description": "Tribal's managed provider connection.",
+            "properties": {
+              "provider": {
+                "enum": [
+                  "platform"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "provider"
             ],
-            "type": "string"
+            "type": "object"
           }
         ]
+      },
+      "ProviderConnectionName": {
+        "pattern": "^[a-z][a-z0-9_]*$",
+        "type": "string",
+        "x-cortex-swift-type": "validated-string"
       },
       "ProviderLimitsConfig": {
         "additionalProperties": false,
@@ -817,27 +842,16 @@
       },
       "StageInferenceConfig": {
         "additionalProperties": false,
-        "description": "Configuration for a single inference stage.\n\nWhen `base_url` is `None`, the provider implementation supplies its own default URL.",
+        "description": "Configuration for a single inference stage.",
         "properties": {
-          "api_key": {
-            "anyOf": [
+          "connection": {
+            "allOf": [
               {
-                "$ref": "#/definitions/ApiKey"
-              },
-              {
-                "type": "null"
+                "$ref": "#/definitions/ProviderConnectionName"
               }
             ],
-            "default": null,
-            "description": "API key for cloud providers."
-          },
-          "base_url": {
-            "default": null,
-            "description": "Base URL for the provider API.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "default": "ollama_default",
+            "description": "Reusable provider connection."
           },
           "max_tokens": {
             "default": null,
@@ -852,15 +866,6 @@
           "model": {
             "description": "Model name.",
             "type": "string"
-          },
-          "provider": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/ProviderKind"
-              }
-            ],
-            "default": "ollama",
-            "description": "LLM provider."
           },
           "temperature": {
             "default": null,
@@ -1053,14 +1058,6 @@
         },
         "description": "Authentication settings."
       },
-      "credentials": {
-        "additionalProperties": {
-          "$ref": "#/definitions/CredentialEntry"
-        },
-        "default": {},
-        "description": "Named embedding credential connections, resolved by endpoint.",
-        "type": "object"
-      },
       "database": {
         "allOf": [
           {
@@ -1114,27 +1111,21 @@
         ],
         "default": {
           "extraction": {
-            "api_key": null,
-            "base_url": null,
+            "connection": "ollama_default",
             "max_tokens": null,
             "model": "llama3.1:70b",
-            "provider": "ollama",
             "temperature": null
           },
           "relation": {
-            "api_key": null,
-            "base_url": null,
+            "connection": "ollama_default",
             "max_tokens": null,
             "model": "llama3.1:8b",
-            "provider": "ollama",
             "temperature": null
           },
           "triage": {
-            "api_key": null,
-            "base_url": null,
+            "connection": "ollama_default",
             "max_tokens": null,
             "model": "llama3.1:8b",
-            "provider": "ollama",
             "temperature": null
           }
         },
@@ -1148,10 +1139,9 @@
         ],
         "default": {
           "embedding": {
-            "base_url": null,
+            "connection": "ollama_default",
             "dimensions": null,
-            "model": "nomic-embed-text:v1.5",
-            "provider": "ollama"
+            "model": "nomic-embed-text:v1.5"
           }
         },
         "description": "Fresh-system genesis seed values (applied only when first creating a corpus)."
@@ -1208,7 +1198,6 @@
         "default": {
           "access_token_ttl_hours": 24,
           "authorization_code_ttl_seconds": 600,
-          "dcr_enabled": true,
           "issuer_url": null,
           "resource_url": null
         },
@@ -1226,6 +1215,19 @@
           }
         },
         "description": "Prompt file settings."
+      },
+      "provider_connections": {
+        "additionalProperties": {
+          "$ref": "#/definitions/ProviderConnectionConfig"
+        },
+        "default": {
+          "ollama_default": {
+            "base_url": "http://localhost:11434",
+            "provider": "ollama"
+          }
+        },
+        "description": "Reusable model-provider connections.",
+        "type": "object"
       },
       "server": {
         "allOf": [
@@ -1555,17 +1557,9 @@
       "default": 100
     },
     {
-      "path": "inference.extraction.api_key",
-      "secret": true,
-      "tier": "advanced",
-      "group": "models",
-      "reload_class": "requires_restart",
-      "default": null
-    },
-    {
-      "path": "inference.extraction.base_url",
+      "path": "inference.extraction.connection",
       "secret": false,
-      "tier": "advanced",
+      "tier": "primary",
       "group": "models",
       "reload_class": "requires_restart",
       "default": null
@@ -1587,14 +1581,6 @@
       "default": null
     },
     {
-      "path": "inference.extraction.provider",
-      "secret": false,
-      "tier": "primary",
-      "group": "models",
-      "reload_class": "requires_restart",
-      "default": null
-    },
-    {
       "path": "inference.extraction.temperature",
       "secret": false,
       "tier": "advanced",
@@ -1603,17 +1589,9 @@
       "default": null
     },
     {
-      "path": "inference.relation.api_key",
-      "secret": true,
-      "tier": "advanced",
-      "group": "models",
-      "reload_class": "requires_restart",
-      "default": null
-    },
-    {
-      "path": "inference.relation.base_url",
+      "path": "inference.relation.connection",
       "secret": false,
-      "tier": "advanced",
+      "tier": "primary",
       "group": "models",
       "reload_class": "requires_restart",
       "default": null
@@ -1635,14 +1613,6 @@
       "default": null
     },
     {
-      "path": "inference.relation.provider",
-      "secret": false,
-      "tier": "primary",
-      "group": "models",
-      "reload_class": "requires_restart",
-      "default": null
-    },
-    {
       "path": "inference.relation.temperature",
       "secret": false,
       "tier": "advanced",
@@ -1651,17 +1621,9 @@
       "default": null
     },
     {
-      "path": "inference.triage.api_key",
-      "secret": true,
-      "tier": "advanced",
-      "group": "models",
-      "reload_class": "requires_restart",
-      "default": null
-    },
-    {
-      "path": "inference.triage.base_url",
+      "path": "inference.triage.connection",
       "secret": false,
-      "tier": "advanced",
+      "tier": "primary",
       "group": "models",
       "reload_class": "requires_restart",
       "default": null
@@ -1683,14 +1645,6 @@
       "default": null
     },
     {
-      "path": "inference.triage.provider",
-      "secret": false,
-      "tier": "primary",
-      "group": "models",
-      "reload_class": "requires_restart",
-      "default": null
-    },
-    {
       "path": "inference.triage.temperature",
       "secret": false,
       "tier": "advanced",
@@ -1699,7 +1653,7 @@
       "default": null
     },
     {
-      "path": "init.embedding.base_url",
+      "path": "init.embedding.connection",
       "secret": false,
       "tier": "primary",
       "group": "graph",
@@ -1721,14 +1675,6 @@
       "group": "graph",
       "reload_class": "genesis_only",
       "default": "nomic-embed-text:v1.5"
-    },
-    {
-      "path": "init.embedding.provider",
-      "secret": false,
-      "tier": "primary",
-      "group": "graph",
-      "reload_class": "genesis_only",
-      "default": null
     },
     {
       "path": "logging.file_directory",
@@ -1793,14 +1739,6 @@
       "group": "auth",
       "reload_class": "requires_restart",
       "default": 600
-    },
-    {
-      "path": "oauth.dcr_enabled",
-      "secret": false,
-      "tier": "standard",
-      "group": "auth",
-      "reload_class": "requires_restart",
-      "default": true
     },
     {
       "path": "oauth.issuer_url",

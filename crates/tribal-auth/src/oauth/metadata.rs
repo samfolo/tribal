@@ -153,7 +153,7 @@ mod tests {
     fn runtime() -> OAuthRuntimeConfig {
         let issuer = Url::parse("http://127.0.0.1:8080").unwrap();
         let resource = Url::parse("http://127.0.0.1:8080/mcp").unwrap();
-        OAuthRuntimeConfig::build(&OAuthConfig::default(), &issuer, &resource).unwrap()
+        OAuthRuntimeConfig::build(&OAuthConfig::default(), &issuer, &resource, true).unwrap()
     }
 
     #[test]
@@ -194,14 +194,12 @@ mod tests {
 
     #[test]
     fn test_authorization_server_metadata_omits_registration_when_dcr_disabled() {
-        let config = OAuthConfig {
-            dcr_enabled: false,
-            ..Default::default()
-        };
+        let config = OAuthConfig::default();
         let runtime = OAuthRuntimeConfig::build(
             &config,
             &Url::parse("http://127.0.0.1:8080").unwrap(),
             &Url::parse("http://127.0.0.1:8080/mcp").unwrap(),
+            false,
         )
         .unwrap();
         let doc = authorization_server_metadata(&runtime);

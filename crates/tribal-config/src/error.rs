@@ -36,39 +36,32 @@ pub enum ConfigError {
         source: Box<serde_yaml::Error>,
     },
 
-    /// A removed top-level `embedding` config shape was detected.
-    ///
-    /// The `embedding.*` fields and `TRIBAL_EMBEDDING__*` env vars from before
-    /// the credential-catalogue reshape no longer exist; this is the legible
-    /// migration message that replaces the bare figment "unknown field" parse
-    /// error, naming the two sections that supersede it.
+    /// A removed provider-bearing config shape was detected.
     #[error(
-        "the `embedding` config section has been removed: the genesis seed now \
-         lives under `init.embedding` (provider, model, dimensions, base_url) and \
-         the provider credential lives in the `credentials` catalogue (e.g. \
-         `credentials.openai_default` with an `api_key`, or \
-         `TRIBAL_CREDENTIALS__OPENAI_DEFAULT__API_KEY`); move the removed \
-         {detected} accordingly"
+        "the provider configuration at {detected} has been removed: define the \
+         endpoint and credential once under `provider_connections.<name>`, then \
+         reference that name from `inference.<stage>.connection` or \
+         `init.embedding.connection`"
     )]
-    RemovedEmbeddingShape {
+    RemovedProviderShape {
         /// The removed input that was detected (a YAML key or an env var).
-        detected: RemovedEmbeddingSource,
+        detected: RemovedProviderShapeSource,
     },
 }
 
-/// The input that tripped [`ConfigError::RemovedEmbeddingShape`].
+/// The input that tripped [`ConfigError::RemovedProviderShape`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RemovedEmbeddingSource {
-    /// A top-level `embedding:` mapping in the YAML config file.
-    YamlSection,
+pub enum RemovedProviderShapeSource {
+    /// A removed YAML path.
+    YamlPath { path: String },
     /// One or more `TRIBAL_EMBEDDING__*` environment variables.
     EnvVar { name: String },
 }
 
-impl std::fmt::Display for RemovedEmbeddingSource {
+impl std::fmt::Display for RemovedProviderShapeSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::YamlSection => f.write_str("top-level `embedding:` config section"),
+            Self::YamlPath { path } => write!(f, "YAML path `{path}`"),
             Self::EnvVar { name } => write!(f, "`{name}` environment variable"),
         }
     }

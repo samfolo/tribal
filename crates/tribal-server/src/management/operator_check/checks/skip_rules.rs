@@ -58,25 +58,29 @@ impl SkipMask {
         match diagnostic {
             ValidationError::BindAddressStdioConflict
             | ValidationError::BindAddressMalformed { .. }
-            | ValidationError::UrlUnsupportedForm { .. }
-            | ValidationError::NonLoopbackDcrConflict => {
+            | ValidationError::UrlUnsupportedForm { .. } => {
                 self.bits |= flag::ADVERTISED_URL;
             }
             ValidationError::UrlMalformed { field, .. } => {
-                if let Some(stage) = provider_base_url_stage(field.as_str()) {
-                    self.skip_provider_stage(stage);
+                if field.as_str().starts_with("provider_connections.") {
+                    self.skip_all_provider_stages();
                 } else if is_advertised_url_field(field.as_str()) {
                     self.bits |= flag::ADVERTISED_URL;
                 }
             }
-            ValidationError::MissingApiKey { stage, .. }
-            | ValidationError::MissingBaseUrl { stage, .. }
-            | ValidationError::PlatformProviderNotLocal { stage } => match stage {
-                ProviderStage::Embedding => self.skip_provider_stage(ProviderStage::Embedding),
-                ProviderStage::Extraction => self.skip_provider_stage(ProviderStage::Extraction),
-                ProviderStage::Triage => self.skip_provider_stage(ProviderStage::Triage),
-                ProviderStage::Relation => self.skip_provider_stage(ProviderStage::Relation),
-            },
+            ValidationError::ProviderConnectionMissing { field, .. }
+            | ValidationError::ProviderConnectionUnsupported { field, .. }
+            | ValidationError::PlatformProviderNotLocal { field, .. } => {
+                if let Some(stage) = provider_connection_stage(field.as_str()) {
+                    self.skip_provider_stage(stage);
+                }
+            }
+            ValidationError::ProviderConnectionCredentialMissing { .. }
+            | ValidationError::DuplicateProviderConnectionEndpoint { .. } => {
+                // These diagnostics describe a shared connection rather than one
+                // consumer. Without a valid catalogue, no provider probe is sound.
+                self.skip_all_provider_stages();
+            }
             ValidationError::Empty { .. }
             | ValidationError::ContainsWhitespace { .. }
             | ValidationError::BelowMin { .. }
@@ -84,9 +88,6 @@ impl SkipMask {
             | ValidationError::OutOfRange { .. }
             | ValidationError::FieldOrdering { .. }
             | ValidationError::DerivedFloor { .. }
-            | ValidationError::EmbeddingProviderUnsupported { .. }
-            | ValidationError::InvalidCredentialName { .. }
-            | ValidationError::DuplicateCredentialEndpoint { .. }
             | ValidationError::TelemetryFileExportRequiresEnabled
             | ValidationError::LogFilterMalformed { .. } => {
                 // No downstream skip implied.
@@ -101,6 +102,17 @@ impl SkipMask {
             ProviderStage::Triage => flag::PROVIDER_TRIAGE,
             ProviderStage::Relation => flag::PROVIDER_RELATION,
         };
+    }
+
+    fn skip_all_provider_stages(&mut self) {
+        for stage in [
+            ProviderStage::Embedding,
+            ProviderStage::Extraction,
+            ProviderStage::Triage,
+            ProviderStage::Relation,
+        ] {
+            self.skip_provider_stage(stage);
+        }
     }
 
     pub(in crate::management::operator_check) fn skip_advertised_url(self) -> bool {
@@ -121,14 +133,15 @@ impl SkipMask {
     }
 }
 
-fn provider_base_url_stage(field: &str) -> Option<ProviderStage> {
+fn provider_connection_stage(field: &str) -> Option<ProviderStage> {
     [
+        ProviderStage::Embedding,
         ProviderStage::Extraction,
         ProviderStage::Triage,
         ProviderStage::Relation,
     ]
     .into_iter()
-    .find(|stage| stage.base_url_path().as_str() == field)
+    .find(|stage| stage.section_path().extend("connection").as_str() == field)
 }
 
 fn is_advertised_url_field(field: &str) -> bool {
@@ -141,7 +154,7 @@ fn is_advertised_url_field(field: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use tribal_config::ConfigPath;
-    use tribal_domain::ProviderKind;
+    use tribal_domain::ProviderConnectionName;
 
     use super::*;
 
@@ -200,22 +213,30 @@ mod tests {
     }
 
     #[test]
-    fn test_skip_mask_sets_provider_stage_for_missing_base_url() {
-        let mask = SkipMask::from_validation_errors(&[ValidationError::MissingBaseUrl {
-            stage: ProviderStage::Extraction,
-            provider: ProviderKind::Platform,
-        }]);
+    fn test_skip_mask_sets_provider_stage_for_missing_connection() {
+        let mask =
+            SkipMask::from_validation_errors(&[ValidationError::ProviderConnectionMissing {
+                field: ConfigPath::from_static("inference.extraction.connection"),
+                connection: ProviderConnectionName::parse("missing").expect("valid name"),
+            }]);
         assert!(mask.skip_provider_probe(ProviderStage::Extraction));
         assert!(!mask.skip_advertised_url());
     }
 
     #[test]
-    fn test_skip_mask_sets_provider_stage_for_malformed_inference_base_url() {
+    fn test_skip_mask_sets_all_provider_stages_for_malformed_connection_url() {
         let mask = SkipMask::from_validation_errors(&[ValidationError::UrlMalformed {
-            field: ConfigPath::from_static("inference.relation.base_url"),
+            field: ConfigPath::from_static("provider_connections.local.base_url"),
             value: "not a url".into(),
         }]);
-        assert!(mask.skip_provider_probe(ProviderStage::Relation));
+        for stage in [
+            ProviderStage::Embedding,
+            ProviderStage::Extraction,
+            ProviderStage::Triage,
+            ProviderStage::Relation,
+        ] {
+            assert!(mask.skip_provider_probe(stage));
+        }
         assert!(!mask.skip_advertised_url());
     }
 
@@ -243,10 +264,11 @@ mod tests {
             ProviderStage::Relation,
         ];
         for stage in all {
-            let mask = SkipMask::from_validation_errors(&[ValidationError::MissingApiKey {
-                stage,
-                provider: ProviderKind::OpenAi,
-            }]);
+            let mask =
+                SkipMask::from_validation_errors(&[ValidationError::ProviderConnectionMissing {
+                    field: stage.section_path().extend("connection"),
+                    connection: ProviderConnectionName::parse("missing").expect("valid name"),
+                }]);
             assert!(
                 mask.skip_provider_probe(stage),
                 "{stage:?} did not match its own diagnostic",
@@ -269,13 +291,13 @@ mod tests {
                 field: ConfigPath::from_static("database.url"),
             },
             ValidationError::BindAddressStdioConflict,
-            ValidationError::MissingApiKey {
-                stage: ProviderStage::Embedding,
-                provider: ProviderKind::OpenAi,
+            ValidationError::ProviderConnectionMissing {
+                field: ConfigPath::from_static("init.embedding.connection"),
+                connection: ProviderConnectionName::parse("missing_embedding").expect("valid name"),
             },
-            ValidationError::MissingApiKey {
-                stage: ProviderStage::Triage,
-                provider: ProviderKind::OpenAi,
+            ValidationError::ProviderConnectionMissing {
+                field: ConfigPath::from_static("inference.triage.connection"),
+                connection: ProviderConnectionName::parse("missing_triage").expect("valid name"),
             },
         ]);
         assert!(mask.skip_advertised_url());

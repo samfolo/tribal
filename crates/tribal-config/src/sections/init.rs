@@ -9,7 +9,9 @@
 //! records the seed a corpus began from, and carries no live authority.
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::ProviderKind;
+use tribal_domain::ProviderConnectionName;
+
+use super::provider_connections::default_provider_connection_name;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -36,19 +38,13 @@ fn default_model() -> String {
 
 /// The genesis embedding identity used to seed the first profile.
 ///
-/// Carries no credential: the runtime resolves the active provider's
-/// credential through the credential catalogue, keyed by
-/// `(provider_kind, normalised_base_url)`, because after a migration the
-/// active provider can differ from this genesis provider and the runtime
-/// must follow the active one. `dimensions` is optional: `None` resolves
-/// through the embedding service's native-dimension chain at provisioning.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct InitEmbeddingConfig {
-    /// Genesis embedding provider.
-    #[serde(default)]
-    pub provider: ProviderKind,
+    /// Reusable embedding-provider connection.
+    #[serde(default = "default_provider_connection_name")]
+    pub connection: ProviderConnectionName,
 
     /// Genesis embedding model name.
     #[serde(default = "default_model")]
@@ -58,21 +54,14 @@ pub struct InitEmbeddingConfig {
     /// service's native-dimension chain when the genesis profile is created.
     #[serde(default)]
     pub dimensions: Option<u32>,
-
-    /// Base URL for the provider API.
-    ///
-    /// When `None`, the provider supplies its own default.
-    #[serde(default)]
-    pub base_url: Option<String>,
 }
 
 impl Default for InitEmbeddingConfig {
     fn default() -> Self {
         Self {
-            provider: ProviderKind::default(),
+            connection: default_provider_connection_name(),
             model: default_model(),
             dimensions: None,
-            base_url: None,
         }
     }
 }
@@ -102,10 +91,9 @@ mod tests {
     #[test]
     fn test_default_init_embedding_values() {
         let init = InitConfig::default();
-        assert_eq!(init.embedding.provider, ProviderKind::default());
+        assert_eq!(init.embedding.connection.as_str(), "ollama_default");
         assert_eq!(init.embedding.model, DEFAULT_MODEL);
         assert_eq!(init.embedding.dimensions, None);
-        assert_eq!(init.embedding.base_url, None);
     }
 
     #[test]
@@ -117,16 +105,16 @@ mod tests {
     #[test]
     fn test_deserialises_partial_embedding() {
         let init: InitConfig = serde_yaml::from_str(
-            "embedding:\n  provider: openai\n  model: text-embedding-3-small\n  dimensions: 1536\n",
+            "embedding:\n  connection: openai_default\n  model: text-embedding-3-small\n  dimensions: 1536\n",
         )
         .unwrap();
-        assert_eq!(init.embedding.provider, ProviderKind::OpenAi);
+        assert_eq!(init.embedding.connection.as_str(), "openai_default");
         assert_eq!(init.embedding.model, "text-embedding-3-small");
         assert_eq!(init.embedding.dimensions, Some(1536));
     }
 
     #[test]
     fn test_rejects_unknown_field() {
-        assert!(serde_yaml::from_str::<InitConfig>("embedding:\n  api_key: sk-x\n").is_err());
+        assert!(serde_yaml::from_str::<InitConfig>("embedding:\n  provider: openai\n").is_err());
     }
 }

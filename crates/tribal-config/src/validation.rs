@@ -4,15 +4,10 @@
 //! returning, so the operator sees every problem at once rather than
 //! fixing them one at a time.
 
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    net::SocketAddr,
-};
+use std::net::SocketAddr;
 
 use tracing_subscriber::EnvFilter;
-use tribal_domain::{
-    MAX_EMBEDDING_DIMENSIONS, ProviderKind, TransportKind, normalise_endpoint_url,
-};
+use tribal_domain::{MAX_EMBEDDING_DIMENSIONS, ProviderKind, TransportKind};
 use url::Url;
 
 use crate::{
@@ -20,8 +15,7 @@ use crate::{
     error::ConfigError,
     sections::{
         MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
-        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TribalConfig, is_valid_connection_name,
-        oauth_surface_is_routable,
+        MIN_AUTHORIZATION_CODE_TTL_SECONDS, ProviderConnectionViolation, TribalConfig,
     },
 };
 
@@ -83,10 +77,8 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_pool_sizing(config, &mut diags);
     validate_init(config, &mut diags);
     validate_inference(config, &mut diags);
-    validate_provider_locality(config, &mut diags);
+    validate_provider_connections(config, &mut diags);
     validate_provider_limits(config, &mut diags);
-    validate_api_key_presence(config, &mut diags);
-    validate_credentials(config, &mut diags);
     validate_discovery(config, &mut diags);
     validate_exploration(config, &mut diags);
     validate_logging(config, &mut diags);
@@ -282,20 +274,6 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
     validate_issuer_url(config.oauth.issuer_url.as_deref(), diags);
     validate_resource_url(config.oauth.resource_url.as_deref(), diags);
     validate_public_mcp_url(config.server.public_mcp_url.as_deref(), diags);
-
-    // /register is unauthenticated, so DCR is refused when the OAuth surface
-    // is reachable beyond loopback. An explicit advertised URL decides this;
-    // with none, a routable or wildcard bind is treated as reachable (fail
-    // closed), so a bare public bind refuses DCR unless an explicit loopback
-    // advertised URL marks it trusted (the Docker host-port-mapping shape).
-    if matches!(
-        config.server.transport,
-        TransportKind::Http | TransportKind::Sse
-    ) && config.oauth.dcr_enabled
-        && oauth_surface_is_routable(config)
-    {
-        diags.push(ValidationError::NonLoopbackDcrConflict);
-    }
 }
 
 /// Required form of `oauth.issuer_url`.
@@ -434,44 +412,6 @@ fn validate_init(config: &TribalConfig, diags: &mut Diagnostics) {
         }
         Some(_) | None => {}
     }
-
-    if !init.provider.supports_embedding() {
-        diags.push(ValidationError::EmbeddingProviderUnsupported {
-            provider: init.provider,
-        });
-    }
-}
-
-fn validate_credentials(config: &TribalConfig, diags: &mut Diagnostics) {
-    // Connection name seen for each resolved endpoint, used to reject two
-    // entries that would resolve to the same `(provider_kind, base_url)`.
-    let mut seen: HashMap<(ProviderKind, String), &str> = HashMap::new();
-
-    for (name, entry) in config.credentials.iter() {
-        if !is_valid_connection_name(name) {
-            diags.push(ValidationError::InvalidCredentialName {
-                name: name.to_owned(),
-            });
-        }
-
-        match normalise_endpoint_url(&entry.base_url) {
-            Ok(normalised) => match seen.entry((entry.provider_kind, normalised)) {
-                Entry::Occupied(first) => {
-                    diags.push(ValidationError::DuplicateCredentialEndpoint {
-                        first: (*first.get()).to_owned(),
-                        second: name.to_owned(),
-                    });
-                }
-                Entry::Vacant(slot) => {
-                    slot.insert(name);
-                }
-            },
-            Err(_) => diags.push(ValidationError::UrlMalformed {
-                field: ConfigPath::child("credentials", name).extend("base_url"),
-                value: entry.base_url.clone(),
-            }),
-        }
-    }
 }
 
 fn validate_worker(config: &TribalConfig, diags: &mut Diagnostics) {
@@ -504,41 +444,9 @@ fn validate_pool_sizing(config: &TribalConfig, diags: &mut Diagnostics) {
 fn validate_inference(config: &TribalConfig, diags: &mut Diagnostics) {
     // Range checks apply only to set values; `None` means provider default
     // and is always admissible.
-    let stages = [
-        (
-            ProviderStage::Extraction,
-            "inference.extraction",
-            &config.inference.extraction,
-        ),
-        (
-            ProviderStage::Triage,
-            "inference.triage",
-            &config.inference.triage,
-        ),
-        (
-            ProviderStage::Relation,
-            "inference.relation",
-            &config.inference.relation,
-        ),
-    ];
-    for (stage, prefix, cfg) in stages {
+    for (stage, cfg) in config.inference.stages() {
+        let prefix = stage.config_path();
         validate_model_id(ConfigPath::child(prefix, "model"), &cfg.model, diags);
-
-        match cfg.base_url.as_deref() {
-            Some(raw) if normalise_endpoint_url(raw).is_err() => {
-                diags.push(ValidationError::UrlMalformed {
-                    field: stage.base_url_path(),
-                    value: raw.to_owned(),
-                });
-            }
-            None if cfg.provider.default_base_url().is_none() => {
-                diags.push(ValidationError::MissingBaseUrl {
-                    stage,
-                    provider: cfg.provider,
-                });
-            }
-            Some(_) | None => {}
-        }
 
         if let Some(temperature) = cfg.temperature
             && !TEMPERATURE_RANGE.contains(temperature)
@@ -559,11 +467,66 @@ fn validate_inference(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 }
 
-/// Rejects the platform provider for the local embedding genesis seed.
-fn validate_provider_locality(config: &TribalConfig, diags: &mut Diagnostics) {
-    if config.init.embedding.provider == ProviderKind::Platform {
+fn validate_provider_connections(config: &TribalConfig, diags: &mut Diagnostics) {
+    let stages = config.inference.stages().collect::<Vec<_>>();
+    for violation in config
+        .provider_connections
+        .violations(&stages, &config.init.embedding)
+    {
+        match violation {
+            ProviderConnectionViolation::MissingReference { connection, usage } => {
+                diags.push(ValidationError::ProviderConnectionMissing {
+                    field: usage.connection_path(),
+                    connection,
+                });
+            }
+            ProviderConnectionViolation::UnsupportedCapability {
+                connection,
+                provider,
+                usage,
+            } => diags.push(ValidationError::ProviderConnectionUnsupported {
+                field: usage.connection_path(),
+                connection,
+                provider,
+                capability: usage.capability(),
+            }),
+            ProviderConnectionViolation::MissingCredential {
+                connection,
+                provider,
+            } => diags.push(ValidationError::ProviderConnectionCredentialMissing {
+                connection,
+                provider,
+            }),
+            ProviderConnectionViolation::InvalidEndpoint { connection, value } => {
+                diags.push(ValidationError::UrlMalformed {
+                    field: ConfigPath::child("provider_connections", connection.as_str())
+                        .extend("base_url"),
+                    value,
+                });
+            }
+            ProviderConnectionViolation::DuplicateEndpoint {
+                first,
+                second,
+                provider,
+                normalised_base_url,
+            } => diags.push(ValidationError::DuplicateProviderConnectionEndpoint {
+                first,
+                second,
+                provider,
+                normalised_base_url,
+            }),
+        }
+    }
+
+    let genesis = &config.init.embedding;
+    if config
+        .provider_connections
+        .get(genesis.connection.as_str())
+        .is_some_and(|connection| connection.provider() == ProviderKind::Platform)
+    {
         diags.push(ValidationError::PlatformProviderNotLocal {
-            stage: ProviderStage::Embedding,
+            field: ConfigPath::from_static("init.embedding.connection"),
+            connection: genesis.connection.clone(),
         });
     }
 }
@@ -599,25 +562,6 @@ fn validate_provider_limits(config: &TribalConfig, diags: &mut Diagnostics) {
                     value: task_timeout,
                 },
                 relation: OrderRelation::LessThan,
-            });
-        }
-    }
-}
-
-fn validate_api_key_presence(config: &TribalConfig, diags: &mut Diagnostics) {
-    // The embedding credential is not checked here: it lives in the catalogue
-    // keyed by the live active provider's endpoint, resolved fail-closed at
-    // boot and by `tribal check`, not against the genesis seed at config time.
-    let stages = [
-        (ProviderStage::Extraction, &config.inference.extraction),
-        (ProviderStage::Triage, &config.inference.triage),
-        (ProviderStage::Relation, &config.inference.relation),
-    ];
-    for (stage, cfg) in stages {
-        if cfg.provider.requires_api_key() && cfg.api_key.is_none() {
-            diags.push(ValidationError::MissingApiKey {
-                stage,
-                provider: cfg.provider,
             });
         }
     }
@@ -754,13 +698,27 @@ fn validate_telemetry(config: &TribalConfig, diags: &mut Diagnostics) {
 
 #[cfg(test)]
 mod tests {
-    use tribal_domain::ProviderKind;
+    use tribal_domain::{ProviderConnectionName, ProviderKind};
 
     use super::*;
-    use crate::sections::{DEFAULT_BIND_ADDRESS, oauth_onboarding_is_url_only};
+    use crate::sections::{
+        ClientRegistrationMode, DEFAULT_BIND_ADDRESS, client_registration_mode,
+        oauth_onboarding_is_url_only, oauth_surface_is_routable,
+    };
 
     fn valid_config() -> TribalConfig {
         TribalConfig::minimum_valid("postgres://localhost/tribal")
+    }
+
+    fn connection_name(value: &str) -> ProviderConnectionName {
+        ProviderConnectionName::parse(value).unwrap()
+    }
+
+    fn openai(base_url: &str, api_key: Option<&str>) -> crate::ProviderConnectionConfig {
+        crate::ProviderConnectionConfig::OpenAi {
+            base_url: base_url.to_owned(),
+            api_key: api_key.map(|value| value.parse().unwrap()),
+        }
     }
 
     /// Returns the diagnostics from a failed [`validate`] run, panicking
@@ -843,102 +801,26 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_rejects_dcr_with_routable_resource_url() {
+    fn test_client_registration_is_derived_from_transport_and_routability() {
         let mut config = valid_config();
-        config.server.transport = TransportKind::Http;
-        config.oauth.resource_url = Some("https://tribal.example.com/mcp".into());
-        config.oauth.dcr_enabled = true;
-        let diags = diagnostics_for(&config);
-        assert!(any(&diags, |d| matches!(
-            d,
-            ValidationError::NonLoopbackDcrConflict,
-        )));
-    }
+        assert_eq!(
+            client_registration_mode(&config),
+            ClientRegistrationMode::NoNetworkTransport,
+        );
 
-    #[test]
-    fn test_validate_rejects_dcr_with_routable_issuer_url() {
-        let mut config = valid_config();
-        config.server.transport = TransportKind::Http;
-        config.oauth.issuer_url = Some("https://auth.example.com".into());
-        config.oauth.dcr_enabled = true;
-        let diags = diagnostics_for(&config);
-        assert!(any(&diags, |d| matches!(
-            d,
-            ValidationError::NonLoopbackDcrConflict,
-        )));
-    }
-
-    #[test]
-    fn test_validate_accepts_dcr_with_loopback_resource_url() {
-        let mut config = valid_config();
-        config.server.transport = TransportKind::Http;
-        config.oauth.resource_url = Some("http://127.0.0.1:8725/mcp".into());
-        config.oauth.dcr_enabled = true;
-        assert!(validate(&config).is_ok());
-    }
-
-    #[test]
-    fn test_validate_refuses_dcr_on_wildcard_bind_with_unset_urls() {
-        // A bare wildcard bind with no advertised URL fails closed: the
-        // process cannot tell a public 0.0.0.0 bind from one mapped to host
-        // loopback, so open DCR is refused unless an explicit loopback
-        // advertised URL marks the surface trusted (see the Docker case).
-        let mut config = valid_config();
-        config.server.transport = TransportKind::Http;
-        config.server.bind_address = Some("0.0.0.0:8725".into());
-        config.oauth.issuer_url = None;
-        config.oauth.resource_url = None;
-        config.oauth.dcr_enabled = true;
-        let diags = diagnostics_for(&config);
-        assert!(any(&diags, |d| matches!(
-            d,
-            ValidationError::NonLoopbackDcrConflict,
-        )));
-    }
-
-    #[test]
-    fn test_validate_rejects_dcr_on_specific_routable_bind_with_unset_urls() {
-        // A specific (non-wildcard) routable bind with unset URLs derives a
-        // routable issuer/resource, so the unauthenticated /register would
-        // be reachable: it must be refused even though no URL is set.
-        let mut config = valid_config();
-        config.server.transport = TransportKind::Http;
-        config.server.bind_address = Some("10.0.0.5:8725".into());
-        config.oauth.issuer_url = None;
-        config.oauth.resource_url = None;
-        config.oauth.dcr_enabled = true;
-        let diags = diagnostics_for(&config);
-        assert!(any(&diags, |d| matches!(
-            d,
-            ValidationError::NonLoopbackDcrConflict,
-        )));
-    }
-
-    #[test]
-    fn test_validate_accepts_routable_resource_without_dcr() {
-        let mut config = valid_config();
-        config.server.transport = TransportKind::Http;
-        config.oauth.resource_url = Some("https://tribal.example.com/mcp".into());
-        config.oauth.dcr_enabled = false;
-        assert!(validate(&config).is_ok());
-    }
-
-    #[test]
-    fn test_validate_rejects_dcr_with_routable_public_mcp_url() {
-        // A loopback bind with a routable advertised URL (the reverse-proxy
-        // case) is a routable surface, so open DCR is refused even though
-        // the bind and the OAuth URLs are loopback. validate() reads the
-        // resolved field, so this needs no environment.
-        let mut config = valid_config();
         config.server.transport = TransportKind::Http;
         config.server.bind_address = Some("127.0.0.1:8725".into());
+        assert_eq!(
+            client_registration_mode(&config),
+            ClientRegistrationMode::Automatic,
+        );
+
         config.server.public_mcp_url = Some("https://tribal.example.com/mcp".into());
-        config.oauth.dcr_enabled = true;
-        let diags = diagnostics_for(&config);
-        assert!(any(&diags, |d| matches!(
-            d,
-            ValidationError::NonLoopbackDcrConflict,
-        )));
+        assert_eq!(
+            client_registration_mode(&config),
+            ClientRegistrationMode::RoutableOauthSurface,
+        );
+        assert!(validate(&config).is_ok());
     }
 
     #[test]
@@ -1030,7 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_accepts_dcr_on_wildcard_bind_with_loopback_public_mcp_url() {
+    fn test_validate_accepts_wildcard_bind_with_loopback_public_mcp_url() {
         // The validate-side of the Docker shape: a wildcard bind with an
         // explicit loopback advertised URL is the trusted-exposure override,
         // so open DCR is allowed.
@@ -1038,27 +920,21 @@ mod tests {
         config.server.transport = TransportKind::Http;
         config.server.bind_address = Some("0.0.0.0:8725".into());
         config.server.public_mcp_url = Some("http://127.0.0.1:8725/mcp".into());
-        config.oauth.dcr_enabled = true;
         assert!(validate(&config).is_ok());
     }
 
     #[test]
-    fn test_onboarding_url_only_on_loopback_with_dcr() {
+    fn test_onboarding_url_only_on_loopback_network_transport() {
         let mut config = valid_config();
         config.server.transport = TransportKind::Http;
         config.server.bind_address = Some("127.0.0.1:8725".into());
-        config.oauth.dcr_enabled = true;
         assert!(oauth_onboarding_is_url_only(&config));
     }
 
     #[test]
-    fn test_onboarding_not_url_only_when_dcr_disabled() {
-        // Loopback but DCR off: a fresh harness cannot register, so the
-        // static token is the auth path, not the URL-only OAuth snippet.
+    fn test_onboarding_not_url_only_without_network_transport() {
         let mut config = valid_config();
-        config.server.transport = TransportKind::Http;
-        config.server.bind_address = Some("127.0.0.1:8725".into());
-        config.oauth.dcr_enabled = false;
+        config.server.transport = TransportKind::Stdio;
         assert!(!oauth_onboarding_is_url_only(&config));
     }
 
@@ -1067,7 +943,6 @@ mod tests {
         let mut config = valid_config();
         config.server.transport = TransportKind::Http;
         config.server.public_mcp_url = Some("https://tribal.example.com/mcp".into());
-        config.oauth.dcr_enabled = true;
         assert!(!oauth_onboarding_is_url_only(&config));
     }
 
@@ -1464,69 +1339,75 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_accepts_well_formed_catalogue() {
+    fn test_validate_accepts_well_formed_provider_connection() {
         let mut config = valid_config();
-        config.credentials = serde_yaml::from_str(
-            "openai_default:\n  provider_kind: openai\n  base_url: https://api.openai.com/v1\n  api_key: sk-test\n",
-        )
-        .unwrap();
-        // An otherwise-valid config plus a well-formed catalogue still validates.
+        config.provider_connections.insert(
+            connection_name("openai_default"),
+            openai("https://api.openai.com/v1", Some("sk-test")),
+        );
         assert!(validate(&config).is_ok());
     }
 
     #[test]
-    fn test_validate_rejects_invalid_connection_name() {
+    fn test_invalid_connection_name_fails_deserialisation() {
+        assert!(
+            serde_yaml::from_str::<crate::ProviderConnections>(
+                "open-ai:\n  provider: ollama\n  base_url: http://localhost:11434\n",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_duplicate_provider_endpoint() {
         let mut config = valid_config();
-        config.credentials = serde_yaml::from_str(
-            "open-ai:\n  provider_kind: openai\n  base_url: https://api.openai.com/v1\n",
-        )
-        .unwrap();
+        config.provider_connections.insert(
+            connection_name("ollama_secondary"),
+            crate::ProviderConnectionConfig::Ollama {
+                base_url: "http://localhost:11434/".to_owned(),
+            },
+        );
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
-            ValidationError::InvalidCredentialName { name } if name == "open-ai",
+            ValidationError::DuplicateProviderConnectionEndpoint { .. },
         )));
     }
 
     #[test]
-    fn test_validate_rejects_duplicate_catalogue_endpoint() {
+    fn test_validate_rejects_unparseable_provider_base_url() {
         let mut config = valid_config();
-        // Two names normalise to the same (ollama, http://localhost:11434).
-        config.credentials = serde_yaml::from_str(
-            "a:\n  provider_kind: ollama\n  base_url: http://localhost:11434\n\
-             b:\n  provider_kind: ollama\n  base_url: http://localhost:11434/\n",
-        )
-        .unwrap();
-        let diags = diagnostics_for(&config);
-        assert!(any(&diags, |d| matches!(
-            d,
-            ValidationError::DuplicateCredentialEndpoint { .. },
-        )));
-    }
-
-    #[test]
-    fn test_validate_rejects_unparseable_catalogue_base_url() {
-        let mut config = valid_config();
-        config.credentials =
-            serde_yaml::from_str("bad:\n  provider_kind: ollama\n  base_url: \"not a url\"\n")
-                .unwrap();
+        config.provider_connections.insert(
+            connection_name("bad"),
+            crate::ProviderConnectionConfig::Ollama {
+                base_url: "not a url".to_owned(),
+            },
+        );
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
             ValidationError::UrlMalformed { field, .. }
-                if field.as_str() == "credentials.bad.base_url",
+                if field.as_str() == "provider_connections.bad.base_url",
         )));
     }
 
     #[test]
-    fn test_validate_rejects_anthropic_embedding_provider() {
+    fn test_validate_rejects_anthropic_embedding_connection() {
         let mut config = valid_config();
-        config.init.embedding.provider = ProviderKind::Anthropic;
+        config.provider_connections.insert(
+            connection_name("anthropic_default"),
+            crate::ProviderConnectionConfig::Anthropic {
+                base_url: "https://api.anthropic.com".to_owned(),
+                api_key: Some("sk-test".parse().unwrap()),
+            },
+        );
+        config.init.embedding.connection = connection_name("anthropic_default");
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
-            ValidationError::EmbeddingProviderUnsupported {
-                provider: ProviderKind::Anthropic
+            ValidationError::ProviderConnectionUnsupported {
+                provider: ProviderKind::Anthropic,
+                ..
             },
         )));
     }
@@ -1591,46 +1472,46 @@ mod tests {
         )));
     }
 
-    // -- api key presence --------------------------------------------------
+    // -- provider references ----------------------------------------------
 
     #[test]
-    fn test_validate_rejects_missing_api_key_for_cloud_provider() {
+    fn test_validate_rejects_missing_key_for_cloud_connection() {
         let mut config = valid_config();
-        config.inference.extraction.provider = ProviderKind::OpenAi;
-        config.inference.extraction.api_key = None;
+        config.provider_connections.insert(
+            connection_name("openai_default"),
+            openai("https://api.openai.com/v1", None),
+        );
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
-            ValidationError::MissingApiKey {
-                stage: ProviderStage::Extraction,
+            ValidationError::ProviderConnectionCredentialMissing {
                 provider: ProviderKind::OpenAi,
+                ..
             },
         )));
     }
 
     #[test]
-    fn test_validate_emits_one_missing_api_key_per_stage() {
+    fn test_validate_emits_one_missing_reference_per_stage() {
         let mut config = valid_config();
-        config.inference.extraction.provider = ProviderKind::OpenAi;
-        config.inference.extraction.api_key = None;
-        config.inference.triage.provider = ProviderKind::OpenAi;
-        config.inference.triage.api_key = None;
-        config.inference.relation.provider = ProviderKind::OpenAi;
-        config.inference.relation.api_key = None;
+        let missing = connection_name("missing");
+        config.inference.extraction.connection = missing.clone();
+        config.inference.triage.connection = missing.clone();
+        config.inference.relation.connection = missing;
 
         let diags = diagnostics_for(&config);
-        for stage in [
-            ProviderStage::Extraction,
-            ProviderStage::Triage,
-            ProviderStage::Relation,
+        for path in [
+            "inference.extraction.connection",
+            "inference.triage.connection",
+            "inference.relation.connection",
         ] {
             assert!(
                 any(&diags, |d| matches!(
                     d,
-                    ValidationError::MissingApiKey { stage: s, provider: ProviderKind::OpenAi }
-                        if *s == stage,
+                    ValidationError::ProviderConnectionMissing { field, .. }
+                        if field.as_str() == path,
                 )),
-                "no MissingApiKey for {stage:?}; diagnostics: {diags:?}",
+                "no missing-reference diagnostic for {path}; diagnostics: {diags:?}",
             );
         }
     }
@@ -1638,51 +1519,27 @@ mod tests {
     #[test]
     fn test_validate_rejects_platform_as_embedding_provider() {
         let mut config = valid_config();
-        config.init.embedding.provider = ProviderKind::Platform;
+        config.provider_connections.insert(
+            connection_name("platform_default"),
+            crate::ProviderConnectionConfig::Platform {},
+        );
+        config.init.embedding.connection = connection_name("platform_default");
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
-            ValidationError::PlatformProviderNotLocal {
-                stage: ProviderStage::Embedding,
-            },
+            ValidationError::PlatformProviderNotLocal { field, .. }
+                if field.as_str() == "init.embedding.connection",
         )));
     }
 
     #[test]
-    fn test_validate_rejects_platform_inference_without_gateway_endpoint() {
+    fn test_validate_accepts_platform_inference_connection() {
         let mut config = valid_config();
-        config.inference.extraction.provider = ProviderKind::Platform;
-        let diags = diagnostics_for(&config);
-        assert!(any(&diags, |d| matches!(
-            d,
-            ValidationError::MissingBaseUrl {
-                stage: ProviderStage::Extraction,
-                provider: ProviderKind::Platform,
-            },
-        )));
-    }
-
-    #[test]
-    fn test_validate_rejects_malformed_inference_base_url() {
-        let mut config = valid_config();
-        config.inference.extraction.base_url = Some("not a url".to_owned());
-        let diags = diagnostics_for(&config);
-        assert!(any(&diags, |d| matches!(
-            d,
-            ValidationError::UrlMalformed { field, .. }
-                if field.as_str() == "inference.extraction.base_url",
-        )));
-    }
-
-    #[test]
-    fn test_validate_accepts_platform_for_inference_stages_with_gateway_endpoints() {
-        let mut config = valid_config();
-        config.inference.extraction.provider = ProviderKind::Platform;
-        config.inference.extraction.base_url = Some("https://gateway.example.com".to_owned());
-        config.inference.triage.provider = ProviderKind::Platform;
-        config.inference.triage.base_url = Some("https://gateway.example.com".to_owned());
-        config.inference.relation.provider = ProviderKind::Platform;
-        config.inference.relation.base_url = Some("https://gateway.example.com".to_owned());
+        config.provider_connections.insert(
+            connection_name("platform_default"),
+            crate::ProviderConnectionConfig::Platform {},
+        );
+        config.inference.extraction.connection = connection_name("platform_default");
         assert!(validate(&config).is_ok());
     }
 

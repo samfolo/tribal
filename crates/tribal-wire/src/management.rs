@@ -15,6 +15,7 @@ mod maintenance;
 mod method;
 mod readiness;
 mod runtime;
+mod settings;
 mod wire_id;
 
 pub use administration::{
@@ -29,29 +30,24 @@ pub use administration::{
     TokenSummary,
 };
 pub use bootstrap::{
-    BootstrapGenesisCredential, BootstrapGenesisInput, BootstrapHandoff, BootstrapOutcome,
+    BootstrapGenesisInput, BootstrapHandoff, BootstrapOutcome, BootstrapProviderConnectionInput,
     BootstrapPublicCredential, BootstrapRequest, BootstrapResult, BootstrapStorage,
-    BootstrapTelemetryInput, BootstrapTokenPolicy, CredentialOrigin, ModelSelectionInput,
-    OtlpEndpoint, OtlpEndpointError,
+    BootstrapTelemetryInput, BootstrapTokenPolicy, CredentialOrigin, OtlpEndpoint,
+    OtlpEndpointError,
 };
 pub use config_schema::{AudienceTier, ConfigFieldMeta, ConfigSchema, ReloadClass};
 pub use configuration::{
     AdministrationFailure, ConfigChangeEvent, ConfigChangeSource, ConfigDocument,
     ConfigFieldOutcome, ConfigGetRequest, ConfigLiteral, ConfigPatchChange, ConfigPatchOutcome,
     ConfigPatchRefusal, ConfigPatchRequest, ConfigPersistenceObservation, ConfigPersistencePhase,
-    ConfigSetRequest, ConfigValidateRequest, ConfigValidation, ConfigValue, ConfigViolation,
-    ConfigWriteEffect, ConfigWriteOutcome, CredentialCapabilityInvalidReason, CredentialInput,
-    CredentialRequirement, CredentialSource, CredentialSourceKind, CredentialSources,
-    CredentialSourcesRequest, CredentialUse, CredentialUseCapabilities, EmbeddingProfileSummary,
-    EmbeddingReuseAvailability, EmbeddingReuseUnavailableReason, EndpointRequirement,
-    EndpointSelection, EndpointTransitionRefusal, GenesisConfigurationRequest,
-    GenesisConvergenceRequest, GenesisDimensionsConstraint, GenesisEmbeddingInput,
-    GenesisModelConstraint, GenesisOptions, GenesisPolicyRefusal, GenesisProviderAvailability,
-    GenesisProviderOption, GenesisUnavailableReason, GraphEmbeddingProfile, InferenceStage,
-    InvalidStageSetReason, InventoryItemRef, KnownModelEntry, ManagementError,
-    ManagementResponseError, ModelAccess, ModelAvailability, ModelSelectionRequest,
-    ModelSettingsCapability, ModelUnavailableReason, ModelsCatalogue, SecretLiteral,
-    SecretLiteralError,
+    ConfigSetRequest, ConfigValue, ConfigWriteEffect, ConfigWriteOutcome, CredentialRequirement,
+    EmbeddingDimensions, EmbeddingModelOption, EmbeddingProfileSummary, EndpointRequirement,
+    GenesisConfigurationRequest, GenesisConnectionOption, GenesisConvergenceRequest,
+    GenesisEmbeddingInput, GenesisModelConstraint, GenesisModelOptions, GenesisOptions,
+    GenesisPolicyRefusal, GenesisProviderAvailability, GenesisUnavailableReason,
+    GraphEmbeddingProfile, InferenceStage, InventoryItemRef, KnownModelEntry, ManagementError,
+    ManagementResponseError, ModelAccess, ModelAvailability, ModelSettingsCapability,
+    ModelUnavailableReason, ModelsCatalogue, SecretLiteral, SecretLiteralError,
 };
 pub use envelope::{
     BootstrapShutdownRefusal, ManagementBootstrapRequest, ManagementBootstrapResponse,
@@ -102,15 +98,17 @@ pub use maintenance::{
     ThreadPruneRequest, ThreadPruneResult,
 };
 pub use method::{
-    BootstrapRunCall, CheckReportCall, ConfigGetAllCall, ConfigGetCall, ConfigPatchCall,
-    ConfigPathCall, ConfigSchemaCall, ConfigSetCall, ConfigValidateCall, CredentialProbeCall,
-    CredentialSourcesCall, DatabaseInitialiseCall, DatabaseProbeCall, GraphConfigureGenesisCall,
+    AuthenticationSettingsCall, BootstrapRunCall, CheckReportCall, ConfigGetAllCall, ConfigGetCall,
+    ConfigPatchCall, ConfigPathCall, ConfigSchemaCall, ConfigSetCall, ConfigValidatePatchCall,
+    DatabaseConnectionCall, DatabaseInitialiseCall, DatabaseProbeCall, GraphConfigureGenesisCall,
     GraphConvergeGenesisCall, GraphEmbeddingProfileCall, GraphGenesisOptionsCall,
     IntegrationMcpConfigCall, LogsTailCall, ManagementCall, ManagementMethod, ManagerShutdownCall,
-    ManagerSnapshotCall, ModelsCatalogueCall, ModelsSelectCall, ProjectListCall,
-    ProjectRegisterCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall, RuntimeRestartCall,
-    RuntimeStartCall, RuntimeStopCall, ServerStatusCall, ThreadsPruneCall, TokenCreateCall,
-    TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
+    ManagerSnapshotCall, ModelsCatalogueCall, ProcessingProfileCall, ProcessingProfileSetCall,
+    ProjectListCall, ProjectRegisterCall, ProviderConnectionRemoveCall,
+    ProviderConnectionUpsertCall, ProviderConnectionsCall, ProviderProbeCall, ReindexCancelCall,
+    ReindexPruneCall, ReindexRunCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall,
+    ServerStatusCall, SettingsResetPreviewCall, ThreadsPruneCall, TokenCreateCall, TokenListCall,
+    TokenRevokeAllCall, TokenRevokeCall,
 };
 #[cfg(feature = "schema")]
 pub use method::{ManagementCallSchema, management_call_schemas};
@@ -125,10 +123,28 @@ pub use runtime::{
     ManagedRuntimeStatus, ManagedRuntimeStatusResult, RuntimeLogsTailRequest,
     RuntimeLogsTailResult, RuntimeReadUnavailable,
 };
-pub use tribal_domain::{ConfigFieldPath, ProviderKind, TransportKind};
+pub use settings::{
+    AuthenticationSettingsSnapshot, CandidateProviderProbeObservation,
+    ClientRegistrationAvailability, ClientRegistrationUnavailableReason, ConfigPatchValidation,
+    ConfigValidatePatchRequest, CredentialMutation, CredentialMutationRefusal,
+    CustomProcessingSettings, DatabaseConnectionSummary, DatabaseEndpointSummary,
+    DatabaseProbeRequest, DatabaseProbeTarget, ExtractionStageSettings, ManagerSnapshot,
+    PatchConfigViolation, PresetModelSettings, ProcessingProfile, ProcessingProfileSetRequest,
+    ProcessingProfileSnapshot, ProviderConnectionAvailability, ProviderConnectionCapability,
+    ProviderConnectionInput, ProviderConnectionMutationReceipt, ProviderConnectionProbeReceipt,
+    ProviderConnectionRemovalRefusal, ProviderConnectionRemoveRequest, ProviderConnectionSummary,
+    ProviderConnectionUnavailableReason, ProviderConnectionUpsertRequest, ProviderConnectionUse,
+    ProviderConnectionsCatalogue, ProviderCredentialSummary, ProviderEndpointSummary,
+    ProviderProbeRequest, ProviderProbeResponse, ProviderProbeTarget, SecretPresence,
+    SettingsFocusDestination, SettingsPane, SettingsResetPreview, SettingsResetPreviewRequest,
+    SettingsResetScope, SettingsSetupFocus, SettingsSetupReason, SettingsSetupSnapshot,
+    SettingsSetupStep, SettingsSetupStepKind, SettingsSetupStepState, StageExecutionSettings,
+    StageModelSettings, VerifiedStageExecutionSettings, VerifiedStageSettings,
+};
+pub use tribal_domain::{ConfigFieldPath, ProviderConnectionName, ProviderKind, TransportKind};
 pub use wire_id::{
-    ConfigDigest, ConfigRevision, CredentialSourceId, EmbeddingProfileRevision, KnownModelId,
-    PanicCorrelationId, PanicCorrelationIdParseError, WireIdError,
+    ConfigDigest, ConfigRevision, EmbeddingProfileRevision, KnownModelId, PanicCorrelationId,
+    PanicCorrelationIdParseError, WireIdError,
 };
 
 pub use crate::{
