@@ -68,6 +68,16 @@ pub(super) struct BootstrapTokenReceipt {
     pub(super) origin: PersistedIssuanceOrigin,
 }
 
+/// Validated token inputs retained across the bootstrap effect chain.
+pub(super) struct PreparedBootstrapToken {
+    ensure: bool,
+    principal: String,
+    scopes: Vec<tribal_domain::Scope>,
+    audience: String,
+    now: chrono::DateTime<Utc>,
+    expires_at: chrono::DateTime<Utc>,
+}
+
 impl TokenAdministration {
     pub(super) fn new(database: DatabaseAccess, credentials: CredentialCoordinator) -> Self {
         Self {
@@ -137,12 +147,15 @@ impl TokenAdministration {
         })
     }
 
-    pub(super) async fn provision_bootstrap(
+    pub(super) async fn preflight_bootstrap(
         &self,
-        expected_revision: ConfigRevision,
+        expected_revision: &ConfigRevision,
         policy: BootstrapTokenPolicy,
-    ) -> Result<Revisioned<BootstrapTokenReceipt>, TokenAdministrationError> {
-        let session = self.database.mutation_session(&expected_revision).await?;
+    ) -> Result<PreparedBootstrapToken, TokenAdministrationError> {
+        let snapshot = self
+            .database
+            .config_snapshot(Some(expected_revision))
+            .await?;
         let (ensure, principal, ttl_hours, scopes) = match policy {
             BootstrapTokenPolicy::EnsureLocalCredential {
                 principal,
@@ -157,14 +170,40 @@ impl TokenAdministration {
         };
         let principal = principal.unwrap_or_else(|| LOCAL_PRINCIPAL_KEY.to_owned());
         let scopes = normalise_scopes(scopes)?;
-        let expires_at = compute_expires_at(ttl_hours, session.config.auth.token_ttl_hours)?;
-        let audience = crate::startup::resolve_oauth_runtime(&session.config)
+        let now = Utc::now();
+        let expires_at =
+            compute_expires_at_at(ttl_hours, snapshot.config.auth.token_ttl_hours, now)?;
+        let audience = crate::startup::resolve_oauth_runtime(&snapshot.config)
             .map_err(|_| TokenAdministrationError::Issuance)?
             .canonical_resource;
+        Ok(PreparedBootstrapToken {
+            ensure,
+            principal,
+            scopes,
+            audience,
+            now,
+            expires_at,
+        })
+    }
+
+    pub(super) async fn provision_bootstrap(
+        &self,
+        expected_revision: ConfigRevision,
+        prepared: PreparedBootstrapToken,
+    ) -> Result<Revisioned<BootstrapTokenReceipt>, TokenAdministrationError> {
+        let session = self.database.mutation_session(&expected_revision).await?;
+        let PreparedBootstrapToken {
+            ensure,
+            principal,
+            scopes,
+            audience,
+            now,
+            expires_at,
+        } = prepared;
         let revision = session.revision.clone();
         let issued = if ensure {
             self.credentials
-                .ensure_persisted(session, principal, scopes, audience, Utc::now(), expires_at)
+                .ensure_persisted(session, principal, scopes, audience, now, expires_at)
                 .await
         } else {
             self.credentials
@@ -301,14 +340,21 @@ fn compute_expires_at(
     requested_hours: Option<u64>,
     configured_hours: u64,
 ) -> Result<chrono::DateTime<Utc>, TokenAdministrationError> {
+    compute_expires_at_at(requested_hours, configured_hours, Utc::now())
+}
+
+fn compute_expires_at_at(
+    requested_hours: Option<u64>,
+    configured_hours: u64,
+    now: chrono::DateTime<Utc>,
+) -> Result<chrono::DateTime<Utc>, TokenAdministrationError> {
     let hours = requested_hours.unwrap_or(configured_hours);
     if hours == 0 || hours > MAX_TTL_HOURS {
         return Err(TokenAdministrationError::Issuance);
     }
     let hours = i64::try_from(hours).map_err(|_| TokenAdministrationError::Issuance)?;
     let lifetime = TimeDelta::try_hours(hours).ok_or(TokenAdministrationError::Issuance)?;
-    Utc::now()
-        .checked_add_signed(lifetime)
+    now.checked_add_signed(lifetime)
         .ok_or(TokenAdministrationError::Issuance)
 }
 

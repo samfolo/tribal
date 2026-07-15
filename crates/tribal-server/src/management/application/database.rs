@@ -136,15 +136,8 @@ impl DatabaseAccess {
         &self,
         expected_revision: Option<&ConfigRevision>,
     ) -> Result<DatabaseSession, DatabaseAccessError> {
-        let ResolvedConfigSnapshot { config, revision } = self.config.resolved_snapshot().await?;
-        if let Some(expected) = expected_revision
-            && expected != &revision
-        {
-            return Err(DatabaseAccessError::RevisionConflict {
-                expected: expected.clone(),
-                actual: revision,
-            });
-        }
+        let ResolvedConfigSnapshot { config, revision } =
+            self.config_snapshot(expected_revision).await?;
         let pool = (self.pool_factory)(Arc::clone(&config))
             .await
             .map_err(|source| DatabaseAccessError::Connection { source })?;
@@ -153,6 +146,23 @@ impl DatabaseAccess {
             config,
             pool,
         })
+    }
+
+    /// Resolves configuration without opening the operation's database pool.
+    pub(super) async fn config_snapshot(
+        &self,
+        expected_revision: Option<&ConfigRevision>,
+    ) -> Result<ResolvedConfigSnapshot, DatabaseAccessError> {
+        let snapshot = self.config.resolved_snapshot().await?;
+        if let Some(expected) = expected_revision
+            && expected != &snapshot.revision
+        {
+            return Err(DatabaseAccessError::RevisionConflict {
+                expected: expected.clone(),
+                actual: snapshot.revision,
+            });
+        }
+        Ok(snapshot)
     }
 
     pub(crate) async fn read_session(&self) -> Result<DatabaseSession, DatabaseAccessError> {

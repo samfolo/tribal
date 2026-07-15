@@ -962,7 +962,10 @@ fn selected_endpoints(
                     },
                 )
             }),
-        EndpointSelection::Custom { value } => Ok(vec![value.clone(); stages.len()]),
+        EndpointSelection::Custom { value } => {
+            let value = normalise_endpoint_url(value).map_err(|_| invalid_contract())?;
+            Ok(vec![value; stages.len()])
+        }
     }
 }
 
@@ -1556,6 +1559,34 @@ mod tests {
             refusal.error,
             ManagementError::CredentialConnectionConflict { connection }
                 if connection == "openai_default"
+        ));
+    }
+
+    #[test]
+    fn test_custom_model_endpoints_are_normalised_before_effects() {
+        let endpoints = selected_endpoints(
+            ProviderKind::OpenAi,
+            &[InferenceStage::Extraction],
+            &EndpointSelection::Custom {
+                value: "https://api.openai.com/v1/".to_owned(),
+            },
+            &serde_json::json!({}),
+        )
+        .expect("custom endpoint is valid");
+        assert_eq!(endpoints, ["https://api.openai.com:443/v1"]);
+
+        let error = selected_endpoints(
+            ProviderKind::OpenAi,
+            &[InferenceStage::Extraction],
+            &EndpointSelection::Custom {
+                value: "not a URL".to_owned(),
+            },
+            &serde_json::json!({}),
+        )
+        .expect_err("invalid custom endpoint is refused");
+        assert!(matches!(
+            error.error,
+            ManagementError::ConfigurationInvalid { .. }
         ));
     }
 }

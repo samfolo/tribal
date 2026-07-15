@@ -17,7 +17,7 @@ use super::{
     database::DatabaseAccess,
     integration::IntegrationAdministration,
     project::ProjectAdministration,
-    token::{TokenAdministration, public_error as token_error},
+    token::{PreparedBootstrapToken, TokenAdministration, public_error as token_error},
 };
 use crate::management::{
     configuration::management_error, lifecycle::LifecycleController, product::ProductSession,
@@ -31,6 +31,11 @@ pub(super) struct BootstrapAdministration<'a> {
     projects: ProjectAdministration,
     tokens: TokenAdministration,
     integration: IntegrationAdministration,
+}
+
+struct BootstrapPreflight {
+    reuse_stage: Option<InferenceStage>,
+    token: PreparedBootstrapToken,
 }
 
 impl<'a> BootstrapAdministration<'a> {
@@ -79,7 +84,7 @@ impl<'a> BootstrapAdministration<'a> {
         product: &ProductSession,
         request: BootstrapRequest,
     ) -> Result<BootstrapResult, ManagementResponseError> {
-        let reuse_stage = self.preflight(product, &request).await?;
+        let preflight = self.preflight(product, &request).await?;
         let BootstrapRequest {
             expected_revision,
             storage,
@@ -87,7 +92,7 @@ impl<'a> BootstrapAdministration<'a> {
             genesis,
             telemetry,
             project,
-            token,
+            token: _,
             integration,
         } = request;
         let mut revision = expected_revision;
@@ -104,7 +109,8 @@ impl<'a> BootstrapAdministration<'a> {
                 .await?;
         }
         for selection in model_selections {
-            let reuse = reuse_stage
+            let reuse = preflight
+                .reuse_stage
                 .as_ref()
                 .is_some_and(|stage| selection.stages.contains(stage));
             let mut outcome = product
@@ -184,7 +190,7 @@ impl<'a> BootstrapAdministration<'a> {
             .map_err(super::integration_error)?;
         let credential = self
             .tokens
-            .provision_bootstrap(revision, token)
+            .provision_bootstrap(revision, preflight.token)
             .await
             .map_err(token_error)?;
         if prepared.revision() != &credential.config_revision {
@@ -244,7 +250,7 @@ impl<'a> BootstrapAdministration<'a> {
         &self,
         product: &ProductSession,
         request: &BootstrapRequest,
-    ) -> Result<Option<InferenceStage>, ManagementResponseError> {
+    ) -> Result<BootstrapPreflight, ManagementResponseError> {
         let catalogue = product.models_catalogue().await?;
         if catalogue.revision != request.expected_revision {
             return Err(config_conflict(
@@ -253,6 +259,11 @@ impl<'a> BootstrapAdministration<'a> {
             ));
         }
         self.preflight_config(request).await?;
+        let token = self
+            .tokens
+            .preflight_bootstrap(&request.expected_revision, request.token.clone())
+            .await
+            .map_err(token_error)?;
         if let Some(project) = &request.project {
             ProjectAdministration::preflight(project).map_err(super::project::public_error)?;
         }
@@ -367,7 +378,7 @@ impl<'a> BootstrapAdministration<'a> {
                 )
                 .await?;
         }
-        Ok(reuse_stage)
+        Ok(BootstrapPreflight { reuse_stage, token })
     }
 
     async fn preflight_config(
@@ -775,6 +786,28 @@ mod tests {
         assert!(matches!(
             error.error,
             ManagementError::EmbeddingReuseRefused { .. }
+        ));
+
+        let mut invalid_token = harness.request();
+        invalid_token.telemetry = Some(BootstrapTelemetryInput {
+            otlp_endpoint: OtlpEndpoint::try_from("https://collector.example/v1/traces".to_owned())
+                .unwrap(),
+        });
+        invalid_token.token = BootstrapTokenPolicy::Create {
+            principal: None,
+            ttl_hours: Some(0),
+            scopes: full_access_scopes(),
+        };
+        let error = harness
+            .administration
+            .run(&harness.product, invalid_token)
+            .await
+            .expect_err("invalid token policy is refused before effects");
+        assert!(matches!(
+            error.error,
+            ManagementError::Administration {
+                failure: tribal_wire::management::AdministrationFailure::TokenIssuanceRefused
+            }
         ));
         assert_eq!(harness.token_count().await, before_tokens);
         assert_eq!(
