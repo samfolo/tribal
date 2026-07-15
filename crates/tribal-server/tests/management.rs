@@ -108,6 +108,8 @@ fn config_watcher_lag_rereads_snapshot() {
         .set_nonblocking(true)
         .expect("lagged subscriber polling configures");
     drain_until_disconnect(&mut lagged);
+    drop(lagged);
+    drop(writer);
 
     let mut reconnected = handshake(&announcement);
     let snapshot = poll_until(|| {
@@ -119,6 +121,7 @@ fn config_watcher_lag_rereads_snapshot() {
 
     let _: tribal_wire::management::ManagerShutdownResult =
         call(&mut reconnected, 10_001, "manager.shutdown", None);
+    drop(reconnected);
     wait_for_success(&mut manager, "config lag shutdown");
 }
 

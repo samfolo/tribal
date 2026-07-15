@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     fs::File,
+    future::Future,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -773,12 +774,23 @@ async fn finish_replacement(
         },
         Err(source) => CredentialCoordinatorError::Connection { source },
     };
-    tokio::time::timeout(
-        RECONCILIATION_TIMEOUT,
-        reconcile_replacement(namespace, store, session, staged, failure),
-    )
+    await_reconciliation(reconcile_replacement(
+        namespace, store, session, staged, failure,
+    ))
     .await
-    .map_err(|_| CredentialCoordinatorError::ReconciliationTimedOut)?
+}
+
+async fn await_reconciliation<T>(
+    reconciliation: impl Future<Output = Result<T, CredentialCoordinatorError>>,
+) -> Result<T, CredentialCoordinatorError> {
+    let mut reconciliation = std::pin::pin!(reconciliation);
+    if let Ok(result) = tokio::time::timeout(RECONCILIATION_TIMEOUT, reconciliation.as_mut()).await
+    {
+        result
+    } else {
+        let _ = reconciliation.await;
+        Err(CredentialCoordinatorError::ReconciliationTimedOut)
+    }
 }
 
 async fn reconcile_replacement(
@@ -1173,6 +1185,31 @@ mod recovery {
                 token: "secret-token".parse().expect("token parses"),
             },
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_reconciliation_timeout_drains_terminal_work() {
+        let (started, admitted) = tokio::sync::oneshot::channel();
+        let (release, blocked) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            await_reconciliation(async move {
+                let _ = started.send(());
+                let _ = blocked.await;
+                Ok(())
+            })
+            .await
+        });
+
+        admitted.await.expect("reconciliation begins");
+        tokio::time::advance(RECONCILIATION_TIMEOUT).await;
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        release.send(()).expect("reconciliation releases");
+
+        assert!(matches!(
+            task.await.expect("reconciliation task joins"),
+            Err(CredentialCoordinatorError::ReconciliationTimedOut)
+        ));
     }
 
     #[tokio::test]
