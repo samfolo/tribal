@@ -39,12 +39,12 @@ use tribal_wire::management::{
 
 use super::{
     config_schema,
-    configuration::{ConfigAuthorityError, management_error},
+    configuration::management_error,
     lifecycle::LifecycleController,
     probe::{ProbeError, ProbeService},
     product::ProductSession,
     readiness,
-    worker::ConfigWorkerClient,
+    worker::{ConfigWorkerClient, ConfigWorkerRequestError},
 };
 
 /// One connection's access to the manager-owned application services.
@@ -271,26 +271,39 @@ impl<'a> ManagementApplication<'a> {
                 self.refresh_readiness(&operation).await?;
                 encode_call::<CredentialProbeCall>(Ok(receipts))
             }
-            ManagementMethod::ConfigGetAll => {
-                encode_config::<ConfigGetAllCall>(self.config.document().await)
-            }
-            ManagementMethod::ConfigPath => {
-                encode_config::<ConfigPathCall>(self.config.path().await)
-            }
+            ManagementMethod::ConfigGetAll => encode_call::<ConfigGetAllCall>(
+                self.config
+                    .for_operation(&operation)
+                    .document()
+                    .await
+                    .map_err(ConfigWorkerRequestError::into_public_error),
+            ),
+            ManagementMethod::ConfigPath => encode_call::<ConfigPathCall>(
+                self.config
+                    .for_operation(&operation)
+                    .path()
+                    .await
+                    .map_err(ConfigWorkerRequestError::into_public_error),
+            ),
             ManagementMethod::ConfigSchema => encode_call::<ConfigSchemaCall>(Ok(
                 config_schema::project(tribal_config::config_schema())
                     .map_err(|_| internal_error("configuration schema projection failed"))?,
             )),
-            ManagementMethod::ConfigGet => encode_config::<ConfigGetCall>(
-                self.config.get(parse_call::<ConfigGetCall>(params)?).await,
+            ManagementMethod::ConfigGet => encode_call::<ConfigGetCall>(
+                self.config
+                    .for_operation(&operation)
+                    .get(parse_call::<ConfigGetCall>(params)?)
+                    .await
+                    .map_err(ConfigWorkerRequestError::into_public_error),
             ),
             ManagementMethod::ConfigValidate => {
                 let request = parse_call::<ConfigValidateCall>(params)?;
                 let violations = self
                     .config
+                    .for_operation(&operation)
                     .validate(request.key.as_str().to_owned(), request.value)
                     .await
-                    .map_err(management_error)?;
+                    .map_err(ConfigWorkerRequestError::into_public_error)?;
                 encode_call::<ConfigValidateCall>(Ok(ConfigValidation {
                     valid: violations.is_empty(),
                     violations: violations
@@ -310,7 +323,12 @@ impl<'a> ManagementApplication<'a> {
                         request.value.expose_sensitive().clone(),
                     ),
                 }];
-                let mut outcome = self.config.set(request).await.map_err(management_error)?;
+                let mut outcome = self
+                    .config
+                    .for_operation(&operation)
+                    .set(request)
+                    .await
+                    .map_err(ConfigWorkerRequestError::into_public_error)?;
                 project_runtime_effect(
                     self.lifecycle,
                     &mut outcome.effect,
@@ -339,7 +357,12 @@ impl<'a> ManagementApplication<'a> {
                         ),
                     })
                     .collect();
-                let mut outcome = self.config.patch(request).await.map_err(management_error)?;
+                let mut outcome = self
+                    .config
+                    .for_operation(&operation)
+                    .patch(request)
+                    .await
+                    .map_err(ConfigWorkerRequestError::into_public_error)?;
                 project_patch_effects(self.lifecycle, &mut outcome, runtime_changes).await;
                 if patch_requires_lifecycle_update(&outcome) {
                     self.lifecycle.config_changed().await;
@@ -347,12 +370,12 @@ impl<'a> ManagementApplication<'a> {
                 encode_call::<ConfigPatchCall>(Ok(outcome))
             }
             ManagementMethod::ModelsCatalogue => {
-                encode_call::<ModelsCatalogueCall>(self.product.models_catalogue().await)
+                encode_call::<ModelsCatalogueCall>(self.product.models_catalogue(&operation).await)
             }
             ManagementMethod::ModelsSelect => {
                 let mut outcome = self
                     .product
-                    .select_model(parse_call::<ModelsSelectCall>(params)?)
+                    .select_model(&operation, parse_call::<ModelsSelectCall>(params)?)
                     .await?;
                 project_patch_effects(self.lifecycle, &mut outcome, Vec::new()).await;
                 if patch_requires_lifecycle_update(&outcome) {
@@ -362,12 +385,12 @@ impl<'a> ManagementApplication<'a> {
             }
             ManagementMethod::CredentialSources => encode_call::<CredentialSourcesCall>(
                 self.product
-                    .credential_sources(parse_call::<CredentialSourcesCall>(params)?)
+                    .credential_sources(&operation, parse_call::<CredentialSourcesCall>(params)?)
                     .await,
             ),
-            ManagementMethod::GraphGenesisOptions => {
-                encode_call::<GraphGenesisOptionsCall>(self.product.genesis_options().await)
-            }
+            ManagementMethod::GraphGenesisOptions => encode_call::<GraphGenesisOptionsCall>(
+                self.product.genesis_options(&operation).await,
+            ),
             ManagementMethod::GraphEmbeddingProfile => {
                 let session = self
                     .database
@@ -381,7 +404,7 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::GraphConfigureGenesis => {
                 let mut outcome = self
                     .product
-                    .configure_genesis(parse_call::<GraphConfigureGenesisCall>(params)?)
+                    .configure_genesis(&operation, parse_call::<GraphConfigureGenesisCall>(params)?)
                     .await?;
                 project_patch_effects(self.lifecycle, &mut outcome, Vec::new()).await;
                 if patch_requires_lifecycle_update(&outcome) {
@@ -454,15 +477,6 @@ where
         .map_err(operation::public_error)?
         .ok_or_else(|| internal_error("lifecycle owner is unavailable"))?;
     serde_json::to_value(value).map_err(|_| internal_error("lifecycle response encoding failed"))
-}
-
-fn encode_config<C: ManagementCall>(
-    result: Result<C::Response, ConfigAuthorityError>,
-) -> Result<serde_json::Value, ManagementResponseError>
-where
-    C::Response: serde::Serialize,
-{
-    encode_call::<C>(result.map_err(management_error))
 }
 
 fn encode_call<C: ManagementCall>(

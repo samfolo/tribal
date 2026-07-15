@@ -339,7 +339,9 @@ pub(super) fn public_failure(error: &IntegrationAdministrationError) -> Administ
             source: CredentialCoordinatorError::Unavailable,
         } => AdministrationFailure::PersistedCredentialUnavailable,
         IntegrationAdministrationError::Credential {
-            source: CredentialCoordinatorError::Store(_),
+            source:
+                CredentialCoordinatorError::Store(_)
+                | CredentialCoordinatorError::ReconciliationTimedOut,
         } => AdministrationFailure::PersistedCredentialRecoveryFailed,
         IntegrationAdministrationError::Credential {
             source: CredentialCoordinatorError::Operation(failure),
@@ -449,6 +451,18 @@ mod tests {
                 target,
             }
         }
+    }
+
+    #[test]
+    fn test_terminal_credential_timeout_is_a_recovery_failure() {
+        let failure = public_failure(&IntegrationAdministrationError::Credential {
+            source: CredentialCoordinatorError::ReconciliationTimedOut,
+        });
+
+        assert_eq!(
+            failure,
+            AdministrationFailure::PersistedCredentialRecoveryFailed
+        );
     }
 
     #[test]

@@ -21,8 +21,9 @@ use super::{
     token::{PreparedBootstrapToken, TokenAdministration, public_error as token_error},
 };
 use crate::management::{
-    configuration::management_error, lifecycle::LifecycleController, product::ProductSession,
-    worker::ConfigWorkerClient,
+    lifecycle::LifecycleController,
+    product::ProductSession,
+    worker::{ConfigWorkerClient, ConfigWorkerRequestError},
 };
 
 pub(super) struct BootstrapAdministration<'a> {
@@ -125,14 +126,17 @@ impl<'a> BootstrapAdministration<'a> {
                 .as_ref()
                 .is_some_and(|stage| selection.stages.contains(stage));
             let mut outcome = product
-                .select_model(ModelSelectionRequest {
-                    model: selection.model,
-                    stages: selection.stages,
-                    endpoint: selection.endpoint,
-                    credential: selection.credential,
-                    reuse_api_key_for_embedding: reuse,
-                    expected_revision: revision,
-                })
+                .select_model(
+                    &self.operation,
+                    ModelSelectionRequest {
+                        model: selection.model,
+                        stages: selection.stages,
+                        endpoint: selection.endpoint,
+                        credential: selection.credential,
+                        reuse_api_key_for_embedding: reuse,
+                        expected_revision: revision,
+                    },
+                )
                 .await?;
             self.project_patch(&mut outcome).await;
             revision = outcome.revision;
@@ -144,11 +148,14 @@ impl<'a> BootstrapAdministration<'a> {
                 Some(BootstrapGenesisCredential::ReuseInferenceStage { .. }) | None => None,
             };
             let mut outcome = product
-                .configure_genesis(GenesisConfigurationRequest {
-                    embedding: genesis.embedding,
-                    credential,
-                    expected_revision: revision,
-                })
+                .configure_genesis(
+                    &self.operation,
+                    GenesisConfigurationRequest {
+                        embedding: genesis.embedding,
+                        credential,
+                        expected_revision: revision,
+                    },
+                )
                 .await?;
             self.project_patch(&mut outcome).await;
             revision = outcome.revision;
@@ -283,7 +290,7 @@ impl<'a> BootstrapAdministration<'a> {
         product: &ProductSession,
         request: &BootstrapRequest,
     ) -> Result<BootstrapPreflight, ManagementResponseError> {
-        let catalogue = product.models_catalogue().await?;
+        let catalogue = product.models_catalogue(&self.operation).await?;
         if catalogue.revision != request.expected_revision {
             return Err(config_conflict(
                 request.expected_revision.clone(),
@@ -362,11 +369,9 @@ impl<'a> BootstrapAdministration<'a> {
                 .is_some_and(|stage| selection.stages.contains(stage));
             let selected = product
                 .preflight_model_selection(
+                    &self.operation,
                     &request.expected_revision,
-                    &selection.model,
-                    &selection.stages,
-                    &selection.endpoint,
-                    selection.credential.as_ref(),
+                    selection,
                     reuse,
                 )
                 .await?;
@@ -411,6 +416,7 @@ impl<'a> BootstrapAdministration<'a> {
             }
             product
                 .preflight_genesis(
+                    &self.operation,
                     &request.expected_revision,
                     &genesis.embedding,
                     explicit,
@@ -451,9 +457,10 @@ impl<'a> BootstrapAdministration<'a> {
     ) -> Result<(), ManagementResponseError> {
         let violations = self
             .config
+            .for_operation(&self.operation)
             .validate(key.to_owned(), value)
             .await
-            .map_err(management_error)?;
+            .map_err(ConfigWorkerRequestError::into_public_error)?;
         if violations.is_empty() {
             Ok(())
         } else {
@@ -476,12 +483,13 @@ impl<'a> BootstrapAdministration<'a> {
     ) -> Result<ConfigRevision, ManagementResponseError> {
         let mut outcome = self
             .config
+            .for_operation(&self.operation)
             .patch(ConfigPatchRequest {
                 changes,
                 expected_revision,
             })
             .await
-            .map_err(management_error)?;
+            .map_err(ConfigWorkerRequestError::into_public_error)?;
         self.project_patch(&mut outcome).await;
         Ok(outcome.revision)
     }

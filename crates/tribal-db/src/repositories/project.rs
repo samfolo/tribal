@@ -13,10 +13,6 @@ use typed_builder::TypedBuilder;
 
 use crate::DbError;
 
-const SCHEMA_VERSION_EXCEEDS_I32: &str = "schema_version exceeds i32::MAX";
-const SCHEMA_VERSION_OVERFLOW: &str = "negative schema_version in database — data corruption";
-const GIT_REMOTE_PARSE: &str = "stored git_remote must be valid";
-
 #[derive(sqlx::FromRow)]
 struct ProjectRow {
     id: uuid::Uuid,
@@ -139,10 +135,11 @@ impl ProjectRepository for PgProjectRepository {
         conn: &mut PgConnection,
         new_project: &NewProject,
     ) -> Result<Project, DbError> {
-        let schema_version =
-            i32::try_from(new_project.schema_version).expect(SCHEMA_VERSION_EXCEEDS_I32);
+        let schema_version = i32::try_from(new_project.schema_version)
+            .map_err(|source| decode_error("encoding project schema version", source))?;
 
-        let row = sqlx::query!(
+        let row = sqlx::query_as!(
+            ProjectRow,
             r#"
             INSERT INTO projects (git_remote, name, default_branch, project_type, schema_version, settings)
             VALUES ($1, $2, $3, $4, $5, $6)
@@ -159,17 +156,7 @@ impl ProjectRepository for PgProjectRepository {
         .await;
 
         match row {
-            Ok(r) => Ok(Project::builder()
-                .id(ProjectId::from(r.id))
-                .git_remote(r.git_remote.parse::<GitRemote>().expect(GIT_REMOTE_PARSE))
-                .name(r.name)
-                .default_branch(r.default_branch)
-                .project_type(r.project_type)
-                .schema_version(u32::try_from(r.schema_version).expect(SCHEMA_VERSION_OVERFLOW))
-                .settings(r.settings)
-                .created_at(r.created_at)
-                .updated_at(r.updated_at)
-                .build()),
+            Ok(row) => map_project(row),
             Err(e) => {
                 if let Some(uv) = super::common::constraint::try_into_unique_violation(&e) {
                     Err(uv)
@@ -184,29 +171,23 @@ impl ProjectRepository for PgProjectRepository {
     }
 
     async fn find_by_id(&self, conn: &mut PgConnection, id: ProjectId) -> Result<Project, DbError> {
-        let r = sqlx::query!(r#"SELECT * FROM projects WHERE id = $1"#, id.inner())
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(|e| DbError::QueryFailed {
-                context: format!("finding project by id {id}"),
-                source: e,
-            })?
-            .ok_or_else(|| DbError::NotFound {
-                entity: "project",
-                id: id.to_string(),
-            })?;
+        let row = sqlx::query_as!(
+            ProjectRow,
+            r#"SELECT * FROM projects WHERE id = $1"#,
+            id.inner()
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("finding project by id {id}"),
+            source: e,
+        })?
+        .ok_or_else(|| DbError::NotFound {
+            entity: "project",
+            id: id.to_string(),
+        })?;
 
-        Ok(Project::builder()
-            .id(ProjectId::from(r.id))
-            .git_remote(r.git_remote.parse::<GitRemote>().expect(GIT_REMOTE_PARSE))
-            .name(r.name)
-            .default_branch(r.default_branch)
-            .project_type(r.project_type)
-            .schema_version(u32::try_from(r.schema_version).expect(SCHEMA_VERSION_OVERFLOW))
-            .settings(r.settings)
-            .created_at(r.created_at)
-            .updated_at(r.updated_at)
-            .build())
+        map_project(row)
     }
 
     async fn find_by_git_remote(
@@ -214,7 +195,8 @@ impl ProjectRepository for PgProjectRepository {
         conn: &mut PgConnection,
         git_remote: &GitRemote,
     ) -> Result<Option<Project>, DbError> {
-        let r = sqlx::query!(
+        let row = sqlx::query_as!(
+            ProjectRow,
             r#"SELECT * FROM projects WHERE git_remote = $1"#,
             git_remote.as_str(),
         )
@@ -225,46 +207,22 @@ impl ProjectRepository for PgProjectRepository {
             source: e,
         })?;
 
-        Ok(r.map(|r| {
-            Project::builder()
-                .id(ProjectId::from(r.id))
-                .git_remote(r.git_remote.parse::<GitRemote>().expect(GIT_REMOTE_PARSE))
-                .name(r.name)
-                .default_branch(r.default_branch)
-                .project_type(r.project_type)
-                .schema_version(u32::try_from(r.schema_version).expect(SCHEMA_VERSION_OVERFLOW))
-                .settings(r.settings)
-                .created_at(r.created_at)
-                .updated_at(r.updated_at)
-                .build()
-        }))
+        row.map(map_project).transpose()
     }
 
     async fn list(&self, conn: &mut PgConnection) -> Result<Vec<Project>, DbError> {
-        let rows = sqlx::query!(r#"SELECT * FROM projects ORDER BY created_at ASC"#)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|e| DbError::QueryFailed {
-                context: "listing projects".to_owned(),
-                source: e,
-            })?;
+        let rows = sqlx::query_as!(
+            ProjectRow,
+            r#"SELECT * FROM projects ORDER BY created_at ASC"#
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "listing projects".to_owned(),
+            source: e,
+        })?;
 
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                Project::builder()
-                    .id(ProjectId::from(r.id))
-                    .git_remote(r.git_remote.parse::<GitRemote>().expect(GIT_REMOTE_PARSE))
-                    .name(r.name)
-                    .default_branch(r.default_branch)
-                    .project_type(r.project_type)
-                    .schema_version(u32::try_from(r.schema_version).expect(SCHEMA_VERSION_OVERFLOW))
-                    .settings(r.settings)
-                    .created_at(r.created_at)
-                    .updated_at(r.updated_at)
-                    .build()
-            })
-            .collect())
+        rows.into_iter().map(map_project).collect()
     }
 
     async fn page_high_water(
@@ -340,23 +298,36 @@ impl ProjectRepository for PgProjectRepository {
             source,
         })?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                Project::builder()
-                    .id(ProjectId::from(row.id))
-                    .git_remote(row.git_remote.parse::<GitRemote>().expect(GIT_REMOTE_PARSE))
-                    .name(row.name)
-                    .default_branch(row.default_branch)
-                    .project_type(row.project_type)
-                    .schema_version(
-                        u32::try_from(row.schema_version).expect(SCHEMA_VERSION_OVERFLOW),
-                    )
-                    .settings(row.settings)
-                    .created_at(row.created_at)
-                    .updated_at(row.updated_at)
-                    .build()
-            })
-            .collect())
+        rows.into_iter().map(map_project).collect()
+    }
+}
+
+fn map_project(row: ProjectRow) -> Result<Project, DbError> {
+    let git_remote = row
+        .git_remote
+        .parse::<GitRemote>()
+        .map_err(|source| decode_error("decoding project git remote", source))?;
+    let schema_version = u32::try_from(row.schema_version)
+        .map_err(|source| decode_error("decoding project schema version", source))?;
+    Ok(Project::builder()
+        .id(ProjectId::from(row.id))
+        .git_remote(git_remote)
+        .name(row.name)
+        .default_branch(row.default_branch)
+        .project_type(row.project_type)
+        .schema_version(schema_version)
+        .settings(row.settings)
+        .created_at(row.created_at)
+        .updated_at(row.updated_at)
+        .build())
+}
+
+fn decode_error(
+    context: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> DbError {
+    DbError::QueryFailed {
+        context: context.to_owned(),
+        source: sqlx::Error::Decode(Box::new(source)),
     }
 }

@@ -138,5 +138,9 @@ pub use crate::{
 
 /// The version of the public local-management contract.
 pub const MANAGEMENT_CONTRACT_VERSION: u16 = 3;
+/// Deadline for admitting a management connection.
+pub const MANAGEMENT_BOOTSTRAP_TIMEOUT_SECONDS: u64 = 5;
+/// Deadline for flushing one framed management response or event.
+pub const MANAGEMENT_FRAME_WRITE_TIMEOUT_SECONDS: u64 = 5;
 /// Client deadline for one accepted management application call.
 pub const MANAGEMENT_REQUEST_TIMEOUT_SECONDS: u64 = 125;

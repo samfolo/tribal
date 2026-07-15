@@ -20,15 +20,18 @@ use tribal_wire::management::{
     GenesisDimensionsConstraint, GenesisEmbeddingInput, GenesisModelConstraint, GenesisOptions,
     GenesisProviderAvailability, GenesisProviderOption, GenesisUnavailableReason,
     GraphEmbeddingProfile, InferenceStage, InvalidStageSetReason, KnownModelEntry, KnownModelId,
-    ManagementError, ManagementResponseError, ModelAccess, ModelAvailability,
+    ManagementError, ManagementResponseError, ModelAccess, ModelAvailability, ModelSelectionInput,
     ModelSelectionRequest, ModelSettingsCapability, ModelUnavailableReason, ModelsCatalogue,
     Revisioned,
 };
 
 use super::{
-    application::{DatabaseSession, operation},
-    configuration::{CredentialMaterial, management_error},
-    worker::ConfigWorkerClient,
+    application::{
+        DatabaseSession,
+        operation::{self, OperationContext},
+    },
+    configuration::CredentialMaterial,
+    worker::{ConfigWorkerClient, ConfigWorkerRequestError},
 };
 
 struct ModelDescriptor {
@@ -135,10 +138,17 @@ impl ProductService {
 }
 
 impl ProductSession {
-    pub(crate) async fn models_catalogue(
+    pub(in crate::management) async fn models_catalogue(
         &self,
+        operation: &OperationContext,
     ) -> Result<ModelsCatalogue, ManagementResponseError> {
-        let (_, revision) = document(self.config.document().await.map_err(management_error)?)?;
+        let (_, revision) = document(
+            self.config
+                .for_operation(operation)
+                .document()
+                .await
+                .map_err(ConfigWorkerRequestError::into_public_error)?,
+        )?;
         let models = model_descriptors()
             .into_iter()
             .map(model_entry)
@@ -146,20 +156,26 @@ impl ProductSession {
         Ok(ModelsCatalogue { models, revision })
     }
 
-    pub(crate) async fn credential_sources(
+    pub(in crate::management) async fn credential_sources(
         &self,
+        operation: &OperationContext,
         request: CredentialSourcesRequest,
     ) -> Result<CredentialSources, ManagementResponseError> {
-        let (values, actual) = document(self.config.document().await.map_err(management_error)?)?;
+        let config = self.config.for_operation(operation);
+        let (values, actual) = document(
+            config
+                .document()
+                .await
+                .map_err(ConfigWorkerRequestError::into_public_error)?,
+        )?;
         if actual != request.expected_revision {
             return Err(config_conflict(request.expected_revision, actual));
         }
         validate_credential_use(&request.use_case)?;
-        let materials = self
-            .config
+        let materials = config
             .credential_materials()
             .await
-            .map_err(management_error)?;
+            .map_err(ConfigWorkerRequestError::into_public_error)?;
         let mut grants = Vec::new();
         for material in materials {
             if material_matches(&material, &request.use_case)? {
@@ -189,8 +205,9 @@ impl ProductSession {
         })
     }
 
-    pub(crate) async fn select_model(
+    pub(in crate::management) async fn select_model(
         &self,
+        operation: &OperationContext,
         request: ModelSelectionRequest,
     ) -> Result<ConfigPatchOutcome, ManagementResponseError> {
         let PreparedModelSelection {
@@ -201,6 +218,7 @@ impl ProductSession {
             endpoints,
         } = self
             .prepare_model_selection(
+                operation,
                 &request.expected_revision,
                 &request.model,
                 &request.stages,
@@ -261,12 +279,13 @@ impl ProductSession {
         }
         let result = self
             .config
+            .for_operation(operation)
             .patch(ConfigPatchRequest {
                 changes,
                 expected_revision: revision,
             })
             .await
-            .map_err(management_error);
+            .map_err(ConfigWorkerRequestError::into_public_error);
         if result.is_err() {
             self.restore(&mut credential)?;
         }
@@ -275,6 +294,7 @@ impl ProductSession {
 
     async fn prepare_model_selection(
         &self,
+        operation: &OperationContext,
         expected_revision: &ConfigRevision,
         model: &KnownModelId,
         stages: &[InferenceStage],
@@ -291,7 +311,13 @@ impl ProductSession {
                 },
             ));
         }
-        let (values, revision) = document(self.config.document().await.map_err(management_error)?)?;
+        let (values, revision) = document(
+            self.config
+                .for_operation(operation)
+                .document()
+                .await
+                .map_err(ConfigWorkerRequestError::into_public_error)?,
+        )?;
         if &revision != expected_revision {
             return Err(config_conflict(expected_revision.clone(), revision));
         }
@@ -324,25 +350,28 @@ impl ProductSession {
         })
     }
 
-    pub(crate) async fn preflight_model_selection(
+    pub(in crate::management) async fn preflight_model_selection(
         &self,
+        operation: &OperationContext,
         expected_revision: &ConfigRevision,
-        model: &KnownModelId,
-        stages: &[InferenceStage],
-        endpoint: &EndpointSelection,
-        credential: Option<&CredentialInput>,
+        selection: &ModelSelectionInput,
         reuse_api_key_for_embedding: bool,
     ) -> Result<Vec<String>, ManagementResponseError> {
         let prepared = self
             .prepare_model_selection(
+                operation,
                 expected_revision,
-                model,
-                stages,
-                endpoint,
-                credential.is_some(),
+                &selection.model,
+                &selection.stages,
+                &selection.endpoint,
+                selection.credential.is_some(),
             )
             .await?;
-        self.inspect_credential(credential, &prepared.use_case, expected_revision)?;
+        self.inspect_credential(
+            selection.credential.as_ref(),
+            &prepared.use_case,
+            expected_revision,
+        )?;
         if reuse_api_key_for_embedding {
             if prepared.descriptor.provider != ProviderKind::OpenAi {
                 return Err(public_error(
@@ -352,7 +381,7 @@ impl ProductSession {
                     },
                 ));
             }
-            if credential.is_none() {
+            if selection.credential.is_none() {
                 return Err(public_error(
                     "embedding reuse requires an explicit credential",
                     ManagementError::EmbeddingReuseRefused {
@@ -366,8 +395,17 @@ impl ProductSession {
         Ok(prepared.endpoints)
     }
 
-    pub(crate) async fn genesis_options(&self) -> Result<GenesisOptions, ManagementResponseError> {
-        let (_, revision) = document(self.config.document().await.map_err(management_error)?)?;
+    pub(in crate::management) async fn genesis_options(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<GenesisOptions, ManagementResponseError> {
+        let (_, revision) = document(
+            self.config
+                .for_operation(operation)
+                .document()
+                .await
+                .map_err(ConfigWorkerRequestError::into_public_error)?,
+        )?;
         Ok(GenesisOptions {
             recommended: GenesisEmbeddingInput {
                 provider: ProviderKind::Ollama,
@@ -383,8 +421,9 @@ impl ProductSession {
         })
     }
 
-    pub(crate) async fn configure_genesis(
+    pub(in crate::management) async fn configure_genesis(
         &self,
+        operation: &OperationContext,
         request: GenesisConfigurationRequest,
     ) -> Result<ConfigPatchOutcome, ManagementResponseError> {
         let PreparedGenesis {
@@ -394,6 +433,7 @@ impl ProductSession {
             use_case,
         } = self
             .prepare_genesis(
+                operation,
                 &request.expected_revision,
                 &request.embedding,
                 request.credential.is_some(),
@@ -433,12 +473,13 @@ impl ProductSession {
         }
         let result = self
             .config
+            .for_operation(operation)
             .patch(ConfigPatchRequest {
                 changes,
                 expected_revision: revision,
             })
             .await
-            .map_err(management_error);
+            .map_err(ConfigWorkerRequestError::into_public_error);
         if result.is_err() {
             self.restore(&mut credential)?;
         }
@@ -447,13 +488,20 @@ impl ProductSession {
 
     async fn prepare_genesis(
         &self,
+        operation: &OperationContext,
         expected_revision: &ConfigRevision,
         embedding: &GenesisEmbeddingInput,
         credential_present: bool,
         credential_will_exist: bool,
     ) -> Result<PreparedGenesis, ManagementResponseError> {
         validate_genesis(embedding)?;
-        let (values, revision) = document(self.config.document().await.map_err(management_error)?)?;
+        let (values, revision) = document(
+            self.config
+                .for_operation(operation)
+                .document()
+                .await
+                .map_err(ConfigWorkerRequestError::into_public_error)?,
+        )?;
         if &revision != expected_revision {
             return Err(config_conflict(expected_revision.clone(), revision));
         }
@@ -492,8 +540,9 @@ impl ProductSession {
         })
     }
 
-    pub(crate) async fn preflight_genesis(
+    pub(in crate::management) async fn preflight_genesis(
         &self,
+        operation: &OperationContext,
         expected_revision: &ConfigRevision,
         embedding: &GenesisEmbeddingInput,
         credential: Option<&CredentialInput>,
@@ -501,6 +550,7 @@ impl ProductSession {
     ) -> Result<(), ManagementResponseError> {
         let prepared = self
             .prepare_genesis(
+                operation,
                 expected_revision,
                 embedding,
                 credential.is_some(),
@@ -634,6 +684,7 @@ impl ProductSession {
             .map_err(operation::public_error)?;
         let mut outcome = match self
             .config
+            .for_operation(session.operation())
             .patch(ConfigPatchRequest {
                 changes,
                 expected_revision: request.expected_revision,
@@ -643,7 +694,7 @@ impl ProductSession {
             Ok(outcome) => outcome,
             Err(error) => {
                 let _ = transaction.rollback().await;
-                return Err(management_error(error));
+                return Err(error.into_public_error());
             }
         };
         transaction
@@ -1411,6 +1462,10 @@ mod tests {
         ProductService::new(worker).session()
     }
 
+    fn operation() -> OperationContext {
+        OperationContext::new(tokio_util::sync::CancellationToken::new())
+    }
+
     async fn revision(session: &ProductSession) -> ConfigRevision {
         let (_, revision) = document(session.config.document().await.expect("document reads"))
             .expect("document is durable and valid");
@@ -1428,14 +1483,21 @@ mod tests {
             ),
         );
         let session = session(path);
-        let catalogue = session.models_catalogue().await.expect("catalogue returns");
+        let operation = operation();
+        let catalogue = session
+            .models_catalogue(&operation)
+            .await
+            .expect("catalogue returns");
         assert_eq!(catalogue.models.len(), 4);
         assert!(catalogue.models.iter().any(|entry| {
             entry.provider == ProviderKind::Platform
                 && matches!(entry.availability, ModelAvailability::Unavailable { .. })
         }));
 
-        let options = session.genesis_options().await.expect("options return");
+        let options = session
+            .genesis_options(&operation)
+            .await
+            .expect("options return");
         assert_eq!(options.providers.len(), ProviderKind::ALL.len());
         assert!(options.providers.iter().any(|option| {
             option.provider == ProviderKind::Anthropic
@@ -1454,6 +1516,7 @@ mod tests {
         let path = temp.path().join("tribal.yaml");
         write_config(&path, &openai_config());
         let session = session(path.clone());
+        let operation = operation();
         let expected_revision = revision(&session).await;
         let model = KnownModelId::parse("openai.gpt-4o-mini").expect("model id parses");
         let use_case = CredentialUse::ModelSelection {
@@ -1462,10 +1525,13 @@ mod tests {
             endpoint: EndpointSelection::ProviderDefault,
         };
         let sources = session
-            .credential_sources(CredentialSourcesRequest {
-                use_case,
-                expected_revision: expected_revision.clone(),
-            })
+            .credential_sources(
+                &operation,
+                CredentialSourcesRequest {
+                    use_case,
+                    expected_revision: expected_revision.clone(),
+                },
+            )
             .await
             .expect("credential sources return");
         let source = sources
@@ -1477,16 +1543,19 @@ mod tests {
         assert!(!format!("{source:?}").contains(source.as_str()));
 
         let mismatched_use = session
-            .select_model(ModelSelectionRequest {
-                model: model.clone(),
-                stages: vec![InferenceStage::Triage],
-                endpoint: EndpointSelection::ProviderDefault,
-                credential: Some(CredentialInput::Source {
-                    source: source.clone(),
-                }),
-                reuse_api_key_for_embedding: false,
-                expected_revision: expected_revision.clone(),
-            })
+            .select_model(
+                &operation,
+                ModelSelectionRequest {
+                    model: model.clone(),
+                    stages: vec![InferenceStage::Triage],
+                    endpoint: EndpointSelection::ProviderDefault,
+                    credential: Some(CredentialInput::Source {
+                        source: source.clone(),
+                    }),
+                    reuse_api_key_for_embedding: false,
+                    expected_revision: expected_revision.clone(),
+                },
+            )
             .await
             .expect_err("source cannot cross its issued use");
         assert!(matches!(
@@ -1497,16 +1566,19 @@ mod tests {
         ));
 
         let outcome = session
-            .select_model(ModelSelectionRequest {
-                model: model.clone(),
-                stages: vec![InferenceStage::Extraction],
-                endpoint: EndpointSelection::ProviderDefault,
-                credential: Some(CredentialInput::Source {
-                    source: source.clone(),
-                }),
-                reuse_api_key_for_embedding: false,
-                expected_revision,
-            })
+            .select_model(
+                &operation,
+                ModelSelectionRequest {
+                    model: model.clone(),
+                    stages: vec![InferenceStage::Extraction],
+                    endpoint: EndpointSelection::ProviderDefault,
+                    credential: Some(CredentialInput::Source {
+                        source: source.clone(),
+                    }),
+                    reuse_api_key_for_embedding: false,
+                    expected_revision,
+                },
+            )
             .await
             .expect("source-backed selection commits");
         assert!(
@@ -1519,14 +1591,17 @@ mod tests {
         assert!(persisted.contains("sk-product-secret"));
 
         let replay = session
-            .select_model(ModelSelectionRequest {
-                model,
-                stages: vec![InferenceStage::Extraction],
-                endpoint: EndpointSelection::ProviderDefault,
-                credential: Some(CredentialInput::Source { source }),
-                reuse_api_key_for_embedding: false,
-                expected_revision: outcome.revision,
-            })
+            .select_model(
+                &operation,
+                ModelSelectionRequest {
+                    model,
+                    stages: vec![InferenceStage::Extraction],
+                    endpoint: EndpointSelection::ProviderDefault,
+                    credential: Some(CredentialInput::Source { source }),
+                    reuse_api_key_for_embedding: false,
+                    expected_revision: outcome.revision,
+                },
+            )
             .await
             .expect_err("consumed source is refused");
         assert!(matches!(

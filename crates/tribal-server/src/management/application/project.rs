@@ -2,6 +2,7 @@
 
 use std::{path::Path, str::FromStr as _};
 
+use sqlx::Acquire as _;
 use tribal_db::{DbError, NewProject, PgProjectRepository, ProjectPageKey, ProjectRepository};
 use tribal_domain::{GitRemote, Project, ProjectId};
 use tribal_wire::management::{
@@ -82,36 +83,41 @@ impl ProjectAdministration {
             .schema_version(PROJECT_SCHEMA_VERSION)
             .settings(serde_json::json!({}))
             .build();
-        let mut connection = operation
-            .cancel_safe(session.pool.acquire())
+        let (transaction, outcome) = operation
+            .cancel_safe(async {
+                let mut transaction = session.pool.begin().await.map_err(database_connection)?;
+                let mut insertion = transaction.begin().await.map_err(database_connection)?;
+                let outcome = match PgProjectRepository.insert(&mut insertion, &candidate).await {
+                    Ok(project) => {
+                        insertion.commit().await.map_err(database_connection)?;
+                        ProjectRegisterOutcome::Registered {
+                            project: summary(&project),
+                        }
+                    }
+                    Err(DbError::UniqueViolation { .. }) => {
+                        insertion.rollback().await.map_err(database_connection)?;
+                        let project = PgProjectRepository
+                            .find_by_git_remote(&mut transaction, &remote)
+                            .await
+                            .map_err(repository)?
+                            .ok_or_else(|| ProjectAdministrationError::Repository {
+                                source: DbError::NotFound {
+                                    entity: "project",
+                                    id: remote.to_string(),
+                                },
+                            })?;
+                        ProjectRegisterOutcome::AlreadyRegistered {
+                            project: summary(&project),
+                        }
+                    }
+                    Err(source) => return Err(repository(source)),
+                };
+                Ok::<_, ProjectAdministrationError>((transaction, outcome))
+            })
             .await
-            .map_err(DatabaseAccessError::from)?
-            .map_err(database_connection)?;
+            .map_err(DatabaseAccessError::from)??;
         operation.checkpoint().map_err(DatabaseAccessError::from)?;
-        let outcome = match PgProjectRepository
-            .insert(&mut connection, &candidate)
-            .await
-        {
-            Ok(project) => ProjectRegisterOutcome::Registered {
-                project: summary(&project),
-            },
-            Err(DbError::UniqueViolation { .. }) => {
-                let project = PgProjectRepository
-                    .find_by_git_remote(&mut connection, &remote)
-                    .await
-                    .map_err(repository)?
-                    .ok_or_else(|| ProjectAdministrationError::Repository {
-                        source: DbError::NotFound {
-                            entity: "project",
-                            id: remote.to_string(),
-                        },
-                    })?;
-                ProjectRegisterOutcome::AlreadyRegistered {
-                    project: summary(&project),
-                }
-            }
-            Err(source) => return Err(repository(source)),
-        };
+        transaction.commit().await.map_err(database_connection)?;
         Ok(session.revisioned(outcome))
     }
 

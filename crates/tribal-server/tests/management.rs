@@ -874,7 +874,7 @@ async fn test_direct_runtime_credentials_follow_the_canonical_config_namespace()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "one process journey keeps pagination evidence in causal order"
 )]

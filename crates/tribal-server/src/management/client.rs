@@ -11,15 +11,16 @@ use tokio::{
     time::{Duration, timeout},
 };
 use tribal_wire::management::{
-    BootstrapShutdownRefusal, MANAGEMENT_CONTRACT_VERSION, MANAGEMENT_REQUEST_TIMEOUT_SECONDS,
-    ManagementBootstrapRequest, ManagementBootstrapResponse, ManagementCall, ManagementClientHello,
-    ManagementEvent, ManagementMethod, ManagementResponseError, ManagerAnnouncement,
+    BootstrapShutdownRefusal, MANAGEMENT_BOOTSTRAP_TIMEOUT_SECONDS, MANAGEMENT_CONTRACT_VERSION,
+    MANAGEMENT_REQUEST_TIMEOUT_SECONDS, ManagementBootstrapRequest, ManagementBootstrapResponse,
+    ManagementCall, ManagementClientHello, ManagementEvent, ManagementMethod,
+    ManagementResponseError, ManagerAnnouncement,
 };
 
 use super::authority::AuthorityDescriptor;
 
 const MAX_FRAME_BYTES: usize = 64 * 1024;
-const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(5);
+const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(MANAGEMENT_BOOTSTRAP_TIMEOUT_SECONDS);
 pub(super) const CALL_TIMEOUT: Duration = Duration::from_secs(MANAGEMENT_REQUEST_TIMEOUT_SECONDS);
 
 /// Compatible full-protocol connection to one discovered manager.

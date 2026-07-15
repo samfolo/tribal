@@ -135,9 +135,11 @@ fn credential_replacement_lock_id(authority_namespace: &str) -> i64 {
     let mut digest = Sha256::new();
     digest.update(crate::advisory_locks::CREDENTIAL_REPLACEMENT.to_be_bytes());
     digest.update(authority_namespace.as_bytes());
-    let bytes: [u8; 8] = digest.finalize()[..8]
-        .try_into()
-        .expect("SHA-256 prefix has eight bytes");
+    let digest = digest.finalize();
+    let mut bytes = [0_u8; 8];
+    for (target, source) in bytes.iter_mut().zip(digest.iter().copied()) {
+        *target = source;
+    }
     i64::from_be_bytes(bytes)
 }
 

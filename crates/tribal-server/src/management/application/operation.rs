@@ -6,7 +6,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tribal_wire::management::{AdministrationFailure, ManagementError, ManagementResponseError};
 
-const ACTIVE_WINDOW: Duration = Duration::from_secs(45);
+pub(in crate::management) const ACTIVE_WINDOW: Duration = Duration::from_secs(45);
 
 /// Deadline and manager shutdown state shared by one composed application call.
 #[derive(Debug, Clone)]

@@ -12,12 +12,15 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tribal_wire::management::{
     ConfigChangeEvent, ConfigChangeSource, ConfigDocument, ConfigFilePath, ConfigGetRequest,
     ConfigPatchOutcome, ConfigPatchRequest, ConfigSetRequest, ConfigValue, ConfigWriteEffect,
-    ConfigWriteOutcome, PanicCorrelationId,
+    ConfigWriteOutcome, ManagementResponseError, PanicCorrelationId,
 };
 
-use super::configuration::{
-    ConfigAuthority, ConfigAuthorityError, ConfigCheckSnapshot, ConfigProbeSnapshot,
-    CredentialMaterial, ResolvedConfigSnapshot,
+use super::{
+    application::operation::{self, OperationContext, OperationError},
+    configuration::{
+        ConfigAuthority, ConfigAuthorityError, ConfigCheckSnapshot, ConfigProbeSnapshot,
+        CredentialMaterial, ResolvedConfigSnapshot, management_error,
+    },
 };
 
 const COMMAND_CAPACITY: usize = 1;
@@ -30,8 +33,32 @@ thread_local! {
 /// Cloneable async handle to the synchronous configuration authority.
 #[derive(Debug, Clone)]
 pub(crate) struct ConfigWorkerClient {
-    sender: mpsc::Sender<ConfigCommand>,
+    sender: mpsc::Sender<ConfigWorkerCommand>,
     changes: broadcast::Sender<ConfigChangeEvent>,
+}
+
+/// Configuration access bound to one management operation.
+pub(in crate::management) struct ConfigWorkerOperation<'a> {
+    client: &'a ConfigWorkerClient,
+    operation: &'a OperationContext,
+}
+
+/// Failure admitting or completing an operation-bound configuration command.
+#[derive(Debug, thiserror::Error)]
+pub(in crate::management) enum ConfigWorkerRequestError {
+    #[error(transparent)]
+    Operation(#[from] OperationError),
+    #[error(transparent)]
+    Authority(#[from] ConfigAuthorityError),
+}
+
+impl ConfigWorkerRequestError {
+    pub(in crate::management) fn into_public_error(self) -> ManagementResponseError {
+        match self {
+            Self::Operation(error) => operation::public_error(error),
+            Self::Authority(error) => management_error(error),
+        }
+    }
 }
 
 /// Terminal state of the dedicated configuration worker.
@@ -78,31 +105,42 @@ pub(crate) enum ConfigWorkerStartError {
     },
 }
 
+type ConfigResponse<T> = oneshot::Sender<Result<T, OperationError>>;
+
+struct ConfigWorkerCommand {
+    operation: Option<OperationContext>,
+    command: ConfigCommand,
+}
+
 enum ConfigCommand {
-    Path(oneshot::Sender<ConfigFilePath>),
-    Document(oneshot::Sender<Result<ConfigDocument, ConfigAuthorityError>>),
+    Path(ConfigResponse<ConfigFilePath>),
+    Document(ConfigResponse<Result<ConfigDocument, ConfigAuthorityError>>),
     Get {
         request: ConfigGetRequest,
-        response: oneshot::Sender<Result<ConfigValue, ConfigAuthorityError>>,
+        response: ConfigResponse<Result<ConfigValue, ConfigAuthorityError>>,
     },
     Set {
         request: ConfigSetRequest,
-        response: oneshot::Sender<Result<ConfigWriteOutcome, ConfigAuthorityError>>,
+        response: ConfigResponse<Result<ConfigWriteOutcome, ConfigAuthorityError>>,
     },
     Patch {
         request: ConfigPatchRequest,
-        response: oneshot::Sender<Result<ConfigPatchOutcome, ConfigAuthorityError>>,
+        response: ConfigResponse<Result<ConfigPatchOutcome, ConfigAuthorityError>>,
     },
     Validate {
         key: String,
         value: serde_json::Value,
-        response:
-            oneshot::Sender<Result<Vec<tribal_config::ConfigViolation>, ConfigAuthorityError>>,
+        response: ConfigResponse<Result<Vec<tribal_config::ConfigViolation>, ConfigAuthorityError>>,
     },
-    CredentialMaterials(oneshot::Sender<Result<Vec<CredentialMaterial>, ConfigAuthorityError>>),
-    ProbeSnapshot(oneshot::Sender<Result<ConfigProbeSnapshot, ConfigAuthorityError>>),
-    CheckSnapshot(oneshot::Sender<Result<ConfigCheckSnapshot, ConfigAuthorityError>>),
-    ResolvedSnapshot(oneshot::Sender<Result<ResolvedConfigSnapshot, ConfigAuthorityError>>),
+    CredentialMaterials(ConfigResponse<Result<Vec<CredentialMaterial>, ConfigAuthorityError>>),
+    ProbeSnapshot(ConfigResponse<Result<ConfigProbeSnapshot, ConfigAuthorityError>>),
+    CheckSnapshot(ConfigResponse<Result<ConfigCheckSnapshot, ConfigAuthorityError>>),
+    ResolvedSnapshot(ConfigResponse<Result<ResolvedConfigSnapshot, ConfigAuthorityError>>),
+    #[cfg(test)]
+    Block {
+        entered: oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    },
     #[cfg(test)]
     Panic,
 }
@@ -223,23 +261,28 @@ fn update_frame(mac: &mut hmac::Hmac<sha2::Sha256>, value: &[u8]) {
 
 fn dispatch(
     authority: &ConfigAuthority,
-    command: ConfigCommand,
+    envelope: ConfigWorkerCommand,
     changes: &broadcast::Sender<ConfigChangeEvent>,
 ) {
+    let admitted = envelope
+        .operation
+        .as_ref()
+        .map_or(Ok(()), OperationContext::checkpoint);
+    let command = envelope.command;
     match command {
         ConfigCommand::Path(response) => {
-            let _ = response.send(authority.path());
+            let _ = response.send(admitted.map(|()| authority.path()));
         }
         ConfigCommand::Document(response) => {
-            let _ = response.send(authority.document());
+            let _ = response.send(admitted.map(|()| authority.document()));
         }
         ConfigCommand::Get { request, response } => {
-            let _ = response.send(authority.get(request));
+            let _ = response.send(admitted.map(|()| authority.get(request)));
         }
         ConfigCommand::Set { request, response } => {
             let key = request.key.clone();
-            let result = authority.set(request);
-            if let Ok(outcome) = &result
+            let result = admitted.map(|()| authority.set(request));
+            if let Ok(Ok(outcome)) = &result
                 && !matches!(outcome.effect, ConfigWriteEffect::Unchanged)
             {
                 let _ = changes.send(ConfigChangeEvent {
@@ -251,8 +294,8 @@ fn dispatch(
             let _ = response.send(result);
         }
         ConfigCommand::Patch { request, response } => {
-            let result = authority.patch(request);
-            if let Ok(outcome) = &result {
+            let result = admitted.map(|()| authority.patch(request));
+            if let Ok(Ok(outcome)) = &result {
                 let changed_fields = outcome
                     .fields
                     .iter()
@@ -274,19 +317,24 @@ fn dispatch(
             value,
             response,
         } => {
-            let _ = response.send(authority.validate_value(&key, value));
+            let _ = response.send(admitted.map(|()| authority.validate_value(&key, value)));
         }
         ConfigCommand::CredentialMaterials(response) => {
-            let _ = response.send(authority.credential_materials());
+            let _ = response.send(admitted.map(|()| authority.credential_materials()));
         }
         ConfigCommand::ProbeSnapshot(response) => {
-            let _ = response.send(authority.probe_snapshot());
+            let _ = response.send(admitted.map(|()| authority.probe_snapshot()));
         }
         ConfigCommand::CheckSnapshot(response) => {
-            let _ = response.send(authority.check_snapshot());
+            let _ = response.send(admitted.map(|()| authority.check_snapshot()));
         }
         ConfigCommand::ResolvedSnapshot(response) => {
-            let _ = response.send(authority.resolved_snapshot());
+            let _ = response.send(admitted.map(|()| authority.resolved_snapshot()));
+        }
+        #[cfg(test)]
+        ConfigCommand::Block { entered, release } => {
+            let _ = entered.send(());
+            let _ = release.recv();
         }
         #[cfg(test)]
         ConfigCommand::Panic => panic!("config-worker-test-panic"),
@@ -296,16 +344,30 @@ fn dispatch(
 impl ConfigWorkerClient {
     async fn request<T>(
         &self,
-        command: impl FnOnce(oneshot::Sender<T>) -> ConfigCommand,
+        command: impl FnOnce(ConfigResponse<T>) -> ConfigCommand,
     ) -> Result<T, ConfigAuthorityError> {
         let (response, receiver) = oneshot::channel();
         self.sender
-            .send(command(response))
+            .send(ConfigWorkerCommand {
+                operation: None,
+                command: command(response),
+            })
             .await
             .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
         receiver
             .await
+            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?
             .map_err(|_| ConfigAuthorityError::WorkerUnavailable)
+    }
+
+    pub(in crate::management) fn for_operation<'a>(
+        &'a self,
+        operation: &'a OperationContext,
+    ) -> ConfigWorkerOperation<'a> {
+        ConfigWorkerOperation {
+            client: self,
+            operation,
+        }
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<ConfigChangeEvent> {
@@ -322,7 +384,43 @@ impl ConfigWorkerClient {
 
     #[cfg(test)]
     pub(crate) async fn panic_for_test(&self) -> bool {
-        self.sender.send(ConfigCommand::Panic).await.is_ok()
+        self.sender
+            .send(ConfigWorkerCommand {
+                operation: None,
+                command: ConfigCommand::Panic,
+            })
+            .await
+            .is_ok()
+    }
+
+    #[cfg(test)]
+    async fn block_for_test(
+        &self,
+        entered: oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        self.sender
+            .send(ConfigWorkerCommand {
+                operation: None,
+                command: ConfigCommand::Block { entered, release },
+            })
+            .await
+            .expect("config worker accepts blocking fixture");
+    }
+
+    #[cfg(test)]
+    async fn enqueue_path_for_test(
+        &self,
+    ) -> oneshot::Receiver<Result<ConfigFilePath, OperationError>> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(ConfigWorkerCommand {
+                operation: None,
+                command: ConfigCommand::Path(response),
+            })
+            .await
+            .expect("config worker accepts capacity fixture");
+        receiver
     }
 
     pub(crate) async fn path(&self) -> Result<ConfigFilePath, ConfigAuthorityError> {
@@ -333,47 +431,13 @@ impl ConfigWorkerClient {
         self.request(ConfigCommand::Document).await?
     }
 
-    pub(crate) async fn get(
-        &self,
-        request: ConfigGetRequest,
-    ) -> Result<ConfigValue, ConfigAuthorityError> {
-        self.request(|response| ConfigCommand::Get { request, response })
-            .await?
-    }
-
+    #[cfg(test)]
     pub(crate) async fn set(
         &self,
         request: ConfigSetRequest,
     ) -> Result<ConfigWriteOutcome, ConfigAuthorityError> {
         self.request(|response| ConfigCommand::Set { request, response })
             .await?
-    }
-
-    pub(crate) async fn patch(
-        &self,
-        request: ConfigPatchRequest,
-    ) -> Result<ConfigPatchOutcome, ConfigAuthorityError> {
-        self.request(|response| ConfigCommand::Patch { request, response })
-            .await?
-    }
-
-    pub(crate) async fn validate(
-        &self,
-        key: String,
-        value: serde_json::Value,
-    ) -> Result<Vec<tribal_config::ConfigViolation>, ConfigAuthorityError> {
-        self.request(|response| ConfigCommand::Validate {
-            key,
-            value,
-            response,
-        })
-        .await?
-    }
-
-    pub(crate) async fn credential_materials(
-        &self,
-    ) -> Result<Vec<CredentialMaterial>, ConfigAuthorityError> {
-        self.request(ConfigCommand::CredentialMaterials).await?
     }
 
     pub(crate) async fn probe_snapshot(&self) -> Result<ConfigProbeSnapshot, ConfigAuthorityError> {
@@ -384,6 +448,7 @@ impl ConfigWorkerClient {
         self.request(ConfigCommand::CheckSnapshot).await?
     }
 
+    #[cfg(test)]
     pub(crate) async fn resolved_snapshot(
         &self,
     ) -> Result<ResolvedConfigSnapshot, ConfigAuthorityError> {
@@ -391,9 +456,133 @@ impl ConfigWorkerClient {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ConfigCompletion {
+    CancelSafe,
+    Terminal,
+}
+
+impl ConfigWorkerOperation<'_> {
+    async fn request<T>(
+        &self,
+        completion: ConfigCompletion,
+        command: impl FnOnce(ConfigResponse<T>) -> ConfigCommand,
+    ) -> Result<T, ConfigWorkerRequestError> {
+        let (response, receiver) = oneshot::channel();
+        let permit = self
+            .operation
+            .cancel_safe(self.client.sender.reserve())
+            .await?
+            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
+        permit.send(ConfigWorkerCommand {
+            operation: Some(self.operation.clone()),
+            command: command(response),
+        });
+        let response = match completion {
+            ConfigCompletion::CancelSafe => self
+                .operation
+                .cancel_safe(receiver)
+                .await?
+                .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?,
+            ConfigCompletion::Terminal => receiver
+                .await
+                .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?,
+        };
+        response.map_err(ConfigWorkerRequestError::from)
+    }
+
+    pub(in crate::management) async fn path(
+        &self,
+    ) -> Result<ConfigFilePath, ConfigWorkerRequestError> {
+        self.request(ConfigCompletion::CancelSafe, ConfigCommand::Path)
+            .await
+    }
+
+    pub(in crate::management) async fn document(
+        &self,
+    ) -> Result<ConfigDocument, ConfigWorkerRequestError> {
+        self.request(ConfigCompletion::CancelSafe, ConfigCommand::Document)
+            .await?
+            .map_err(ConfigWorkerRequestError::from)
+    }
+
+    pub(in crate::management) async fn get(
+        &self,
+        request: ConfigGetRequest,
+    ) -> Result<ConfigValue, ConfigWorkerRequestError> {
+        self.request(ConfigCompletion::CancelSafe, |response| {
+            ConfigCommand::Get { request, response }
+        })
+        .await?
+        .map_err(ConfigWorkerRequestError::from)
+    }
+
+    pub(in crate::management) async fn set(
+        &self,
+        request: ConfigSetRequest,
+    ) -> Result<ConfigWriteOutcome, ConfigWorkerRequestError> {
+        self.request(ConfigCompletion::Terminal, |response| ConfigCommand::Set {
+            request,
+            response,
+        })
+        .await?
+        .map_err(ConfigWorkerRequestError::from)
+    }
+
+    pub(in crate::management) async fn patch(
+        &self,
+        request: ConfigPatchRequest,
+    ) -> Result<ConfigPatchOutcome, ConfigWorkerRequestError> {
+        self.request(ConfigCompletion::Terminal, |response| {
+            ConfigCommand::Patch { request, response }
+        })
+        .await?
+        .map_err(ConfigWorkerRequestError::from)
+    }
+
+    pub(in crate::management) async fn validate(
+        &self,
+        key: String,
+        value: serde_json::Value,
+    ) -> Result<Vec<tribal_config::ConfigViolation>, ConfigWorkerRequestError> {
+        self.request(ConfigCompletion::CancelSafe, |response| {
+            ConfigCommand::Validate {
+                key,
+                value,
+                response,
+            }
+        })
+        .await?
+        .map_err(ConfigWorkerRequestError::from)
+    }
+
+    pub(in crate::management) async fn credential_materials(
+        &self,
+    ) -> Result<Vec<CredentialMaterial>, ConfigWorkerRequestError> {
+        self.request(
+            ConfigCompletion::CancelSafe,
+            ConfigCommand::CredentialMaterials,
+        )
+        .await?
+        .map_err(ConfigWorkerRequestError::from)
+    }
+
+    pub(in crate::management) async fn resolved_snapshot(
+        &self,
+    ) -> Result<ResolvedConfigSnapshot, ConfigWorkerRequestError> {
+        self.request(
+            ConfigCompletion::CancelSafe,
+            ConfigCommand::ResolvedSnapshot,
+        )
+        .await?
+        .map_err(ConfigWorkerRequestError::from)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::management::application::operation::ACTIVE_WINDOW;
 
     #[tokio::test]
     async fn test_worker_serves_document_through_capacity_one_channel() {
@@ -412,6 +601,69 @@ mod tests {
             worker.document().await.expect("document returns"),
             ConfigDocument::DurableValid { .. }
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_expired_write_never_enters_a_saturated_worker() {
+        let temp = tempfile::tempdir().expect("temporary config root");
+        let path = temp.path().join("tribal.yaml");
+        let config = tribal_config::TribalConfig::minimum_valid(
+            "postgres://user:pass@localhost:5432/tribal",
+        );
+        std::fs::write(
+            &path,
+            serde_yaml::to_string(&config).expect("config serialises"),
+        )
+        .expect("config writes");
+        let (worker, runtime) = spawn(ConfigAuthority::new(path)).expect("worker starts");
+        let before = worker
+            .resolved_snapshot()
+            .await
+            .expect("initial snapshot resolves");
+        let (entered_sender, entered_receiver) = oneshot::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        worker
+            .block_for_test(entered_sender, release_receiver)
+            .await;
+        entered_receiver.await.expect("blocking fixture enters");
+        let capacity = worker.enqueue_path_for_test().await;
+        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let write_worker = worker.clone();
+        let expected_revision = before.revision.clone();
+        let write = tokio::spawn(async move {
+            write_worker
+                .for_operation(&operation)
+                .set(ConfigSetRequest {
+                    key: tribal_domain::ConfigFieldPath::parse("database.url")
+                        .expect("field path is valid"),
+                    value: tribal_wire::management::ConfigLiteral::new(serde_json::Value::String(
+                        "postgres://user:pass@localhost:5432/other".to_owned(),
+                    )),
+                    expected_revision,
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(ACTIVE_WINDOW).await;
+        let failure = write.await.expect("write task joins").unwrap_err();
+
+        assert!(matches!(
+            failure,
+            ConfigWorkerRequestError::Operation(OperationError::DeadlineElapsed)
+        ));
+        release_sender.send(()).expect("blocking fixture releases");
+        capacity
+            .await
+            .expect("capacity fixture responds")
+            .expect("capacity fixture remains admitted");
+        let after = worker
+            .resolved_snapshot()
+            .await
+            .expect("final snapshot resolves");
+        assert_eq!(after.revision, before.revision);
+        drop(worker);
+        runtime.join().expect("config worker joins");
     }
 
     #[test]

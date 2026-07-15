@@ -41,7 +41,6 @@ impl ConfigAuthorityNamespace {
 pub(crate) enum AuthorityOwnerKind {
     Manager,
     StandaloneRuntime,
-    OneShot,
 }
 
 /// Discoverable identity of the current authority owner.
@@ -91,7 +90,6 @@ pub(crate) enum AuthorityAcquire {
 pub(crate) enum AuthorityConflict {
     Manager(AuthorityDescriptor),
     StandaloneRuntime(AuthorityDescriptor),
-    OneShot(AuthorityDescriptor),
     Recovering { canonical_config_path: PathBuf },
 }
 
@@ -432,7 +430,6 @@ fn read_conflict(paths: &AuthorityPaths) -> Result<AuthorityConflict, AuthorityE
     Ok(match descriptor.kind {
         AuthorityOwnerKind::Manager => AuthorityConflict::Manager(descriptor),
         AuthorityOwnerKind::StandaloneRuntime => AuthorityConflict::StandaloneRuntime(descriptor),
-        AuthorityOwnerKind::OneShot => AuthorityConflict::OneShot(descriptor),
     })
 }
 
@@ -485,6 +482,39 @@ mod tests {
         .expect("second acquisition classifies contention");
         assert!(matches!(
             second,
+            AuthorityAcquire::Occupied(AuthorityConflict::Recovering { .. })
+        ));
+    }
+
+    #[test]
+    fn test_removed_owner_kind_is_treated_as_recovering() {
+        let temp = tempfile::tempdir().expect("temporary authority root");
+        let config = temp.path().join("tribal.yaml");
+        let state = temp.path().join("state");
+        let runtime = temp.path().join("run");
+        let first = acquire(&config, &state, &runtime).expect("lease acquisition succeeds");
+        let AuthorityAcquire::Acquired(lease) = first else {
+            panic!("first contender must acquire the lease");
+        };
+        let legacy_descriptor = serde_json::json!({
+            "kind": "one_shot",
+            "instance_id": "removed-owner",
+            "pid": 42,
+            "binary_version": "old",
+            "canonical_config_path": lease.paths().canonical_config_path,
+            "socket_path": null,
+            "protocol_version": null
+        });
+        std::fs::write(
+            &lease.paths().descriptor_path,
+            serde_json::to_vec(&legacy_descriptor).expect("stale descriptor serialises"),
+        )
+        .expect("stale descriptor writes");
+
+        let contender = acquire(&config, &state, &runtime).expect("contention classifies");
+
+        assert!(matches!(
+            contender,
             AuthorityAcquire::Occupied(AuthorityConflict::Recovering { .. })
         ));
     }

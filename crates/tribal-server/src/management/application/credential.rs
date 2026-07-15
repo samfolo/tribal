@@ -90,6 +90,8 @@ pub(super) enum CredentialCoordinatorError {
     Operation(#[from] OperationError),
     #[error("credential coordinator is unavailable")]
     Unavailable,
+    #[error("persisted credential reconciliation exceeded its terminal deadline")]
+    ReconciliationTimedOut,
     #[error("credential database connection failed: {source}")]
     Connection {
         #[source]
@@ -245,7 +247,7 @@ impl CredentialCoordinator {
     ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
         let operation = session.operation().clone();
         let (response, receiver) = oneshot::channel();
-        self.submit(
+        self.submit_terminal(
             &operation,
             CredentialCommand::Issue(IssueCommand {
                 session,
@@ -269,7 +271,7 @@ impl CredentialCoordinator {
     ) -> Result<BearerToken, CredentialCoordinatorError> {
         let operation = session.operation().clone();
         let (response, receiver) = oneshot::channel();
-        self.submit(
+        self.submit_cancel_safe(
             &operation,
             CredentialCommand::Export(ExportCommand {
                 session,
@@ -292,7 +294,7 @@ impl CredentialCoordinator {
     ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
         let operation = session.operation().clone();
         let (response, receiver) = oneshot::channel();
-        self.submit(
+        self.submit_terminal(
             &operation,
             CredentialCommand::Ensure(EnsureCommand {
                 session,
@@ -310,7 +312,7 @@ impl CredentialCoordinator {
         .await
     }
 
-    async fn submit<T>(
+    async fn submit_terminal<T>(
         &self,
         operation: &OperationContext,
         command: CredentialCommand,
@@ -322,6 +324,22 @@ impl CredentialCoordinator {
             .map_err(|_| CredentialCoordinatorError::Unavailable)?;
         receiver
             .await
+            .map_err(|_| CredentialCoordinatorError::Unavailable)?
+    }
+
+    async fn submit_cancel_safe<T>(
+        &self,
+        operation: &OperationContext,
+        command: CredentialCommand,
+        receiver: oneshot::Receiver<Result<T, CredentialCoordinatorError>>,
+    ) -> Result<T, CredentialCoordinatorError> {
+        operation
+            .cancel_safe(self.sender.send(command))
+            .await?
+            .map_err(|_| CredentialCoordinatorError::Unavailable)?;
+        operation
+            .cancel_safe(receiver)
+            .await?
             .map_err(|_| CredentialCoordinatorError::Unavailable)?
     }
 }
@@ -744,7 +762,7 @@ async fn finish_replacement(
         reconcile_replacement(namespace, store, session, staged, failure),
     )
     .await
-    .map_err(|_| CredentialCoordinatorError::Operation(OperationError::DeadlineElapsed))?
+    .map_err(|_| CredentialCoordinatorError::ReconciliationTimedOut)?
 }
 
 async fn reconcile_replacement(

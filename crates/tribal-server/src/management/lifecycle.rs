@@ -536,35 +536,35 @@ impl LifecycleController {
         &self,
         operation: &OperationContext,
     ) -> Result<Option<LifecycleSnapshot>, OperationError> {
-        request(operation, &self.sender, LifecycleCommand::Snapshot).await
+        request_cancel_safe(operation, &self.sender, LifecycleCommand::Snapshot).await
     }
 
     pub(in crate::management) async fn start_for(
         &self,
         operation: &OperationContext,
     ) -> Result<Option<RuntimeStartResult>, OperationError> {
-        request(operation, &self.sender, LifecycleCommand::Start).await
+        request_terminal(operation, &self.sender, LifecycleCommand::Start).await
     }
 
     pub(in crate::management) async fn stop_for(
         &self,
         operation: &OperationContext,
     ) -> Result<Option<RuntimeStopResult>, OperationError> {
-        request(operation, &self.sender, LifecycleCommand::Stop).await
+        request_terminal(operation, &self.sender, LifecycleCommand::Stop).await
     }
 
     pub(in crate::management) async fn restart_for(
         &self,
         operation: &OperationContext,
     ) -> Result<Option<RuntimeRestartResult>, OperationError> {
-        request(operation, &self.sender, LifecycleCommand::Restart).await
+        request_terminal(operation, &self.sender, LifecycleCommand::Restart).await
     }
 
     pub(in crate::management) async fn shutdown_for(
         &self,
         operation: &OperationContext,
     ) -> Result<Option<ManagerShutdownResult>, OperationError> {
-        request(operation, &self.sender, LifecycleCommand::Shutdown).await
+        request_terminal(operation, &self.sender, LifecycleCommand::Shutdown).await
     }
 
     pub(crate) async fn apply_config(
@@ -588,7 +588,7 @@ impl LifecycleController {
         &self,
         operation: &OperationContext,
     ) -> Result<Option<ManagedRuntimeStatusResult>, OperationError> {
-        request(operation, &self.sender, LifecycleCommand::RuntimeStatus).await
+        request_cancel_safe(operation, &self.sender, LifecycleCommand::RuntimeStatus).await
     }
 
     pub(in crate::management) async fn runtime_logs_tail_for(
@@ -596,7 +596,7 @@ impl LifecycleController {
         operation: &OperationContext,
         lines: u32,
     ) -> Result<Option<RuntimeLogsTailResult>, OperationError> {
-        request(operation, &self.sender, |response| {
+        request_cancel_safe(operation, &self.sender, |response| {
             LifecycleCommand::RuntimeLogsTail { lines, response }
         })
         .await
@@ -622,7 +622,7 @@ impl LifecycleController {
     }
 }
 
-async fn request<T>(
+async fn request_terminal<T>(
     operation: &OperationContext,
     sender: &mpsc::Sender<LifecycleCommand>,
     command: impl FnOnce(oneshot::Sender<T>) -> LifecycleCommand,
@@ -635,6 +635,21 @@ async fn request<T>(
         return Ok(None);
     }
     Ok(receiver.await.ok())
+}
+
+async fn request_cancel_safe<T>(
+    operation: &OperationContext,
+    sender: &mpsc::Sender<LifecycleCommand>,
+    command: impl FnOnce(oneshot::Sender<T>) -> LifecycleCommand,
+) -> Result<Option<T>, OperationError> {
+    let (response, receiver) = oneshot::channel();
+    let sent = operation
+        .cancel_safe(sender.send(command(response)))
+        .await?;
+    if sent.is_err() {
+        return Ok(None);
+    }
+    Ok(operation.cancel_safe(receiver).await?.ok())
 }
 
 async fn request_internal<T>(

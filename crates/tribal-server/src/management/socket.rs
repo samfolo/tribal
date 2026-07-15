@@ -4,6 +4,7 @@ use std::{
     io,
     os::unix::fs::{MetadataExt as _, PermissionsExt as _},
     path::Path,
+    time::Duration,
 };
 
 use tokio::{
@@ -12,7 +13,8 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tribal_wire::management::{
-    BootstrapShutdownRefusal, MANAGEMENT_CONTRACT_VERSION, ManagementBootstrapRequest,
+    BootstrapShutdownRefusal, MANAGEMENT_BOOTSTRAP_TIMEOUT_SECONDS, MANAGEMENT_CONTRACT_VERSION,
+    MANAGEMENT_FRAME_WRITE_TIMEOUT_SECONDS, ManagementBootstrapRequest,
     ManagementBootstrapResponse, ManagementEvent, ManagementLogLoss, ManagementMethod,
     ManagementResponseError, ManagementServerHello,
 };
@@ -29,6 +31,8 @@ const SOCKET_MODE: u32 = 0o600;
 const SOCKET_DIRECTORY_MODE: u32 = 0o700;
 pub(crate) const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_CONNECTIONS: usize = 32;
+const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(MANAGEMENT_BOOTSTRAP_TIMEOUT_SECONDS);
+const FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(MANAGEMENT_FRAME_WRITE_TIMEOUT_SECONDS);
 
 /// Identity a bound management socket presents during handshake.
 #[derive(Debug, Clone)]
@@ -181,7 +185,7 @@ async fn handle_connection(
 
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
-    let Some(request) = read_frame::<ManagementBootstrapRequest>(&mut reader).await else {
+    let Some(request) = read_bootstrap(&mut reader, &services.shutdown).await else {
         return;
     };
     let hello = ManagementServerHello {
@@ -237,6 +241,18 @@ async fn handle_connection(
         .await;
     } else {
         serve_restricted(&mut reader, &mut write, &services.shutdown).await;
+    }
+}
+
+async fn read_bootstrap(
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    shutdown: &CancellationToken,
+) -> Option<ManagementBootstrapRequest> {
+    tokio::select! {
+        biased;
+        () = shutdown.cancelled() => None,
+        () = tokio::time::sleep(BOOTSTRAP_TIMEOUT) => None,
+        request = read_frame(reader) => request,
     }
 }
 
@@ -431,7 +447,16 @@ async fn write_frame<T: serde::Serialize>(
         ));
     }
     bytes.push(b'\n');
-    writer.write_all(&bytes).await
+    write_bytes(writer, &bytes).await
+}
+
+async fn write_bytes(
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    bytes: &[u8],
+) -> Result<(), io::Error> {
+    tokio::time::timeout(FRAME_WRITE_TIMEOUT, writer.write_all(bytes))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "management frame write timed out"))?
 }
 
 fn socket_error(path: &Path, source: io::Error) -> ManagerSocketError {
@@ -448,6 +473,40 @@ mod tests {
     use tribal_wire::management::ManagementClientHello;
 
     use super::*;
+
+    #[tokio::test]
+    async fn test_shutdown_releases_an_idle_bootstrap_peer() {
+        let (server, _peer) = UnixStream::pair().expect("socket pair opens");
+        let (read, _) = server.into_split();
+        let mut reader = BufReader::new(read);
+        let shutdown = CancellationToken::new();
+        let waiting = tokio::spawn({
+            let shutdown = shutdown.clone();
+            async move { read_bootstrap(&mut reader, &shutdown).await }
+        });
+
+        shutdown.cancel();
+
+        assert!(waiting.await.expect("bootstrap task joins").is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_blocked_frame_write_has_a_terminal_deadline() {
+        let (mut writer, _reader) = tokio::io::duplex(1);
+        let writing = tokio::spawn(async move { write_bytes(&mut writer, &[1, 2]).await });
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(FRAME_WRITE_TIMEOUT).await;
+
+        assert_eq!(
+            writing
+                .await
+                .expect("write task joins")
+                .expect_err("blocked write times out")
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
 
     #[test]
     fn test_mixed_public_event_lag_never_claims_a_line_count() {

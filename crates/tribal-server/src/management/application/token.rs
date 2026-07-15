@@ -249,29 +249,40 @@ impl TokenAdministration {
             .database
             .mutation_session(operation, &request.expected_revision)
             .await?;
-        let mut connection = session.pool.acquire().await.map_err(connection_error)?;
-        let Some(existing) = PgAuthTokenRepository
-            .find_by_id(&mut connection, request.id)
+        let (transaction, outcome) = operation
+            .cancel_safe(async {
+                let mut transaction = session.pool.begin().await.map_err(connection_error)?;
+                let Some(existing) = PgAuthTokenRepository
+                    .find_by_id(&mut transaction, request.id)
+                    .await
+                    .map_err(repository)?
+                else {
+                    return Ok::<_, TokenAdministrationError>((
+                        transaction,
+                        TokenRevokeOutcome::NotFound { id: request.id },
+                    ));
+                };
+                let principal = PgPrincipalRepository
+                    .find_by_id(&mut transaction, existing.principal_id())
+                    .await
+                    .map_err(repository)?;
+                let (token, revoked) = PgAuthTokenRepository
+                    .revoke(&mut transaction, request.id, Utc::now())
+                    .await
+                    .map_err(repository)?;
+                let token = summary(&token, principal.principal_key().to_owned());
+                let outcome = if revoked {
+                    TokenRevokeOutcome::Revoked { token }
+                } else {
+                    TokenRevokeOutcome::AlreadyRevoked { token }
+                };
+                Ok((transaction, outcome))
+            })
             .await
-            .map_err(repository)?
-        else {
-            return Ok(session.revisioned(TokenRevokeOutcome::NotFound { id: request.id }));
-        };
-        let principal = PgPrincipalRepository
-            .find_by_id(&mut connection, existing.principal_id())
-            .await
-            .map_err(repository)?;
+            .map_err(DatabaseAccessError::from)??;
         session.checkpoint()?;
-        let (token, revoked) = PgAuthTokenRepository
-            .revoke(&mut connection, request.id, Utc::now())
-            .await
-            .map_err(repository)?;
-        let token = summary(&token, principal.principal_key().to_owned());
-        Ok(session.revisioned(if revoked {
-            TokenRevokeOutcome::Revoked { token }
-        } else {
-            TokenRevokeOutcome::AlreadyRevoked { token }
-        }))
+        transaction.commit().await.map_err(connection_error)?;
+        Ok(session.revisioned(outcome))
     }
 
     pub(super) async fn revoke_all(
@@ -283,25 +294,35 @@ impl TokenAdministration {
             .database
             .mutation_session(operation, &request.expected_revision)
             .await?;
-        let mut connection = session.pool.acquire().await.map_err(connection_error)?;
-        let principal_id = if let Some(principal) = request.principal {
-            let Some(principal) = PgPrincipalRepository
-                .find_by_key(&mut connection, &principal)
-                .await
-                .map_err(repository)?
-            else {
-                return Ok(session.revisioned(TokenRevokeAllOutcome { revoked: 0 }));
-            };
-            Some(principal.id())
-        } else {
-            None
-        };
-        session.checkpoint()?;
-        let revoked = PgAuthTokenRepository
-            .revoke_all(&mut connection, principal_id, Utc::now())
+        let (transaction, outcome) = operation
+            .cancel_safe(async {
+                let mut transaction = session.pool.begin().await.map_err(connection_error)?;
+                let principal_id = if let Some(principal) = request.principal {
+                    let Some(principal) = PgPrincipalRepository
+                        .find_by_key(&mut transaction, &principal)
+                        .await
+                        .map_err(repository)?
+                    else {
+                        return Ok::<_, TokenAdministrationError>((
+                            transaction,
+                            TokenRevokeAllOutcome { revoked: 0 },
+                        ));
+                    };
+                    Some(principal.id())
+                } else {
+                    None
+                };
+                let revoked = PgAuthTokenRepository
+                    .revoke_all(&mut transaction, principal_id, Utc::now())
+                    .await
+                    .map_err(repository)?;
+                Ok((transaction, TokenRevokeAllOutcome { revoked }))
+            })
             .await
-            .map_err(repository)?;
-        Ok(session.revisioned(TokenRevokeAllOutcome { revoked }))
+            .map_err(DatabaseAccessError::from)??;
+        session.checkpoint()?;
+        transaction.commit().await.map_err(connection_error)?;
+        Ok(session.revisioned(outcome))
     }
 
     pub(super) async fn list(

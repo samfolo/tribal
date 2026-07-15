@@ -225,7 +225,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
             .await;
 
         match result {
-            Ok(row) => Ok(map_auth_token_row(&row)),
+            Ok(row) => map_auth_token_row(&row),
             Err(e) => {
                 if let Some(uv) = super::common::constraint::try_into_unique_violation(&e) {
                     Err(uv)
@@ -255,7 +255,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
                 source: e,
             })?;
 
-        Ok(row.as_ref().map(map_auth_token_row))
+        row.as_ref().map(map_auth_token_row).transpose()
     }
 
     async fn find_by_id(
@@ -272,7 +272,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
                 context: format!("finding auth token by id {id}"),
                 source,
             })?;
-        Ok(row.as_ref().map(map_auth_token_row))
+        row.as_ref().map(map_auth_token_row).transpose()
     }
 
     async fn find_by_principal_id(
@@ -295,7 +295,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
                 source: e,
             })?;
 
-        Ok(rows.iter().map(map_auth_token_row).collect())
+        rows.iter().map(map_auth_token_row).collect()
     }
 
     async fn revoke(
@@ -335,7 +335,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
                 id: id.to_string(),
             })?;
 
-        Ok((map_auth_token_row(&row), affected > 0))
+        Ok((map_auth_token_row(&row)?, affected > 0))
     }
 
     async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<AuthToken>, DbError> {
@@ -350,7 +350,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
                     source: e,
                 })?;
 
-        Ok(rows.iter().map(map_auth_token_row).collect())
+        rows.iter().map(map_auth_token_row).collect()
     }
 
     async fn revoke_all(
@@ -469,7 +469,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
             context: "listing a token inventory page".to_owned(),
             source,
         })?;
-        Ok(rows.into_iter().map(map_inventory_row).collect())
+        rows.into_iter().map(map_inventory_row).collect()
     }
 }
 
@@ -477,24 +477,16 @@ impl AuthTokenRepository for PgAuthTokenRepository {
 // Row mapping
 // ---------------------------------------------------------------------------
 
-const EXPECT_VALID_SCOPE_IN_DB: &str = "invariant: database contains valid scopes";
-
 /// Maps a raw `sqlx::Row` from an auth token query into an
 /// [`AuthToken`].
-///
-/// # Panics
-///
-/// Panics if a scope value stored in the database fails to parse. The
-/// application only writes validated scopes, so invalid values indicate
-/// data corruption.
-fn map_auth_token_row(r: &sqlx::postgres::PgRow) -> AuthToken {
+fn map_auth_token_row(r: &sqlx::postgres::PgRow) -> Result<AuthToken, DbError> {
     let scope_strings: Vec<String> = r.get("scopes");
     let scopes = scope_strings
         .iter()
-        .map(|s| Scope::parse(s).unwrap_or_else(|_| panic!("{EXPECT_VALID_SCOPE_IN_DB}: {s:?}")))
-        .collect();
+        .map(|scope| Scope::parse(scope).map_err(scope_decode_error))
+        .collect::<Result<Vec<_>, _>>()?;
 
-    AuthToken::builder()
+    Ok(AuthToken::builder()
         .id(AuthTokenId::from(r.get::<uuid::Uuid, _>("id")))
         .token_hash(r.get("token_hash"))
         .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
@@ -503,18 +495,16 @@ fn map_auth_token_row(r: &sqlx::postgres::PgRow) -> AuthToken {
         .expires_at(r.get("expires_at"))
         .created_at(r.get("created_at"))
         .revoked_at(r.get("revoked_at"))
-        .build()
+        .build())
 }
 
-fn map_inventory_row(row: AuthTokenInventoryDbRow) -> AuthTokenInventoryRow {
+fn map_inventory_row(row: AuthTokenInventoryDbRow) -> Result<AuthTokenInventoryRow, DbError> {
     let scopes = row
         .scopes
         .into_iter()
-        .map(|scope| {
-            Scope::parse(&scope).unwrap_or_else(|_| panic!("{EXPECT_VALID_SCOPE_IN_DB}: {scope:?}"))
-        })
-        .collect();
-    AuthTokenInventoryRow {
+        .map(|scope| Scope::parse(&scope).map_err(scope_decode_error))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(AuthTokenInventoryRow {
         token: AuthToken::builder()
             .id(AuthTokenId::from(row.id))
             .token_hash(row.token_hash)
@@ -526,5 +516,12 @@ fn map_inventory_row(row: AuthTokenInventoryDbRow) -> AuthTokenInventoryRow {
             .revoked_at(row.revoked_at)
             .build(),
         principal: row.principal_key,
+    })
+}
+
+fn scope_decode_error(source: tribal_domain::ScopeParseError) -> DbError {
+    DbError::QueryFailed {
+        context: "decoding auth token scopes".to_owned(),
+        source: sqlx::Error::Decode(Box::new(source)),
     }
 }

@@ -16,7 +16,7 @@ use tribal_wire::management::{
 use super::{
     super::{
         configuration::{ConfigAuthorityError, ResolvedConfigSnapshot},
-        worker::ConfigWorkerClient,
+        worker::{ConfigWorkerClient, ConfigWorkerRequestError},
     },
     operation::{OperationContext, OperationError},
 };
@@ -187,9 +187,12 @@ impl DatabaseAccess {
         operation: &OperationContext,
         expected_revision: Option<&ConfigRevision>,
     ) -> Result<ResolvedConfigSnapshot, DatabaseAccessError> {
-        let snapshot = operation
-            .cancel_safe(self.config.resolved_snapshot())
-            .await??;
+        let snapshot = self
+            .config
+            .for_operation(operation)
+            .resolved_snapshot()
+            .await
+            .map_err(config_worker_error)?;
         if let Some(expected) = expected_revision
             && expected != &snapshot.revision
         {
@@ -280,6 +283,13 @@ impl DatabaseAccess {
                 DatabaseInitialiseOutcome::Initialised
             };
         Ok(session.revisioned(outcome).into())
+    }
+}
+
+fn config_worker_error(error: ConfigWorkerRequestError) -> DatabaseAccessError {
+    match error {
+        ConfigWorkerRequestError::Operation(error) => DatabaseAccessError::Operation(error),
+        ConfigWorkerRequestError::Authority(error) => DatabaseAccessError::Configuration(error),
     }
 }
 

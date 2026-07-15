@@ -173,7 +173,7 @@ impl ReindexAdministration {
         session: &DatabaseSession,
     ) -> Result<(), ReindexAdministrationError> {
         let options = product
-            .genesis_options()
+            .genesis_options(session.operation())
             .await
             .map_err(ReindexAdministrationError::Public)?;
         if options.revision != session.revision {

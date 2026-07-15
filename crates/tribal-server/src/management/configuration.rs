@@ -667,51 +667,70 @@ fn managed_effect(effect: WriteEffect, runtime_attached: bool) -> ConfigWriteEff
 }
 
 pub(super) fn management_error(error: ConfigAuthorityError) -> ManagementResponseError {
-    let message = error.to_string();
-    let error = match error {
-        ConfigAuthorityError::Conflict { expected, actual } => {
-            ManagementError::ConfigConflict { expected, actual }
-        }
-        ConfigAuthorityError::PatchRefused { reason } => {
-            ManagementError::ConfigPatchRefused { reason }
-        }
+    tracing::error!(error = %error, "configuration management request failed");
+    let (message, error) = match error {
+        ConfigAuthorityError::Conflict { expected, actual } => (
+            "configuration revision conflict",
+            ManagementError::ConfigConflict { expected, actual },
+        ),
+        ConfigAuthorityError::PatchRefused { reason } => (
+            "configuration patch was refused",
+            ManagementError::ConfigPatchRefused { reason },
+        ),
         ConfigAuthorityError::Write { source } => {
-            let fields = source
-                .violations()
+            let violations = source.violations();
+            let is_invalid = violations.is_some();
+            let fields = violations
                 .into_iter()
                 .flatten()
                 .filter_map(|violation| tribal_domain::ConfigFieldPath::parse(&violation.key).ok())
                 .collect();
-            if source.violations().is_some() {
-                ManagementError::ConfigurationInvalid { fields }
+            if is_invalid {
+                (
+                    "configuration is invalid",
+                    ManagementError::ConfigurationInvalid { fields },
+                )
             } else {
-                ManagementError::ConfigPersistenceUnavailable {
-                    phase: ConfigPersistencePhase::NotCommitted,
-                    observation: ConfigPersistenceObservation::Unreadable,
-                }
+                (
+                    "configuration could not be persisted",
+                    ManagementError::ConfigPersistenceUnavailable {
+                        phase: ConfigPersistencePhase::NotCommitted,
+                        observation: ConfigPersistenceObservation::Unreadable,
+                    },
+                )
             }
         }
         ConfigAuthorityError::DurabilityUncertain {
             observed_digest, ..
-        } => ManagementError::ConfigPersistenceUnavailable {
-            phase: ConfigPersistencePhase::DurabilityUncertain,
-            observation: ConfigPersistenceObservation::Observed {
-                digest: observed_digest,
+        } => (
+            "configuration durability is uncertain",
+            ManagementError::ConfigPersistenceUnavailable {
+                phase: ConfigPersistencePhase::DurabilityUncertain,
+                observation: ConfigPersistenceObservation::Observed {
+                    digest: observed_digest,
+                },
             },
-        },
-        ConfigAuthorityError::Io { .. } | ConfigAuthorityError::StableWinnerUnavailable => {
+        ),
+        ConfigAuthorityError::Io { .. } | ConfigAuthorityError::StableWinnerUnavailable => (
+            "configuration state is unavailable",
             ManagementError::ConfigPersistenceUnavailable {
                 phase: ConfigPersistencePhase::DurabilityUncertain,
                 observation: ConfigPersistenceObservation::Unreadable,
-            }
-        }
-        ConfigAuthorityError::Invalid { .. }
-        | ConfigAuthorityError::UnknownKey { .. }
-        | ConfigAuthorityError::WorkerUnavailable => {
-            ManagementError::ConfigurationInvalid { fields: Vec::new() }
-        }
+            },
+        ),
+        ConfigAuthorityError::Invalid { .. } | ConfigAuthorityError::UnknownKey { .. } => (
+            "configuration request is invalid",
+            ManagementError::ConfigurationInvalid { fields: Vec::new() },
+        ),
+        ConfigAuthorityError::WorkerUnavailable => (
+            "configuration service is unavailable",
+            ManagementError::ConfigurationInvalid { fields: Vec::new() },
+        ),
     };
-    ManagementResponseError { message, error }
+    ManagementResponseError {
+        message: message.to_owned(),
+        error,
+    }
 }
 
 #[cfg(test)]
@@ -733,6 +752,23 @@ mod tests {
 
     fn literal(value: serde_json::Value) -> ConfigLiteral {
         ConfigLiteral::new(value)
+    }
+
+    #[test]
+    fn test_management_error_does_not_expose_internal_io_context() {
+        let sentinel = "private-config-path-and-source";
+        let response = management_error(ConfigAuthorityError::Io {
+            path: PathBuf::from(sentinel),
+            source: io::Error::other(sentinel),
+        });
+
+        let wire = serde_json::to_string(&response).expect("management error serialises");
+
+        assert!(!wire.contains(sentinel));
+        assert!(matches!(
+            response.error,
+            ManagementError::ConfigPersistenceUnavailable { .. }
+        ));
     }
 
     fn revision(authority: &ConfigAuthority) -> ConfigRevision {

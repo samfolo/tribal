@@ -170,7 +170,7 @@ struct PreparedAuthority {
     recovered: Option<RecoveredRuntime>,
 }
 
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "manager startup and ordered owner shutdown form one auditable sequence"
 )]
@@ -291,6 +291,8 @@ async fn run_async(
     let mut lifecycle_exit = None;
     let mut credential_exit = None;
     tokio::select! {
+        // Normal shutdown owns concurrent worker termination.
+        biased;
         () = shutdown.cancelled() => {}
         signal = tokio::signal::ctrl_c() => {
             signal.map_err(|source| ManageError::Signal { source })?;
@@ -744,12 +746,6 @@ fn conflict_record(conflict: AuthorityConflict) -> ManagerLaunchRecord {
                             .into_owned(),
                     },
                 },
-            },
-        },
-        AuthorityConflict::OneShot(descriptor) => ManagerLaunchRecord::Failed {
-            failure: ManagerLaunchFailure::AuthorityUnavailable {
-                config_path: config_path(&descriptor.canonical_config_path),
-                reason: AuthorityUnavailableReason::LeaseOwnerUnreachable,
             },
         },
         AuthorityConflict::Recovering {
