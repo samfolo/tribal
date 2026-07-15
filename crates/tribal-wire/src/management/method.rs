@@ -29,6 +29,7 @@ pub trait ManagementCall {
 #[cfg(feature = "schema")]
 /// Schema roots projected from one registered call.
 pub struct ManagementCallSchema {
+    pub call_name: &'static str,
     pub method: ManagementMethod,
     pub request_name: String,
     pub request: schemars::schema::RootSchema,
@@ -90,6 +91,7 @@ macro_rules! management_calls {
 
             vec![$(
                 ManagementCallSchema {
+                    call_name: stringify!($call),
                     method: ManagementMethod::$variant,
                     request_name: <$request>::schema_name(),
                     request: schemars::schema_for!($request),

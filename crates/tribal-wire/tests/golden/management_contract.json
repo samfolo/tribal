@@ -5613,6 +5613,235 @@
       }
     }
   },
+  "ManagementCallCatalogue": {
+    "x-cortex-management-calls": [
+      {
+        "call": "ManagerSnapshotCall",
+        "method": "manager.snapshot",
+        "request": null,
+        "response": "LifecycleSnapshot"
+      },
+      {
+        "call": "RuntimeStartCall",
+        "method": "runtime.start",
+        "request": null,
+        "response": "RuntimeStartResult"
+      },
+      {
+        "call": "RuntimeStopCall",
+        "method": "runtime.stop",
+        "request": null,
+        "response": "RuntimeStopResult"
+      },
+      {
+        "call": "RuntimeRestartCall",
+        "method": "runtime.restart",
+        "request": null,
+        "response": "RuntimeRestartResult"
+      },
+      {
+        "call": "ManagerShutdownCall",
+        "method": "manager.shutdown",
+        "request": null,
+        "response": "ManagerShutdownResult"
+      },
+      {
+        "call": "ServerStatusCall",
+        "method": "server.status",
+        "request": null,
+        "response": "ManagedRuntimeStatusResult"
+      },
+      {
+        "call": "LogsTailCall",
+        "method": "logs.tail",
+        "request": "RuntimeLogsTailRequest",
+        "response": "RuntimeLogsTailResult"
+      },
+      {
+        "call": "TokenListCall",
+        "method": "token.list",
+        "request": "TokenListRequest",
+        "response": "Revisioned_for_TokenPage"
+      },
+      {
+        "call": "TokenCreateCall",
+        "method": "token.create",
+        "request": "TokenCreateRequest",
+        "response": "Revisioned_for_TokenCreateOutcome"
+      },
+      {
+        "call": "TokenRevokeCall",
+        "method": "token.revoke",
+        "request": "TokenRevokeRequest",
+        "response": "Revisioned_for_TokenRevokeOutcome"
+      },
+      {
+        "call": "TokenRevokeAllCall",
+        "method": "token.revokeAll",
+        "request": "TokenRevokeAllRequest",
+        "response": "Revisioned_for_TokenRevokeAllOutcome"
+      },
+      {
+        "call": "CheckReportCall",
+        "method": "check.report",
+        "request": null,
+        "response": "ReadinessReport"
+      },
+      {
+        "call": "DatabaseInitialiseCall",
+        "method": "database.initialise",
+        "request": "DatabaseInitialiseRequest",
+        "response": "DatabaseInitialiseResult"
+      },
+      {
+        "call": "ProjectRegisterCall",
+        "method": "project.register",
+        "request": "ProjectRegisterRequest",
+        "response": "Revisioned_for_ProjectRegisterOutcome"
+      },
+      {
+        "call": "ProjectListCall",
+        "method": "project.list",
+        "request": "ProjectListRequest",
+        "response": "Revisioned_for_ProjectPage"
+      },
+      {
+        "call": "IntegrationMcpConfigCall",
+        "method": "integration.mcpConfig",
+        "request": "McpConfigRequest",
+        "response": "Revisioned_for_McpConfigEntry"
+      },
+      {
+        "call": "ReindexRunCall",
+        "method": "reindex.run",
+        "request": "ReindexRunRequest",
+        "response": "Revisioned_for_ReindexRunOutcome"
+      },
+      {
+        "call": "ReindexCancelCall",
+        "method": "reindex.cancel",
+        "request": "ReindexCancelRequest",
+        "response": "Revisioned_for_ReindexCancelOutcome"
+      },
+      {
+        "call": "ReindexPruneCall",
+        "method": "reindex.prune",
+        "request": "ReindexPruneRequest",
+        "response": "Revisioned_for_ReindexPruneOutcome"
+      },
+      {
+        "call": "ThreadsPruneCall",
+        "method": "threads.prune",
+        "request": "ThreadPruneRequest",
+        "response": "Revisioned_for_ThreadPruneOutcome"
+      },
+      {
+        "call": "BootstrapRunCall",
+        "method": "bootstrap.run",
+        "request": "BootstrapRequest",
+        "response": "Revisioned_for_BootstrapOutcome"
+      },
+      {
+        "call": "DatabaseProbeCall",
+        "method": "database.probe",
+        "request": null,
+        "response": "ProbeReceipt"
+      },
+      {
+        "call": "CredentialProbeCall",
+        "method": "credential.probe",
+        "request": null,
+        "response": {
+          "array": "ProbeReceipt"
+        }
+      },
+      {
+        "call": "ConfigGetAllCall",
+        "method": "config.getAll",
+        "request": null,
+        "response": "ConfigDocument"
+      },
+      {
+        "call": "ConfigPathCall",
+        "method": "config.path",
+        "request": null,
+        "response": "ConfigFilePath"
+      },
+      {
+        "call": "ConfigSchemaCall",
+        "method": "config.schema",
+        "request": null,
+        "response": "ConfigSchema"
+      },
+      {
+        "call": "ConfigGetCall",
+        "method": "config.get",
+        "request": "ConfigGetRequest",
+        "response": "ConfigValue"
+      },
+      {
+        "call": "ConfigValidateCall",
+        "method": "config.validate",
+        "request": "ConfigValidateRequest",
+        "response": "ConfigValidation"
+      },
+      {
+        "call": "ConfigSetCall",
+        "method": "config.set",
+        "request": "ConfigSetRequest",
+        "response": "ConfigWriteOutcome"
+      },
+      {
+        "call": "ConfigPatchCall",
+        "method": "config.patch",
+        "request": "ConfigPatchRequest",
+        "response": "ConfigPatchOutcome"
+      },
+      {
+        "call": "ModelsCatalogueCall",
+        "method": "models.catalogue",
+        "request": null,
+        "response": "ModelsCatalogue"
+      },
+      {
+        "call": "ModelsSelectCall",
+        "method": "models.select",
+        "request": "ModelSelectionRequest",
+        "response": "ConfigPatchOutcome"
+      },
+      {
+        "call": "CredentialSourcesCall",
+        "method": "credential.sources",
+        "request": "CredentialSourcesRequest",
+        "response": "CredentialSources"
+      },
+      {
+        "call": "GraphGenesisOptionsCall",
+        "method": "graph.genesisOptions",
+        "request": null,
+        "response": "GenesisOptions"
+      },
+      {
+        "call": "GraphEmbeddingProfileCall",
+        "method": "graph.embedding_profile",
+        "request": null,
+        "response": "Revisioned_for_GraphEmbeddingProfile"
+      },
+      {
+        "call": "GraphConfigureGenesisCall",
+        "method": "graph.configureGenesis",
+        "request": "GenesisConfigurationRequest",
+        "response": "ConfigPatchOutcome"
+      },
+      {
+        "call": "GraphConvergeGenesisCall",
+        "method": "graph.convergeGenesis",
+        "request": "GenesisConvergenceRequest",
+        "response": "ConfigPatchOutcome"
+      }
+    ],
+    "x-cortex-swift-type": "management-call-catalogue"
+  },
   "ManagementEvent": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ManagementEvent",

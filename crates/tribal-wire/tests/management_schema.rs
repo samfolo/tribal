@@ -47,7 +47,13 @@ fn registered_call_catalogue_is_total() {
 
 fn contract_schemas() -> BTreeMap<String, RootSchema> {
     let mut schemas = BTreeMap::new();
-    for call in m::management_call_schemas() {
+    let calls = m::management_call_schemas();
+    insert_schema(
+        &mut schemas,
+        "ManagementCallCatalogue".to_owned(),
+        call_catalogue(&calls),
+    );
+    for call in calls {
         insert_renderable(&mut schemas, call.request_name, call.request);
         insert_renderable(&mut schemas, call.response_name, call.response);
     }
@@ -72,6 +78,46 @@ fn contract_schemas() -> BTreeMap<String, RootSchema> {
         insert_schema(&mut schemas, name.to_owned(), schema);
     }
     schemas
+}
+
+fn call_catalogue(calls: &[m::ManagementCallSchema]) -> RootSchema {
+    let calls = calls
+        .iter()
+        .map(|call| {
+            serde_json::json!({
+                "call": call.call_name,
+                "method": call.method.wire_name(),
+                "request": call_type(&call.request_name, &call.request),
+                "response": call_type(&call.response_name, &call.response),
+            })
+        })
+        .collect();
+    let mut schema = RootSchema::default();
+    schema.schema.extensions.insert(
+        "x-cortex-swift-type".to_owned(),
+        serde_json::Value::String("management-call-catalogue".to_owned()),
+    );
+    schema
+        .schema
+        .extensions
+        .insert("x-cortex-management-calls".to_owned(), calls);
+    schema
+}
+
+fn call_type(name: &str, schema: &RootSchema) -> serde_json::Value {
+    let shape = serde_json::to_value(&schema.schema).expect("call schema root serialises");
+    match shape.get("type").and_then(serde_json::Value::as_str) {
+        Some("null") => serde_json::Value::Null,
+        Some("array") => {
+            let item = shape
+                .pointer("/items/$ref")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|reference| reference.rsplit('/').next())
+                .expect("registered array calls name their item schema");
+            serde_json::json!({ "array": item })
+        }
+        _ => serde_json::Value::String(name.to_owned()),
+    }
 }
 
 fn insert_renderable(schemas: &mut BTreeMap<String, RootSchema>, name: String, schema: RootSchema) {
