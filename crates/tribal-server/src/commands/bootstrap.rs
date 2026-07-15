@@ -248,16 +248,16 @@ fn model_selections(
         });
     }
     if let Some((stage, _)) = endpoints.into_iter().next() {
+        return Err(command_error(BootstrapCommandError::OrphanModelEndpoint {
+            stage: stage.as_str().to_owned(),
+        }));
+    }
+    if let Some((stage, _)) = credentials.into_iter().next() {
         return Err(command_error(
             BootstrapCommandError::OrphanModelCredential {
                 stage: stage.as_str().to_owned(),
             },
         ));
-    }
-    if let Some((stage, _)) = credentials.into_iter().next() {
-        return Err(command_error(BootstrapCommandError::OrphanModelEndpoint {
-            stage: stage.as_str().to_owned(),
-        }));
     }
     Ok(selections)
 }
@@ -531,6 +531,48 @@ mod tests {
             Some(BootstrapGenesisCredential::Explicit {
                 credential: CredentialInput::Source { source }
             }) if source == genesis_source
+        ));
+    }
+
+    #[test]
+    fn test_orphan_model_endpoint_is_reported_as_an_endpoint() {
+        let endpoints = BTreeMap::from([(
+            InferenceStageArg::Extraction,
+            EndpointSelection::ProviderDefault,
+        )]);
+
+        let error = model_selections(Vec::new(), endpoints, BTreeMap::new())
+            .expect_err("orphan endpoint is refused");
+        let AppError::Management { source } = error else {
+            panic!("bootstrap validation error");
+        };
+
+        assert!(matches!(
+            source.downcast_ref::<BootstrapCommandError>(),
+            Some(BootstrapCommandError::OrphanModelEndpoint { stage })
+                if stage == "extraction"
+        ));
+    }
+
+    #[test]
+    fn test_orphan_model_credential_is_reported_as_a_credential() {
+        let credentials = BTreeMap::from([(
+            InferenceStageArg::Extraction,
+            CredentialInput::Literal {
+                value: SecretLiteral::try_from("secret".to_owned()).expect("credential is valid"),
+            },
+        )]);
+
+        let error = model_selections(Vec::new(), BTreeMap::new(), credentials)
+            .expect_err("orphan credential is refused");
+        let AppError::Management { source } = error else {
+            panic!("bootstrap validation error");
+        };
+
+        assert!(matches!(
+            source.downcast_ref::<BootstrapCommandError>(),
+            Some(BootstrapCommandError::OrphanModelCredential { stage })
+                if stage == "extraction"
         ));
     }
 }
