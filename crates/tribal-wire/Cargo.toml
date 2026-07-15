@@ -22,6 +22,10 @@ zeroize.workspace = true
 
 tribal-domain = { path = "../tribal-domain" }
 
+[build-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
 [dev-dependencies]
 # The golden-schema test generates schemas under the `schema` feature; it is
 # gated on that feature, so schemars is unused when the feature is off.
