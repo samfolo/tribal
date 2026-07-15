@@ -803,7 +803,7 @@ fn thread_error(error: thread::ThreadAdministrationError) -> ManagementResponseE
 }
 
 #[cfg(test)]
-mod dispatch {
+mod tests {
     use super::*;
 
     #[test]

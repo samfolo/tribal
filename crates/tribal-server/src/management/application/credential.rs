@@ -1157,7 +1157,7 @@ fn file_error(path: &Path, source: io::Error) -> CredentialStoreError {
 }
 
 #[cfg(test)]
-mod recovery {
+mod tests {
     use std::sync::{Arc, Mutex};
 
     use chrono::Utc;

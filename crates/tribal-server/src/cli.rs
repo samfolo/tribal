@@ -19,7 +19,7 @@ pub use command::{
 };
 
 #[cfg(test)]
-mod projection {
+mod tests {
     mod core {
         use clap::Parser as _;
 

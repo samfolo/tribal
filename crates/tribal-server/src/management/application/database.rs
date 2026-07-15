@@ -341,7 +341,7 @@ pub(super) async fn find_or_create_principal(
 }
 
 #[cfg(test)]
-mod revision_session {
+mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
