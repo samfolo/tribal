@@ -3,8 +3,8 @@
 
 use std::process::Command;
 
-use tribal_config::TribalConfig;
-use tribal_domain::{ProviderKind, normalise_endpoint_url};
+use tribal_config::{ProviderConnectionConfig, TribalConfig};
+use tribal_domain::{ProviderConnectionName, ProviderKind, normalise_endpoint_url};
 use tribal_test_utils::{TestDb, ensure_genesis_profile_with_endpoint, env_lock};
 
 use super::common::{
@@ -76,11 +76,18 @@ async fn test_validate_failure_targeted_skip_for_provider_under_providers_flag()
     let ctx = TestDb::new().await;
     let env = TestEnv::new();
     let _pool = fresh_db(&ctx).await;
-    // An inference stage missing its api key trips a config-validate failure
+    // An inference connection missing its API key trips a config-validate failure
     // and a targeted skip of that stage's provider probe.
     let mut config = TribalConfig::minimum_valid(ctx.database_url());
-    config.inference.triage.provider = ProviderKind::OpenAi;
-    config.inference.triage.api_key = None;
+    let connection = ProviderConnectionName::parse("missing_triage_key").unwrap();
+    config.provider_connections.insert(
+        connection.clone(),
+        ProviderConnectionConfig::OpenAi {
+            base_url: "https://api.openai.com/v1".to_owned(),
+            api_key: None,
+        },
+    );
+    config.inference.triage.connection = connection;
     write_config(&env.config_path, &config);
 
     let (stdout, _stderr, _output) = run_check(CheckRun {
@@ -99,16 +106,23 @@ async fn test_validate_failure_targeted_skip_for_provider_under_providers_flag()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_keyless_embedding_genesis_fails_the_provider_probe() {
+async fn test_unreachable_embedding_connection_fails_the_provider_probe() {
     let _env = env_lock().await;
     let ctx = TestDb::new().await;
     let env = TestEnv::new();
     let _pool = fresh_db(&ctx).await;
-    // An OpenAI embedding genesis resolves its credential through the
-    // catalogue; with no matching entry the re-homed probe fails closed
-    // rather than being skipped, and the config itself stays valid.
+    // A fully configured OpenAI embedding connection remains valid while its
+    // unreachable endpoint makes the provider probe fail closed.
     let mut config = TribalConfig::minimum_valid(ctx.database_url());
-    config.init.embedding.provider = ProviderKind::OpenAi;
+    let connection = ProviderConnectionName::parse("unreachable_embedding").unwrap();
+    config.provider_connections.insert(
+        connection.clone(),
+        ProviderConnectionConfig::OpenAi {
+            base_url: "http://127.0.0.1:9/v1".to_owned(),
+            api_key: Some("sk-check-unreachable".parse().unwrap()),
+        },
+    );
+    config.init.embedding.connection = connection;
     config.init.embedding.model = "text-embedding-3-small".to_owned();
     write_config(&env.config_path, &config);
 
@@ -295,7 +309,7 @@ async fn test_embedding_profile_fails_on_an_unresolvable_active_credential() {
     let mut conn = pool.acquire().await.expect("acquire connection");
     let base_url =
         normalise_endpoint_url(ProviderKind::OpenAi.default_base_url().unwrap()).unwrap();
-    // An OpenAI active profile with no matching catalogue entry is the
+    // An OpenAI active profile with no matching provider connection is the
     // fail-closed condition the next boot would trip.
     ensure_genesis_profile_with_endpoint(
         &mut conn,

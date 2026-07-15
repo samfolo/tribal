@@ -901,7 +901,7 @@ prompts:
                         base_url: https://api.openai.com/v1\n  openai_secondary:\n    \
                         provider: openai\n    base_url: https://openai.example/v1\ninit:\n  \
                         embedding:\n    connection: openai_default\n";
-            jail.create_file("tribal.yaml", &yaml)?;
+            jail.create_file("tribal.yaml", yaml)?;
             jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
 
             let path = jail.directory().join("tribal.yaml");

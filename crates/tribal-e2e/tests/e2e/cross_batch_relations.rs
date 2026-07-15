@@ -1,9 +1,11 @@
 use serde_json::json;
+use tribal_config::InferenceStage;
 use tribal_domain::{KnowledgeKind, ProviderKind};
 use tribal_test_utils::item;
 
 use crate::harness::{
     assertions::assert_success,
+    config::use_inference_provider,
     fixtures::{ExtractionFixture, ReferenceSpec, RelationFixture, candidate, hint, novel, relate},
     server::TestHarness,
     tool_call::tool_result_json,
@@ -16,14 +18,21 @@ use crate::harness::{
 /// Theme: Canopy's event sourcing architecture — a new performance
 /// fact supports the original architecture decision, and a companion
 /// monitoring heuristic is extracted alongside it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario reads as one linear narrative"
+)]
 #[tokio::test]
 async fn test_cross_batch_relations() {
     let mut harness = TestHarness::init(|setup| {
         // Anthropic triage exercises the Anthropic envelope abstraction.
         setup.config(|c| {
-            c.inference.triage.provider = ProviderKind::Anthropic;
-            c.inference.triage.api_key =
-                Some("sk-ant-e2e-000000".parse().expect("test fixture is valid"));
+            use_inference_provider(
+                c,
+                InferenceStage::Triage,
+                ProviderKind::Anthropic,
+                Some("sk-ant-e2e-000000"),
+            );
         });
 
         setup.graph(|g| {

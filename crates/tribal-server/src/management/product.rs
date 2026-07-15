@@ -15,15 +15,16 @@ use tribal_domain::{
 };
 use tribal_inference::{KnownModel, known_models};
 use tribal_wire::management::{
-    AuthenticationSettingsSnapshot, ClientRegistrationAvailability,
-    ClientRegistrationUnavailableReason, ConfigDocument, ConfigLiteral, ConfigPatchChange,
-    ConfigPatchOutcome, ConfigPatchRequest, ConfigRevision, CredentialMutation,
-    CredentialMutationRefusal, CredentialRequirement, DatabaseConnectionSummary,
-    DatabaseEndpointSummary, EmbeddingDimensions, EmbeddingModelOption, EmbeddingProfileRevision,
-    EmbeddingProfileSummary, EndpointRequirement, GenesisConfigurationRequest,
-    GenesisConnectionOption, GenesisConvergenceRequest, GenesisEmbeddingInput,
-    GenesisModelConstraint, GenesisModelOptions, GenesisOptions, GenesisProviderAvailability,
-    GenesisUnavailableReason, GraphEmbeddingProfile, InferenceStage, KnownModelEntry, KnownModelId,
+    AuthenticationSettingsSnapshot, CheckName, CheckObservation, CheckResult, CheckSubject,
+    ClientRegistrationAvailability, ClientRegistrationUnavailableReason, ConfigDiagnosticLocation,
+    ConfigDocument, ConfigLiteral, ConfigPatchChange, ConfigPatchOutcome, ConfigPatchRequest,
+    ConfigPersistenceObservation, ConfigRevision, CredentialMutation, CredentialMutationRefusal,
+    CredentialRequirement, DatabaseConnectionSummary, DatabaseEndpointSummary, DegradedReason,
+    EmbeddingDimensions, EmbeddingModelOption, EmbeddingProfileRevision, EmbeddingProfileSummary,
+    EndpointRequirement, GenesisConfigurationRequest, GenesisConnectionOption,
+    GenesisConvergenceRequest, GenesisEmbeddingInput, GenesisModelConstraint, GenesisModelOptions,
+    GenesisOptions, GenesisProviderAvailability, GenesisUnavailableReason, GraphEmbeddingProfile,
+    InferenceStage, KnownModelEntry, KnownModelId, LifecyclePhase, LifecycleSnapshot,
     ManagementError, ManagementResponseError, ModelAccess, ModelAvailability,
     ModelSettingsCapability, ModelUnavailableReason, ModelsCatalogue, ProcessingProfile,
     ProcessingProfileSetRequest, ProcessingProfileSnapshot, ProviderConnectionAvailability,
@@ -32,9 +33,10 @@ use tribal_wire::management::{
     ProviderConnectionRemoveRequest, ProviderConnectionSummary,
     ProviderConnectionUnavailableReason, ProviderConnectionUpsertRequest, ProviderConnectionUse,
     ProviderConnectionsCatalogue, ProviderCredentialSummary, ProviderEndpointSummary, Revisioned,
-    SecretPresence, SettingsResetPreview, SettingsResetPreviewRequest, SettingsResetScope,
-    SettingsSetupFocus, SettingsSetupReason, SettingsSetupSnapshot, SettingsSetupStep,
-    SettingsSetupStepKind, SettingsSetupStepState,
+    SecretPresence, SettingsFocusDestination, SettingsPane, SettingsResetPreview,
+    SettingsResetPreviewRequest, SettingsResetScope, SettingsSetupFocus, SettingsSetupReason,
+    SettingsSetupSnapshot, SettingsSetupStep, SettingsSetupStepKind, SettingsSetupStepState,
+    StartBlockedVerdict, StartVerdict, StoppedState,
 };
 
 use super::{
@@ -73,6 +75,7 @@ impl ProductSession {
     pub(in crate::management) async fn setup_snapshot(
         &self,
         operation: &OperationContext,
+        lifecycle: &LifecycleSnapshot,
     ) -> Result<SettingsSetupSnapshot, ManagementResponseError> {
         let document = self
             .config
@@ -83,14 +86,38 @@ impl ProductSession {
         match document {
             ConfigDocument::DurableValid { .. } => {
                 let snapshot = self.snapshot(operation).await?;
-                Ok(setup_snapshot(&snapshot.config, snapshot.revision))
+                Ok(setup_snapshot(
+                    &snapshot.config,
+                    snapshot.revision,
+                    lifecycle,
+                ))
             }
-            ConfigDocument::DurableInvalid { revision } => Ok(invalid_setup_snapshot(revision)),
-            ConfigDocument::UncertainValid { .. }
-            | ConfigDocument::UncertainInvalid { .. }
-            | ConfigDocument::Unreadable { .. } => Err(public_error(
+            ConfigDocument::DurableInvalid { revision } => {
+                Ok(invalid_setup_snapshot(revision, lifecycle))
+            }
+            ConfigDocument::UncertainValid {
+                observed_digest,
+                phase,
+                ..
+            }
+            | ConfigDocument::UncertainInvalid {
+                observed_digest,
+                phase,
+            } => Err(public_error(
                 "configuration durability is unavailable",
-                ManagementError::InternalInvariant,
+                ManagementError::ConfigPersistenceUnavailable {
+                    phase,
+                    observation: ConfigPersistenceObservation::Observed {
+                        digest: observed_digest,
+                    },
+                },
+            )),
+            ConfigDocument::Unreadable { phase } => Err(public_error(
+                "configuration durability is unavailable",
+                ManagementError::ConfigPersistenceUnavailable {
+                    phase,
+                    observation: ConfigPersistenceObservation::Unreadable,
+                },
             )),
         }
     }
@@ -888,24 +915,73 @@ fn embedding_model(model: &str, display_name: &str, maximum: u32) -> EmbeddingMo
     }
 }
 
-fn setup_snapshot(config: &TribalConfig, revision: ConfigRevision) -> SettingsSetupSnapshot {
-    let database_complete = !config.database.url.is_empty();
-    let providers_complete = !config.provider_connections.is_empty();
+fn setup_snapshot(
+    config: &TribalConfig,
+    revision: ConfigRevision,
+    lifecycle: &LifecycleSnapshot,
+) -> SettingsSetupSnapshot {
+    let (blockers, observations) = setup_readiness(lifecycle);
+    let database_blocker = blockers.iter().copied().find(|check| {
+        matches!(
+            check,
+            CheckName::DatabaseReachable | CheckName::MigrationsCurrent
+        )
+    });
+    let database_complete = !config.database.url.is_empty() && database_blocker.is_none();
+
+    let referenced = [
+        &config.inference.extraction.connection,
+        &config.inference.triage.connection,
+        &config.inference.relation.connection,
+        &config.init.embedding.connection,
+    ];
+    let missing_connection = referenced
+        .iter()
+        .copied()
+        .find(|name| config.provider_connections.get(name.as_str()).is_none());
+    let missing_credential = referenced.iter().copied().find(|name| {
+        config
+            .provider_connections
+            .get(name.as_str())
+            .is_some_and(|connection| {
+                connection.provider().requires_api_key()
+                    && connection
+                        .api_key()
+                        .is_none_or(|key| key.as_str().is_empty())
+            })
+    });
+    let providers_complete = missing_connection.is_none() && missing_credential.is_none();
+
+    let graph_drift = blockers.contains(&CheckName::EmbeddingProfile);
     let graph_complete = config
         .provider_connections
         .get(config.init.embedding.connection.as_str())
-        .is_some();
+        .is_some()
+        && !graph_drift;
+    let database_reason = match database_blocker {
+        Some(CheckName::MigrationsCurrent) => SettingsSetupReason::MigrationsNotCurrent,
+        Some(_) => SettingsSetupReason::DatabaseUnavailable,
+        None if config.database.url.is_empty() => SettingsSetupReason::DatabaseUnconfigured,
+        None => SettingsSetupReason::DatabaseInvalid,
+    };
+    let provider_reason = if missing_connection.is_some() {
+        SettingsSetupReason::ProviderConnectionMissing
+    } else if missing_credential.is_some() {
+        SettingsSetupReason::ProviderCredentialMissing
+    } else {
+        SettingsSetupReason::ProviderConnectionMissing
+    };
     let steps = vec![
         setup_step(
             SettingsSetupStepKind::Connection,
             database_complete,
-            SettingsSetupReason::DatabaseUnconfigured,
+            database_reason,
             None,
         ),
         setup_step(
             SettingsSetupStepKind::ProviderConnections,
             providers_complete,
-            SettingsSetupReason::ProviderConnectionMissing,
+            provider_reason,
             (!database_complete).then_some(SettingsSetupStepKind::Connection),
         ),
         setup_step(
@@ -917,21 +993,35 @@ fn setup_snapshot(config: &TribalConfig, revision: ConfigRevision) -> SettingsSe
         setup_step(
             SettingsSetupStepKind::GraphGenesis,
             graph_complete,
-            SettingsSetupReason::GraphGenesisInvalid,
+            if graph_drift {
+                SettingsSetupReason::GraphProfileDrift
+            } else {
+                SettingsSetupReason::GraphGenesisInvalid
+            },
             (!providers_complete).then_some(SettingsSetupStepKind::ProviderConnections),
         ),
     ];
-    let focus = steps.iter().find_map(|step| match &step.state {
-        SettingsSetupStepState::NeedsAction { .. } => Some(match step.step {
-            SettingsSetupStepKind::Connection => SettingsSetupFocus::Connection,
-            SettingsSetupStepKind::ProviderConnections => SettingsSetupFocus::ProviderConnection {
-                name: config.init.embedding.connection.clone(),
-            },
-            SettingsSetupStepKind::ProcessingProfile => SettingsSetupFocus::ProcessingProfile,
-            SettingsSetupStepKind::GraphGenesis => SettingsSetupFocus::GraphGenesis,
-        }),
-        SettingsSetupStepState::Complete | SettingsSetupStepState::Blocked { .. } => None,
-    });
+    let focus = blockers
+        .first()
+        .copied()
+        .map(|check| readiness_focus(config, check, observations))
+        .or_else(|| {
+            steps.iter().find_map(|step| match &step.state {
+                SettingsSetupStepState::NeedsAction { .. } => Some(match step.step {
+                    SettingsSetupStepKind::Connection => SettingsSetupFocus::Connection,
+                    SettingsSetupStepKind::ProviderConnections => {
+                        SettingsSetupFocus::ProviderConnection {
+                            name: config.init.embedding.connection.clone(),
+                        }
+                    }
+                    SettingsSetupStepKind::ProcessingProfile => {
+                        SettingsSetupFocus::ProcessingProfile
+                    }
+                    SettingsSetupStepKind::GraphGenesis => SettingsSetupFocus::GraphGenesis,
+                }),
+                SettingsSetupStepState::Complete | SettingsSetupStepState::Blocked { .. } => None,
+            })
+        });
     SettingsSetupSnapshot {
         revision,
         focus,
@@ -939,37 +1029,327 @@ fn setup_snapshot(config: &TribalConfig, revision: ConfigRevision) -> SettingsSe
     }
 }
 
-fn invalid_setup_snapshot(revision: ConfigRevision) -> SettingsSetupSnapshot {
+fn setup_readiness(lifecycle: &LifecycleSnapshot) -> (Vec<CheckName>, &[CheckObservation]) {
+    match &lifecycle.phase {
+        LifecyclePhase::Unconfigured { readiness, .. } => {
+            let StartBlockedVerdict::Blocked { first, rest } = &readiness.start;
+            let mut blockers = vec![*first];
+            blockers.extend(rest.iter().copied());
+            (blockers, &readiness.checks)
+        }
+        LifecyclePhase::Stopped {
+            state: StoppedState::Ready { readiness, .. },
+        } => (Vec::new(), &readiness.checks),
+        LifecyclePhase::Stopped {
+            state: StoppedState::ReadinessUnavailable { last_report, .. },
+        } => last_report
+            .as_ref()
+            .map_or((Vec::new(), &[]), readiness_evidence),
+        LifecyclePhase::Degraded { reason, .. } => match reason {
+            DegradedReason::Readiness { report } => {
+                let blockers = start_blockers(&report.start);
+                (blockers, &report.checks)
+            }
+            DegradedReason::RuntimeControlLost { report, .. } => readiness_evidence(report),
+        },
+        LifecyclePhase::Starting
+        | LifecyclePhase::Healthy { .. }
+        | LifecyclePhase::VersionMismatch { .. }
+        | LifecyclePhase::Stopping { .. }
+        | LifecyclePhase::CancellingEarlyChild { .. }
+        | LifecyclePhase::RuntimeUnresponsive { .. }
+        | LifecyclePhase::ManagerTerminating { .. } => (Vec::new(), &[]),
+    }
+}
+
+fn readiness_evidence(
+    report: &tribal_wire::management::ReadinessReport,
+) -> (Vec<CheckName>, &[CheckObservation]) {
+    (start_blockers(&report.start), &report.checks)
+}
+
+fn start_blockers(verdict: &StartVerdict) -> Vec<CheckName> {
+    match verdict {
+        StartVerdict::Clear => Vec::new(),
+        StartVerdict::Blocked { first, rest } => {
+            let mut blockers = vec![*first];
+            blockers.extend(rest.iter().copied());
+            blockers
+        }
+    }
+}
+
+fn readiness_focus(
+    config: &TribalConfig,
+    check: CheckName,
+    observations: &[CheckObservation],
+) -> SettingsSetupFocus {
+    match check {
+        CheckName::DatabaseReachable | CheckName::MigrationsCurrent => {
+            SettingsSetupFocus::Connection
+        }
+        CheckName::ProviderEmbedding => SettingsSetupFocus::ProviderConnection {
+            name: config.init.embedding.connection.clone(),
+        },
+        CheckName::ProviderExtraction => SettingsSetupFocus::ProviderConnection {
+            name: config.inference.extraction.connection.clone(),
+        },
+        CheckName::ProviderTriage => SettingsSetupFocus::ProviderConnection {
+            name: config.inference.triage.connection.clone(),
+        },
+        CheckName::ProviderRelation => SettingsSetupFocus::ProviderConnection {
+            name: config.inference.relation.connection.clone(),
+        },
+        CheckName::EmbeddingProfile => SettingsSetupFocus::GraphGenesis,
+        CheckName::ConfigParse | CheckName::ConfigValidate => {
+            let subject = first_subject(check, observations);
+            specialised_config_focus(config, check, subject)
+        }
+        CheckName::ProjectResolution
+        | CheckName::ValidTokenExists
+        | CheckName::AdvertisedUrlReachable
+        | CheckName::BinaryUniqueness => SettingsSetupFocus::Readiness {
+            check,
+            subject: first_subject(check, observations),
+            destination: SettingsFocusDestination::Diagnostics,
+        },
+    }
+}
+
+fn specialised_config_focus(
+    config: &TribalConfig,
+    check: CheckName,
+    subject: Option<CheckSubject>,
+) -> SettingsSetupFocus {
+    match subject.as_ref().and_then(subject_pane) {
+        Some(SettingsPane::Connection) => SettingsSetupFocus::Connection,
+        Some(SettingsPane::Providers) => SettingsSetupFocus::ProviderConnection {
+            name: subject
+                .as_ref()
+                .and_then(subject_connection_name)
+                .unwrap_or_else(|| config.init.embedding.connection.clone()),
+        },
+        Some(SettingsPane::Pipeline) => SettingsSetupFocus::ProcessingProfile,
+        Some(SettingsPane::Graph) => SettingsSetupFocus::GraphGenesis,
+        Some(pane) => SettingsSetupFocus::Readiness {
+            check,
+            subject,
+            destination: SettingsFocusDestination::Pane { pane },
+        },
+        None => SettingsSetupFocus::Readiness {
+            check,
+            subject,
+            destination: SettingsFocusDestination::Diagnostics,
+        },
+    }
+}
+
+fn subject_connection_name(subject: &CheckSubject) -> Option<ProviderConnectionName> {
+    let raw = match subject {
+        CheckSubject::Configuration {
+            location: ConfigDiagnosticLocation::Field { path },
+        } => path
+            .as_str()
+            .strip_prefix("provider_connections.")?
+            .split('.')
+            .next()?,
+        CheckSubject::Credentials | CheckSubject::Project | CheckSubject::Runtime => return None,
+    };
+    ProviderConnectionName::parse(raw).ok()
+}
+
+fn first_subject(check: CheckName, observations: &[CheckObservation]) -> Option<CheckSubject> {
+    observations
+        .iter()
+        .find(|observation| check_name(&observation.result) == check)
+        .and_then(|observation| observation.subjects.first().cloned())
+}
+
+fn check_name(result: &CheckResult) -> CheckName {
+    match result {
+        CheckResult::Pass { name, .. }
+        | CheckResult::Warn { name, .. }
+        | CheckResult::Fail { name, .. }
+        | CheckResult::Skip { name, .. } => *name,
+    }
+}
+
+fn subject_pane(subject: &CheckSubject) -> Option<SettingsPane> {
+    match subject {
+        CheckSubject::Configuration {
+            location: ConfigDiagnosticLocation::Field { path },
+        } => pane_for_path(path.as_str()),
+        CheckSubject::Credentials => Some(SettingsPane::Providers),
+        CheckSubject::Project | CheckSubject::Runtime => None,
+    }
+}
+
+fn pane_for_path(path: &str) -> Option<SettingsPane> {
+    if path == "database" || path.starts_with("database.") {
+        Some(SettingsPane::Connection)
+    } else if path == "provider_connections" || path.starts_with("provider_connections.") {
+        Some(SettingsPane::Providers)
+    } else if path == "inference"
+        || path.starts_with("inference.")
+        || path == "agents"
+        || path.starts_with("agents.")
+    {
+        Some(SettingsPane::Pipeline)
+    } else if path == "init.embedding" || path.starts_with("init.embedding.") {
+        Some(SettingsPane::Graph)
+    } else if path == "auth"
+        || path.starts_with("auth.")
+        || path == "oauth"
+        || path.starts_with("oauth.")
+    {
+        Some(SettingsPane::Authentication)
+    } else if path == "retrieval" || path.starts_with("retrieval.") {
+        Some(SettingsPane::Retrieval)
+    } else if path == "prompts" || path.starts_with("prompts.") {
+        Some(SettingsPane::Prompts)
+    } else if path == "logging" || path.starts_with("logging.") {
+        Some(SettingsPane::Logging)
+    } else if path == "telemetry" || path.starts_with("telemetry.") {
+        Some(SettingsPane::Telemetry)
+    } else if path == "server" || path.starts_with("server.") {
+        Some(SettingsPane::Server)
+    } else if path == "worker" || path.starts_with("worker.") {
+        Some(SettingsPane::Worker)
+    } else {
+        None
+    }
+}
+
+fn invalid_setup_snapshot(
+    revision: ConfigRevision,
+    lifecycle: &LifecycleSnapshot,
+) -> SettingsSetupSnapshot {
+    let (blockers, observations) = setup_readiness(lifecycle);
+    let blocker = blockers.first().copied();
+    let focus = blocker.map(|check| {
+        let subject = first_subject(check, observations);
+        match check {
+            CheckName::ConfigParse | CheckName::ConfigValidate => {
+                invalid_config_focus(check, subject)
+            }
+            _ => SettingsSetupFocus::Readiness {
+                check,
+                subject,
+                destination: SettingsFocusDestination::Diagnostics,
+            },
+        }
+    });
+    let affected = focus.as_ref().and_then(setup_step_for_focus);
     SettingsSetupSnapshot {
         revision,
-        focus: Some(SettingsSetupFocus::Connection),
-        steps: vec![
-            SettingsSetupStep {
-                step: SettingsSetupStepKind::Connection,
-                state: SettingsSetupStepState::NeedsAction {
-                    reason: SettingsSetupReason::DatabaseInvalid,
-                },
-            },
-            SettingsSetupStep {
-                step: SettingsSetupStepKind::ProviderConnections,
-                state: SettingsSetupStepState::Blocked {
-                    by: SettingsSetupStepKind::Connection,
-                },
-            },
-            SettingsSetupStep {
-                step: SettingsSetupStepKind::ProcessingProfile,
-                state: SettingsSetupStepState::Blocked {
-                    by: SettingsSetupStepKind::Connection,
-                },
-            },
-            SettingsSetupStep {
-                step: SettingsSetupStepKind::GraphGenesis,
-                state: SettingsSetupStepState::Blocked {
-                    by: SettingsSetupStepKind::Connection,
-                },
-            },
-        ],
+        focus,
+        steps: setup_steps_for_invalid(affected, blocker),
     }
+}
+
+fn invalid_config_focus(check: CheckName, subject: Option<CheckSubject>) -> SettingsSetupFocus {
+    match subject.as_ref().and_then(subject_pane) {
+        Some(SettingsPane::Connection) => SettingsSetupFocus::Connection,
+        Some(SettingsPane::Providers) => subject
+            .as_ref()
+            .and_then(subject_connection_name)
+            .map_or_else(
+                || SettingsSetupFocus::Readiness {
+                    check,
+                    subject,
+                    destination: SettingsFocusDestination::Pane {
+                        pane: SettingsPane::Providers,
+                    },
+                },
+                |name| SettingsSetupFocus::ProviderConnection { name },
+            ),
+        Some(SettingsPane::Pipeline) => SettingsSetupFocus::ProcessingProfile,
+        Some(SettingsPane::Graph) => SettingsSetupFocus::GraphGenesis,
+        Some(pane) => SettingsSetupFocus::Readiness {
+            check,
+            subject,
+            destination: SettingsFocusDestination::Pane { pane },
+        },
+        None => SettingsSetupFocus::Readiness {
+            check,
+            subject,
+            destination: SettingsFocusDestination::Diagnostics,
+        },
+    }
+}
+
+fn setup_step_for_focus(focus: &SettingsSetupFocus) -> Option<SettingsSetupStepKind> {
+    match focus {
+        SettingsSetupFocus::Connection => Some(SettingsSetupStepKind::Connection),
+        SettingsSetupFocus::ProviderConnection { .. } => {
+            Some(SettingsSetupStepKind::ProviderConnections)
+        }
+        SettingsSetupFocus::ProcessingProfile => Some(SettingsSetupStepKind::ProcessingProfile),
+        SettingsSetupFocus::GraphGenesis => Some(SettingsSetupStepKind::GraphGenesis),
+        SettingsSetupFocus::Readiness {
+            destination: SettingsFocusDestination::Pane { pane },
+            ..
+        } => match pane {
+            SettingsPane::Connection => Some(SettingsSetupStepKind::Connection),
+            SettingsPane::Providers => Some(SettingsSetupStepKind::ProviderConnections),
+            SettingsPane::Pipeline => Some(SettingsSetupStepKind::ProcessingProfile),
+            SettingsPane::Graph => Some(SettingsSetupStepKind::GraphGenesis),
+            SettingsPane::Authentication
+            | SettingsPane::Retrieval
+            | SettingsPane::Prompts
+            | SettingsPane::Logging
+            | SettingsPane::Telemetry
+            | SettingsPane::Server
+            | SettingsPane::Worker => None,
+        },
+        SettingsSetupFocus::Readiness {
+            destination: SettingsFocusDestination::Diagnostics,
+            ..
+        } => None,
+    }
+}
+
+fn setup_steps_for_invalid(
+    affected: Option<SettingsSetupStepKind>,
+    blocker: Option<CheckName>,
+) -> Vec<SettingsSetupStep> {
+    let order = [
+        SettingsSetupStepKind::Connection,
+        SettingsSetupStepKind::ProviderConnections,
+        SettingsSetupStepKind::ProcessingProfile,
+        SettingsSetupStepKind::GraphGenesis,
+    ];
+    let affected_index = affected.and_then(|target| order.iter().position(|step| *step == target));
+    order
+        .into_iter()
+        .enumerate()
+        .map(|(index, step)| {
+            let state = match affected_index {
+                None => SettingsSetupStepState::Complete,
+                Some(target) if index < target => SettingsSetupStepState::Complete,
+                Some(target) if index > target => {
+                    SettingsSetupStepState::Blocked { by: order[target] }
+                }
+                Some(_) => SettingsSetupStepState::NeedsAction {
+                    reason: match step {
+                        SettingsSetupStepKind::Connection => SettingsSetupReason::DatabaseInvalid,
+                        SettingsSetupStepKind::ProviderConnections => {
+                            SettingsSetupReason::ReadinessBlocked {
+                                check: blocker.unwrap_or(CheckName::ConfigValidate),
+                            }
+                        }
+                        SettingsSetupStepKind::ProcessingProfile => {
+                            SettingsSetupReason::ProcessingProfileInvalid
+                        }
+                        SettingsSetupStepKind::GraphGenesis => {
+                            SettingsSetupReason::GraphGenesisInvalid
+                        }
+                    },
+                },
+            };
+            SettingsSetupStep { step, state }
+        })
+        .collect()
 }
 
 fn setup_step(
@@ -1322,7 +1702,17 @@ mod tests {
         let revision = ConfigRevision::from_digest(
             &tribal_wire::management::ConfigDigest::from_bytes(b"invalid"),
         );
-        let setup = invalid_setup_snapshot(revision);
+        let setup = invalid_setup_snapshot(
+            revision,
+            &blocked_lifecycle(
+                CheckName::ConfigValidate,
+                vec![CheckSubject::Configuration {
+                    location: ConfigDiagnosticLocation::Field {
+                        path: ConfigFieldPath::parse("database.url").unwrap(),
+                    },
+                }],
+            ),
+        );
         assert_eq!(setup.focus, Some(SettingsSetupFocus::Connection));
         assert!(matches!(
             setup.steps[0].state,
@@ -1330,6 +1720,134 @@ mod tests {
                 reason: SettingsSetupReason::DatabaseInvalid
             }
         ));
+    }
+
+    #[test]
+    fn test_setup_projection_uses_readiness_for_database_state_and_focus() {
+        let config = TribalConfig::minimum_valid("postgres://localhost/tribal");
+        let revision = ConfigRevision::from_digest(
+            &tribal_wire::management::ConfigDigest::from_bytes(b"configured"),
+        );
+        let lifecycle = blocked_lifecycle(CheckName::MigrationsCurrent, Vec::new());
+
+        let setup = setup_snapshot(&config, revision, &lifecycle);
+
+        assert_eq!(setup.focus, Some(SettingsSetupFocus::Connection));
+        assert!(matches!(
+            setup.steps[0].state,
+            SettingsSetupStepState::NeedsAction {
+                reason: SettingsSetupReason::MigrationsNotCurrent
+            }
+        ));
+        assert!(matches!(
+            setup.steps[1].state,
+            SettingsSetupStepState::Blocked {
+                by: SettingsSetupStepKind::Connection
+            }
+        ));
+    }
+
+    #[test]
+    fn test_setup_projection_preserves_unknown_readiness_subject() {
+        let config = TribalConfig::minimum_valid("postgres://localhost/tribal");
+        let revision = ConfigRevision::from_digest(
+            &tribal_wire::management::ConfigDigest::from_bytes(b"configured"),
+        );
+        let subject = CheckSubject::Project;
+        let lifecycle = blocked_lifecycle(CheckName::ProjectResolution, vec![subject.clone()]);
+
+        let setup = setup_snapshot(&config, revision, &lifecycle);
+
+        assert_eq!(
+            setup.focus,
+            Some(SettingsSetupFocus::Readiness {
+                check: CheckName::ProjectResolution,
+                subject: Some(subject),
+                destination: SettingsFocusDestination::Diagnostics,
+            })
+        );
+    }
+
+    #[test]
+    fn test_provider_health_focus_does_not_make_configuration_incomplete() {
+        let config = TribalConfig::minimum_valid("postgres://localhost/tribal");
+        let revision = ConfigRevision::from_digest(
+            &tribal_wire::management::ConfigDigest::from_bytes(b"configured"),
+        );
+        let lifecycle = blocked_lifecycle(CheckName::ProviderExtraction, Vec::new());
+
+        let setup = setup_snapshot(&config, revision, &lifecycle);
+
+        assert_eq!(
+            setup.focus,
+            Some(SettingsSetupFocus::ProviderConnection {
+                name: config.inference.extraction.connection.clone(),
+            })
+        );
+        assert_eq!(setup.steps[1].state, SettingsSetupStepState::Complete);
+    }
+
+    #[test]
+    fn test_invalid_provider_document_focuses_its_named_connection() {
+        let revision = ConfigRevision::from_digest(
+            &tribal_wire::management::ConfigDigest::from_bytes(b"invalid"),
+        );
+        let lifecycle = blocked_lifecycle(
+            CheckName::ConfigValidate,
+            vec![CheckSubject::Configuration {
+                location: ConfigDiagnosticLocation::Field {
+                    path: ConfigFieldPath::parse("provider_connections.ollama_default.base_url")
+                        .unwrap(),
+                },
+            }],
+        );
+
+        let setup = invalid_setup_snapshot(revision, &lifecycle);
+
+        assert_eq!(
+            setup.focus,
+            Some(SettingsSetupFocus::ProviderConnection {
+                name: ProviderConnectionName::parse("ollama_default").unwrap(),
+            })
+        );
+        assert!(matches!(
+            setup.steps[1].state,
+            SettingsSetupStepState::NeedsAction {
+                reason: SettingsSetupReason::ReadinessBlocked {
+                    check: CheckName::ConfigValidate
+                }
+            }
+        ));
+    }
+
+    fn blocked_lifecycle(check: CheckName, subjects: Vec<CheckSubject>) -> LifecycleSnapshot {
+        LifecycleSnapshot {
+            header: tribal_wire::management::LifecycleSnapshotHeader {
+                manager_instance_id: "manager".to_owned(),
+                revision: 1,
+                manager_version: "test".to_owned(),
+            },
+            phase: LifecyclePhase::Unconfigured {
+                readiness: tribal_wire::management::StartBlockedReadinessReport {
+                    start: StartBlockedVerdict::Blocked {
+                        first: check,
+                        rest: Vec::new(),
+                    },
+                    health: tribal_wire::management::HealthVerdict::NotApplicable,
+                    checks: vec![CheckObservation {
+                        result: CheckResult::Fail {
+                            name: check,
+                            detail: "blocked".to_owned(),
+                            remediation: "repair the subject".to_owned(),
+                        },
+                        scope: tribal_wire::management::ReadinessScope::Start,
+                        subjects,
+                    }],
+                },
+                focus: None,
+                failure: None,
+            },
+        }
     }
 
     #[test]

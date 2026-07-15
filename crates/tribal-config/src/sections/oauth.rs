@@ -8,10 +8,10 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
+use tribal_domain::TransportKind;
 use url::{Host, Url};
 
 use super::{root::TribalConfig, server::DEFAULT_BIND_ADDRESS};
-use tribal_domain::TransportKind;
 
 // ---------------------------------------------------------------------------
 // Defaults

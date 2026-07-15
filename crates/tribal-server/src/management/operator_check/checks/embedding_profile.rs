@@ -1,11 +1,9 @@
 //! Outcome constructors and action for the `embedding_profile` check.
 //!
-//! Reports the live embedding identity against the genesis seed and the
-//! catalogue: the active provider's credential being unresolvable is a fail
-//! (the boot fail-closed precondition), a live reindex run or quarantined
-//! items are a warning, and a genesis seed that no longer matches the live
-//! profile is informational state, never a warning, because the seed is stale
-//! by design once a corpus exists.
+//! Reports the live embedding identity against the genesis seed and provider
+//! connections. An unresolvable active credential is a boot-blocking failure;
+//! live reindex work or quarantined items are warnings. Genesis drift is
+//! informational because the seed is stale by design once a corpus exists.
 
 use tribal_config::{InitEmbeddingConfig, ProviderConnectionResolutionError, ProviderConnections};
 use tribal_db::{
@@ -57,7 +55,7 @@ impl CheckOutcome {
             },
             ProviderConnectionResolutionError::MissingConnection { .. }
             | ProviderConnectionResolutionError::MissingEndpoint { .. } => {
-                CheckRemediation::AddEmbeddingCredential { provider }
+                CheckRemediation::AddEmbeddingConnection { provider }
             }
         };
         Self::Fail {
@@ -93,8 +91,8 @@ impl CheckOutcome {
     }
 }
 
-/// Reports the active embedding profile against the genesis seed and the
-/// credential catalogue.
+/// Reports the active embedding profile against the genesis seed and provider
+/// connections.
 pub(in crate::management::operator_check) async fn act(state: &mut CheckState) -> CheckOutcome {
     let pool = state
         .pool
@@ -356,7 +354,7 @@ mod tests {
         assert!(detail.render().contains("no provider connection owns"));
         assert!(matches!(
             remediation,
-            CheckRemediation::AddEmbeddingCredential {
+            CheckRemediation::AddEmbeddingConnection {
                 provider: ProviderKind::OpenAi,
             },
         ));

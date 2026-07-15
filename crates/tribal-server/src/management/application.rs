@@ -115,7 +115,7 @@ impl<'a> ManagementApplication<'a> {
                     .await
                     .map_err(operation::public_error)?
                     .ok_or_else(|| internal_error("lifecycle owner is unavailable"))?;
-                let settings = self.product.setup_snapshot(&operation).await?;
+                let settings = self.product.setup_snapshot(&operation, &lifecycle).await?;
                 encode_call::<ManagerSnapshotCall>(Ok(ManagerSnapshot {
                     lifecycle,
                     settings,

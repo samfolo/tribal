@@ -54,8 +54,8 @@ impl SecretField {
 
 /// Whether `key` is a configuration path whose value reads back redacted —
 /// exactly the paths [`redact_secrets`] masks: a fixed [`SecretField`] leaf or a
-/// catalogue entry's `api_key`. A write of the redaction mask to such a key must
-/// be refused, never persisted over the real secret a redacted read hid.
+/// provider connection's `api_key`. A write of the redaction mask to such a key
+/// must be refused, never persisted over the real secret a redacted read hid.
 #[must_use]
 pub fn is_secret_key(key: &str) -> bool {
     SecretField::ALL.iter().any(|field| field.path() == key)

@@ -1,6 +1,9 @@
 use sqlx::PgPool;
-use tribal_config::{CredentialEntry, DEFAULT_EMBEDDING_DIMENSIONS, PromptSource, TribalConfig};
-use tribal_domain::{ProviderKind, normalise_endpoint_url};
+use tribal_config::{
+    DEFAULT_EMBEDDING_DIMENSIONS, InferenceStage, PromptSource, ProviderConnectionConfig,
+    TribalConfig,
+};
+use tribal_domain::{ProviderConnectionName, ProviderKind, normalise_endpoint_url};
 use tribal_inference::resolve_dimensions;
 use tribal_test_utils::ensure_genesis_profile_with_endpoint;
 
@@ -34,6 +37,11 @@ const RECLAIM_INTERVAL_MS: u64 = 500;
 /// Must be less than `TASK_TIMEOUT_MS` to satisfy validation.
 const REQUEST_TIMEOUT_MS: u64 = 4_000;
 
+const EMBEDDING_CONNECTION: &str = "e2e_embedding";
+const EXTRACTION_CONNECTION: &str = "e2e_extraction";
+const TRIAGE_CONNECTION: &str = "e2e_triage";
+const RELATION_CONNECTION: &str = "e2e_relation";
+
 // ---------------------------------------------------------------------------
 // Config builder
 // ---------------------------------------------------------------------------
@@ -63,11 +71,15 @@ pub fn test_config(
     // -- Providers -----------------------------------------------------------
     // The genesis seed points the embedding identity at the wiremock; a
     // concrete dimension keeps the synthetic mock vectors deterministic.
-    config.init.embedding.base_url = Some(embedding_url.to_owned());
+    config.init.embedding.connection =
+        insert_ollama_connection(&mut config, EMBEDDING_CONNECTION, embedding_url);
     config.init.embedding.dimensions = Some(DEFAULT_EMBEDDING_DIMENSIONS);
-    config.inference.extraction.base_url = Some(extraction_url.to_owned());
-    config.inference.triage.base_url = Some(triage_url.to_owned());
-    config.inference.relation.base_url = Some(relation_url.to_owned());
+    config.inference.extraction.connection =
+        insert_ollama_connection(&mut config, EXTRACTION_CONNECTION, extraction_url);
+    config.inference.triage.connection =
+        insert_ollama_connection(&mut config, TRIAGE_CONNECTION, triage_url);
+    config.inference.relation.connection =
+        insert_ollama_connection(&mut config, RELATION_CONNECTION, relation_url);
 
     // -- Prompts -------------------------------------------------------------
     config.prompts.source = PromptSource::Disk {
@@ -99,28 +111,53 @@ pub fn test_config(
 }
 
 /// Switches the genesis embedding identity to `OpenAI` for an E2E test and
-/// registers the matching `openai_default` catalogue credential.
+/// replaces its named connection with the matching endpoint and credential.
 ///
 /// The runtime resolves the live embedding identity from the active profile
-/// (seeded from `init.embedding`) and its credential from the catalogue, so a
+/// (seeded from `init.embedding`) and its credential from the connection, so a
 /// test exercising the `OpenAI` path sets both here, in its config override,
 /// against the embedding wiremock the harness already mounted.
 pub fn use_openai_embedding(config: &mut TribalConfig, api_key: &str) {
-    config.init.embedding.provider = ProviderKind::OpenAi;
-    let base_url = config
-        .init
-        .embedding
-        .base_url
-        .clone()
-        .unwrap_or_else(|| ProviderKind::OpenAi.default_base_url().unwrap().to_owned());
-    config.credentials.insert(
-        "openai_default".to_owned(),
-        CredentialEntry {
-            provider_kind: ProviderKind::OpenAi,
-            base_url,
-            api_key: Some(api_key.parse().expect("test fixture api key is valid")),
-        },
-    );
+    let connection = config.init.embedding.connection.clone();
+    replace_connection_provider(config, connection, ProviderKind::OpenAi, Some(api_key));
+}
+
+/// Changes one inference stage's named connection while preserving its mock endpoint.
+pub fn use_inference_provider(
+    config: &mut TribalConfig,
+    stage: InferenceStage,
+    provider: ProviderKind,
+    api_key: Option<&str>,
+) {
+    let connection = match stage {
+        InferenceStage::Extraction => config.inference.extraction.connection.clone(),
+        InferenceStage::Triage => config.inference.triage.connection.clone(),
+        InferenceStage::Relation => config.inference.relation.connection.clone(),
+    };
+    replace_connection_provider(config, connection, provider, api_key);
+}
+
+/// Resolves the provider owned by one inference stage's named connection.
+pub fn inference_provider(config: &TribalConfig, stage: InferenceStage) -> ProviderKind {
+    let connection = match stage {
+        InferenceStage::Extraction => &config.inference.extraction.connection,
+        InferenceStage::Triage => &config.inference.triage.connection,
+        InferenceStage::Relation => &config.inference.relation.connection,
+    };
+    config
+        .provider_connections
+        .require(connection)
+        .expect("E2E stage connection must exist")
+        .provider()
+}
+
+/// Resolves the provider owned by the genesis embedding connection.
+pub fn embedding_provider(config: &TribalConfig) -> ProviderKind {
+    config
+        .provider_connections
+        .require(&config.init.embedding.connection)
+        .expect("E2E embedding connection must exist")
+        .provider()
 }
 
 /// Seeds the genesis embedding profile from `init.embedding` so the seed graph
@@ -132,26 +169,62 @@ pub fn use_openai_embedding(config: &mut TribalConfig, api_key: &str) {
 /// builder constructs against.
 pub async fn seed_genesis_from_init(pool: &PgPool, config: &TribalConfig) {
     let init = &config.init.embedding;
-    let base_url = init
-        .base_url
-        .clone()
-        .or_else(|| init.provider.default_base_url().map(ToOwned::to_owned))
-        .expect("init.embedding.base_url or a provider default must be present");
-    let normalised =
-        normalise_endpoint_url(&base_url).expect("init.embedding.base_url must normalise");
-    let dimensions = resolve_dimensions(init.provider, &init.model, init.dimensions)
+    let connection = config
+        .provider_connections
+        .require(&init.connection)
+        .expect("E2E embedding connection must exist");
+    let provider = connection.provider();
+    let base_url = connection
+        .base_url()
+        .or_else(|| provider.default_base_url())
+        .expect("E2E embedding connection must expose an endpoint");
+    let normalised = normalise_endpoint_url(base_url).expect("embedding endpoint must normalise");
+    let dimensions = resolve_dimensions(provider, &init.model, init.dimensions)
         .expect("init.embedding dimensions must resolve");
 
     let mut conn = pool
         .acquire()
         .await
         .expect("acquire connection for genesis");
-    ensure_genesis_profile_with_endpoint(
-        &mut conn,
-        init.provider,
-        &init.model,
-        dimensions,
-        &normalised,
-    )
-    .await;
+    ensure_genesis_profile_with_endpoint(&mut conn, provider, &init.model, dimensions, &normalised)
+        .await;
+}
+
+fn insert_ollama_connection(
+    config: &mut TribalConfig,
+    name: &str,
+    base_url: &str,
+) -> ProviderConnectionName {
+    let name = ProviderConnectionName::parse(name).expect("E2E connection name is valid");
+    config.provider_connections.insert(
+        name.clone(),
+        ProviderConnectionConfig::Ollama {
+            base_url: base_url.to_owned(),
+        },
+    );
+    name
+}
+
+fn replace_connection_provider(
+    config: &mut TribalConfig,
+    name: ProviderConnectionName,
+    provider: ProviderKind,
+    api_key: Option<&str>,
+) {
+    let base_url = config
+        .provider_connections
+        .require(&name)
+        .expect("E2E connection must exist")
+        .base_url()
+        .map(ToOwned::to_owned)
+        .or_else(|| provider.default_base_url().map(ToOwned::to_owned))
+        .expect("E2E provider must expose an endpoint");
+    let api_key = api_key.map(|value| value.parse().expect("test fixture api key is valid"));
+    let connection = match provider {
+        ProviderKind::Ollama => ProviderConnectionConfig::Ollama { base_url },
+        ProviderKind::Anthropic => ProviderConnectionConfig::Anthropic { base_url, api_key },
+        ProviderKind::OpenAi => ProviderConnectionConfig::OpenAi { base_url, api_key },
+        ProviderKind::Platform => ProviderConnectionConfig::Platform {},
+    };
+    config.provider_connections.insert(name, connection);
 }

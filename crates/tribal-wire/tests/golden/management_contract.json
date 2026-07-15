@@ -4069,45 +4069,6 @@
                 ]
               }
             }
-          },
-          {
-            "description": "An entry in the dynamic credential catalogue.",
-            "type": "object",
-            "required": [
-              "data",
-              "kind"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "key"
-                ],
-                "properties": {
-                  "key": {
-                    "description": "The raw user-authored map key.",
-                    "type": "string"
-                  },
-                  "member": {
-                    "description": "The invalid member, or none when the key itself is invalid.",
-                    "anyOf": [
-                      {
-                        "$ref": "#/definitions/CredentialEntryMember"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                }
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "credential_entry"
-                ]
-              }
-            }
           }
         ]
       },
@@ -4134,32 +4095,6 @@
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-cortex-base64url-prefix": "cfg_",
         "x-cortex-swift-type": "canonical-base64url-32"
-      },
-      "CredentialEntryMember": {
-        "description": "A member of a dynamic credential entry.",
-        "oneOf": [
-          {
-            "description": "Credential provider kind.",
-            "type": "string",
-            "enum": [
-              "provider_kind"
-            ]
-          },
-          {
-            "description": "Credential endpoint URL.",
-            "type": "string",
-            "enum": [
-              "base_url"
-            ]
-          },
-          {
-            "description": "Credential API key.",
-            "type": "string",
-            "enum": [
-              "api_key"
-            ]
-          }
-        ]
       },
       "CustodyLossTerminationRuntime": {
         "description": "Runtime evidence legal after lifetime custody is lost.",
@@ -7734,45 +7669,6 @@
                 ]
               }
             }
-          },
-          {
-            "description": "An entry in the dynamic credential catalogue.",
-            "type": "object",
-            "required": [
-              "data",
-              "kind"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "key"
-                ],
-                "properties": {
-                  "key": {
-                    "description": "The raw user-authored map key.",
-                    "type": "string"
-                  },
-                  "member": {
-                    "description": "The invalid member, or none when the key itself is invalid.",
-                    "anyOf": [
-                      {
-                        "$ref": "#/definitions/CredentialEntryMember"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                }
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "credential_entry"
-                ]
-              }
-            }
           }
         ]
       },
@@ -7799,32 +7695,6 @@
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-cortex-base64url-prefix": "cfg_",
         "x-cortex-swift-type": "canonical-base64url-32"
-      },
-      "CredentialEntryMember": {
-        "description": "A member of a dynamic credential entry.",
-        "oneOf": [
-          {
-            "description": "Credential provider kind.",
-            "type": "string",
-            "enum": [
-              "provider_kind"
-            ]
-          },
-          {
-            "description": "Credential endpoint URL.",
-            "type": "string",
-            "enum": [
-              "base_url"
-            ]
-          },
-          {
-            "description": "Credential API key.",
-            "type": "string",
-            "enum": [
-              "api_key"
-            ]
-          }
-        ]
       },
       "CustodyLossTerminationRuntime": {
         "description": "Runtime evidence legal after lifetime custody is lost.",
@@ -9833,45 +9703,6 @@
                 ]
               }
             }
-          },
-          {
-            "description": "An entry in the dynamic credential catalogue.",
-            "type": "object",
-            "required": [
-              "data",
-              "kind"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "key"
-                ],
-                "properties": {
-                  "key": {
-                    "description": "The raw user-authored map key.",
-                    "type": "string"
-                  },
-                  "member": {
-                    "description": "The invalid member, or none when the key itself is invalid.",
-                    "anyOf": [
-                      {
-                        "$ref": "#/definitions/CredentialEntryMember"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                }
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "credential_entry"
-                ]
-              }
-            }
           }
         ]
       },
@@ -9898,32 +9729,6 @@
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-cortex-base64url-prefix": "cfg_",
         "x-cortex-swift-type": "canonical-base64url-32"
-      },
-      "CredentialEntryMember": {
-        "description": "A member of a dynamic credential entry.",
-        "oneOf": [
-          {
-            "description": "Credential provider kind.",
-            "type": "string",
-            "enum": [
-              "provider_kind"
-            ]
-          },
-          {
-            "description": "Credential endpoint URL.",
-            "type": "string",
-            "enum": [
-              "base_url"
-            ]
-          },
-          {
-            "description": "Credential API key.",
-            "type": "string",
-            "enum": [
-              "api_key"
-            ]
-          }
-        ]
       },
       "CustodyLossTerminationRuntime": {
         "description": "Runtime evidence legal after lifetime custody is lost.",
@@ -11425,6 +11230,16 @@
                   },
                   "destination": {
                     "$ref": "#/definitions/SettingsFocusDestination"
+                  },
+                  "subject": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/CheckSubject"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 }
               },
@@ -15903,45 +15718,6 @@
                 ]
               }
             }
-          },
-          {
-            "description": "An entry in the dynamic credential catalogue.",
-            "type": "object",
-            "required": [
-              "data",
-              "kind"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "key"
-                ],
-                "properties": {
-                  "key": {
-                    "description": "The raw user-authored map key.",
-                    "type": "string"
-                  },
-                  "member": {
-                    "description": "The invalid member, or none when the key itself is invalid.",
-                    "anyOf": [
-                      {
-                        "$ref": "#/definitions/CredentialEntryMember"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                }
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "credential_entry"
-                ]
-              }
-            }
           }
         ]
       },
@@ -15955,32 +15731,6 @@
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-cortex-base64url-prefix": "cfg_",
         "x-cortex-swift-type": "canonical-base64url-32"
-      },
-      "CredentialEntryMember": {
-        "description": "A member of a dynamic credential entry.",
-        "oneOf": [
-          {
-            "description": "Credential provider kind.",
-            "type": "string",
-            "enum": [
-              "provider_kind"
-            ]
-          },
-          {
-            "description": "Credential endpoint URL.",
-            "type": "string",
-            "enum": [
-              "base_url"
-            ]
-          },
-          {
-            "description": "Credential API key.",
-            "type": "string",
-            "enum": [
-              "api_key"
-            ]
-          }
-        ]
       },
       "HealthVerdict": {
         "description": "Whether a running runtime is healthy.",
@@ -19922,45 +19672,6 @@
                 ]
               }
             }
-          },
-          {
-            "description": "An entry in the dynamic credential catalogue.",
-            "type": "object",
-            "required": [
-              "data",
-              "kind"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "key"
-                ],
-                "properties": {
-                  "key": {
-                    "description": "The raw user-authored map key.",
-                    "type": "string"
-                  },
-                  "member": {
-                    "description": "The invalid member, or none when the key itself is invalid.",
-                    "anyOf": [
-                      {
-                        "$ref": "#/definitions/CredentialEntryMember"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                }
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "credential_entry"
-                ]
-              }
-            }
           }
         ]
       },
@@ -19987,32 +19698,6 @@
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-cortex-base64url-prefix": "cfg_",
         "x-cortex-swift-type": "canonical-base64url-32"
-      },
-      "CredentialEntryMember": {
-        "description": "A member of a dynamic credential entry.",
-        "oneOf": [
-          {
-            "description": "Credential provider kind.",
-            "type": "string",
-            "enum": [
-              "provider_kind"
-            ]
-          },
-          {
-            "description": "Credential endpoint URL.",
-            "type": "string",
-            "enum": [
-              "base_url"
-            ]
-          },
-          {
-            "description": "Credential API key.",
-            "type": "string",
-            "enum": [
-              "api_key"
-            ]
-          }
-        ]
       },
       "CustodyLossTerminationRuntime": {
         "description": "Runtime evidence legal after lifetime custody is lost.",
@@ -23143,45 +22828,6 @@
                 ]
               }
             }
-          },
-          {
-            "description": "An entry in the dynamic credential catalogue.",
-            "type": "object",
-            "required": [
-              "data",
-              "kind"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "key"
-                ],
-                "properties": {
-                  "key": {
-                    "description": "The raw user-authored map key.",
-                    "type": "string"
-                  },
-                  "member": {
-                    "description": "The invalid member, or none when the key itself is invalid.",
-                    "anyOf": [
-                      {
-                        "$ref": "#/definitions/CredentialEntryMember"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                }
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "credential_entry"
-                ]
-              }
-            }
           }
         ]
       },
@@ -23208,32 +22854,6 @@
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-cortex-base64url-prefix": "cfg_",
         "x-cortex-swift-type": "canonical-base64url-32"
-      },
-      "CredentialEntryMember": {
-        "description": "A member of a dynamic credential entry.",
-        "oneOf": [
-          {
-            "description": "Credential provider kind.",
-            "type": "string",
-            "enum": [
-              "provider_kind"
-            ]
-          },
-          {
-            "description": "Credential endpoint URL.",
-            "type": "string",
-            "enum": [
-              "base_url"
-            ]
-          },
-          {
-            "description": "Credential API key.",
-            "type": "string",
-            "enum": [
-              "api_key"
-            ]
-          }
-        ]
       },
       "CustodyLossTerminationRuntime": {
         "description": "Runtime evidence legal after lifetime custody is lost.",
@@ -26233,45 +25853,6 @@
                 ]
               }
             }
-          },
-          {
-            "description": "An entry in the dynamic credential catalogue.",
-            "type": "object",
-            "required": [
-              "data",
-              "kind"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "key"
-                ],
-                "properties": {
-                  "key": {
-                    "description": "The raw user-authored map key.",
-                    "type": "string"
-                  },
-                  "member": {
-                    "description": "The invalid member, or none when the key itself is invalid.",
-                    "anyOf": [
-                      {
-                        "$ref": "#/definitions/CredentialEntryMember"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                }
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "credential_entry"
-                ]
-              }
-            }
           }
         ]
       },
@@ -26298,32 +25879,6 @@
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-cortex-base64url-prefix": "cfg_",
         "x-cortex-swift-type": "canonical-base64url-32"
-      },
-      "CredentialEntryMember": {
-        "description": "A member of a dynamic credential entry.",
-        "oneOf": [
-          {
-            "description": "Credential provider kind.",
-            "type": "string",
-            "enum": [
-              "provider_kind"
-            ]
-          },
-          {
-            "description": "Credential endpoint URL.",
-            "type": "string",
-            "enum": [
-              "base_url"
-            ]
-          },
-          {
-            "description": "Credential API key.",
-            "type": "string",
-            "enum": [
-              "api_key"
-            ]
-          }
-        ]
       },
       "CustodyLossTerminationRuntime": {
         "description": "Runtime evidence legal after lifetime custody is lost.",

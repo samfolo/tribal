@@ -53,10 +53,9 @@ impl CheckOutcome {
         provider: ProviderKind,
         error: String,
     ) -> Self {
-        // The embedding credential resolves through the catalogue, not an
-        // `init.embedding.api_key` field, so its probe failure routes to a
-        // remediation naming `init.embedding.base_url` and the catalogue
-        // credential rather than the removed `embedding.*` paths.
+        // The embedding identity resolves through its named connection, so its
+        // probe failure routes to that connection rather than a stage-local
+        // endpoint or credential.
         let remediation = match target {
             ProviderStage::Embedding => CheckRemediation::FixEmbeddingProviderConfig { provider },
             ProviderStage::Extraction | ProviderStage::Triage | ProviderStage::Relation => {
@@ -129,9 +128,8 @@ fn ensure_gateway(state: &mut CheckState) -> Result<Arc<InferenceGateway>, Strin
     Ok(gateway)
 }
 
-/// Builds the check-local gateway: a command registry from the inference
-/// configuration, the catalogue credential resolver, and a ledger sink
-/// matching what the run has to write to.
+/// Builds the check-local gateway from inference configuration, named provider
+/// connections, and a ledger sink matching what the run has to write to.
 fn build_check_gateway(
     config: &TribalConfig,
     pool: Option<PgPool>,
@@ -325,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn test_embedding_probe_failure_routes_to_the_catalogue_remediation() {
+    fn test_embedding_probe_failure_routes_to_the_connection_remediation() {
         let outcome = CheckOutcome::provider_probe_failed(
             ProviderStage::Embedding,
             ProviderKind::OpenAi,

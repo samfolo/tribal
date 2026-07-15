@@ -114,8 +114,8 @@ pub use method::{
 pub use method::{ManagementCallSchema, management_call_schemas};
 pub use readiness::{
     CheckObservation, CheckSubject, ConfigDiagnosticLocation, ConfigFilePath,
-    CredentialEntryMember, HealthDegradedReadinessReport, HealthDegradedVerdict, HealthVerdict,
-    ProbeOutcome, ProbeReceipt, ProbeReceiptFreshness, ProbeSubject, ProviderProbeCapability,
+    HealthDegradedReadinessReport, HealthDegradedVerdict, HealthVerdict, ProbeOutcome,
+    ProbeReceipt, ProbeReceiptFreshness, ProbeSubject, ProviderProbeCapability,
     ReadinessRefinementError, ReadinessReport, ReadinessScope, StartBlockedReadinessReport,
     StartBlockedVerdict, StartClearReadinessReport, StartClearVerdict, StartVerdict,
 };

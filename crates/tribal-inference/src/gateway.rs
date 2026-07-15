@@ -936,8 +936,8 @@ pub struct InjectedProviders {
 #[cfg(any(test, feature = "test-helpers"))]
 impl InjectedProviders {
     /// One inference provider serving all three stages under one key, an
-    /// empty-catalogue credential resolver, and the given embeddings and
-    /// sink: the common shape of a test gateway.
+    /// empty credential resolver, and the given embeddings and sink: the
+    /// common shape of a test gateway.
     #[must_use]
     pub fn uniform(
         registry: ProviderRegistry,
@@ -1009,9 +1009,9 @@ impl InferenceGateway {
     }
 }
 
-/// A resolver behaving as an empty credential catalogue: providers that
-/// need no key resolve an empty one, and key-requiring providers fail
-/// closed. For tests whose providers are mocks or keyless endpoints.
+/// An empty credential resolver: providers that need no key resolve an empty
+/// one, and key-requiring providers fail closed. For tests whose providers are
+/// mocks or keyless endpoints.
 #[cfg(any(test, feature = "test-helpers"))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EmptyCredentialResolver;

@@ -132,9 +132,9 @@ fn completion_stage_spec(
     })
 }
 
-/// The gateway's embedding credential resolver, backed by the config
-/// catalogue: fail-closed for key-requiring providers, empty for
-/// providers that need none.
+/// The gateway's embedding credential resolver, backed by named provider
+/// connections: fail-closed for key-requiring providers, empty for providers
+/// that need none.
 pub(crate) struct ProviderConnectionCredentialResolver {
     connections: ProviderConnections,
 }
@@ -163,7 +163,7 @@ impl EmbeddingCredentialResolver for ProviderConnectionCredentialResolver {
 }
 
 /// Validates the active embedding identity fail-closed at boot: a
-/// key-requiring provider with no catalogue credential, or a provider
+/// key-requiring provider with no matching connection credential, or a provider
 /// kind with no embedding API, aborts startup with the endpoint named
 /// rather than booting into a server whose every ingest and discover
 /// fails.
@@ -242,6 +242,11 @@ fn add_entry(
     request_class: RequestClass,
     config: &TribalConfig,
 ) -> Result<(), AppError> {
+    if provider == ProviderKind::Platform && base_url.is_none() {
+        return Err(AppError::ProviderSetup {
+            context: "the platform provider requires the managed gateway transport".to_owned(),
+        });
+    }
     let url = resolve_base_url(provider, base_url);
     let key = ProviderKey::new(provider.to_string(), &url, request_class)
         .map_err(|source| AppError::ProviderRegistry { source })?;
@@ -361,7 +366,7 @@ mod tests {
         let error = build_command_registry(&config)
             .expect_err("platform has no local endpoint before managed transport exists");
         assert!(
-            error.to_string().contains("provider registry"),
+            error.to_string().contains("managed gateway transport"),
             "unexpected error: {error}",
         );
     }

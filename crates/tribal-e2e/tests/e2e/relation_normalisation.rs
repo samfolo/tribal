@@ -1,8 +1,10 @@
 use serde_json::json;
+use tribal_config::InferenceStage;
 use tribal_domain::ProviderKind;
 
 use crate::harness::{
     assertions::assert_success,
+    config::use_inference_provider,
     fixtures::{ExtractionFixture, RelationFixture, candidate, novel, relate},
     server::TestHarness,
     tool_call::tool_result_json,
@@ -29,9 +31,12 @@ async fn test_relation_normalisation_drops_invalid_edges() {
     let mut harness = TestHarness::init(|setup| {
         // OpenAI triage exercises the OpenAI envelope abstraction.
         setup.config(|c| {
-            c.inference.triage.provider = ProviderKind::OpenAi;
-            c.inference.triage.api_key =
-                Some("sk-e2e-000000".parse().expect("test fixture is valid"));
+            use_inference_provider(
+                c,
+                InferenceStage::Triage,
+                ProviderKind::OpenAi,
+                Some("sk-e2e-000000"),
+            );
         });
     })
     .await;

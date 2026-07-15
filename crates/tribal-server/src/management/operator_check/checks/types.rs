@@ -551,16 +551,15 @@ pub(in crate::management::operator_check) enum CheckRemediation {
         target: ProviderStage,
         provider: ProviderKind,
     },
-    /// The genesis-embedding probe failed; name `init.embedding.base_url`
-    /// (the genesis endpoint) and the catalogue credential that backs it,
-    /// because the embedding credential resolves through the catalogue, not
-    /// an `init.embedding.api_key` field.
+    /// The genesis-embedding probe failed; inspect its named provider
+    /// connection because the embedding identity owns no stage-local endpoint
+    /// or credential.
     FixEmbeddingProviderConfig { provider: ProviderKind },
-    /// Add a catalogue credential for the active embedding provider's
-    /// endpoint so the next server boot resolves it.
-    AddEmbeddingCredential { provider: ProviderKind },
-    /// A catalogue entry already matches the active endpoint, but its `api_key`
-    /// is empty; set the key on the existing connection rather than adding one.
+    /// Add a provider connection for the active embedding endpoint so the next
+    /// server boot resolves it.
+    AddEmbeddingConnection { provider: ProviderKind },
+    /// A provider connection already matches the active endpoint, but its
+    /// `api_key` is empty; set the key on the existing connection.
     SetEmbeddingCredentialKey {
         connection: ProviderConnectionName,
         provider: ProviderKind,
@@ -634,10 +633,10 @@ impl CheckRemediation {
                 format!(
                     "check `{connection_path}` and {}, or run `tribal serve` to see the \
                      underlying startup probe warning",
-                    embedding_credential_phrase(*provider),
+                    embedding_connection_phrase(*provider),
                 )
             }
-            Self::AddEmbeddingCredential { provider } => embedding_credential_phrase(*provider),
+            Self::AddEmbeddingConnection { provider } => embedding_connection_phrase(*provider),
             Self::SetEmbeddingCredentialKey {
                 connection,
                 provider,
@@ -663,10 +662,9 @@ impl CheckRemediation {
     }
 }
 
-/// Renders the "set the catalogue credential" phrase shared by the
-/// embedding-credential remediations, naming the `<provider>_default`
-/// connection and the env-override paths that satisfy it.
-fn embedding_credential_phrase(provider: ProviderKind) -> String {
+/// Renders the connection repair shared by embedding remediations, naming the
+/// conventional `<provider>_default` connection and its environment overrides.
+fn embedding_connection_phrase(provider: ProviderKind) -> String {
     let connection = format!("{provider}_default");
     let path = format!("provider_connections.{connection}.api_key");
     match standard_env_var_name(provider) {

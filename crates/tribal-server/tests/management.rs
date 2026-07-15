@@ -27,9 +27,10 @@ use tribal_wire::management::{
     ManagementBootstrapRequest, ManagementBootstrapResponse, ManagementClientHello,
     ManagementError, ManagementResponseError, ManagementServerHello, ManagerAnnouncement,
     ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord, ManagerShutdownCall,
-    PageCursor, PageRequest, PageSize, ProjectList, ProjectListRequest, ProjectRegisterInput,
-    ProjectRegisterOutcome, ProjectRegisterRequest, ProjectRegistrationSource, RuntimeIdentity,
-    RuntimeStartResult, TokenCreateRequest, TokenCreateResult,
+    ManagerSnapshot, PageCursor, PageRequest, PageSize, ProjectList, ProjectListRequest,
+    ProjectRegisterInput, ProjectRegisterOutcome, ProjectRegisterRequest,
+    ProjectRegistrationSource, RuntimeIdentity, RuntimeStartResult, TokenCreateRequest,
+    TokenCreateResult,
 };
 
 /// Upper bound for manager replacement and child-process observations.
@@ -471,7 +472,7 @@ fn test_invalid_config_manager_repairs_without_restart() {
 
     let mut reader = handshake(&announcement);
 
-    let snapshot: LifecycleSnapshot = call(&mut reader, 1, "manager.snapshot", None);
+    let snapshot = lifecycle_snapshot(&mut reader, 1);
     assert_eq!(phase(&snapshot), "unconfigured");
     let initial_revision = snapshot.header.revision;
     let document: ConfigDocument = call(&mut reader, 2, "config.getAll", None);
@@ -495,7 +496,7 @@ fn test_invalid_config_manager_repairs_without_restart() {
 
     let mut request_id = 4;
     let repaired = poll_until(|| {
-        let snapshot: LifecycleSnapshot = call(&mut reader, request_id, "manager.snapshot", None);
+        let snapshot = lifecycle_snapshot(&mut reader, request_id);
         request_id += 1;
         (snapshot.header.revision > initial_revision && configuration_is_valid(&snapshot))
             .then_some(())
@@ -1402,7 +1403,7 @@ fn handshake_version(
 fn wait_for_start_clear(reader: &mut BufReader<UnixStream>) {
     let mut id = 10;
     let clear = poll_until(|| {
-        let snapshot: LifecycleSnapshot = call(reader, id, "manager.snapshot", None);
+        let snapshot = lifecycle_snapshot(reader, id);
         id += 1;
         if matches!(
             snapshot.phase,
@@ -1420,7 +1421,7 @@ fn wait_for_start_clear(reader: &mut BufReader<UnixStream>) {
 fn wait_for_runtime(reader: &mut BufReader<UnixStream>, expected: &RuntimeIdentity) {
     let mut id = 20;
     let recovered = poll_until(|| {
-        let snapshot: LifecycleSnapshot = call(reader, id, "manager.snapshot", None);
+        let snapshot = lifecycle_snapshot(reader, id);
         id += 1;
         if runtime_from_snapshot(&snapshot) == Some(expected) {
             return Some(());
@@ -1431,6 +1432,11 @@ fn wait_for_runtime(reader: &mut BufReader<UnixStream>, expected: &RuntimeIdenti
         recovered.is_some(),
         "recovered manager did not publish the expected runtime"
     );
+}
+
+fn lifecycle_snapshot(reader: &mut BufReader<UnixStream>, id: u64) -> LifecycleSnapshot {
+    let snapshot: ManagerSnapshot = call(reader, id, "manager.snapshot", None);
+    snapshot.lifecycle
 }
 
 fn runtime_from_snapshot(snapshot: &LifecycleSnapshot) -> Option<&RuntimeIdentity> {

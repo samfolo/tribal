@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use tribal_domain::{ProviderConnectionName, ProviderKind};
 
 use super::{
-    ConfigFieldPath, ConfigPatchChange, ConfigPatchOutcome, ConfigRevision, CredentialRequirement,
-    EndpointRequirement, LifecycleSnapshot, ProbeOutcome, ProbeReceiptFreshness, SecretLiteral,
+    CheckSubject, ConfigFieldPath, ConfigPatchChange, ConfigPatchOutcome, ConfigRevision,
+    CredentialRequirement, EndpointRequirement, LifecycleSnapshot, ProbeOutcome,
+    ProbeReceiptFreshness, SecretLiteral,
 };
 use crate::operator_check::CheckName;
 
@@ -38,6 +39,7 @@ pub enum SettingsSetupFocus {
     GraphGenesis,
     Readiness {
         check: CheckName,
+        subject: Option<CheckSubject>,
         destination: SettingsFocusDestination,
     },
 }
