@@ -52,13 +52,16 @@ impl OperationContext {
         }
     }
 
-    /// Waits for an admitted effect to report its terminal result.
+    /// Bounds an admitted effect independently of the active phase.
     pub(in crate::management) async fn terminal<T>(
         &self,
+        window: Duration,
         future: impl Future<Output = T>,
     ) -> Result<T, OperationError> {
         self.checkpoint()?;
-        Ok(future.await)
+        tokio::time::timeout(window, future)
+            .await
+            .map_err(|_| OperationError::DeadlineElapsed)
     }
 }
 
@@ -115,12 +118,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_terminal_work_finishes_after_the_active_deadline() {
+    async fn test_terminal_work_uses_its_own_deadline() {
         let operation = OperationContext::new(CancellationToken::new());
         let (started, admitted) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             operation
-                .terminal(async {
+                .terminal(ACTIVE_WINDOW + Duration::from_secs(2), async {
                     let _ = started.send(());
                     tokio::time::sleep(ACTIVE_WINDOW + Duration::from_secs(1)).await;
                     7
@@ -132,6 +135,28 @@ mod tests {
         tokio::time::advance(ACTIVE_WINDOW + Duration::from_secs(1)).await;
 
         assert_eq!(task.await.expect("operation task joins").unwrap(), 7);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_terminal_work_obeys_its_capability_deadline() {
+        let operation = OperationContext::new(CancellationToken::new());
+        let (started, admitted) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            operation
+                .terminal(Duration::from_secs(2), async {
+                    let _ = started.send(());
+                    std::future::pending::<()>().await;
+                })
+                .await
+        });
+
+        admitted.await.expect("terminal work begins");
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        assert!(matches!(
+            task.await.expect("operation task joins"),
+            Err(OperationError::DeadlineElapsed)
+        ));
     }
 
     #[tokio::test]
@@ -152,13 +177,10 @@ mod tests {
 
     #[test]
     fn test_active_window_leaves_terminal_grace_before_client_timeout() {
-        let database_terminal =
-            Duration::from_millis(super::super::database::COMMAND_STATEMENT_TIMEOUT_MS * 2);
-        let credential_terminal = super::super::credential::TERMINAL_WINDOW;
+        let database_terminal = super::super::database::MIGRATION_TERMINAL_WINDOW;
         let client =
             Duration::from_secs(tribal_wire::management::MANAGEMENT_REQUEST_TIMEOUT_SECONDS);
 
         assert!(ACTIVE_WINDOW + database_terminal < client);
-        assert!(ACTIVE_WINDOW + credential_terminal < client);
     }
 }

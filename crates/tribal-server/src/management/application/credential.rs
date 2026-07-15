@@ -37,10 +37,6 @@ const COORDINATOR_CAPACITY: usize = 1;
 const CREDENTIAL_REUSE_WINDOW_MINUTES: i64 = 5;
 const CREDENTIAL_STATEMENT_TIMEOUT_SECONDS: u64 = 5;
 const RECONCILIATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
-#[cfg(test)]
-pub(super) const TERMINAL_WINDOW: std::time::Duration = std::time::Duration::from_secs(
-    CREDENTIAL_STATEMENT_TIMEOUT_SECONDS + RECONCILIATION_TIMEOUT.as_secs(),
-);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PersistedIssuanceOrigin {
@@ -61,28 +57,16 @@ struct StagedIssuance {
     generation_id: CredentialGenerationId,
 }
 
+struct PreparedIssuance {
+    staged: StagedIssuance,
+    envelope: PersistedCredentialEnvelope,
+}
+
 struct CredentialGrant {
     principal: String,
     scopes: Vec<Scope>,
     audience: String,
     expires_at: chrono::DateTime<chrono::Utc>,
-}
-
-struct StagedCredentialTransaction<T> {
-    transaction: sqlx::Transaction<'static, sqlx::Postgres>,
-    value: T,
-}
-
-impl<T> StagedCredentialTransaction<T> {
-    async fn commit(self) -> (T, Result<(), sqlx::Error>) {
-        let result = self.transaction.commit().await;
-        (self.value, result)
-    }
-}
-
-enum EnsureDisposition {
-    Existing(PersistedIssuance),
-    Replacement(StagedIssuance),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -253,7 +237,7 @@ impl CredentialCoordinator {
     ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
         let operation = session.operation().clone();
         let (response, receiver) = oneshot::channel();
-        self.submit_terminal(
+        self.submit(
             &operation,
             CredentialCommand::Issue(IssueCommand {
                 session,
@@ -277,7 +261,7 @@ impl CredentialCoordinator {
     ) -> Result<BearerToken, CredentialCoordinatorError> {
         let operation = session.operation().clone();
         let (response, receiver) = oneshot::channel();
-        self.submit_terminal(
+        self.submit(
             &operation,
             CredentialCommand::Export(ExportCommand {
                 session,
@@ -300,7 +284,7 @@ impl CredentialCoordinator {
     ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
         let operation = session.operation().clone();
         let (response, receiver) = oneshot::channel();
-        self.submit_terminal(
+        self.submit(
             &operation,
             CredentialCommand::Ensure(EnsureCommand {
                 session,
@@ -318,7 +302,7 @@ impl CredentialCoordinator {
         .await
     }
 
-    async fn submit_terminal<T>(
+    async fn submit<T>(
         &self,
         operation: &OperationContext,
         command: CredentialCommand,
@@ -424,75 +408,97 @@ async fn ensure_persisted_inner(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
     let operation = session.operation().clone();
+    let (mut transaction, previous) = begin_locked(&operation, namespace, &session).await?;
+    let disposition = recover_before_commit(&operation, store, previous.clone()).await?;
+    if matches!(
+        disposition,
+        RecoveryDisposition::Stable | RecoveryDisposition::PromotedPending
+    ) {
+        let envelope = read_stable_before_commit(&operation, store).await?;
+        if let Some(existing) = operation
+            .cancel_safe(reusable_issuance(
+                &mut transaction,
+                previous.as_ref(),
+                envelope,
+                &grant.principal,
+                &grant.scopes,
+                &grant.audience,
+                now,
+            ))
+            .await??
+        {
+            return Ok(existing);
+        }
+    }
+    replace_persisted(
+        &operation,
+        namespace,
+        store,
+        &session,
+        transaction,
+        previous,
+        grant,
+    )
+    .await
+}
+
+async fn begin_locked(
+    operation: &OperationContext,
+    namespace: &ConfigAuthorityNamespace,
+    session: &DatabaseSession,
+) -> Result<
+    (
+        sqlx::Transaction<'static, sqlx::Postgres>,
+        Option<LocalDefaultCredential>,
+    ),
+    CredentialCoordinatorError,
+> {
     operation
-        .terminal(async {
-            let staged = stage_ensure(namespace, store, &session, grant, now).await?;
-            let (disposition, commit) = staged.commit().await;
-            match disposition {
-                EnsureDisposition::Existing(issuance) => {
-                    commit.map_err(|source| CredentialCoordinatorError::Connection { source })?;
-                    Ok(issuance)
-                }
-                EnsureDisposition::Replacement(staged) => {
-                    finish_replacement(namespace, store, &session, staged, commit).await
-                }
-            }
+        .cancel_safe(async {
+            let mut transaction = session
+                .pool
+                .begin()
+                .await
+                .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+            set_statement_timeout(&mut transaction).await?;
+            PgAdvisoryLockRepository
+                .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
+                .await
+                .map_err(database_error)?;
+            let previous = PgLocalDefaultCredentialRepository
+                .find(&mut transaction, namespace.as_str())
+                .await
+                .map_err(database_error)?;
+            Ok((transaction, previous))
         })
         .await?
 }
 
-async fn stage_ensure(
-    namespace: &ConfigAuthorityNamespace,
+async fn recover_before_commit(
+    operation: &OperationContext,
     store: &Arc<CredentialStore>,
-    session: &DatabaseSession,
-    grant: CredentialGrant,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<StagedCredentialTransaction<EnsureDisposition>, CredentialCoordinatorError> {
-    let mut transaction = session
-        .pool
-        .begin()
-        .await
-        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
-    set_statement_timeout(&mut transaction).await?;
-    PgAdvisoryLockRepository
-        .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
-        .await
-        .map_err(database_error)?;
-    let previous = PgLocalDefaultCredentialRepository
-        .find(&mut transaction, namespace.as_str())
-        .await
-        .map_err(database_error)?;
-    let disposition = store.recover_async(previous.clone()).await?;
-    if matches!(
-        disposition,
-        RecoveryDisposition::Stable | RecoveryDisposition::PromotedPending
-    ) && let Some(existing) = reusable_issuance(
-        store,
-        &mut transaction,
-        previous.as_ref(),
-        &grant.principal,
-        &grant.scopes,
-        &grant.audience,
-        now,
-    )
-    .await?
-    {
-        return Ok(StagedCredentialTransaction {
-            transaction,
-            value: EnsureDisposition::Existing(existing),
-        });
-    }
-    let staged = replace_locked(namespace, store, &mut transaction, previous, grant).await?;
-    Ok(StagedCredentialTransaction {
-        transaction,
-        value: EnsureDisposition::Replacement(staged),
-    })
+    previous: Option<LocalDefaultCredential>,
+) -> Result<RecoveryDisposition, CredentialCoordinatorError> {
+    operation.checkpoint()?;
+    let disposition = store.recover_async(previous).await?;
+    operation.checkpoint()?;
+    Ok(disposition)
+}
+
+async fn read_stable_before_commit(
+    operation: &OperationContext,
+    store: &Arc<CredentialStore>,
+) -> Result<Option<PersistedCredentialEnvelope>, CredentialCoordinatorError> {
+    operation.checkpoint()?;
+    let envelope = store.read_stable_async().await?;
+    operation.checkpoint()?;
+    Ok(envelope)
 }
 
 async fn reusable_issuance(
-    store: &Arc<CredentialStore>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     mapping: Option<&LocalDefaultCredential>,
+    envelope: Option<PersistedCredentialEnvelope>,
     principal_key: &str,
     scopes: &[Scope],
     audience: &str,
@@ -501,11 +507,7 @@ async fn reusable_issuance(
     let Some(mapping) = mapping else {
         return Ok(None);
     };
-    let Some(envelope) = store
-        .read_stable_async()
-        .await?
-        .filter(|envelope| mapping_matches(mapping, envelope))
-    else {
+    let Some(envelope) = envelope.filter(|envelope| mapping_matches(mapping, envelope)) else {
         return Ok(None);
     };
     let Some(token) = PgAuthTokenRepository
@@ -560,40 +562,15 @@ async fn export_persisted_inner(
     audience: &str,
 ) -> Result<BearerToken, CredentialCoordinatorError> {
     let operation = session.operation().clone();
-    operation
-        .terminal(export_persisted_read(namespace, store, session, audience))
-        .await?
-}
-
-async fn export_persisted_read(
-    namespace: &ConfigAuthorityNamespace,
-    store: &Arc<CredentialStore>,
-    session: DatabaseSession,
-    audience: &str,
-) -> Result<BearerToken, CredentialCoordinatorError> {
-    let mut transaction = session
-        .pool
-        .begin()
-        .await
-        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
-    set_statement_timeout(&mut transaction).await?;
-    PgAdvisoryLockRepository
-        .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
-        .await
-        .map_err(database_error)?;
-    let mapping = PgLocalDefaultCredentialRepository
-        .find(&mut transaction, namespace.as_str())
-        .await
-        .map_err(database_error)?;
-    let disposition = store.recover_async(mapping.clone()).await?;
+    let (mut transaction, mapping) = begin_locked(&operation, namespace, &session).await?;
+    let disposition = recover_before_commit(&operation, store, mapping.clone()).await?;
     if !matches!(
         disposition,
         RecoveryDisposition::Stable | RecoveryDisposition::PromotedPending
     ) {
         return Err(CredentialCoordinatorError::Unavailable);
     }
-    let envelope = store
-        .read_stable_async()
+    let envelope = read_stable_before_commit(&operation, store)
         .await?
         .filter(|envelope| {
             mapping
@@ -601,10 +578,14 @@ async fn export_persisted_read(
                 .is_some_and(|mapping| mapping_matches(mapping, envelope))
         })
         .ok_or(CredentialCoordinatorError::Unavailable)?;
-    let token = PgAuthTokenRepository
-        .find_by_id(&mut transaction, envelope.token_id)
-        .await
-        .map_err(database_error)?
+    let token = operation
+        .cancel_safe(async {
+            PgAuthTokenRepository
+                .find_by_id(&mut transaction, envelope.token_id)
+                .await
+                .map_err(database_error)
+        })
+        .await??
         .filter(|token| {
             token.revoked_at().is_none()
                 && token.expires_at() >= chrono::Utc::now()
@@ -642,50 +623,79 @@ async fn issue_persisted_inner(
     grant: CredentialGrant,
 ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
     let operation = session.operation().clone();
-    operation
-        .terminal(async {
-            let staged = stage_issue(namespace, store, &session, grant).await?;
-            let (staged, commit) = staged.commit().await;
-            finish_replacement(namespace, store, &session, staged, commit).await
-        })
-        .await?
+    let (transaction, previous) = begin_locked(&operation, namespace, &session).await?;
+    let _ = recover_before_commit(&operation, store, previous.clone()).await?;
+    replace_persisted(
+        &operation,
+        namespace,
+        store,
+        &session,
+        transaction,
+        previous,
+        grant,
+    )
+    .await
 }
 
-async fn stage_issue(
+async fn replace_persisted(
+    operation: &OperationContext,
     namespace: &ConfigAuthorityNamespace,
     store: &Arc<CredentialStore>,
     session: &DatabaseSession,
+    mut transaction: sqlx::Transaction<'static, sqlx::Postgres>,
+    previous: Option<LocalDefaultCredential>,
     grant: CredentialGrant,
-) -> Result<StagedCredentialTransaction<StagedIssuance>, CredentialCoordinatorError> {
-    let mut transaction = session
-        .pool
-        .begin()
-        .await
-        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
-    set_statement_timeout(&mut transaction).await?;
-    PgAdvisoryLockRepository
-        .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
-        .await
-        .map_err(database_error)?;
-    let previous = PgLocalDefaultCredentialRepository
-        .find(&mut transaction, namespace.as_str())
-        .await
-        .map_err(database_error)?;
-    let _ = store.recover_async(previous.clone()).await?;
-    let staged = replace_locked(namespace, store, &mut transaction, previous, grant).await?;
-    Ok(StagedCredentialTransaction {
-        transaction,
-        value: staged,
-    })
+) -> Result<PersistedIssuance, CredentialCoordinatorError> {
+    let staged = stage_replacement(
+        operation,
+        namespace,
+        store,
+        &mut transaction,
+        previous,
+        grant,
+    )
+    .await?;
+    let commit = transaction.commit().await;
+    finish_replacement(namespace, store, session, staged, commit).await
 }
 
-async fn replace_locked(
+async fn stage_replacement(
+    operation: &OperationContext,
     namespace: &ConfigAuthorityNamespace,
     store: &Arc<CredentialStore>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     previous: Option<LocalDefaultCredential>,
     grant: CredentialGrant,
 ) -> Result<StagedIssuance, CredentialCoordinatorError> {
+    let prepared = operation
+        .cancel_safe(prepare_replacement(namespace, transaction, grant))
+        .await??;
+    operation.checkpoint()?;
+    let result: Result<_, CredentialCoordinatorError> = async {
+        store.stage_async(prepared.envelope.clone()).await?;
+        operation
+            .cancel_safe(finalise_replacement(
+                namespace,
+                transaction,
+                previous,
+                &prepared,
+            ))
+            .await??;
+        operation.checkpoint()?;
+        Ok(prepared.staged)
+    }
+    .await;
+    if result.is_err() {
+        store.discard_pending_async().await?;
+    }
+    result
+}
+
+async fn prepare_replacement(
+    namespace: &ConfigAuthorityNamespace,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    grant: CredentialGrant,
+) -> Result<PreparedIssuance, CredentialCoordinatorError> {
     let principal = find_or_create_principal(transaction, &grant.principal)
         .await
         .map_err(database_error)?;
@@ -708,9 +718,29 @@ async fn replace_locked(
         token_id: token.id(),
         auth: Auth::Bearer { token: bearer },
     };
-    store.stage_async(envelope.clone()).await?;
+    let generation_id = envelope.generation_id;
+    Ok(PreparedIssuance {
+        envelope,
+        staged: StagedIssuance {
+            generation_id,
+            issuance: PersistedIssuance {
+                raw,
+                token,
+                principal: principal.principal_key().to_owned(),
+                origin: PersistedIssuanceOrigin::Issued,
+            },
+        },
+    })
+}
+
+async fn finalise_replacement(
+    namespace: &ConfigAuthorityNamespace,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    previous: Option<LocalDefaultCredential>,
+    prepared: &PreparedIssuance,
+) -> Result<(), CredentialCoordinatorError> {
     if let Some(previous) = previous
-        && previous.token_id != token.id()
+        && previous.token_id != prepared.staged.issuance.token.id()
     {
         PgAuthTokenRepository
             .revoke(transaction, previous.token_id, chrono::Utc::now())
@@ -721,20 +751,12 @@ async fn replace_locked(
         .replace(
             transaction,
             namespace.as_str(),
-            envelope.generation_id,
-            token.id(),
+            prepared.envelope.generation_id,
+            prepared.envelope.token_id,
         )
         .await
         .map_err(database_error)?;
-    Ok(StagedIssuance {
-        generation_id: envelope.generation_id,
-        issuance: PersistedIssuance {
-            raw,
-            token,
-            principal: principal.principal_key().to_owned(),
-            origin: PersistedIssuanceOrigin::Issued,
-        },
-    })
+    Ok(())
 }
 
 async fn finish_replacement(
@@ -947,6 +969,11 @@ impl CredentialStore {
         run_store_task(move || store.promote_pending()).await
     }
 
+    async fn discard_pending_async(self: &Arc<Self>) -> Result<(), CredentialCoordinatorError> {
+        let store = Arc::clone(self);
+        run_store_task(move || Self::remove_if_exists(&store.pending_path)).await
+    }
+
     async fn recover_async(
         self: &Arc<Self>,
         mapping: Option<LocalDefaultCredential>,
@@ -1119,9 +1146,11 @@ fn file_error(path: &Path, source: io::Error) -> CredentialStoreError {
 
 #[cfg(test)]
 mod recovery {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use chrono::Utc;
+    use sqlx::postgres::PgPoolOptions;
+    use tokio::sync::Notify;
     use tribal_db::{
         AuthTokenRepository as _, LocalDefaultCredentialRepository as _, PgAuthTokenRepository,
         PgLocalDefaultCredentialRepository,
@@ -1237,7 +1266,8 @@ mod recovery {
             .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
             .await
             .expect("credential lock");
-        let staged = replace_locked(
+        let staged = stage_replacement(
+            session.operation(),
             &namespace,
             &store,
             &mut transaction,
@@ -1329,6 +1359,97 @@ mod recovery {
             issued.token.id()
         );
         assert!(!store.pending_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_before_transaction_admission_leaves_no_credential_effect() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let root = tempfile::tempdir().expect("temporary credential root");
+        let namespace = namespace("3123456789abcdef01234567");
+        let store = Arc::new(CredentialStore::with_root(namespace.clone(), root.path()));
+        let entered = Arc::new(Mutex::new(None::<oneshot::Sender<()>>));
+        let release = Arc::new(Notify::new());
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .before_acquire({
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
+                move |_, _| {
+                    let entered = Arc::clone(&entered);
+                    let release = Arc::clone(&release);
+                    Box::pin(async move {
+                        let signal = entered.lock().expect("admission signal lock").take();
+                        if let Some(signal) = signal {
+                            let _ = signal.send(());
+                            release.notified().await;
+                        }
+                        Ok(true)
+                    })
+                }
+            })
+            .connect(database.database_url())
+            .await
+            .expect("credential pool connects");
+        drop(pool.acquire().await.expect("idle connection primes"));
+        let (admitted, admission) = oneshot::channel();
+        *entered.lock().expect("admission signal lock") = Some(admitted);
+        let shutdown = CancellationToken::new();
+        let revision = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"shutdown"));
+        let session = DatabaseSession::for_test_with_operation(
+            revision,
+            Arc::new(tribal_config::TribalConfig::minimum_valid(
+                database.database_url(),
+            )),
+            pool,
+            OperationContext::new(shutdown.clone()),
+        );
+        let task = tokio::spawn({
+            let namespace = namespace.clone();
+            let store = Arc::clone(&store);
+            async move {
+                issue_persisted_inner(
+                    &namespace,
+                    &store,
+                    session,
+                    CredentialGrant {
+                        principal: tribal_domain::LOCAL_PRINCIPAL_KEY.to_owned(),
+                        scopes: full_access_scopes(),
+                        audience: "http://localhost/mcp".to_owned(),
+                        expires_at: Utc::now() + chrono::Duration::hours(1),
+                    },
+                )
+                .await
+            }
+        });
+
+        admission.await.expect("transaction acquisition begins");
+        shutdown.cancel();
+        release.notify_one();
+        let Err(error) = task.await.expect("credential task joins") else {
+            panic!("shutdown must refuse uncommitted issuance");
+        };
+
+        assert!(matches!(
+            error,
+            CredentialCoordinatorError::Operation(OperationError::ManagerShuttingDown)
+        ));
+        let tokens = PgAuthTokenRepository
+            .find_all(&mut database.pool().acquire().await.expect("token connection"))
+            .await
+            .expect("tokens read");
+        assert!(tokens.is_empty());
+        assert!(
+            PgLocalDefaultCredentialRepository
+                .find(
+                    &mut database.pool().acquire().await.expect("mapping connection"),
+                    namespace.as_str(),
+                )
+                .await
+                .expect("mapping reads")
+                .is_none()
+        );
+        assert!(!store.pending_path.exists());
+        assert!(!store.stable_path.exists());
     }
 
     #[test]

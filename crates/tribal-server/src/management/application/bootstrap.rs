@@ -763,7 +763,7 @@ mod tests {
             .unwrap();
         assert_ne!(result.config_revision, harness.revision);
         let snapshot = harness.worker.resolved_snapshot().await.unwrap();
-        assert_eq!(snapshot.config.inference.extraction.model, "llama3.2");
+        assert_eq!(snapshot.config.inference.extraction.model, "llama3.1:8b");
         assert_eq!(snapshot.config.inference.triage.model, "gpt-4o-mini");
         assert_eq!(
             snapshot.config.telemetry.otlp_endpoint.as_deref(),

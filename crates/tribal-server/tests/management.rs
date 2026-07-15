@@ -105,8 +105,8 @@ fn config_watcher_lag_rereads_snapshot() {
 
     lagged
         .get_ref()
-        .set_read_timeout(Some(PROCESS_TIMEOUT))
-        .expect("lagged subscriber timeout configures");
+        .set_nonblocking(true)
+        .expect("lagged subscriber polling configures");
     drain_until_disconnect(&mut lagged);
 
     let mut reconnected = handshake(&announcement);
@@ -1515,11 +1515,19 @@ fn read_frame<T: serde::de::DeserializeOwned>(reader: &mut BufReader<UnixStream>
 }
 
 fn drain_until_disconnect(reader: &mut BufReader<UnixStream>) {
+    let deadline = Instant::now() + PROCESS_TIMEOUT;
     loop {
         let mut frame = Vec::new();
         match reader.read_until(b'\n', &mut frame) {
             Ok(0) => return,
             Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < deadline,
+                    "lagged subscriber did not disconnect before the process deadline"
+                );
+                thread::sleep(POLL_INTERVAL);
+            }
             Err(error) => panic!("lagged subscriber did not disconnect: {error}"),
         }
     }

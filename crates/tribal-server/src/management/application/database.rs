@@ -28,6 +28,10 @@ pub(crate) const DATABASE_COMMAND_DEFAULTS: [(&str, &str); 1] =
     [("database.url", DEFAULT_DATABASE_URL)];
 pub(crate) const COMMAND_POOL_MAX_CONNECTIONS: u32 = 1;
 pub(crate) const COMMAND_STATEMENT_TIMEOUT_MS: u64 = 30_000;
+pub(super) const MIGRATION_TERMINAL_WINDOW: std::time::Duration =
+    std::time::Duration::from_millis(COMMAND_STATEMENT_TIMEOUT_MS * 2);
+const MUTATION_TERMINAL_WINDOW: std::time::Duration =
+    std::time::Duration::from_millis(COMMAND_STATEMENT_TIMEOUT_MS);
 
 type PoolFuture = Pin<Box<dyn Future<Output = Result<PgPool, tribal_db::DbError>> + Send>>;
 type PoolFactory = Arc<dyn Fn(Arc<TribalConfig>) -> PoolFuture + Send + Sync>;
@@ -65,11 +69,26 @@ impl DatabaseSession {
         config: Arc<TribalConfig>,
         pool: PgPool,
     ) -> Self {
+        Self::for_test_with_operation(
+            revision,
+            config,
+            pool,
+            OperationContext::new(tokio_util::sync::CancellationToken::new()),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_test_with_operation(
+        revision: ConfigRevision,
+        config: Arc<TribalConfig>,
+        pool: PgPool,
+        operation: OperationContext,
+    ) -> Self {
         Self {
             revision,
             config,
             pool,
-            operation: OperationContext::new(tokio_util::sync::CancellationToken::new()),
+            operation,
         }
     }
 
@@ -247,7 +266,7 @@ impl DatabaseAccess {
             .map_err(DatabaseAccessError::from)??;
 
         operation
-            .terminal(run_migrations(&session.pool))
+            .terminal(MIGRATION_TERMINAL_WINDOW, run_migrations(&session.pool))
             .await
             .map_err(DatabaseAccessError::from)?
             .map_err(|source| DatabaseInitialiseError::Migration { source })?;
@@ -271,9 +290,10 @@ impl DatabaseAccess {
             .await
             .map_err(DatabaseAccessError::from)??;
         session.checkpoint()?;
-        transaction
-            .commit()
+        operation
+            .terminal(MUTATION_TERMINAL_WINDOW, transaction.commit())
             .await
+            .map_err(DatabaseAccessError::from)?
             .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })?;
 
         let outcome =
