@@ -11,6 +11,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sqlx::Acquire as _;
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio_util::sync::CancellationToken;
 use tribal_auth::{IssuedAuthToken, issue_token_with_record};
 use tribal_db::{
     AdvisoryLockRepository, AuthTokenRepository, DbError, LocalDefaultCredential,
@@ -164,6 +165,7 @@ pub(crate) struct CredentialCoordinatorRuntime {
 impl CredentialCoordinator {
     pub(crate) fn spawn(
         namespace: ConfigAuthorityNamespace,
+        shutdown: CancellationToken,
     ) -> (Self, CredentialCoordinatorRuntime) {
         let (sender, receiver) = mpsc::channel(COORDINATOR_CAPACITY);
         let (terminal_sender, terminal) = watch::channel(CredentialCoordinatorExit::Running);
@@ -171,6 +173,7 @@ impl CredentialCoordinator {
             namespace.clone(),
             CredentialStore::new(namespace),
             receiver,
+            shutdown,
             terminal_sender,
         ));
         (
@@ -183,11 +186,18 @@ impl CredentialCoordinator {
     pub(super) fn spawn_with_root(
         namespace: ConfigAuthorityNamespace,
         root: &Path,
+        shutdown: CancellationToken,
     ) -> (Self, CredentialCoordinatorRuntime) {
         let (sender, receiver) = mpsc::channel(COORDINATOR_CAPACITY);
         let (terminal_sender, terminal) = watch::channel(CredentialCoordinatorExit::Running);
         let store = CredentialStore::with_root(namespace.clone(), root);
-        let task = tokio::spawn(run_coordinator(namespace, store, receiver, terminal_sender));
+        let task = tokio::spawn(run_coordinator(
+            namespace,
+            store,
+            receiver,
+            shutdown,
+            terminal_sender,
+        ));
         (
             Self { sender },
             CredentialCoordinatorRuntime { terminal, task },
@@ -286,25 +296,48 @@ async fn run_coordinator(
     namespace: ConfigAuthorityNamespace,
     store: CredentialStore,
     mut receiver: mpsc::Receiver<CredentialCommand>,
+    shutdown: CancellationToken,
     terminal: watch::Sender<CredentialCoordinatorExit>,
 ) {
+    loop {
+        let command = tokio::select! {
+            biased;
+            () = shutdown.cancelled() => {
+                receiver.close();
+                break;
+            }
+            command = receiver.recv() => command,
+        };
+        let Some(command) = command else {
+            break;
+        };
+        run_command(&namespace, &store, command).await;
+    }
     while let Some(command) = receiver.recv().await {
-        match command {
-            CredentialCommand::Issue(command) => {
-                let result = issue_persisted(&namespace, &store, command).await;
-                let _ = result.1.send(result.0);
-            }
-            CredentialCommand::Ensure(command) => {
-                let result = ensure_persisted(&namespace, &store, command).await;
-                let _ = result.1.send(result.0);
-            }
-            CredentialCommand::Export(command) => {
-                let result = export_persisted(&namespace, &store, command).await;
-                let _ = result.1.send(result.0);
-            }
-        }
+        run_command(&namespace, &store, command).await;
     }
     let _ = terminal.send(CredentialCoordinatorExit::InputClosed);
+}
+
+async fn run_command(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    command: CredentialCommand,
+) {
+    match command {
+        CredentialCommand::Issue(command) => {
+            let result = issue_persisted(namespace, store, command).await;
+            let _ = result.1.send(result.0);
+        }
+        CredentialCommand::Ensure(command) => {
+            let result = ensure_persisted(namespace, store, command).await;
+            let _ = result.1.send(result.0);
+        }
+        CredentialCommand::Export(command) => {
+            let result = export_persisted(namespace, store, command).await;
+            let _ = result.1.send(result.0);
+        }
+    }
 }
 
 async fn ensure_persisted(
@@ -1004,6 +1037,28 @@ mod recovery {
         }
     }
 
+    #[tokio::test]
+    async fn test_close_ends_admission_with_live_client_handles() {
+        let root = tempfile::tempdir().expect("temporary credential root");
+        let shutdown = CancellationToken::new();
+        let (coordinator, runtime) = CredentialCoordinator::spawn_with_root(
+            namespace("close"),
+            root.path(),
+            shutdown.clone(),
+        );
+        let mut terminal = runtime.terminal();
+
+        shutdown.cancel();
+        terminal.changed().await.expect("terminal state changes");
+
+        assert_eq!(
+            *terminal.borrow_and_update(),
+            CredentialCoordinatorExit::InputClosed
+        );
+        assert!(coordinator.sender.is_closed());
+        runtime.join().await.expect("coordinator joins");
+    }
+
     fn session(database: &tribal_test_utils::TestDb, revision: &ConfigRevision) -> DatabaseSession {
         DatabaseSession {
             revision: revision.clone(),
@@ -1270,8 +1325,11 @@ mod recovery {
         let database = tribal_test_utils::TestDb::new().await;
         let root = tempfile::tempdir().expect("temporary credential root");
         let namespace = namespace("0123456789abcdef01234567");
-        let (coordinator, runtime) =
-            CredentialCoordinator::spawn_with_root(namespace.clone(), root.path());
+        let (coordinator, runtime) = CredentialCoordinator::spawn_with_root(
+            namespace.clone(),
+            root.path(),
+            CancellationToken::new(),
+        );
         let revision = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"credential-test"));
         let expires_at = Utc::now() + chrono::Duration::hours(1);
 
@@ -1333,7 +1391,11 @@ mod recovery {
         let database = tribal_test_utils::TestDb::new().await;
         let root = tempfile::tempdir().expect("temporary credential root");
         let namespace = namespace("abcdef0123456789abcdef01");
-        let (coordinator, runtime) = CredentialCoordinator::spawn_with_root(namespace, root.path());
+        let (coordinator, runtime) = CredentialCoordinator::spawn_with_root(
+            namespace,
+            root.path(),
+            CancellationToken::new(),
+        );
         let revision = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"ensure-test"));
         let now = Utc::now();
         let scopes = full_access_scopes();

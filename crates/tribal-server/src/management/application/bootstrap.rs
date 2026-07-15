@@ -549,6 +549,7 @@ mod tests {
             let (credentials, credential_runtime) = CredentialCoordinator::spawn_with_root(
                 ConfigAuthorityNamespace::from_test("abcdef0123456789abcdef01"),
                 temp.path(),
+                tokio_util::sync::CancellationToken::new(),
             );
             let access = DatabaseAccess::new(worker.clone());
             let administration = BootstrapAdministration::without_lifecycle(

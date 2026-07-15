@@ -403,8 +403,11 @@ mod tests {
                 worker::spawn(ConfigAuthority::new(config_path)).expect("config worker starts");
             let revision = worker.resolved_snapshot().await.unwrap().revision;
             let namespace = ConfigAuthorityNamespace::from_test("0123456789abcdef01234567");
-            let (credentials, credential_runtime) =
-                CredentialCoordinator::spawn_with_root(namespace, temp.path());
+            let (credentials, credential_runtime) = CredentialCoordinator::spawn_with_root(
+                namespace,
+                temp.path(),
+                tokio_util::sync::CancellationToken::new(),
+            );
             let access = DatabaseAccess::new(worker.clone());
             let administration =
                 IntegrationAdministration::new(worker, access.clone(), credentials.clone());

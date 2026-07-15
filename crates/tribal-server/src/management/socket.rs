@@ -517,6 +517,7 @@ mod tests {
                         super::super::authority::ConfigAuthorityNamespace::from_test(&format!(
                             "test-{version}"
                         )),
+                        shutdown.clone(),
                     );
                     ManagerSocketServices::new(
                         config.clone(),

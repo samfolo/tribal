@@ -251,7 +251,7 @@ async fn run_async(
     observe_readiness_once(&config, &probe, &lifecycle).await;
     let product = ProductService::new(config.clone());
     let (credentials, credential_runtime) =
-        CredentialCoordinator::spawn(lease.paths().namespace.clone());
+        CredentialCoordinator::spawn(lease.paths().namespace.clone(), shutdown.clone());
     let mut credential_terminal = credential_runtime.terminal();
     let config_watch_task = tokio::spawn(watch_config_file(
         config.clone(),

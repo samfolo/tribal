@@ -556,8 +556,10 @@ mod tests {
         let database = tribal_test_utils::TestDb::new().await;
         let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
         let revision = worker.resolved_snapshot().await.unwrap().revision;
-        let (credentials, credential_runtime) =
-            CredentialCoordinator::spawn(ConfigAuthorityNamespace::from_test("token-application"));
+        let (credentials, credential_runtime) = CredentialCoordinator::spawn(
+            ConfigAuthorityNamespace::from_test("token-application"),
+            tokio_util::sync::CancellationToken::new(),
+        );
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
 
         let created = administration
@@ -661,6 +663,7 @@ mod tests {
             config_worker("postgres://user:pass@localhost:1/unreachable");
         let (credentials, credential_runtime) = CredentialCoordinator::spawn(
             ConfigAuthorityNamespace::from_test("stale-token-application"),
+            tokio_util::sync::CancellationToken::new(),
         );
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
 
@@ -690,6 +693,7 @@ mod tests {
         let revision = worker.resolved_snapshot().await.unwrap().revision;
         let (credentials, runtime) = CredentialCoordinator::spawn(
             ConfigAuthorityNamespace::from_test("failed-token-application"),
+            tokio_util::sync::CancellationToken::new(),
         );
         runtime.abort().await;
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
