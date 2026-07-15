@@ -20,7 +20,7 @@ pub(crate) use database::create_pool_with_retry;
 pub(crate) use instance_id::generate_instance_id;
 pub(crate) use migration::{check_first_run, run_migrations};
 pub(crate) use oauth::{expected_token_audience, resolve_oauth_runtime};
-pub(crate) use project::resolve_project;
+pub(crate) use project::{resolve_project, resolve_project_mode};
 pub(crate) use prompts::{
     PromptTemplateLocation, ensure_prompt_files, load_prompts, load_prompts_embedded,
 };
@@ -29,4 +29,4 @@ pub(crate) use providers::{
     completion_stage_specs, probe_startup_providers, validate_embedding_identity,
 };
 pub(crate) use provisioning::{provision_genesis, read_active_profile};
-pub(crate) use watcher::{SelfWriteSentinel, init_config_watcher, init_prompt_watcher};
+pub(crate) use watcher::{init_config_watcher, init_prompt_watcher};

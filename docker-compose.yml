@@ -19,7 +19,7 @@ services:
         max-file: "3"
 
   tribal:
-    image: ghcr.io/tribal-memory/tribal:0.4.1
+    image: ${TRIBAL_IMAGE:-ghcr.io/tribal-memory/tribal:0.4.1}
     depends_on:
       postgres:
         condition: service_healthy
@@ -34,11 +34,10 @@ services:
       - TRIBAL_SERVER__TRANSPORT=http
       - TRIBAL_SERVER__BIND_ADDRESS=0.0.0.0:8725
       - TRIBAL_PUBLIC_MCP_URL=http://127.0.0.1:8725/mcp
-      # Redirect tribal.yaml and credentials.json into the state volume so
-      # they survive container restart. Resolves to
-      # /var/lib/tribal/tribal/{tribal.yaml,credentials.json} (the inner
+      # Redirect tribal.yaml and namespaced credentials into the state volume
+      # so they survive container restart. The inner
       # `tribal/` segment is the binary's own subdirectory under any
-      # XDG_CONFIG_HOME parent).
+      # XDG_CONFIG_HOME parent.
       - XDG_CONFIG_HOME=/var/lib/tribal
       - TRIBAL_CONFIG_PATH=/var/lib/tribal/tribal/tribal.yaml
       # Provider selection. Defaults target a local Ollama on the host.
@@ -91,15 +90,6 @@ services:
       - TRIBAL_AGENTS__RELATION__MAX_TURNS
       - TRIBAL_AGENTS__RELATION__MAX_TOTAL_TOKENS
       - TRIBAL_AGENTS__RELATION__EXECUTION_DEADLINE_SECONDS
-      - TRIBAL_PROJECT_NAME=${TRIBAL_PROJECT_NAME:-tribal-docker-local}
-      - TRIBAL_PROJECT_REMOTE=${TRIBAL_PROJECT_REMOTE:-https://example.com/local/tribal-docker.git}
-      # Scopes container-side commands (the healthcheck and any
-      # `docker compose exec tribal ...`) to the bootstrapped project. Leave
-      # empty for the first `up`; once bootstrap prints the project id, set it
-      # in .env so exec'd commands resolve that project instead of warning.
-      # The server always serves the project recorded in the state volume, so
-      # a stale value here cannot mis-scope serving.
-      - TRIBAL_PROJECT_ID=${TRIBAL_PROJECT_ID:-}
       # Provider env vars passed through from the host shell. Optional;
       # required only for real ingest against the listed cloud providers.
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}

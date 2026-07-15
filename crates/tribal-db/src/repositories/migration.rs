@@ -21,7 +21,7 @@ pub enum MigrationHeadStatus {
     /// The database is older than the binary expects.  The binary
     /// includes migrations the database has not yet applied.  An empty
     /// `_sqlx_migrations` table folds here with `found: 0` — the
-    /// remediation (`tribal setup`) is the same as for any other
+    /// remediation (`tribal database initialise`) is the same as for any other
     /// Behind, and a separate "empty" arm would add no actionable
     /// information.
     Behind { expected: i64, found: i64 },
@@ -118,7 +118,7 @@ impl MigrationRepository for PgMigrationRepository {
         })?;
 
         // A migrations table exists but contains no rows.  Treat this as
-        // "behind from zero" so the operator is steered to `tribal setup`,
+        // "behind from zero" so the operator is steered to `tribal database initialise`,
         // matching the remediation path for any other Behind variant.
         let found = found.unwrap_or(0);
 

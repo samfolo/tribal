@@ -11,7 +11,6 @@ use std::{
     time::Duration,
 };
 
-use sqlx::PgPool;
 use tokio::{
     io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader},
     net::{UnixListener, UnixStream},
@@ -20,10 +19,9 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tribal_config::{ReloadClass, TribalConfig, load_config, reload_class, validate};
-use tribal_telemetry::{LogFilterHandle, LogRing};
+use tribal_telemetry::{LogFilterHandle, LogLine, LogRing};
 use tribal_wire::{
-    control::ControlEvent,
-    management::{ConfigDigest, ConfigRevision, RuntimeIdentity, TokenList},
+    management::{ConfigDigest, ConfigRevision, RuntimeIdentity},
     runtime_control::{
         ManagedRuntimeStatus, RUNTIME_CONTROL_CONTRACT_VERSION, RuntimeBootstrapRefusal,
         RuntimeBootstrapRequest, RuntimeBootstrapResponse, RuntimeConfigApplyOutcome,
@@ -51,8 +49,7 @@ pub(crate) struct RuntimeControlService {
     pub(crate) config: watch::Sender<Arc<TribalConfig>>,
     pub(crate) log_filter: LogFilterHandle,
     pub(crate) log_ring: LogRing,
-    pub(crate) events: broadcast::Sender<ControlEvent>,
-    pub(crate) pool: PgPool,
+    pub(crate) events: broadcast::Sender<LogLine>,
     pub(crate) shutdown: CancellationToken,
 }
 
@@ -221,8 +218,7 @@ impl RuntimeControlClient {
             | RuntimeControlResponse::Readiness { .. }
             | RuntimeControlResponse::StopAccepted
             | RuntimeControlResponse::LogsTail { .. }
-            | RuntimeControlResponse::LogsSubscribed
-            | RuntimeControlResponse::TokenList { .. } => self.unexpected_response().await,
+            | RuntimeControlResponse::LogsSubscribed => self.unexpected_response().await,
         }
     }
 
@@ -234,7 +230,6 @@ impl RuntimeControlClient {
             | RuntimeControlResponse::StopAccepted
             | RuntimeControlResponse::LogsTail { .. }
             | RuntimeControlResponse::LogsSubscribed
-            | RuntimeControlResponse::TokenList { .. }
             | RuntimeControlResponse::Refused { .. } => self.unexpected_response().await,
         }
     }
@@ -249,20 +244,6 @@ impl RuntimeControlClient {
             | RuntimeControlResponse::Readiness { .. }
             | RuntimeControlResponse::ApplyConfig { .. }
             | RuntimeControlResponse::StopAccepted
-            | RuntimeControlResponse::LogsSubscribed
-            | RuntimeControlResponse::TokenList { .. }
-            | RuntimeControlResponse::Refused { .. } => self.unexpected_response().await,
-        }
-    }
-
-    pub(crate) async fn token_list(&self) -> Result<TokenList, RuntimeControlError> {
-        match self.request(RuntimeControlRequest::TokenList).await? {
-            RuntimeControlResponse::TokenList { list } => Ok(list),
-            RuntimeControlResponse::Status { .. }
-            | RuntimeControlResponse::Readiness { .. }
-            | RuntimeControlResponse::ApplyConfig { .. }
-            | RuntimeControlResponse::StopAccepted
-            | RuntimeControlResponse::LogsTail { .. }
             | RuntimeControlResponse::LogsSubscribed
             | RuntimeControlResponse::Refused { .. } => self.unexpected_response().await,
         }
@@ -281,8 +262,7 @@ impl RuntimeControlClient {
             | RuntimeControlResponse::Readiness { .. }
             | RuntimeControlResponse::ApplyConfig { .. }
             | RuntimeControlResponse::LogsTail { .. }
-            | RuntimeControlResponse::LogsSubscribed
-            | RuntimeControlResponse::TokenList { .. } => self.unexpected_response().await,
+            | RuntimeControlResponse::LogsSubscribed => self.unexpected_response().await,
         }
     }
 
@@ -398,7 +378,6 @@ impl RuntimeReconnectCapability {
                     | RuntimeControlResponse::ApplyConfig { .. }
                     | RuntimeControlResponse::StopAccepted
                     | RuntimeControlResponse::LogsTail { .. }
-                    | RuntimeControlResponse::TokenList { .. }
                     | RuntimeControlResponse::Refused { .. },
                 )
                 | None => Err(RuntimeControlError::Closed),
@@ -617,7 +596,7 @@ async fn serve_compatible(
 
 async fn serve_log_subscription(
     stream: &mut FramedStream,
-    mut events: broadcast::Receiver<ControlEvent>,
+    mut events: broadcast::Receiver<LogLine>,
     shutdown: &CancellationToken,
 ) -> Result<(), RuntimeControlError> {
     loop {
@@ -626,12 +605,7 @@ async fn serve_log_subscription(
             event = events.recv() => event,
         };
         let event = match event {
-            Ok(ControlEvent::LogsLine { line }) => {
-                RuntimeControlEvent::LogLine { line: line.message }
-            }
-            Ok(ControlEvent::ConfigChanged { .. } | ControlEvent::PromptReloaded { .. }) => {
-                continue;
-            }
+            Ok(line) => RuntimeControlEvent::LogLine { line: line.message },
             Err(broadcast::error::RecvError::Lagged(_)) => RuntimeControlEvent::LogsLost,
             Err(broadcast::error::RecvError::Closed) => return Ok(()),
         };
@@ -678,13 +652,17 @@ async fn dispatch(
         },
         RuntimeControlRequest::Readiness => {
             let config = service.config.borrow().as_ref().clone();
-            let report = crate::commands::run_report_async(crate::commands::CheckReportOptions {
-                config_path: &service.config_path,
-                source: crate::commands::CheckConfigSource::Parsed(Box::new(config)),
-                providers: false,
-                project: None,
-                token: None,
-            })
+            let report = crate::management::operator_check::run_report_async(
+                crate::management::operator_check::CheckReportOptions {
+                    config_path: &service.config_path,
+                    source: crate::management::operator_check::CheckConfigSource::Parsed(Box::new(
+                        config,
+                    )),
+                    providers: false,
+                    project: None,
+                    token: None,
+                },
+            )
             .await
             .map_or_else(
                 |_| readiness::derive(Vec::new(), true, Vec::new()),
@@ -715,14 +693,6 @@ async fn dispatch(
         RuntimeControlRequest::SubscribeLogs => RuntimeControlResponse::Refused {
             reason: RuntimeControlRefusal::OperationUnavailable,
         },
-        RuntimeControlRequest::TokenList => {
-            match crate::control::list_local_token_metadata(&service.pool).await {
-                Ok(list) => RuntimeControlResponse::TokenList { list },
-                Err(_) => RuntimeControlResponse::Refused {
-                    reason: RuntimeControlRefusal::OperationUnavailable,
-                },
-            }
-        }
     }
 }
 
@@ -998,43 +968,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mixed_runtime_event_lag_never_claims_a_line_count() {
-        let (manager, runtime) = UnixStream::pair().expect("runtime log pair creates");
-        let mut manager = BufReader::new(manager);
-        let mut runtime = BufReader::new(runtime);
-        let (events, receiver) = broadcast::channel(1);
-        events
-            .send(ControlEvent::ConfigChanged {
-                keys: vec!["logging.level".to_owned()],
-                effect: tribal_wire::control::WriteEffect::NeedsRestart,
-            })
-            .expect("config event queues");
-        events
-            .send(ControlEvent::PromptReloaded {
-                stage: "answer".to_owned(),
-                role: "system".to_owned(),
-                version_id: "v2".to_owned(),
-            })
-            .expect("prompt event queues");
-        let shutdown = CancellationToken::new();
-        let task = tokio::spawn({
-            let shutdown = shutdown.clone();
-            async move { serve_log_subscription(&mut manager, receiver, &shutdown).await }
-        });
-
-        assert_eq!(
-            read_frame::<RuntimeControlEvent>(&mut runtime)
-                .await
-                .expect("loss frame reads"),
-            Some(RuntimeControlEvent::LogsLost),
-        );
-        shutdown.cancel();
-        task.await
-            .expect("subscription task joins")
-            .expect("subscription exits cleanly");
-    }
-
-    #[tokio::test]
     async fn test_compatible_client_authenticates_and_stops_exact_runtime() {
         let temp = tempfile::tempdir().expect("temporary runtime-control root");
         let socket_path = temp.path().join("runtime.sock");
@@ -1073,9 +1006,6 @@ mod tests {
                 log_filter,
                 log_ring: LogRing::new(8),
                 events: events.clone(),
-                pool: sqlx::postgres::PgPoolOptions::new()
-                    .connect_lazy("postgres://localhost/tribal")
-                    .expect("lazy pool builds"),
                 shutdown: shutdown.clone(),
             },
         )
@@ -1099,13 +1029,11 @@ mod tests {
             .await
             .expect("log subscription connects");
         events
-            .send(ControlEvent::LogsLine {
-                line: tribal_wire::control::LogLine {
-                    at: chrono::Utc::now(),
-                    level: tribal_wire::control::LogLevel::Info,
-                    target: "test".to_owned(),
-                    message: "live line".to_owned(),
-                },
+            .send(LogLine {
+                at: chrono::Utc::now(),
+                level: tribal_telemetry::LogLevel::Info,
+                target: "test".to_owned(),
+                message: "live line".to_owned(),
             })
             .expect("subscriber receives log event");
         assert_eq!(

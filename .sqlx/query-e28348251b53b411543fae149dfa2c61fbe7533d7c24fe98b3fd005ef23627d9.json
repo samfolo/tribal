@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    SELECT t.id, t.token_hash, t.principal_id, t.scopes,\n                           t.audience, t.expires_at, t.created_at, t.revoked_at,\n                           p.principal_key\n                    FROM auth_tokens t\n                    JOIN principals p ON p.id = t.principal_id\n                    WHERE (t.created_at, t.id) <= ($1, $2)\n                      AND (t.created_at, t.id) < ($3, $4)\n                    ORDER BY t.created_at DESC, t.id DESC\n                    LIMIT $5\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "token_hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "principal_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "audience",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "revoked_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "principal_key",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "e28348251b53b411543fae149dfa2c61fbe7533d7c24fe98b3fd005ef23627d9"
+}

@@ -359,10 +359,11 @@ fn expand_paths(config: &mut TribalConfig) {
 #[allow(clippy::result_large_err)]
 mod tests {
     use figment::Jail;
+    use tribal_domain::TransportKind;
 
     use super::*;
     use crate::{
-        ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, ENV_PUBLIC_MCP_URL, TransportKind,
+        ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, ENV_PUBLIC_MCP_URL,
         cli_overrides::{
             DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
             InferenceStageCliOverrides, InitCliOverrides, ServerCliOverrides,

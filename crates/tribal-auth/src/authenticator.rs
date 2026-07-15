@@ -165,7 +165,7 @@ impl Authenticator {
     /// Resolves the local principal identity for the stdio transport.
     ///
     /// Called once at handler creation. A missing local principal
-    /// (because `tribal setup` has not been run) is a fatal startup
+    /// (because database initialisation has not run) is a fatal startup
     /// error.
     ///
     /// # Errors

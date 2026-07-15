@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sqlx::{PgConnection, Row};
+use sqlx::{FromRow as _, PgConnection};
 use tribal_domain::{AuthToken, AuthTokenId, PrincipalId, Scope};
 use typed_builder::TypedBuilder;
 
@@ -52,6 +52,45 @@ pub struct NewAuthToken {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Stable keyset position for token inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthTokenPageKey {
+    pub created_at: DateTime<Utc>,
+    pub id: AuthTokenId,
+}
+
+/// Token row joined to the principal key rendered to operators.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthTokenInventoryRow {
+    pub token: AuthToken,
+    pub principal: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct AuthTokenDbRow {
+    id: uuid::Uuid,
+    token_hash: String,
+    principal_id: uuid::Uuid,
+    scopes: Vec<String>,
+    audience: String,
+    expires_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+    revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct AuthTokenInventoryDbRow {
+    id: uuid::Uuid,
+    token_hash: String,
+    principal_id: uuid::Uuid,
+    scopes: Vec<String>,
+    audience: String,
+    expires_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+    revoked_at: Option<DateTime<Utc>>,
+    principal_key: String,
+}
+
 // ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
@@ -86,6 +125,13 @@ pub trait AuthTokenRepository {
         &self,
         conn: &mut PgConnection,
         token_hash: &str,
+    ) -> Result<Option<AuthToken>, DbError>;
+
+    /// Finds a token by its stable id.
+    async fn find_by_id(
+        &self,
+        conn: &mut PgConnection,
+        id: AuthTokenId,
     ) -> Result<Option<AuthToken>, DbError>;
 
     /// Finds all tokens for a principal, ordered by `created_at DESC`.
@@ -126,20 +172,6 @@ pub trait AuthTokenRepository {
     /// Returns [`DbError::QueryFailed`] on database errors.
     async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<AuthToken>, DbError>;
 
-    /// Finds tokens whose hash starts with the given prefix.
-    ///
-    /// Returns at most two results — enough for callers to distinguish
-    /// zero, one, or ambiguous matches without scanning the full table.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_by_hash_prefix(
-        &self,
-        conn: &mut PgConnection,
-        prefix: &str,
-    ) -> Result<Vec<AuthToken>, DbError>;
-
     /// Batch-revokes all active tokens, optionally filtered by principal.
     ///
     /// Only tokens that are neither revoked nor expired are affected.
@@ -154,6 +186,21 @@ pub trait AuthTokenRepository {
         principal_id: Option<PrincipalId>,
         revoked_at: DateTime<Utc>,
     ) -> Result<u64, DbError>;
+
+    /// Captures the newest token visible at the start of an inventory walk.
+    async fn page_high_water(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Option<AuthTokenPageKey>, DbError>;
+
+    /// Lists one descending token keyset window bounded by a high water.
+    async fn list_page(
+        &self,
+        conn: &mut PgConnection,
+        high_water: AuthTokenPageKey,
+        after: Option<AuthTokenPageKey>,
+        limit: u16,
+    ) -> Result<Vec<AuthTokenInventoryRow>, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +237,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
             .await;
 
         match result {
-            Ok(row) => Ok(map_auth_token_row(&row)),
+            Ok(row) => map_auth_token_row(&row),
             Err(e) => {
                 if let Some(uv) = super::common::constraint::try_into_unique_violation(&e) {
                     Err(uv)
@@ -220,7 +267,24 @@ impl AuthTokenRepository for PgAuthTokenRepository {
                 source: e,
             })?;
 
-        Ok(row.as_ref().map(map_auth_token_row))
+        row.as_ref().map(map_auth_token_row).transpose()
+    }
+
+    async fn find_by_id(
+        &self,
+        conn: &mut PgConnection,
+        id: AuthTokenId,
+    ) -> Result<Option<AuthToken>, DbError> {
+        let sql = format!("SELECT {COLUMNS} FROM auth_tokens WHERE id = $1");
+        let row = sqlx::query(&sql)
+            .bind(id.inner())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|source| DbError::QueryFailed {
+                context: format!("finding auth token by id {id}"),
+                source,
+            })?;
+        row.as_ref().map(map_auth_token_row).transpose()
     }
 
     async fn find_by_principal_id(
@@ -243,7 +307,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
                 source: e,
             })?;
 
-        Ok(rows.iter().map(map_auth_token_row).collect())
+        rows.iter().map(map_auth_token_row).collect()
     }
 
     async fn revoke(
@@ -283,7 +347,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
                 id: id.to_string(),
             })?;
 
-        Ok((map_auth_token_row(&row), affected > 0))
+        Ok((map_auth_token_row(&row)?, affected > 0))
     }
 
     async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<AuthToken>, DbError> {
@@ -298,34 +362,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
                     source: e,
                 })?;
 
-        Ok(rows.iter().map(map_auth_token_row).collect())
-    }
-
-    async fn find_by_hash_prefix(
-        &self,
-        conn: &mut PgConnection,
-        prefix: &str,
-    ) -> Result<Vec<AuthToken>, DbError> {
-        if prefix.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let sql = format!(
-            "SELECT {COLUMNS} FROM auth_tokens \
-             WHERE LEFT(token_hash, length($1)) = $1 \
-             LIMIT 2",
-        );
-
-        let rows = sqlx::query(&sql)
-            .bind(prefix)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|e| DbError::QueryFailed {
-                context: format!("finding auth tokens by hash prefix '{prefix}'"),
-                source: e,
-            })?;
-
-        Ok(rows.iter().map(map_auth_token_row).collect())
+        rows.iter().map(map_auth_token_row).collect()
     }
 
     async fn revoke_all(
@@ -363,37 +400,146 @@ impl AuthTokenRepository for PgAuthTokenRepository {
 
         Ok(result.rows_affected())
     }
+
+    async fn page_high_water(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Option<AuthTokenPageKey>, DbError> {
+        let row = sqlx::query!(
+            r#"
+            SELECT created_at, id
+            FROM auth_tokens
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            "#
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|source| DbError::QueryFailed {
+            context: "capturing token inventory high water".to_owned(),
+            source,
+        })?;
+        Ok(row.map(|row| AuthTokenPageKey {
+            created_at: row.created_at,
+            id: AuthTokenId::from(row.id),
+        }))
+    }
+
+    async fn list_page(
+        &self,
+        conn: &mut PgConnection,
+        high_water: AuthTokenPageKey,
+        after: Option<AuthTokenPageKey>,
+        limit: u16,
+    ) -> Result<Vec<AuthTokenInventoryRow>, DbError> {
+        let rows = match after {
+            Some(after) => {
+                sqlx::query_as!(
+                    AuthTokenInventoryDbRow,
+                    r#"
+                    SELECT t.id, t.token_hash, t.principal_id, t.scopes,
+                           t.audience, t.expires_at, t.created_at, t.revoked_at,
+                           p.principal_key
+                    FROM auth_tokens t
+                    JOIN principals p ON p.id = t.principal_id
+                    WHERE (t.created_at, t.id) <= ($1, $2)
+                      AND (t.created_at, t.id) < ($3, $4)
+                    ORDER BY t.created_at DESC, t.id DESC
+                    LIMIT $5
+                    "#,
+                    high_water.created_at,
+                    high_water.id.inner(),
+                    after.created_at,
+                    after.id.inner(),
+                    i64::from(limit),
+                )
+                .fetch_all(&mut *conn)
+                .await
+            }
+            None => {
+                sqlx::query_as!(
+                    AuthTokenInventoryDbRow,
+                    r#"
+                    SELECT t.id, t.token_hash, t.principal_id, t.scopes,
+                           t.audience, t.expires_at, t.created_at, t.revoked_at,
+                           p.principal_key
+                    FROM auth_tokens t
+                    JOIN principals p ON p.id = t.principal_id
+                    WHERE (t.created_at, t.id) <= ($1, $2)
+                    ORDER BY t.created_at DESC, t.id DESC
+                    LIMIT $3
+                    "#,
+                    high_water.created_at,
+                    high_water.id.inner(),
+                    i64::from(limit),
+                )
+                .fetch_all(&mut *conn)
+                .await
+            }
+        }
+        .map_err(|source| DbError::QueryFailed {
+            context: "listing a token inventory page".to_owned(),
+            source,
+        })?;
+        rows.into_iter().map(map_inventory_row).collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Row mapping
 // ---------------------------------------------------------------------------
 
-const EXPECT_VALID_SCOPE_IN_DB: &str = "invariant: database contains valid scopes";
+fn map_auth_token_row(r: &sqlx::postgres::PgRow) -> Result<AuthToken, DbError> {
+    let row = AuthTokenDbRow::from_row(r).map_err(row_decode_error)?;
+    map_auth_token_db_row(row)
+}
 
-/// Maps a raw `sqlx::Row` from an auth token query into an
-/// [`AuthToken`].
-///
-/// # Panics
-///
-/// Panics if a scope value stored in the database fails to parse. The
-/// application only writes validated scopes, so invalid values indicate
-/// data corruption.
-fn map_auth_token_row(r: &sqlx::postgres::PgRow) -> AuthToken {
-    let scope_strings: Vec<String> = r.get("scopes");
-    let scopes = scope_strings
-        .iter()
-        .map(|s| Scope::parse(s).unwrap_or_else(|_| panic!("{EXPECT_VALID_SCOPE_IN_DB}: {s:?}")))
-        .collect();
+fn map_auth_token_db_row(row: AuthTokenDbRow) -> Result<AuthToken, DbError> {
+    let scopes = row
+        .scopes
+        .into_iter()
+        .map(|scope| Scope::parse(&scope).map_err(scope_decode_error))
+        .collect::<Result<Vec<_>, _>>()?;
 
-    AuthToken::builder()
-        .id(AuthTokenId::from(r.get::<uuid::Uuid, _>("id")))
-        .token_hash(r.get("token_hash"))
-        .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
+    Ok(AuthToken::builder()
+        .id(AuthTokenId::from(row.id))
+        .token_hash(row.token_hash)
+        .principal_id(PrincipalId::from(row.principal_id))
         .scopes(scopes)
-        .audience(r.get("audience"))
-        .expires_at(r.get("expires_at"))
-        .created_at(r.get("created_at"))
-        .revoked_at(r.get("revoked_at"))
-        .build()
+        .audience(row.audience)
+        .expires_at(row.expires_at)
+        .created_at(row.created_at)
+        .revoked_at(row.revoked_at)
+        .build())
+}
+
+fn map_inventory_row(row: AuthTokenInventoryDbRow) -> Result<AuthTokenInventoryRow, DbError> {
+    let token = AuthTokenDbRow {
+        id: row.id,
+        token_hash: row.token_hash,
+        principal_id: row.principal_id,
+        scopes: row.scopes,
+        audience: row.audience,
+        expires_at: row.expires_at,
+        created_at: row.created_at,
+        revoked_at: row.revoked_at,
+    };
+    Ok(AuthTokenInventoryRow {
+        token: map_auth_token_db_row(token)?,
+        principal: row.principal_key,
+    })
+}
+
+fn row_decode_error(source: sqlx::Error) -> DbError {
+    DbError::QueryFailed {
+        context: "decoding auth token row".to_owned(),
+        source,
+    }
+}
+
+fn scope_decode_error(source: tribal_domain::ScopeParseError) -> DbError {
+    DbError::QueryFailed {
+        context: "decoding auth token scopes".to_owned(),
+        source: sqlx::Error::Decode(Box::new(source)),
+    }
 }

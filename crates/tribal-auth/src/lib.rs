@@ -23,7 +23,7 @@ pub use error::{
     AuthError, DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED,
     DISPLAY_TOKEN_REVOKED,
 };
-pub use issuance::issue_token;
+pub use issuance::{IssuedAuthToken, issue_token, issue_token_with_record};
 pub use middleware::{AuthMiddlewareState, require_bearer_auth};
 pub use principal::AuthenticatedPrincipal;
 pub use strategy::TransportAuthStrategy;

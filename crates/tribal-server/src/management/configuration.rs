@@ -7,15 +7,17 @@ use std::{
     io::{self, Read as _},
     os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use tribal_config::{CliShadow, ReloadClass, SetError, TribalConfig, WriteEffect, reload_class};
 use tribal_wire::management::{
     ConfigDigest, ConfigDocument, ConfigFieldOutcome, ConfigFilePath, ConfigGetRequest,
-    ConfigLiteral, ConfigPatchOutcome, ConfigPatchRefusal, ConfigPatchRequest, ConfigRevision,
-    ConfigSetRequest, ConfigValue, ConfigWriteEffect, ConfigWriteOutcome, CredentialSourceKind,
-    InferenceStage,
+    ConfigLiteral, ConfigPatchOutcome, ConfigPatchRefusal, ConfigPatchRequest,
+    ConfigPersistenceObservation, ConfigPersistencePhase, ConfigRevision, ConfigSetRequest,
+    ConfigValue, ConfigWriteEffect, ConfigWriteOutcome, CredentialSourceKind, InferenceStage,
+    ManagementError, ManagementResponseError,
 };
 
 /// Maximum time spent proving a stable filesystem winner under raw-file races.
@@ -65,6 +67,22 @@ pub(crate) struct ConfigProbeSnapshot {
     pub(crate) path: PathBuf,
     pub(crate) config: TribalConfig,
     pub(crate) revision: ConfigRevision,
+}
+
+/// Effective configuration and revision proven from the same durable bytes.
+pub(crate) struct ResolvedConfigSnapshot {
+    pub(crate) config: Arc<TribalConfig>,
+    pub(crate) revision: ConfigRevision,
+}
+
+impl std::fmt::Debug for ResolvedConfigSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResolvedConfigSnapshot")
+            .field("config", &"<redacted>")
+            .field("revision", &self.revision)
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for ConfigProbeSnapshot {
@@ -168,12 +186,6 @@ impl ConfigAuthority {
         }
     }
 
-    /// Current proven revision for one-shot optimistic operations.
-    pub(crate) fn revision(&self) -> Result<ConfigRevision, ConfigAuthorityError> {
-        self.reconcile_if_needed()?;
-        Ok(self.stable_winner()?.revision)
-    }
-
     /// Validates one field candidate without persistence.
     pub(crate) fn validate_value(
         &self,
@@ -257,21 +269,23 @@ impl ConfigAuthority {
         Ok(materials)
     }
 
-    pub(crate) fn database_url(&self) -> Result<zeroize::Zeroizing<String>, ConfigAuthorityError> {
-        let proven = self.stable_winner()?;
-        Ok(zeroize::Zeroizing::new(
-            Self::load_valid(&proven)?.database.url,
-        ))
-    }
-
     /// Returns a parsed configuration and the revision proven from the same bytes.
     pub(crate) fn probe_snapshot(&self) -> Result<ConfigProbeSnapshot, ConfigAuthorityError> {
+        let snapshot = self.resolved_snapshot()?;
+        Ok(ConfigProbeSnapshot {
+            path: self.path.clone(),
+            config: Arc::unwrap_or_clone(snapshot.config),
+            revision: snapshot.revision,
+        })
+    }
+
+    /// Returns the effective configuration and revision from one stable read.
+    pub(crate) fn resolved_snapshot(&self) -> Result<ResolvedConfigSnapshot, ConfigAuthorityError> {
         self.reconcile_if_needed()?;
         let proven = self.stable_winner()?;
         let config = Self::load_valid(&proven)?;
-        Ok(ConfigProbeSnapshot {
-            path: self.path.clone(),
-            config,
+        Ok(ResolvedConfigSnapshot {
+            config: Arc::new(config),
             revision: proven.revision,
         })
     }
@@ -652,6 +666,73 @@ fn managed_effect(effect: WriteEffect, runtime_attached: bool) -> ConfigWriteEff
     }
 }
 
+pub(super) fn management_error(error: ConfigAuthorityError) -> ManagementResponseError {
+    tracing::error!(error = %error, "configuration management request failed");
+    let (message, error) = match error {
+        ConfigAuthorityError::Conflict { expected, actual } => (
+            "configuration revision conflict",
+            ManagementError::ConfigConflict { expected, actual },
+        ),
+        ConfigAuthorityError::PatchRefused { reason } => (
+            "configuration patch was refused",
+            ManagementError::ConfigPatchRefused { reason },
+        ),
+        ConfigAuthorityError::Write { source } => {
+            let violations = source.violations();
+            let is_invalid = violations.is_some();
+            let fields = violations
+                .into_iter()
+                .flatten()
+                .filter_map(|violation| tribal_domain::ConfigFieldPath::parse(&violation.key).ok())
+                .collect();
+            if is_invalid {
+                (
+                    "configuration is invalid",
+                    ManagementError::ConfigurationInvalid { fields },
+                )
+            } else {
+                (
+                    "configuration could not be persisted",
+                    ManagementError::ConfigPersistenceUnavailable {
+                        phase: ConfigPersistencePhase::NotCommitted,
+                        observation: ConfigPersistenceObservation::Unreadable,
+                    },
+                )
+            }
+        }
+        ConfigAuthorityError::DurabilityUncertain {
+            observed_digest, ..
+        } => (
+            "configuration durability is uncertain",
+            ManagementError::ConfigPersistenceUnavailable {
+                phase: ConfigPersistencePhase::DurabilityUncertain,
+                observation: ConfigPersistenceObservation::Observed {
+                    digest: observed_digest,
+                },
+            },
+        ),
+        ConfigAuthorityError::Io { .. } | ConfigAuthorityError::StableWinnerUnavailable => (
+            "configuration state is unavailable",
+            ManagementError::ConfigPersistenceUnavailable {
+                phase: ConfigPersistencePhase::DurabilityUncertain,
+                observation: ConfigPersistenceObservation::Unreadable,
+            },
+        ),
+        ConfigAuthorityError::Invalid { .. } | ConfigAuthorityError::UnknownKey { .. } => (
+            "configuration request is invalid",
+            ManagementError::ConfigurationInvalid { fields: Vec::new() },
+        ),
+        ConfigAuthorityError::WorkerUnavailable => (
+            "configuration service is unavailable",
+            ManagementError::ConfigurationInvalid { fields: Vec::new() },
+        ),
+    };
+    ManagementResponseError {
+        message: message.to_owned(),
+        error,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tribal_wire::management::{ConfigFieldPath, ConfigPatchChange};
@@ -671,6 +752,23 @@ mod tests {
 
     fn literal(value: serde_json::Value) -> ConfigLiteral {
         ConfigLiteral::new(value)
+    }
+
+    #[test]
+    fn test_management_error_does_not_expose_internal_io_context() {
+        let sentinel = "private-config-path-and-source";
+        let response = management_error(ConfigAuthorityError::Io {
+            path: PathBuf::from(sentinel),
+            source: io::Error::other(sentinel),
+        });
+
+        let wire = serde_json::to_string(&response).expect("management error serialises");
+
+        assert!(!wire.contains(sentinel));
+        assert!(matches!(
+            response.error,
+            ManagementError::ConfigPersistenceUnavailable { .. }
+        ));
     }
 
     fn revision(authority: &ConfigAuthority) -> ConfigRevision {

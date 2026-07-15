@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    SELECT * FROM projects\n                    WHERE (created_at, id) <= ($1, $2)\n                    ORDER BY created_at DESC, id DESC\n                    LIMIT $3\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "git_remote",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "default_branch",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "project_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "schema_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "settings",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c0fbe953b5ba2cf7bf17a5d561397ca3ab436a85cbcc1c720f6fd7877593ff14"
+}

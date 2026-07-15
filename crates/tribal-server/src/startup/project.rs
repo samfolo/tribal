@@ -1,7 +1,7 @@
-//! Project context resolution with a 4-level cascade.
+//! Project context resolution for explicit and ambient server modes.
 //!
-//! Resolution order: CLI flag → `TRIBAL_PROJECT_ID` env var → git remote
-//! heuristic → `None`.
+//! Auto resolution checks `TRIBAL_PROJECT_ID`, then the git remote. Explicit
+//! project and unscoped modes bypass that cascade.
 
 use std::path::Path;
 
@@ -12,7 +12,7 @@ use tribal_domain::ProjectId;
 use tribal_mcp::ResolvedProject;
 
 use super::POOL_NAME_MCP;
-use crate::{error::AppError, git::detect_git_remote_from};
+use crate::{commands::serve::ServeProjectMode, error::AppError, git::detect_git_remote_from};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -20,23 +20,24 @@ use crate::{error::AppError, git::detect_git_remote_from};
 
 /// Resolves the project context for this server instance.
 ///
-/// Cascade:
-/// 1. `cli_project` — explicit `--project` flag (format: `proj_{uuid}`)
-/// 2. `TRIBAL_PROJECT_ID` — environment variable (same format)
-/// 3. Git remote heuristic — discovers the repository and reads the
+/// Auto-mode cascade:
+/// 1. `TRIBAL_PROJECT_ID` — environment variable (format: `proj_{uuid}`)
+/// 2. Git remote heuristic — discovers the repository and reads the
 ///    origin remote URL
-/// 4. `None` — no project context; MCP `set_context` must be used
-pub(crate) async fn resolve_project(
+/// 3. `None` — no project context; MCP `set_context` must be used
+pub(crate) async fn resolve_project_mode(
     pool: &PgPool,
-    cli_project: Option<String>,
+    mode: ServeProjectMode,
 ) -> Result<Option<ResolvedProject>, AppError> {
-    // 1. CLI flag
-    if let Some(raw) = cli_project {
-        let project = resolve_by_id(pool, &raw).await?;
-        return Ok(Some(project));
+    match mode {
+        ServeProjectMode::Project(project_id) => {
+            return resolve_by_id(pool, &project_id.to_string()).await.map(Some);
+        }
+        ServeProjectMode::Unscoped => return Ok(None),
+        ServeProjectMode::Auto => {}
     }
 
-    // 2. Environment variable
+    // 1. Environment variable
     if let Ok(raw) = std::env::var(ENV_PROJECT_ID)
         && !raw.is_empty()
     {
@@ -44,14 +45,29 @@ pub(crate) async fn resolve_project(
         return Ok(Some(project));
     }
 
-    // 3. Git remote heuristic
+    // 2. Git remote heuristic
     if let Some(project) = resolve_by_git_remote(pool).await? {
         return Ok(Some(project));
     }
 
-    // 4. No project context
+    // 3. No project context
     tracing::info!("no project resolved; MCP set_context required");
     Ok(None)
+}
+
+pub(crate) async fn resolve_project(
+    pool: &PgPool,
+    project: Option<String>,
+) -> Result<Option<ResolvedProject>, AppError> {
+    let mode = match project {
+        Some(raw) => {
+            ServeProjectMode::Project(raw.parse().map_err(|_| AppError::ProjectResolution {
+                context: format!("invalid project ID format: {raw}"),
+            })?)
+        }
+        None => ServeProjectMode::Auto,
+    };
+    resolve_project_mode(pool, mode).await
 }
 
 // ---------------------------------------------------------------------------

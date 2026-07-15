@@ -37,6 +37,8 @@ mod job;
 
 #[path = "repositories/knowledge_item.rs"]
 mod knowledge_item;
+#[path = "repositories/local_default_credential.rs"]
+mod local_default_credential;
 
 #[path = "repositories/migration.rs"]
 mod migration;

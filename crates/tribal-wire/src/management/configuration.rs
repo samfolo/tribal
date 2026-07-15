@@ -3,7 +3,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::{ConfigFieldPath, ProviderKind};
+use tribal_domain::{AuthTokenId, ConfigFieldPath, ProjectId, ProviderKind};
 
 use super::{
     ConfigDigest, ConfigRevision, CredentialSourceId, EmbeddingProfileRevision, KnownModelId,
@@ -61,6 +61,36 @@ pub enum ConfigDocument {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ConfigGetRequest {
     pub key: ConfigFieldPath,
+}
+
+/// Proposed configuration value checked without persistence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ConfigValidateRequest {
+    /// The dotted field path being checked.
+    pub key: ConfigFieldPath,
+    /// The candidate JSON value.
+    pub value: serde_json::Value,
+}
+
+/// One configuration rule violated by a candidate value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ConfigViolation {
+    /// The dotted field path that violates the rule.
+    pub key: String,
+    /// The operator-facing violation detail.
+    pub message: String,
+}
+
+/// Validation result for a proposed configuration value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ConfigValidation {
+    /// Whether the candidate satisfies every configuration rule.
+    pub valid: bool,
+    /// Every violated rule, empty for a valid candidate.
+    pub violations: Vec<ConfigViolation>,
 }
 
 /// Arbitrary configuration JSON with constant-redacted formatting.
@@ -617,6 +647,8 @@ pub struct ManagementResponseError {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "code", content = "data", rename_all = "snake_case")]
 pub enum ManagementError {
+    /// Manager code reached an invariant it could not uphold.
+    InternalInvariant,
     /// An explicitly requested external probe could not produce evidence.
     ProbeUnavailable,
     ConfigurationInvalid {
@@ -662,6 +694,39 @@ pub enum ManagementError {
     GenesisPolicyRefused {
         reason: GenesisPolicyRefusal,
     },
+    Administration {
+        failure: AdministrationFailure,
+    },
+}
+
+/// Inventory row that could not fit within the management response budget.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum InventoryItemRef {
+    Project(ProjectId),
+    Token(AuthTokenId),
+}
+
+/// Stable client-actionable administration failure classification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "code", content = "data", rename_all = "snake_case")]
+pub enum AdministrationFailure {
+    OperationTimedOut,
+    ManagerShuttingDown,
+    DatabaseUnavailable,
+    DatabaseMigrationFailed,
+    ProjectSourceInvalid,
+    ProjectNotFound { id: ProjectId },
+    TokenIssuanceRefused,
+    PersistedCredentialUnavailable,
+    PersistedCredentialRecoveryFailed,
+    InventoryItemTooLarge { item: InventoryItemRef },
+    IntegrationTargetIncompatible,
+    IntegrationUnavailable,
+    ReindexUnavailable,
+    ThreadRetentionRefused,
 }
 
 /// Reason a credential capability cannot be consumed.
@@ -787,5 +852,23 @@ mod tests {
     fn test_config_literal_debug_is_constant_redacted() {
         let literal = ConfigLiteral::new(serde_json::json!({"token": "sentinel"}));
         assert_eq!(format!("{literal:?}"), "<redacted config literal>");
+    }
+
+    #[test]
+    fn test_administration_failure_retains_both_public_classifications() {
+        let error = ManagementError::Administration {
+            failure: AdministrationFailure::DatabaseUnavailable,
+        };
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({
+                "code": "administration",
+                "data": {
+                    "failure": {
+                        "code": "database_unavailable"
+                    }
+                }
+            })
+        );
     }
 }

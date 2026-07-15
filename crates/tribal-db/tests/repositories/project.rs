@@ -1,4 +1,4 @@
-use tribal_db::{DbError, PgProjectRepository, ProjectRepository};
+use tribal_db::{DbError, PgProjectRepository, ProjectPageKey, ProjectRepository};
 use tribal_domain::{GitRemote, Project, ProjectId};
 use tribal_test_utils::{TestDb, a_new_project, set_timestamp};
 
@@ -197,4 +197,66 @@ async fn test_list_returns_empty_vec_when_no_projects() {
 
     let projects = repo.list(&mut txn).await.expect("list");
     assert!(projects.is_empty());
+}
+
+#[tokio::test]
+async fn test_keyset_page_keeps_captured_high_water_across_later_insert() {
+    let ctx = TestDb::new().await;
+    let mut connection = ctx.raw_connection().await.expect("connect");
+    let repo = PgProjectRepository;
+    for suffix in ["one", "two", "three"] {
+        repo.insert(
+            &mut connection,
+            &a_new_project()
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    &format!("test/page-{suffix}"),
+                    None,
+                ))
+                .build(),
+        )
+        .await
+        .expect("seed project");
+    }
+    let high_water = repo
+        .page_high_water(&mut connection)
+        .await
+        .expect("high water")
+        .expect("seeded inventory");
+    let first = repo
+        .list_page(&mut connection, high_water, None, 2)
+        .await
+        .expect("first page");
+    assert_eq!(first.len(), 2);
+
+    let inserted_later = repo
+        .insert(
+            &mut connection,
+            &a_new_project()
+                .git_remote(GitRemote::from_parts("github.com", "test/page-later", None))
+                .build(),
+        )
+        .await
+        .expect("later insert");
+    let after = first.last().expect("first page is non-empty");
+    let second = repo
+        .list_page(
+            &mut connection,
+            high_water,
+            Some(ProjectPageKey {
+                created_at: after.created_at(),
+                id: after.id(),
+            }),
+            2,
+        )
+        .await
+        .expect("second page");
+
+    let ids: Vec<ProjectId> = first.iter().chain(&second).map(Project::id).collect();
+    assert_eq!(ids.len(), 3);
+    assert_eq!(
+        ids.iter().collect::<std::collections::HashSet<_>>().len(),
+        3
+    );
+    assert!(!ids.contains(&inserted_later.id()));
 }

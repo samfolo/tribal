@@ -4,12 +4,12 @@ use std::{collections::HashSet, sync::Mutex};
 
 use base64::Engine as _;
 use sha2::Digest as _;
-use sqlx::Connection as _;
 use tribal_db::{
     AdvisoryLockRepository, EmbeddingProfileRepository, PgAdvisoryLockRepository,
     PgEmbeddingProfileRepository, advisory_locks,
 };
 use tribal_domain::{ConfigFieldPath, ProviderKind, normalise_endpoint_url};
+use tribal_inference::{KnownModel, known_models};
 use tribal_wire::management::{
     ConfigDocument, ConfigLiteral, ConfigPatchChange, ConfigPatchOutcome, ConfigPatchRequest,
     ConfigRevision, ConfigWriteEffect, CredentialCapabilityInvalidReason, CredentialInput,
@@ -21,54 +21,19 @@ use tribal_wire::management::{
     GenesisDimensionsConstraint, GenesisEmbeddingInput, GenesisModelConstraint, GenesisOptions,
     GenesisProviderAvailability, GenesisProviderOption, GenesisUnavailableReason,
     GraphEmbeddingProfile, InferenceStage, InvalidStageSetReason, KnownModelEntry, KnownModelId,
-    ManagementError, ManagementResponseError, ModelAccess, ModelAvailability,
+    ManagementError, ManagementResponseError, ModelAccess, ModelAvailability, ModelSelectionInput,
     ModelSelectionRequest, ModelSettingsCapability, ModelUnavailableReason, ModelsCatalogue,
+    Revisioned,
 };
 
 use super::{
-    configuration::CredentialMaterial, socket::management_error, worker::ConfigWorkerClient,
+    application::{
+        DatabaseSession,
+        operation::{self, OperationContext},
+    },
+    configuration::CredentialMaterial,
+    worker::{ConfigWorkerClient, ConfigWorkerRequestError},
 };
-
-struct ModelDescriptor {
-    id: &'static str,
-    provider: ProviderKind,
-    model: &'static str,
-    display_name: &'static str,
-    access: ModelAccess,
-}
-
-fn model_descriptors() -> [ModelDescriptor; 4] {
-    [
-        ModelDescriptor {
-            id: "ollama.llama3.2",
-            provider: ProviderKind::Ollama,
-            model: "llama3.2",
-            display_name: "Llama 3.2 (local)",
-            access: ModelAccess::BringYourOwn,
-        },
-        ModelDescriptor {
-            id: "anthropic.claude-3-5-haiku",
-            provider: ProviderKind::Anthropic,
-            model: "claude-3-5-haiku-latest",
-            display_name: "Claude 3.5 Haiku",
-            access: ModelAccess::BringYourOwn,
-        },
-        ModelDescriptor {
-            id: "openai.gpt-4o-mini",
-            provider: ProviderKind::OpenAi,
-            model: "gpt-4o-mini",
-            display_name: "GPT-4o mini",
-            access: ModelAccess::BringYourOwn,
-        },
-        ModelDescriptor {
-            id: "platform.default",
-            provider: ProviderKind::Platform,
-            model: "default",
-            display_name: "Tribal Platform",
-            access: ModelAccess::Platform,
-        },
-    ]
-}
 
 /// Factory for product sessions bound to individual management connections.
 #[derive(Debug, Clone)]
@@ -98,6 +63,21 @@ struct ResolvedCredential {
     restore: Option<CredentialIssuance>,
 }
 
+struct PreparedModelSelection {
+    values: serde_json::Value,
+    revision: ConfigRevision,
+    descriptor: KnownModel,
+    use_case: CredentialUse,
+    endpoints: Vec<String>,
+}
+
+struct PreparedGenesis {
+    values: serde_json::Value,
+    revision: ConfigRevision,
+    endpoint: String,
+    use_case: CredentialUse,
+}
+
 impl std::fmt::Debug for ProductSession {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("ProductSession { credential_state: <redacted> }")
@@ -118,31 +98,45 @@ impl ProductService {
 }
 
 impl ProductSession {
-    pub(crate) async fn models_catalogue(
+    pub(in crate::management) async fn models_catalogue(
         &self,
+        operation: &OperationContext,
     ) -> Result<ModelsCatalogue, ManagementResponseError> {
-        let (_, revision) = document(self.config.document().await.map_err(management_error)?)?;
-        let models = model_descriptors()
-            .into_iter()
+        let (_, revision) = document(
+            self.config
+                .for_operation(operation)
+                .document()
+                .await
+                .map_err(ConfigWorkerRequestError::into_public_error)?,
+        )?;
+        let models = known_models()
+            .iter()
+            .copied()
             .map(model_entry)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ModelsCatalogue { models, revision })
     }
 
-    pub(crate) async fn credential_sources(
+    pub(in crate::management) async fn credential_sources(
         &self,
+        operation: &OperationContext,
         request: CredentialSourcesRequest,
     ) -> Result<CredentialSources, ManagementResponseError> {
-        let (values, actual) = document(self.config.document().await.map_err(management_error)?)?;
+        let config = self.config.for_operation(operation);
+        let (values, actual) = document(
+            config
+                .document()
+                .await
+                .map_err(ConfigWorkerRequestError::into_public_error)?,
+        )?;
         if actual != request.expected_revision {
             return Err(config_conflict(request.expected_revision, actual));
         }
         validate_credential_use(&request.use_case)?;
-        let materials = self
-            .config
+        let materials = config
             .credential_materials()
             .await
-            .map_err(management_error)?;
+            .map_err(ConfigWorkerRequestError::into_public_error)?;
         let mut grants = Vec::new();
         for material in materials {
             if material_matches(&material, &request.use_case)? {
@@ -172,54 +166,28 @@ impl ProductSession {
         })
     }
 
-    pub(crate) async fn select_model(
+    pub(in crate::management) async fn select_model(
         &self,
+        operation: &OperationContext,
         request: ModelSelectionRequest,
     ) -> Result<ConfigPatchOutcome, ManagementResponseError> {
-        validate_stages(&request.stages)?;
-        let descriptor = descriptor(&request.model)?;
-        if descriptor.provider == ProviderKind::Platform {
-            return Err(public_error(
-                "platform model transport is unavailable",
-                ManagementError::ModelUnavailable {
-                    reason: ModelUnavailableReason::PlatformEndpointUnavailable,
-                },
-            ));
-        }
-        let (values, actual) = document(self.config.document().await.map_err(management_error)?)?;
-        if actual != request.expected_revision {
-            return Err(config_conflict(request.expected_revision, actual));
-        }
-        let use_case = CredentialUse::ModelSelection {
-            model: request.model.clone(),
-            stages: request.stages.clone(),
-            endpoint: request.endpoint.clone(),
-        };
-        let endpoints = selected_endpoints(
-            descriptor.provider,
-            &request.stages,
-            &request.endpoint,
-            &values,
-        )?;
-        let transition = request
-            .stages
-            .iter()
-            .zip(&endpoints)
-            .any(|(stage, endpoint)| {
-                stage_provider(&values, stage) != Some(descriptor.provider)
-                    || stage_endpoint(&values, stage)
-                        .or_else(|| descriptor.provider.default_base_url().map(str::to_owned))
-                        .is_none_or(|current| endpoints_differ(&current, endpoint))
-            });
-        if transition && request.credential.is_none() && descriptor.provider.requires_api_key() {
-            return Err(public_error(
-                "provider or endpoint transition requires a credential",
-                ManagementError::EndpointTransitionRefused {
-                    reason: EndpointTransitionRefusal::CredentialRequired,
-                },
-            ));
-        }
-        let mut credential = self.resolve_credential(request.credential, &use_case, &actual)?;
+        let PreparedModelSelection {
+            values,
+            revision,
+            descriptor,
+            use_case,
+            endpoints,
+        } = self
+            .prepare_model_selection(
+                operation,
+                &request.expected_revision,
+                &request.model,
+                &request.stages,
+                &request.endpoint,
+                request.credential.is_some(),
+            )
+            .await?;
+        let mut credential = self.resolve_credential(request.credential, &use_case, &revision)?;
         let mut changes = Vec::new();
         for (stage, endpoint) in request.stages.iter().zip(&endpoints) {
             let root = stage_root(stage);
@@ -245,6 +213,14 @@ impl ProductSession {
             }
         }
         if request.reuse_api_key_for_embedding {
+            if descriptor.provider != ProviderKind::OpenAi {
+                return Err(public_error(
+                    "provider credential cannot back graph embeddings",
+                    ManagementError::EmbeddingReuseRefused {
+                        reason: EmbeddingReuseUnavailableReason::ProviderUnsupported,
+                    },
+                ));
+            }
             let resolved = credential.as_ref().ok_or_else(|| {
                 public_error(
                     "embedding reuse requires an explicit credential",
@@ -264,20 +240,133 @@ impl ProductSession {
         }
         let result = self
             .config
+            .for_operation(operation)
             .patch(ConfigPatchRequest {
                 changes,
-                expected_revision: actual,
+                expected_revision: revision,
             })
             .await
-            .map_err(management_error);
+            .map_err(ConfigWorkerRequestError::into_public_error);
         if result.is_err() {
             self.restore(&mut credential)?;
         }
         result
     }
 
-    pub(crate) async fn genesis_options(&self) -> Result<GenesisOptions, ManagementResponseError> {
-        let (_, revision) = document(self.config.document().await.map_err(management_error)?)?;
+    async fn prepare_model_selection(
+        &self,
+        operation: &OperationContext,
+        expected_revision: &ConfigRevision,
+        model: &KnownModelId,
+        stages: &[InferenceStage],
+        endpoint: &EndpointSelection,
+        credential_present: bool,
+    ) -> Result<PreparedModelSelection, ManagementResponseError> {
+        validate_stages(stages)?;
+        let descriptor = descriptor(model)?;
+        if descriptor.provider == ProviderKind::Platform {
+            return Err(public_error(
+                "platform model transport is unavailable",
+                ManagementError::ModelUnavailable {
+                    reason: ModelUnavailableReason::PlatformEndpointUnavailable,
+                },
+            ));
+        }
+        let (values, revision) = document(
+            self.config
+                .for_operation(operation)
+                .document()
+                .await
+                .map_err(ConfigWorkerRequestError::into_public_error)?,
+        )?;
+        if &revision != expected_revision {
+            return Err(config_conflict(expected_revision.clone(), revision));
+        }
+        let use_case = CredentialUse::ModelSelection {
+            model: model.clone(),
+            stages: stages.to_vec(),
+            endpoint: endpoint.clone(),
+        };
+        let endpoints = selected_endpoints(descriptor.provider, stages, endpoint, &values)?;
+        let transition = stages.iter().zip(&endpoints).any(|(stage, endpoint)| {
+            stage_provider(&values, stage) != Some(descriptor.provider)
+                || stage_endpoint(&values, stage)
+                    .or_else(|| descriptor.provider.default_base_url().map(str::to_owned))
+                    .is_none_or(|current| endpoints_differ(&current, endpoint))
+        });
+        if transition && !credential_present && descriptor.provider.requires_api_key() {
+            return Err(public_error(
+                "provider or endpoint transition requires a credential",
+                ManagementError::EndpointTransitionRefused {
+                    reason: EndpointTransitionRefusal::CredentialRequired,
+                },
+            ));
+        }
+        Ok(PreparedModelSelection {
+            values,
+            revision,
+            descriptor,
+            use_case,
+            endpoints,
+        })
+    }
+
+    pub(in crate::management) async fn preflight_model_selection(
+        &self,
+        operation: &OperationContext,
+        expected_revision: &ConfigRevision,
+        selection: &ModelSelectionInput,
+        reuse_api_key_for_embedding: bool,
+    ) -> Result<Vec<String>, ManagementResponseError> {
+        let prepared = self
+            .prepare_model_selection(
+                operation,
+                expected_revision,
+                &selection.model,
+                &selection.stages,
+                &selection.endpoint,
+                selection.credential.is_some(),
+            )
+            .await?;
+        self.inspect_credential(
+            selection.credential.as_ref(),
+            &prepared.use_case,
+            expected_revision,
+        )?;
+        if reuse_api_key_for_embedding {
+            if prepared.descriptor.provider != ProviderKind::OpenAi {
+                return Err(public_error(
+                    "provider credential cannot back graph embeddings",
+                    ManagementError::EmbeddingReuseRefused {
+                        reason: EmbeddingReuseUnavailableReason::ProviderUnsupported,
+                    },
+                ));
+            }
+            if selection.credential.is_none() {
+                return Err(public_error(
+                    "embedding reuse requires an explicit credential",
+                    ManagementError::EmbeddingReuseRefused {
+                        reason: EmbeddingReuseUnavailableReason::EndpointMismatch,
+                    },
+                ));
+            }
+            let endpoint = one_endpoint(&prepared.endpoints)?;
+            let _ = reusable_connection(&prepared.values, prepared.descriptor.provider, &endpoint)?;
+        }
+        Ok(prepared.endpoints)
+    }
+
+    pub(in crate::management) async fn genesis_options(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<GenesisOptions, ManagementResponseError> {
+        let (_, revision) = document(
+            self.config
+                .for_operation(operation)
+                .document()
+                .await
+                .map_err(ConfigWorkerRequestError::into_public_error)?,
+        )?;
         Ok(GenesisOptions {
             recommended: GenesisEmbeddingInput {
                 provider: ProviderKind::Ollama,
@@ -293,46 +382,26 @@ impl ProductSession {
         })
     }
 
-    pub(crate) async fn configure_genesis(
+    pub(in crate::management) async fn configure_genesis(
         &self,
+        operation: &OperationContext,
         request: GenesisConfigurationRequest,
     ) -> Result<ConfigPatchOutcome, ManagementResponseError> {
-        validate_genesis(&request.embedding)?;
-        let (values, actual) = document(self.config.document().await.map_err(management_error)?)?;
-        if actual != request.expected_revision {
-            return Err(config_conflict(request.expected_revision, actual));
-        }
-        let use_case = CredentialUse::Genesis {
-            embedding: request.embedding.clone(),
-        };
-        let mut credential = self.resolve_credential(request.credential, &use_case, &actual)?;
-        if request.embedding.provider.requires_api_key() && credential.is_none() {
-            return Err(public_error(
-                "genesis provider requires a credential",
-                ManagementError::EndpointTransitionRefused {
-                    reason: EndpointTransitionRefusal::CredentialRequired,
-                },
-            ));
-        }
-        let endpoint = request
-            .embedding
-            .base_url
-            .clone()
-            .or_else(|| {
-                request
-                    .embedding
-                    .provider
-                    .default_base_url()
-                    .map(str::to_owned)
-            })
-            .ok_or_else(|| {
-                public_error(
-                    "provider requires an explicit endpoint",
-                    ManagementError::EndpointTransitionRefused {
-                        reason: EndpointTransitionRefusal::ProviderHasNoDefault,
-                    },
-                )
-            })?;
+        let PreparedGenesis {
+            values,
+            revision,
+            endpoint,
+            use_case,
+        } = self
+            .prepare_genesis(
+                operation,
+                &request.expected_revision,
+                &request.embedding,
+                request.credential.is_some(),
+                false,
+            )
+            .await?;
+        let mut credential = self.resolve_credential(request.credential, &use_case, &revision)?;
         let mut changes = vec![
             change(
                 "init.embedding.provider",
@@ -365,101 +434,181 @@ impl ProductSession {
         }
         let result = self
             .config
+            .for_operation(operation)
             .patch(ConfigPatchRequest {
                 changes,
-                expected_revision: actual,
+                expected_revision: revision,
             })
             .await
-            .map_err(management_error);
+            .map_err(ConfigWorkerRequestError::into_public_error);
         if result.is_err() {
             self.restore(&mut credential)?;
         }
         result
     }
 
+    async fn prepare_genesis(
+        &self,
+        operation: &OperationContext,
+        expected_revision: &ConfigRevision,
+        embedding: &GenesisEmbeddingInput,
+        credential_present: bool,
+        credential_will_exist: bool,
+    ) -> Result<PreparedGenesis, ManagementResponseError> {
+        validate_genesis(embedding)?;
+        let (values, revision) = document(
+            self.config
+                .for_operation(operation)
+                .document()
+                .await
+                .map_err(ConfigWorkerRequestError::into_public_error)?,
+        )?;
+        if &revision != expected_revision {
+            return Err(config_conflict(expected_revision.clone(), revision));
+        }
+        let use_case = CredentialUse::Genesis {
+            embedding: embedding.clone(),
+        };
+        let endpoint = embedding
+            .base_url
+            .clone()
+            .or_else(|| embedding.provider.default_base_url().map(str::to_owned))
+            .ok_or_else(|| {
+                public_error(
+                    "provider requires an explicit endpoint",
+                    ManagementError::EndpointTransitionRefused {
+                        reason: EndpointTransitionRefusal::ProviderHasNoDefault,
+                    },
+                )
+            })?;
+        if embedding.provider.requires_api_key()
+            && !credential_present
+            && !credential_will_exist
+            && !existing_embedding_credential(&values, embedding.provider, &endpoint)?
+        {
+            return Err(public_error(
+                "genesis provider requires a credential",
+                ManagementError::EndpointTransitionRefused {
+                    reason: EndpointTransitionRefusal::CredentialRequired,
+                },
+            ));
+        }
+        Ok(PreparedGenesis {
+            values,
+            revision,
+            endpoint,
+            use_case,
+        })
+    }
+
+    pub(in crate::management) async fn preflight_genesis(
+        &self,
+        operation: &OperationContext,
+        expected_revision: &ConfigRevision,
+        embedding: &GenesisEmbeddingInput,
+        credential: Option<&CredentialInput>,
+        credential_will_exist: bool,
+    ) -> Result<(), ManagementResponseError> {
+        let prepared = self
+            .prepare_genesis(
+                operation,
+                expected_revision,
+                embedding,
+                credential.is_some(),
+                credential_will_exist,
+            )
+            .await?;
+        self.inspect_credential(credential, &prepared.use_case, expected_revision)?;
+        if credential.is_some() {
+            let _ = reusable_connection(&prepared.values, embedding.provider, &prepared.endpoint)?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn embedding_profile(
         &self,
-    ) -> Result<GraphEmbeddingProfile, ManagementResponseError> {
-        let database_url = self.config.database_url().await.map_err(management_error)?;
-        let mut connection = sqlx::PgConnection::connect(database_url.as_str())
+        session: &DatabaseSession,
+    ) -> Result<Revisioned<GraphEmbeddingProfile>, ManagementResponseError> {
+        let profile = session
+            .operation()
+            .cancel_safe(async {
+                let mut transaction = session
+                    .pool
+                    .begin()
+                    .await
+                    .map_err(|error| profile_sql_error(&error))?;
+                set_profile_lock_timeout(&mut transaction).await?;
+                PgAdvisoryLockRepository
+                    .acquire_shared_xact(
+                        &mut transaction,
+                        advisory_locks::EMBEDDING_PROFILE_AUTHORITY,
+                    )
+                    .await
+                    .map_err(|error| profile_db_error(&error))?;
+                let profile = PgEmbeddingProfileRepository
+                    .find_active(&mut transaction)
+                    .await
+                    .map_err(|error| profile_db_error(&error))?;
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|error| profile_sql_error(&error))?;
+                Ok::<_, ManagementResponseError>(profile)
+            })
             .await
-            .map_err(|error| profile_sql_error(&error))?;
-        let mut transaction = connection
-            .begin()
-            .await
-            .map_err(|error| profile_sql_error(&error))?;
-        set_profile_lock_timeout(&mut transaction).await?;
-        PgAdvisoryLockRepository
-            .acquire_shared_xact(
-                &mut transaction,
-                advisory_locks::EMBEDDING_PROFILE_AUTHORITY,
-            )
-            .await
-            .map_err(|error| profile_db_error(&error))?;
-        let profile = PgEmbeddingProfileRepository
-            .find_active(&mut transaction)
-            .await
-            .map_err(|error| profile_db_error(&error))?;
-        transaction
-            .commit()
-            .await
-            .map_err(|error| profile_sql_error(&error))?;
+            .map_err(operation::public_error)??;
         let Some(profile) = profile else {
-            return Ok(GraphEmbeddingProfile::NoProfile);
+            return Ok(session.revisioned(GraphEmbeddingProfile::NoProfile));
         };
-        let (values, _) = document(self.config.document().await.map_err(management_error)?)?;
+        let values =
+            serde_json::to_value(session.config.as_ref()).map_err(|_| invalid_contract())?;
         let summary = profile_summary(&profile);
         let genesis_drift = genesis_differs(&values, &summary)
             .then(|| "configuration differs from the active embedding profile".to_owned());
-        Ok(GraphEmbeddingProfile::Active {
+        Ok(session.revisioned(GraphEmbeddingProfile::Active {
             profile: summary,
             profile_revision: profile_revision(&profile)?,
             genesis_drift,
-        })
+        }))
     }
 
     pub(crate) async fn converge_genesis(
         &self,
+        session: &DatabaseSession,
         request: GenesisConvergenceRequest,
     ) -> Result<ConfigPatchOutcome, ManagementResponseError> {
-        let database_url = self.config.database_url().await.map_err(management_error)?;
-        let mut connection = sqlx::PgConnection::connect(database_url.as_str())
+        let (transaction, profile) = session
+            .operation()
+            .cancel_safe(async {
+                let mut transaction = session
+                    .pool
+                    .begin()
+                    .await
+                    .map_err(|error| profile_sql_error(&error))?;
+                set_profile_lock_timeout(&mut transaction).await?;
+                PgAdvisoryLockRepository
+                    .acquire_shared_xact(
+                        &mut transaction,
+                        advisory_locks::EMBEDDING_PROFILE_AUTHORITY,
+                    )
+                    .await
+                    .map_err(|error| profile_db_error(&error))?;
+                let profile = PgEmbeddingProfileRepository
+                    .find_active(&mut transaction)
+                    .await
+                    .map_err(|error| profile_db_error(&error))?
+                    .ok_or_else(|| {
+                        public_error(
+                            "no active embedding profile is available",
+                            ManagementError::GenesisPolicyRefused {
+                                reason: tribal_wire::management::GenesisPolicyRefusal::ProfileUnavailable,
+                            },
+                        )
+                    })?;
+                Ok::<_, ManagementResponseError>((transaction, profile))
+            })
             .await
-            .map_err(|error| profile_sql_error(&error))?;
-        let mut transaction = connection
-            .begin()
-            .await
-            .map_err(|error| profile_sql_error(&error))?;
-        set_profile_lock_timeout(&mut transaction).await?;
-        if let Err(error) = PgAdvisoryLockRepository
-            .acquire_shared_xact(
-                &mut transaction,
-                advisory_locks::EMBEDDING_PROFILE_AUTHORITY,
-            )
-            .await
-        {
-            let _ = transaction.rollback().await;
-            return Err(profile_db_error(&error));
-        }
-        let profile = match PgEmbeddingProfileRepository
-            .find_active(&mut transaction)
-            .await
-        {
-            Ok(Some(profile)) => profile,
-            Ok(None) => {
-                let _ = transaction.rollback().await;
-                return Err(public_error(
-                    "no active embedding profile is available",
-                    ManagementError::GenesisPolicyRefused {
-                        reason: tribal_wire::management::GenesisPolicyRefusal::ProfileUnavailable,
-                    },
-                ));
-            }
-            Err(error) => {
-                let _ = transaction.rollback().await;
-                return Err(profile_db_error(&error));
-            }
-        };
+            .map_err(operation::public_error)??;
         let actual_profile_revision = profile_revision(&profile)?;
         if actual_profile_revision != request.expected_profile_revision {
             let _ = transaction.rollback().await;
@@ -490,8 +639,13 @@ impl ProductSession {
                 serde_json::Value::from(summary.dimensions),
             )?,
         ];
+        session
+            .operation()
+            .checkpoint()
+            .map_err(operation::public_error)?;
         let mut outcome = match self
             .config
+            .for_operation(session.operation())
             .patch(ConfigPatchRequest {
                 changes,
                 expected_revision: request.expected_revision,
@@ -501,7 +655,7 @@ impl ProductSession {
             Ok(outcome) => outcome,
             Err(error) => {
                 let _ = transaction.rollback().await;
-                return Err(management_error(error));
+                return Err(error.into_public_error());
             }
         };
         transaction
@@ -560,6 +714,37 @@ impl ProductSession {
         }
     }
 
+    fn inspect_credential(
+        &self,
+        credential: Option<&CredentialInput>,
+        use_case: &CredentialUse,
+        revision: &ConfigRevision,
+    ) -> Result<(), ManagementResponseError> {
+        let Some(CredentialInput::Source { source }) = credential else {
+            return Ok(());
+        };
+        let state = self.issuance.lock().map_err(|_| capability_state_error())?;
+        let Some(issuance) = state.as_ref() else {
+            return Err(capability_error(CredentialCapabilityInvalidReason::Unknown));
+        };
+        if &issuance.revision != revision {
+            return Err(capability_error(
+                CredentialCapabilityInvalidReason::RevisionChanged,
+            ));
+        }
+        if &issuance.use_case != use_case {
+            return Err(capability_error(
+                CredentialCapabilityInvalidReason::UseMismatch,
+            ));
+        }
+        if !issuance.grants.iter().any(|grant| &grant.id == source) {
+            return Err(capability_error(
+                CredentialCapabilityInvalidReason::Reissued,
+            ));
+        }
+        Ok(())
+    }
+
     fn restore(
         &self,
         credential: &mut Option<ResolvedCredential>,
@@ -590,9 +775,10 @@ impl ProductSession {
     }
 }
 
-fn descriptor(id: &KnownModelId) -> Result<ModelDescriptor, ManagementResponseError> {
-    model_descriptors()
-        .into_iter()
+fn descriptor(id: &KnownModelId) -> Result<KnownModel, ManagementResponseError> {
+    known_models()
+        .iter()
+        .copied()
         .find(|model| model.id == id.as_str())
         .ok_or_else(|| {
             public_error(
@@ -702,14 +888,18 @@ fn profile_sql_error(error: &sqlx::Error) -> ManagementResponseError {
     )
 }
 
-fn model_entry(descriptor: ModelDescriptor) -> Result<KnownModelEntry, ManagementResponseError> {
+fn model_entry(descriptor: KnownModel) -> Result<KnownModelEntry, ManagementResponseError> {
     let endpoint = descriptor.provider.default_base_url();
     Ok(KnownModelEntry {
         id: KnownModelId::parse(descriptor.id).map_err(|_| invalid_contract())?,
         provider: descriptor.provider,
         model: descriptor.model.to_owned(),
         display_name: descriptor.display_name.to_owned(),
-        access: descriptor.access,
+        access: if descriptor.provider == ProviderKind::Platform {
+            ModelAccess::Platform
+        } else {
+            ModelAccess::BringYourOwn
+        },
         availability: if descriptor.provider == ProviderKind::Platform {
             ModelAvailability::Unavailable {
                 reason: ModelUnavailableReason::PlatformEndpointUnavailable,
@@ -799,7 +989,10 @@ fn selected_endpoints(
                     },
                 )
             }),
-        EndpointSelection::Custom { value } => Ok(vec![value.clone(); stages.len()]),
+        EndpointSelection::Custom { value } => {
+            let value = normalise_endpoint_url(value).map_err(|_| invalid_contract())?;
+            Ok(vec![value; stages.len()])
+        }
     }
 }
 
@@ -961,6 +1154,21 @@ fn reusable_connection(
     Ok(default)
 }
 
+fn existing_embedding_credential(
+    values: &serde_json::Value,
+    provider: ProviderKind,
+    endpoint: &str,
+) -> Result<bool, ManagementResponseError> {
+    let connection = reusable_connection(values, provider, endpoint)?;
+    Ok(values
+        .get("credentials")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|entries| entries.get(&connection))
+        .and_then(|entry| entry.get("api_key"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|secret| !secret.is_empty()))
+}
+
 fn connection_exists(values: &serde_json::Value, name: &str) -> bool {
     values
         .get("credentials")
@@ -1057,7 +1265,7 @@ fn validate_stages(stages: &[InferenceStage]) -> Result<(), ManagementResponseEr
 }
 
 fn validate_genesis(embedding: &GenesisEmbeddingInput) -> Result<(), ManagementResponseError> {
-    if !embedding.provider.supports_embedding() {
+    if !embedding.provider.supports_embedding() || embedding.provider == ProviderKind::Platform {
         return Err(public_error(
             "provider has no embedding API",
             ManagementError::GenesisPolicyRefused {
@@ -1220,6 +1428,10 @@ mod tests {
         ProductService::new(worker).session()
     }
 
+    fn operation() -> OperationContext {
+        OperationContext::new(tokio_util::sync::CancellationToken::new())
+    }
+
     async fn revision(session: &ProductSession) -> ConfigRevision {
         let (_, revision) = document(session.config.document().await.expect("document reads"))
             .expect("document is durable and valid");
@@ -1237,14 +1449,33 @@ mod tests {
             ),
         );
         let session = session(path);
-        let catalogue = session.models_catalogue().await.expect("catalogue returns");
-        assert_eq!(catalogue.models.len(), 4);
+        let operation = operation();
+        let catalogue = session
+            .models_catalogue(&operation)
+            .await
+            .expect("catalogue returns");
+        assert_eq!(catalogue.models.len(), known_models().len());
+        assert!(
+            catalogue
+                .models
+                .iter()
+                .zip(known_models())
+                .all(|(entry, model)| {
+                    entry.id.as_str() == model.id
+                        && entry.provider == model.provider
+                        && entry.model == model.model
+                        && entry.display_name == model.display_name
+                })
+        );
         assert!(catalogue.models.iter().any(|entry| {
             entry.provider == ProviderKind::Platform
                 && matches!(entry.availability, ModelAvailability::Unavailable { .. })
         }));
 
-        let options = session.genesis_options().await.expect("options return");
+        let options = session
+            .genesis_options(&operation)
+            .await
+            .expect("options return");
         assert_eq!(options.providers.len(), ProviderKind::ALL.len());
         assert!(options.providers.iter().any(|option| {
             option.provider == ProviderKind::Anthropic
@@ -1263,6 +1494,7 @@ mod tests {
         let path = temp.path().join("tribal.yaml");
         write_config(&path, &openai_config());
         let session = session(path.clone());
+        let operation = operation();
         let expected_revision = revision(&session).await;
         let model = KnownModelId::parse("openai.gpt-4o-mini").expect("model id parses");
         let use_case = CredentialUse::ModelSelection {
@@ -1271,10 +1503,13 @@ mod tests {
             endpoint: EndpointSelection::ProviderDefault,
         };
         let sources = session
-            .credential_sources(CredentialSourcesRequest {
-                use_case,
-                expected_revision: expected_revision.clone(),
-            })
+            .credential_sources(
+                &operation,
+                CredentialSourcesRequest {
+                    use_case,
+                    expected_revision: expected_revision.clone(),
+                },
+            )
             .await
             .expect("credential sources return");
         let source = sources
@@ -1286,16 +1521,19 @@ mod tests {
         assert!(!format!("{source:?}").contains(source.as_str()));
 
         let mismatched_use = session
-            .select_model(ModelSelectionRequest {
-                model: model.clone(),
-                stages: vec![InferenceStage::Triage],
-                endpoint: EndpointSelection::ProviderDefault,
-                credential: Some(CredentialInput::Source {
-                    source: source.clone(),
-                }),
-                reuse_api_key_for_embedding: false,
-                expected_revision: expected_revision.clone(),
-            })
+            .select_model(
+                &operation,
+                ModelSelectionRequest {
+                    model: model.clone(),
+                    stages: vec![InferenceStage::Triage],
+                    endpoint: EndpointSelection::ProviderDefault,
+                    credential: Some(CredentialInput::Source {
+                        source: source.clone(),
+                    }),
+                    reuse_api_key_for_embedding: false,
+                    expected_revision: expected_revision.clone(),
+                },
+            )
             .await
             .expect_err("source cannot cross its issued use");
         assert!(matches!(
@@ -1306,16 +1544,19 @@ mod tests {
         ));
 
         let outcome = session
-            .select_model(ModelSelectionRequest {
-                model: model.clone(),
-                stages: vec![InferenceStage::Extraction],
-                endpoint: EndpointSelection::ProviderDefault,
-                credential: Some(CredentialInput::Source {
-                    source: source.clone(),
-                }),
-                reuse_api_key_for_embedding: false,
-                expected_revision,
-            })
+            .select_model(
+                &operation,
+                ModelSelectionRequest {
+                    model: model.clone(),
+                    stages: vec![InferenceStage::Extraction],
+                    endpoint: EndpointSelection::ProviderDefault,
+                    credential: Some(CredentialInput::Source {
+                        source: source.clone(),
+                    }),
+                    reuse_api_key_for_embedding: false,
+                    expected_revision,
+                },
+            )
             .await
             .expect("source-backed selection commits");
         assert!(
@@ -1328,14 +1569,17 @@ mod tests {
         assert!(persisted.contains("sk-product-secret"));
 
         let replay = session
-            .select_model(ModelSelectionRequest {
-                model,
-                stages: vec![InferenceStage::Extraction],
-                endpoint: EndpointSelection::ProviderDefault,
-                credential: Some(CredentialInput::Source { source }),
-                reuse_api_key_for_embedding: false,
-                expected_revision: outcome.revision,
-            })
+            .select_model(
+                &operation,
+                ModelSelectionRequest {
+                    model,
+                    stages: vec![InferenceStage::Extraction],
+                    endpoint: EndpointSelection::ProviderDefault,
+                    credential: Some(CredentialInput::Source { source }),
+                    reuse_api_key_for_embedding: false,
+                    expected_revision: outcome.revision,
+                },
+            )
             .await
             .expect_err("consumed source is refused");
         assert!(matches!(
@@ -1378,6 +1622,34 @@ mod tests {
             refusal.error,
             ManagementError::CredentialConnectionConflict { connection }
                 if connection == "openai_default"
+        ));
+    }
+
+    #[test]
+    fn test_custom_model_endpoints_are_normalised_before_effects() {
+        let endpoints = selected_endpoints(
+            ProviderKind::OpenAi,
+            &[InferenceStage::Extraction],
+            &EndpointSelection::Custom {
+                value: "https://api.openai.com/v1/".to_owned(),
+            },
+            &serde_json::json!({}),
+        )
+        .expect("custom endpoint is valid");
+        assert_eq!(endpoints, ["https://api.openai.com:443/v1"]);
+
+        let error = selected_endpoints(
+            ProviderKind::OpenAi,
+            &[InferenceStage::Extraction],
+            &EndpointSelection::Custom {
+                value: "not a URL".to_owned(),
+            },
+            &serde_json::json!({}),
+        )
+        .expect_err("invalid custom endpoint is refused");
+        assert!(matches!(
+            error.error,
+            ManagementError::ConfigurationInvalid { .. }
         ));
     }
 }

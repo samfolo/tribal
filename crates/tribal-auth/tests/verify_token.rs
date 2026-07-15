@@ -424,7 +424,7 @@ async fn test_resolve_stdio_principal_missing() {
         .expect_err("should fail when local principal is missing");
 
     assert!(matches!(err, AuthError::LocalPrincipalMissing { .. }));
-    assert!(err.to_string().contains("tribal setup"));
+    assert!(err.to_string().contains("tribal database initialise"));
 }
 
 #[tokio::test]

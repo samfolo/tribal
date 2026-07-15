@@ -7,10 +7,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use tribal_domain::ConfigFieldPath;
 
-use crate::{
-    management::{ConfigLiteral, ConfigRevision, ReadinessReport, RuntimeIdentity},
-    token::TokenList,
-};
+use crate::management::{ConfigLiteral, ConfigRevision, ReadinessReport, RuntimeIdentity};
 
 /// Version of the private manager/runtime contract.
 pub const RUNTIME_CONTROL_CONTRACT_VERSION: u16 = 3;
@@ -162,7 +159,6 @@ pub enum RuntimeControlRequest {
         lines: u32,
     },
     SubscribeLogs,
-    TokenList,
 }
 
 impl fmt::Debug for RuntimeControlRequest {
@@ -178,7 +174,6 @@ impl fmt::Debug for RuntimeControlRequest {
             Self::Stop { runtime } => formatter.debug_tuple("Stop").field(runtime).finish(),
             Self::LogsTail { lines } => formatter.debug_tuple("LogsTail").field(lines).finish(),
             Self::SubscribeLogs => formatter.write_str("SubscribeLogs"),
-            Self::TokenList => formatter.write_str("TokenList"),
         }
     }
 }
@@ -235,7 +230,6 @@ pub enum RuntimeControlResponse {
     StopAccepted,
     LogsTail { lines: Vec<String> },
     LogsSubscribed,
-    TokenList { list: TokenList },
     Refused { reason: RuntimeControlRefusal },
 }
 

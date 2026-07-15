@@ -17,11 +17,6 @@ name = "tribal"
 path = "src/main.rs"
 
 [[test]]
-name = "bootstrap"
-path = "tests/bootstrap.rs"
-required-features = ["test-helpers"]
-
-[[test]]
 name = "check"
 path = "tests/check.rs"
 required-features = ["test-helpers"]

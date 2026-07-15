@@ -26,8 +26,9 @@ pub use worker::{
     ProbeSpec, ThreadReclaimStats, Worker, coupling, drive_managed_run,
     reindex::{ReindexCreationOutcome, ReindexTarget, create_reindex_run, resolve_reindex_target},
     reindex_ops::{
-        ReindexCancelOutcome, ReindexOpError, ReindexPruneOutcome, ReindexResolution,
-        ReindexRunOutcome, ReindexRunRequest, drop_superseded_indexes, reindex_cancel,
-        reindex_prune, reindex_run,
+        PreparedReindexRun, ReindexCancelOutcome, ReindexOpError, ReindexPruneOutcome,
+        ReindexResolution, ReindexRunOutcome, ReindexRunRequest, StagedReindexRun,
+        drop_superseded_indexes, prepare_reindex_run, reindex_cancel, reindex_prune, reindex_run,
+        stage_reindex_run,
     },
 };

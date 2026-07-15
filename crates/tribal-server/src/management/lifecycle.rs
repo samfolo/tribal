@@ -23,8 +23,8 @@ use tribal_wire::{
         RestartRuntimeUnresponsivePhase, RunningLifecycleSnapshot, RunningPhase,
         RuntimeExitFailure, RuntimeIdentity, RuntimeLogsTailResult, RuntimeOperation,
         RuntimeReadUnavailable, RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult,
-        RuntimeStopTimedOutFailure, RuntimeTokenListResult, RuntimeUnresponsiveLifecycleSnapshot,
-        RuntimeUnresponsivePhase, ShutdownInProgressLifecycleSnapshot, ShutdownInProgressPhase,
+        RuntimeStopTimedOutFailure, RuntimeUnresponsiveLifecycleSnapshot, RuntimeUnresponsivePhase,
+        ShutdownInProgressLifecycleSnapshot, ShutdownInProgressPhase,
         ShutdownRuntimeUnresponsiveLifecycleSnapshot, ShutdownRuntimeUnresponsivePhase,
         StartBlockedReadinessReport, StartBlockedVerdict, StartClearReadinessReport,
         StartClearVerdict, StartOperationInProgress, StartSuperseder, StartVerdict,
@@ -38,6 +38,7 @@ use tribal_wire::{
 };
 
 use super::{
+    application::operation::{OperationContext, OperationError},
     authority::{AuthorityLease, AuthorityPaths},
     custody::{
         MANAGED_CUSTODY_PROOF, MANAGED_MANAGER_INSTANCE_ID, MANAGED_RUNTIME_INSTANCE_ID,
@@ -85,7 +86,6 @@ enum LifecycleCommand {
         lines: u32,
         response: oneshot::Sender<RuntimeLogsTailResult>,
     },
-    RuntimeTokenList(oneshot::Sender<RuntimeTokenListResult>),
     Refresh,
     ConfigChanged,
     Readiness(ReadinessReport),
@@ -529,23 +529,42 @@ impl LifecycleController {
     }
 
     pub(crate) async fn snapshot(&self) -> Option<LifecycleSnapshot> {
-        request(&self.sender, LifecycleCommand::Snapshot).await
+        request_internal(&self.sender, LifecycleCommand::Snapshot).await
     }
 
-    pub(crate) async fn start(&self) -> Option<RuntimeStartResult> {
-        request(&self.sender, LifecycleCommand::Start).await
+    pub(in crate::management) async fn snapshot_for(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<Option<LifecycleSnapshot>, OperationError> {
+        request_cancel_safe(operation, &self.sender, LifecycleCommand::Snapshot).await
     }
 
-    pub(crate) async fn stop(&self) -> Option<RuntimeStopResult> {
-        request(&self.sender, LifecycleCommand::Stop).await
+    pub(in crate::management) async fn start_for(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<Option<RuntimeStartResult>, OperationError> {
+        request_terminal(operation, &self.sender, LifecycleCommand::Start).await
     }
 
-    pub(crate) async fn restart(&self) -> Option<RuntimeRestartResult> {
-        request(&self.sender, LifecycleCommand::Restart).await
+    pub(in crate::management) async fn stop_for(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<Option<RuntimeStopResult>, OperationError> {
+        request_terminal(operation, &self.sender, LifecycleCommand::Stop).await
     }
 
-    pub(crate) async fn shutdown(&self) -> Option<ManagerShutdownResult> {
-        request(&self.sender, LifecycleCommand::Shutdown).await
+    pub(in crate::management) async fn restart_for(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<Option<RuntimeRestartResult>, OperationError> {
+        request_terminal(operation, &self.sender, LifecycleCommand::Restart).await
+    }
+
+    pub(in crate::management) async fn shutdown_for(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<Option<ManagerShutdownResult>, OperationError> {
+        request_terminal(operation, &self.sender, LifecycleCommand::Shutdown).await
     }
 
     pub(crate) async fn apply_config(
@@ -565,21 +584,22 @@ impl LifecycleController {
         receiver.await.ok()
     }
 
-    pub(crate) async fn runtime_status(&self) -> Option<ManagedRuntimeStatusResult> {
-        request(&self.sender, LifecycleCommand::RuntimeStatus).await
+    pub(in crate::management) async fn runtime_status_for(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<Option<ManagedRuntimeStatusResult>, OperationError> {
+        request_cancel_safe(operation, &self.sender, LifecycleCommand::RuntimeStatus).await
     }
 
-    pub(crate) async fn runtime_logs_tail(&self, lines: u32) -> Option<RuntimeLogsTailResult> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(LifecycleCommand::RuntimeLogsTail { lines, response })
-            .await
-            .ok()?;
-        receiver.await.ok()
-    }
-
-    pub(crate) async fn runtime_token_list(&self) -> Option<RuntimeTokenListResult> {
-        request(&self.sender, LifecycleCommand::RuntimeTokenList).await
+    pub(in crate::management) async fn runtime_logs_tail_for(
+        &self,
+        operation: &OperationContext,
+        lines: u32,
+    ) -> Result<Option<RuntimeLogsTailResult>, OperationError> {
+        request_cancel_safe(operation, &self.sender, |response| {
+            LifecycleCommand::RuntimeLogsTail { lines, response }
+        })
+        .await
     }
 
     pub(crate) async fn refresh(&self) {
@@ -602,7 +622,37 @@ impl LifecycleController {
     }
 }
 
-async fn request<T>(
+async fn request_terminal<T>(
+    operation: &OperationContext,
+    sender: &mpsc::Sender<LifecycleCommand>,
+    command: impl FnOnce(oneshot::Sender<T>) -> LifecycleCommand,
+) -> Result<Option<T>, OperationError> {
+    let (response, receiver) = oneshot::channel();
+    let sent = operation
+        .cancel_safe(sender.send(command(response)))
+        .await?;
+    if sent.is_err() {
+        return Ok(None);
+    }
+    Ok(receiver.await.ok())
+}
+
+async fn request_cancel_safe<T>(
+    operation: &OperationContext,
+    sender: &mpsc::Sender<LifecycleCommand>,
+    command: impl FnOnce(oneshot::Sender<T>) -> LifecycleCommand,
+) -> Result<Option<T>, OperationError> {
+    let (response, receiver) = oneshot::channel();
+    let sent = operation
+        .cancel_safe(sender.send(command(response)))
+        .await?;
+    if sent.is_err() {
+        return Ok(None);
+    }
+    Ok(operation.cancel_safe(receiver).await?.ok())
+}
+
+async fn request_internal<T>(
     sender: &mpsc::Sender<LifecycleCommand>,
     command: impl FnOnce(oneshot::Sender<T>) -> LifecycleCommand,
 ) -> Option<T> {
@@ -908,7 +958,6 @@ impl LifecycleOwner {
             LifecycleCommand::RuntimeLogsTail { lines, response } => {
                 self.runtime_logs_read(lines, response);
             }
-            LifecycleCommand::RuntimeTokenList(response) => self.runtime_tokens_read(response),
             LifecycleCommand::Refresh => self.request_document_refresh(),
             LifecycleCommand::ConfigChanged => self.apply_config_change(),
             LifecycleCommand::Readiness(report) => self.apply_readiness(report),
@@ -1144,22 +1193,6 @@ impl LifecycleOwner {
                     },
                 },
                 Err(reason) => RuntimeLogsTailResult::Unavailable { reason },
-            };
-            let _ = response.send(result);
-        });
-    }
-
-    fn runtime_tokens_read(&mut self, response: oneshot::Sender<RuntimeTokenListResult>) {
-        let client = self.runtime_read_client();
-        self.observations.spawn(async move {
-            let result = match client {
-                Ok(client) => match client.token_list().await {
-                    Ok(list) => RuntimeTokenListResult::Available { list },
-                    Err(_) => RuntimeTokenListResult::Unavailable {
-                        reason: RuntimeReadUnavailable::RuntimeControlUnavailable,
-                    },
-                },
-                Err(reason) => RuntimeTokenListResult::Unavailable { reason },
             };
             let _ = response.send(result);
         });
@@ -3067,8 +3100,10 @@ fn prepare_child(
     );
     command
         .arg("serve")
+        .arg("--unscoped")
         .arg("--config")
         .arg(config_path)
+        .env_remove(tribal_config::ENV_PROJECT_ID)
         .env(MANAGED_AUTHORITY_FD, fd.to_string())
         .env(MANAGED_RUNTIME_INSTANCE_ID, &runtime_instance_id)
         .env(MANAGED_MANAGER_INSTANCE_ID, manager_instance_id)

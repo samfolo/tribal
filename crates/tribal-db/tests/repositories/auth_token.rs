@@ -150,6 +150,37 @@ async fn test_find_by_hash_returns_none_for_unknown() {
     assert!(found.is_none());
 }
 
+#[tokio::test]
+async fn test_find_by_id_returns_stable_token_identity() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let principal_id = setup_principal(&mut txn, "find-id").await;
+    let inserted = PgAuthTokenRepository
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(make_token_hash())
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("insert");
+
+    let found = PgAuthTokenRepository
+        .find_by_id(&mut txn, inserted.id())
+        .await
+        .expect("find by id");
+
+    assert_eq!(found, Some(inserted));
+    assert!(
+        PgAuthTokenRepository
+            .find_by_id(&mut txn, AuthTokenId::new())
+            .await
+            .expect("find missing id")
+            .is_none()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // find_by_principal_id
 // ---------------------------------------------------------------------------
@@ -367,112 +398,6 @@ async fn test_find_all_returns_empty_when_no_tokens() {
 }
 
 // ---------------------------------------------------------------------------
-// find_by_hash_prefix
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_find_by_hash_prefix_returns_matching_token() {
-    let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin");
-    let repo = PgAuthTokenRepository;
-
-    let principal_id = setup_principal(&mut txn, "prefix-match").await;
-    let hash = make_token_hash();
-    let prefix = hash.get(..8).expect("hash is 64 chars");
-
-    let token = repo
-        .insert(
-            &mut txn,
-            &a_new_auth_token()
-                .token_hash(hash.clone())
-                .principal_id(principal_id)
-                .build(),
-        )
-        .await
-        .expect("insert");
-
-    let results = repo
-        .find_by_hash_prefix(&mut txn, prefix)
-        .await
-        .expect("find_by_hash_prefix");
-
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].id(), token.id());
-}
-
-#[tokio::test]
-async fn test_find_by_hash_prefix_returns_empty_for_unknown() {
-    let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin");
-    let repo = PgAuthTokenRepository;
-
-    let results = repo
-        .find_by_hash_prefix(&mut txn, "00000000")
-        .await
-        .expect("find_by_hash_prefix");
-
-    assert!(results.is_empty());
-}
-
-#[tokio::test]
-async fn test_find_by_hash_prefix_returns_multiple_on_shared_prefix() {
-    let ctx = TestDb::new().await;
-    let mut txn = ctx.begin().await.expect("begin");
-    let repo = PgAuthTokenRepository;
-
-    let principal_id = setup_principal(&mut txn, "prefix-multi").await;
-    let shared_prefix = "abcdef00";
-
-    // Insert three tokens whose hashes share the same 8-char prefix.
-    // The query uses LIMIT 2, so at most two are returned — enough for
-    // callers to distinguish "ambiguous" from "unique".
-    let hash_a = format!("{shared_prefix}{}", &make_token_hash()[8..]);
-    let hash_b = format!("{shared_prefix}{}", &make_token_hash()[8..]);
-    let hash_c = format!("{shared_prefix}{}", &make_token_hash()[8..]);
-
-    repo.insert(
-        &mut txn,
-        &a_new_auth_token()
-            .token_hash(hash_a)
-            .principal_id(principal_id)
-            .build(),
-    )
-    .await
-    .expect("insert a");
-
-    repo.insert(
-        &mut txn,
-        &a_new_auth_token()
-            .token_hash(hash_b)
-            .principal_id(principal_id)
-            .build(),
-    )
-    .await
-    .expect("insert b");
-
-    repo.insert(
-        &mut txn,
-        &a_new_auth_token()
-            .token_hash(hash_c)
-            .principal_id(principal_id)
-            .build(),
-    )
-    .await
-    .expect("insert c");
-
-    let results = repo
-        .find_by_hash_prefix(&mut txn, shared_prefix)
-        .await
-        .expect("find_by_hash_prefix");
-
-    assert_eq!(
-        results.len(),
-        2,
-        "LIMIT 2 caps results even with 3 matching tokens"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // revoke_all
 // ---------------------------------------------------------------------------
 
@@ -664,4 +589,86 @@ async fn test_revoke_all_includes_token_expiring_at_revocation_time() {
         count, 1,
         "token expiring exactly at revocation time is still active"
     );
+}
+
+#[tokio::test]
+async fn test_inventory_uses_descending_keysets_bounded_by_high_water() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let principal_id = setup_principal(&mut txn, "inventory").await;
+    let first = PgAuthTokenRepository
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(make_token_hash())
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("insert first");
+    shift_timestamp_by_id(
+        &mut txn,
+        "auth_tokens",
+        "created_at",
+        *first.id().inner(),
+        chrono::Duration::hours(-2),
+    )
+    .await;
+    let second = PgAuthTokenRepository
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(make_token_hash())
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("insert second");
+    let high_water = PgAuthTokenRepository
+        .page_high_water(&mut txn)
+        .await
+        .expect("capture high water")
+        .expect("inventory is non-empty");
+    let later = PgAuthTokenRepository
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(make_token_hash())
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("insert later");
+    shift_timestamp_by_id(
+        &mut txn,
+        "auth_tokens",
+        "created_at",
+        *later.id().inner(),
+        chrono::Duration::hours(2),
+    )
+    .await;
+
+    let page = PgAuthTokenRepository
+        .list_page(&mut txn, high_water, None, 1)
+        .await
+        .expect("first inventory page");
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].token.id(), second.id());
+    assert_eq!(page[0].principal, "user:auth-token-inventory");
+    let after = tribal_db::AuthTokenPageKey {
+        created_at: page[0].token.created_at(),
+        id: page[0].token.id(),
+    };
+    let continuation = PgAuthTokenRepository
+        .list_page(&mut txn, high_water, Some(after), 10)
+        .await
+        .expect("continued inventory page");
+    assert_eq!(
+        continuation
+            .iter()
+            .map(|row| row.token.id())
+            .collect::<Vec<_>>(),
+        vec![first.id()]
+    );
+    assert!(continuation.iter().all(|row| row.token.id() != later.id()));
 }

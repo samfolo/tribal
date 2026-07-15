@@ -1,6 +1,6 @@
 //! Mock implementation of [`ProjectRepository`].
 
-use tribal_db::{NewProject, ProjectRepository};
+use tribal_db::{NewProject, ProjectPageKey, ProjectRepository};
 use tribal_domain::{GitRemote, Project, ProjectId};
 
 use super::mock_repository;
@@ -14,7 +14,13 @@ mock_repository! {
         find_by_git_remote(GitRemote => Option<Project>)
             (git_remote: &GitRemote) { git_remote.clone() };
         list(() => Vec<Project>)
-            () { () }
+            () { () };
+        page_high_water(() => Option<ProjectPageKey>)
+            () { () };
+        list_page((ProjectPageKey, Option<ProjectPageKey>, u16) => Vec<Project>)
+            (high_water: ProjectPageKey, after: Option<ProjectPageKey>, limit: u16) {
+                (high_water, after, limit)
+            }
     }
 }
 

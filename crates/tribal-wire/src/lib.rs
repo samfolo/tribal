@@ -6,11 +6,10 @@
 //! The types are pure data: `serde` + `chrono` + `tribal-domain` only — never
 //! the server, rmcp, or the database.
 
-pub mod control;
 pub mod gateway;
 pub mod management;
 pub mod mcp;
+pub mod operator_check;
 pub mod runtime_control;
 
-mod operator_check;
 mod token;

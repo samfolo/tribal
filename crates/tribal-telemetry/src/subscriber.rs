@@ -30,7 +30,6 @@ use tracing::subscriber::set_global_default;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{Registry, fmt, layer::SubscriberExt};
 use tribal_config::{FileRotation, LogFormat, LogOutput, LoggingConfig, TelemetryConfig};
-use tribal_wire::control::ControlEvent;
 
 use crate::{
     error::TelemetryError,
@@ -126,7 +125,7 @@ pub fn init_subscriber(
 pub fn init_subscriber_with_log_bridge(
     logging: &LoggingConfig,
     telemetry: &TelemetryConfig,
-    control_events: broadcast::Sender<ControlEvent>,
+    control_events: broadcast::Sender<crate::LogLine>,
 ) -> Result<
     (
         TelemetryGuard,
@@ -159,7 +158,7 @@ pub fn init_subscriber_with_log_bridge(
 fn try_init_subscriber(
     logging: &LoggingConfig,
     telemetry: &TelemetryConfig,
-    control_events: broadcast::Sender<ControlEvent>,
+    control_events: broadcast::Sender<crate::LogLine>,
 ) -> Result<
     (
         TelemetryGuard,

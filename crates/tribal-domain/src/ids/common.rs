@@ -45,9 +45,36 @@ macro_rules! define_id {
             Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
             serde::Serialize, serde::Deserialize,
         )]
-        #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(uuid::Uuid);
+
+        #[cfg(feature = "schema")]
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> String {
+                stringify!($name).to_owned()
+            }
+
+            fn json_schema(
+                _generator: &mut schemars::r#gen::SchemaGenerator,
+            ) -> schemars::schema::Schema {
+                let mut schema = schemars::schema::SchemaObject {
+                    instance_type: Some(schemars::schema::InstanceType::String.into()),
+                    string: Some(Box::new(schemars::schema::StringValidation {
+                        pattern: Some(concat!(
+                            "^", $prefix,
+                            "_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                        ).to_owned()),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                };
+                schema.extensions.insert(
+                    "x-cortex-swift-type".to_owned(),
+                    serde_json::Value::String("validated-string".to_owned()),
+                );
+                schema.into()
+            }
+        }
 
         impl $name {
             /// Creates a new random ID with a v4 UUID.

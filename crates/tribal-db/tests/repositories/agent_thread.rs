@@ -1604,6 +1604,7 @@ fn prune_now(cascade: bool) -> ThreadPruneCriteria {
         completed_before: chrono::Utc::now() + chrono::Duration::seconds(1),
         stage: None,
         cascade,
+        root_limit: u32::MAX,
     }
 }
 
@@ -1647,6 +1648,7 @@ async fn test_prune_deletes_only_aged_terminal_threads() {
         completed_before: chrono::Utc::now() - chrono::Duration::days(30),
         stage: None,
         cascade: false,
+        root_limit: u32::MAX,
     };
     let pruned = PgAgentThreadRepository
         .prune_threads(&mut txn, &too_old)

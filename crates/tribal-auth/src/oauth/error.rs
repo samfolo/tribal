@@ -290,7 +290,7 @@ pub enum InternalOperation {
     #[error("principal lookup")]
     PrincipalLookup,
     /// The local principal is absent (the server is not provisioned).
-    #[error("local principal resolution (run `tribal setup`)")]
+    #[error("local principal resolution (run `tribal database initialise`)")]
     LocalPrincipalMissing,
     /// Consuming an authorisation code.
     #[error("authorization code consumption")]

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{RuntimeIdentity, TokenList};
+use super::RuntimeIdentity;
 
 /// Why a runtime-owned read cannot currently be served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,14 +46,5 @@ pub struct RuntimeLogsTailRequest {
 #[serde(tag = "outcome", content = "data", rename_all = "snake_case")]
 pub enum RuntimeLogsTailResult {
     Available { lines: Vec<String> },
-    Unavailable { reason: RuntimeReadUnavailable },
-}
-
-/// Result of `token.list` through the manager.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "outcome", content = "data", rename_all = "snake_case")]
-pub enum RuntimeTokenListResult {
-    Available { list: TokenList },
     Unavailable { reason: RuntimeReadUnavailable },
 }

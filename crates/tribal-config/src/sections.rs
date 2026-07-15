@@ -3,7 +3,6 @@
 mod agents;
 mod auth;
 mod credential_catalogue;
-mod credentials;
 mod database;
 mod discovery;
 mod exploration;
@@ -16,7 +15,6 @@ mod prompts;
 mod root;
 mod server;
 mod telemetry;
-mod transport_kind;
 mod worker;
 
 pub use agents::{
@@ -29,12 +27,6 @@ pub use auth::{AuthConfig, MAX_TTL_HOURS};
 pub use credential_catalogue::{
     CredentialCatalogue, CredentialEntry, MissingApiKey, MissingApiKeyKind,
     is_valid_connection_name,
-};
-pub use credentials::{
-    Auth, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX,
-    CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, Credentials,
-    CredentialsPermissions, CredentialsReadError, CredentialsWriteError, LoadedCredentials,
-    read_credentials, write_credentials,
 };
 pub use database::DatabaseConfig;
 pub use discovery::{
@@ -64,5 +56,4 @@ pub use prompts::{PromptSource, PromptsConfig};
 pub use root::{TribalConfig, VERSION};
 pub use server::{DEFAULT_BIND_ADDRESS, MAX_LIFECYCLE_DURATION_MS, ServerConfig, SseConfig};
 pub use telemetry::{FileRotation, TelemetryConfig};
-pub use transport_kind::TransportKind;
 pub use worker::WorkerConfig;

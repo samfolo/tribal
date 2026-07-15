@@ -11,7 +11,8 @@
 use std::net::{IpAddr, SocketAddr};
 
 use tribal_auth::oauth::{OAuthRuntimeConfig, OAuthRuntimeConfigError};
-use tribal_config::{DEFAULT_BIND_ADDRESS, TransportKind, TribalConfig, advertised_oauth_host};
+use tribal_config::{DEFAULT_BIND_ADDRESS, TribalConfig, advertised_oauth_host};
+use tribal_domain::TransportKind;
 use url::Url;
 
 use crate::error::AppError;

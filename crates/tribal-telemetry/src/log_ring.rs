@@ -10,14 +10,33 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::{
     Event, Level, Subscriber,
     field::{Field, Visit},
 };
 use tracing_subscriber::{Layer, layer::Context};
-use tribal_wire::control::{ControlEvent, LogLevel, LogLine};
+
+/// Severity captured with one manager-visible log line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+/// One structured line retained by the runtime log ring.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogLine {
+    pub at: DateTime<Utc>,
+    pub level: LogLevel,
+    pub target: String,
+    pub message: String,
+}
 
 /// How many recent lines the ring retains. `logs.tail` is capped by this.
 const LOG_RING_CAPACITY: usize = 512;
@@ -67,16 +86,16 @@ impl LogRing {
 }
 
 /// The `tracing` layer that captures each admitted event into a [`LogRing`] and
-/// publishes it as a [`ControlEvent::LogsLine`].
+/// publishes it for the manager's runtime bridge.
 pub(crate) struct LogRingLayer {
     ring: LogRing,
-    events: broadcast::Sender<ControlEvent>,
+    events: broadcast::Sender<LogLine>,
 }
 
 impl LogRingLayer {
     /// Builds the layer and returns the ring it captures into, so the caller can
     /// hand the ring to whatever answers `logs.tail`.
-    pub(crate) fn new(events: broadcast::Sender<ControlEvent>) -> (Self, LogRing) {
+    pub(crate) fn new(events: broadcast::Sender<LogLine>) -> (Self, LogRing) {
         let ring = LogRing::new(LOG_RING_CAPACITY);
         (
             Self {
@@ -103,7 +122,7 @@ impl<S: Subscriber> Layer<S> for LogRingLayer {
         self.ring.push(line.clone());
         // A send fails only when no client subscribes; the ring still holds the
         // line for the next `logs.tail`, so the drop is by design.
-        let _ = self.events.send(ControlEvent::LogsLine { line });
+        let _ = self.events.send(line);
     }
 }
 
@@ -152,10 +171,13 @@ mod tests {
         assert_eq!(tail[0].message, "captured line");
         assert_eq!(tail[0].level, LogLevel::Info);
 
-        match subscriber.try_recv().expect("a logs.line was published") {
-            ControlEvent::LogsLine { line } => assert_eq!(line.message, "captured line"),
-            other => panic!("expected logs.line, got {other:?}"),
-        }
+        assert_eq!(
+            subscriber
+                .try_recv()
+                .expect("a logs.line was published")
+                .message,
+            "captured line"
+        );
     }
 
     #[test]

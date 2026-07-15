@@ -24,6 +24,7 @@ pub const APPLICATION_TABLES: &[&str] = &[
     "jobs",
     "knowledge_item_relations",
     "knowledge_items",
+    "local_default_credentials",
     "oauth_authorization_codes",
     "oauth_clients",
     "principals",

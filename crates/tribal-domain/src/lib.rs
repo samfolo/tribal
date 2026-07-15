@@ -100,6 +100,7 @@ mod tag_similarity_result;
 mod task;
 mod token_usage;
 mod tool_failure;
+mod transport;
 mod triage;
 mod usage;
 
@@ -141,11 +142,11 @@ pub use feedback_rating::FeedbackRating;
 pub use git::{GitRemote, GitRemoteParseError};
 pub use ids::{
     AgentBindingVersionId, AgentDriverTaskId, AgentThreadId, AgentThreadRecordId, AuthTokenId,
-    EmbeddingId, EmbeddingProfileId, EpisodeId, ExtractionResultId, IdParseError,
-    ItemObservationId, JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId,
-    ReferenceId, ReindexRunId, ReindexTaskId, RelationBatchId, RelationId, RetrievalFeedbackId,
-    RunJobId, SessionId, SystemFingerprintId, TaskId, TokenUsageId, TriageResultId,
-    TriageSimilarItemDecisionId,
+    CredentialGenerationId, EmbeddingId, EmbeddingProfileId, EpisodeId, ExtractionResultId,
+    IdParseError, ItemObservationId, JobId, KnowledgeItemId, PrincipalId, ProjectId,
+    PromptVersionId, ReferenceId, ReindexRunId, ReindexTaskId, RelationBatchId, RelationId,
+    RetrievalFeedbackId, RunJobId, SessionId, SystemFingerprintId, TaskId, TokenUsageId,
+    TriageResultId, TriageSimilarItemDecisionId,
 };
 pub use inference_event::InferenceEvent;
 pub use inference_parameters::{PipelineParameters, StageParameters};
@@ -186,6 +187,7 @@ pub use tag_similarity_result::TagSimilarityResult;
 pub use task::{ErrorOutcome, Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};
 pub use token_usage::{TokenUsage, TokenUsageBuilder, TokenUsageStage, UsageOwner, UsageTotals};
 pub use tool_failure::{RecoverableToolFailure, ToolFailure};
+pub use transport::TransportKind;
 pub use triage::{
     SimilarItem, SimilarItemBuilder, TriageOutcome, TriageResult, TriageResultBuilder,
     TriageSimilarItemDecision, TriageSimilarItemDecisionBuilder,

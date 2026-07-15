@@ -934,6 +934,7 @@ async fn test_prune_refuses_a_terminal_parent_with_a_live_real_child() {
         completed_before: chrono::Utc::now() + chrono::Duration::seconds(1),
         stage: None,
         cascade: true,
+        root_limit: u32::MAX,
     };
     let refused = PgAgentThreadRepository
         .count_refused_prune_roots(&mut conn, &criteria)

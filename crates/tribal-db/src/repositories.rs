@@ -19,6 +19,7 @@ mod extraction_result;
 mod item_observation;
 mod job;
 mod knowledge_item;
+mod local_default_credential;
 mod migration;
 mod oauth_authorization_code;
 mod oauth_client;
@@ -55,7 +56,10 @@ pub use agent_thread_record::{
     AgentThreadRecordRepository, JobTriageSubmission, NewAgentThreadRecord,
     PgAgentThreadRecordRepository,
 };
-pub use auth_token::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
+pub use auth_token::{
+    AuthTokenInventoryRow, AuthTokenPageKey, AuthTokenRepository, NewAuthToken,
+    PgAuthTokenRepository,
+};
 pub use common::cursor::encode_cursor;
 pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};
 pub use embedding_index::{
@@ -77,13 +81,16 @@ pub use knowledge_item::{
     KnowledgeItemRepository, NewKnowledgeItem, PgKnowledgeItemRepository, SemanticSearchParams,
     SemanticSearchResponse, SemanticSearchResult,
 };
+pub use local_default_credential::{
+    LocalDefaultCredential, LocalDefaultCredentialRepository, PgLocalDefaultCredentialRepository,
+};
 pub use migration::{MigrationHeadStatus, MigrationRepository, PgMigrationRepository};
 pub use oauth_authorization_code::{
     NewOauthAuthorizationCode, OauthAuthorizationCodeRepository, PgOauthAuthorizationCodeRepository,
 };
 pub use oauth_client::{NewOauthClient, OauthClientRepository, PgOauthClientRepository};
 pub use principal::{NewPrincipal, PgPrincipalRepository, PrincipalRepository};
-pub use project::{NewProject, PgProjectRepository, ProjectRepository};
+pub use project::{NewProject, PgProjectRepository, ProjectPageKey, ProjectRepository};
 pub use prompt_version::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
 pub use reference::{NewReference, PgReferenceRepository, ReferenceRepository};
 pub use reindex_quarantine::{

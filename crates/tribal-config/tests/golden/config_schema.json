@@ -931,30 +931,13 @@
         "type": "object"
       },
       "TransportKind": {
-        "description": "Transport protocol for the MCP server.\n\nDetermines how the server communicates with clients.  The HTTP/SSE startup path supplies `127.0.0.1:8725` as a fallback when `bind_address` is `None` and transport is not `Stdio`.\n\nImplements [`FromStr`] so that clap can parse the type natively without a mirror enum.",
-        "oneOf": [
-          {
-            "description": "Communicate over stdin/stdout.",
-            "enum": [
-              "stdio"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Streamable HTTP transport.",
-            "enum": [
-              "http"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Server-sent events transport.",
-            "enum": [
-              "sse"
-            ],
-            "type": "string"
-          }
-        ]
+        "description": "Protocol used to serve MCP traffic.",
+        "enum": [
+          "stdio",
+          "http",
+          "sse"
+        ],
+        "type": "string"
       },
       "WorkerConfig": {
         "additionalProperties": false,

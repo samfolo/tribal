@@ -11,6 +11,7 @@
 //! acquisition blocks until every in-flight writer has committed.
 
 use async_trait::async_trait;
+use sha2::{Digest as _, Sha256};
 use sqlx::PgConnection;
 
 use crate::error::DbError;
@@ -54,6 +55,13 @@ pub trait AdvisoryLockRepository {
         conn: &mut PgConnection,
         lock_id: i64,
     ) -> Result<bool, DbError>;
+
+    /// Acquires the exclusive credential-replacement lock for one namespace.
+    async fn acquire_credential_replacement_xact(
+        &self,
+        conn: &mut PgConnection,
+        authority_namespace: &str,
+    ) -> Result<(), DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,5 +119,44 @@ impl AdvisoryLockRepository for PgAdvisoryLockRepository {
                 source,
             })?;
         Ok(acquired)
+    }
+
+    async fn acquire_credential_replacement_xact(
+        &self,
+        conn: &mut PgConnection,
+        authority_namespace: &str,
+    ) -> Result<(), DbError> {
+        let lock_id = credential_replacement_lock_id(authority_namespace);
+        self.acquire_exclusive_xact(conn, lock_id).await
+    }
+}
+
+fn credential_replacement_lock_id(authority_namespace: &str) -> i64 {
+    let mut digest = Sha256::new();
+    digest.update(crate::advisory_locks::CREDENTIAL_REPLACEMENT.to_be_bytes());
+    digest.update(authority_namespace.as_bytes());
+    let digest = digest.finalize();
+    let mut bytes = [0_u8; 8];
+    for (target, source) in bytes.iter_mut().zip(digest.iter().copied()) {
+        *target = source;
+    }
+    i64::from_be_bytes(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::credential_replacement_lock_id;
+
+    #[test]
+    fn credential_replacement_lock_is_stable_and_namespace_scoped() {
+        let first = credential_replacement_lock_id("0123456789abcdef01234567");
+        assert_eq!(
+            first,
+            credential_replacement_lock_id("0123456789abcdef01234567")
+        );
+        assert_ne!(
+            first,
+            credential_replacement_lock_id("fedcba9876543210fedcba98")
+        );
     }
 }

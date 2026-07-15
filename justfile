@@ -76,6 +76,27 @@ check:
     # feature-flipped clippy would recompile the graph.
     SQLX_OFFLINE=true cargo clippy --workspace --all-targets --features tribal-wire/schema,tribal-config/schema -- -D warnings
 
+# Build the current image and prove its manager-owned bootstrap, runtime, and signal lifecycle.
+container-smoke:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash -n scripts/tribal-entrypoint
+    docker compose config --quiet
+    tag="tribal-management-smoke:$$"
+    cleanup() {
+        TRIBAL_IMAGE="$tag" docker compose down --volumes >/dev/null 2>&1 || true
+        docker image rm "$tag" >/dev/null 2>&1 || true
+    }
+    trap cleanup EXIT
+    docker build --build-arg "TRIBAL_GIT_DESCRIBE=$(git describe --tags --always --dirty)" --tag "$tag" .
+    TRIBAL_IMAGE="$tag" docker compose up --detach --wait
+    TRIBAL_IMAGE="$tag" docker compose exec -T tribal tribal runtime status --json >/dev/null
+    TRIBAL_IMAGE="$tag" docker compose exec -T tribal \
+        tribal integration mcp-config --auth persisted-bearer --json \
+        | jq -e '.config_revision and .value.data.document' >/dev/null
+    TRIBAL_IMAGE="$tag" docker compose stop tribal
+    [ "$(TRIBAL_IMAGE="$tag" docker compose ps --status exited --services tribal)" = "tribal" ]
+
 # Format code
 fmt:
     cargo +nightly fmt --all
@@ -109,7 +130,15 @@ db-down:
 
 # Run database migrations against local Postgres
 db-migrate:
-    cargo run -p tribal -- setup
+    cargo run -p tribal -- database initialise
+
+# Create a database migration in the canonical migration set
+db-migration-new name:
+    cargo sqlx migrate add --source crates/tribal-db/migrations {{quote(name)}}
+
+# Apply migrations to the database used for SQLx preparation
+db-migrate-preparation:
+    cargo sqlx migrate run --source crates/tribal-db/migrations
 
 # Regenerate sqlx offline query metadata
 sqlx-prepare:

@@ -5,6 +5,8 @@ use tribal_domain::ProviderKind;
 /// One known model option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KnownModel {
+    /// Stable identity of this catalogue row.
+    pub id: &'static str,
     /// Provider this row belongs to.
     pub provider: ProviderKind,
     /// Provider-native model identifier.
@@ -15,41 +17,49 @@ pub struct KnownModel {
 
 const KNOWN_MODELS: &[KnownModel] = &[
     KnownModel {
+        id: "ollama.llama3.1-8b",
         provider: ProviderKind::Ollama,
         model: "llama3.1:8b",
         display_name: "Llama 3.1 8B",
     },
     KnownModel {
+        id: "ollama.llama3.1-70b",
         provider: ProviderKind::Ollama,
         model: "llama3.1:70b",
         display_name: "Llama 3.1 70B",
     },
     KnownModel {
+        id: "openai.gpt-4o-mini",
         provider: ProviderKind::OpenAi,
         model: "gpt-4o-mini",
         display_name: "GPT-4o mini",
     },
     KnownModel {
+        id: "openai.gpt-5",
         provider: ProviderKind::OpenAi,
         model: "gpt-5",
         display_name: "GPT-5",
     },
     KnownModel {
+        id: "anthropic.claude-haiku-4-5",
         provider: ProviderKind::Anthropic,
         model: "claude-haiku-4-5-20251001",
         display_name: "Claude Haiku 4.5",
     },
     KnownModel {
+        id: "anthropic.claude-opus-4-7",
         provider: ProviderKind::Anthropic,
         model: "claude-opus-4-7",
         display_name: "Claude Opus 4.7",
     },
     KnownModel {
+        id: "platform.gpt-5",
         provider: ProviderKind::Platform,
         model: "gpt-5",
         display_name: "GPT-5 (Platform)",
     },
     KnownModel {
+        id: "platform.claude-haiku-4-5",
         provider: ProviderKind::Platform,
         model: "claude-haiku-4-5-20251001",
         display_name: "Claude Haiku 4.5 (Platform)",

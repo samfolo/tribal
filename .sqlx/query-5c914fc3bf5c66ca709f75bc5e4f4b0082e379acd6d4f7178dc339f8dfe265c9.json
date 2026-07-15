@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM local_default_credentials WHERE authority_namespace = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5c914fc3bf5c66ca709f75bc5e4f4b0082e379acd6d4f7178dc339f8dfe265c9"
+}
