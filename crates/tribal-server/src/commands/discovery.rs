@@ -2,13 +2,12 @@
 
 use tribal_wire::management::{
     ConfigGetAllCall, CredentialSourcesCall, CredentialSourcesRequest, CredentialUse,
-    EndpointSelection, GenesisEmbeddingInput, GraphGenesisOptionsCall, InferenceStage,
-    ModelsCatalogueCall,
+    EndpointSelection, GenesisEmbeddingInput, GraphGenesisOptionsCall, ModelsCatalogueCall,
 };
 
 use super::{config, presentation};
 use crate::{
-    cli::{GenesisCredentialSourceArgs, InferenceStageArg, ModelCredentialSourceArgs, OutputArgs},
+    cli::{GenesisCredentialSourceArgs, ModelCredentialSourceArgs, OutputArgs},
     error::AppError,
 };
 
@@ -48,7 +47,7 @@ pub(crate) async fn model_credentials(
     let request = CredentialSourcesRequest {
         use_case: CredentialUse::ModelSelection {
             model: args.model,
-            stages: args.stage.into_iter().map(stage).collect(),
+            stages: args.stage.into_iter().map(Into::into).collect(),
             endpoint,
         },
         expected_revision,
@@ -111,14 +110,6 @@ pub(crate) async fn genesis_options(config_path: &str, output: OutputArgs) -> Re
         &options,
         "writing graph genesis options",
     )
-}
-
-fn stage(value: InferenceStageArg) -> InferenceStage {
-    match value {
-        InferenceStageArg::Extraction => InferenceStage::Extraction,
-        InferenceStageArg::Triage => InferenceStage::Triage,
-        InferenceStageArg::Relation => InferenceStage::Relation,
-    }
 }
 
 fn invalid_discovery_input() -> AppError {

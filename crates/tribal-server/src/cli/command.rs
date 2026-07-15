@@ -256,11 +256,62 @@ pub enum CredentialSourcesCommand {
 }
 
 /// Inference stage accepted at the command boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum InferenceStageArg {
     Extraction,
     Triage,
     Relation,
+}
+
+impl InferenceStageArg {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Extraction => "extraction",
+            Self::Triage => "triage",
+            Self::Relation => "relation",
+        }
+    }
+}
+
+impl std::str::FromStr for InferenceStageArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        <Self as ValueEnum>::from_str(value, false)
+            .map_err(|_| format!("unknown inference stage '{value}'"))
+    }
+}
+
+impl From<InferenceStageArg> for tribal_wire::management::InferenceStage {
+    fn from(value: InferenceStageArg) -> Self {
+        match value {
+            InferenceStageArg::Extraction => Self::Extraction,
+            InferenceStageArg::Triage => Self::Triage,
+            InferenceStageArg::Relation => Self::Relation,
+        }
+    }
+}
+
+/// One inference stage and its curated model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageModelArg {
+    pub stage: InferenceStageArg,
+    pub model: KnownModelId,
+}
+
+impl std::str::FromStr for StageModelArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (stage, model) = value
+            .split_once('=')
+            .ok_or_else(|| "expected stage=model-id".to_owned())?;
+        Ok(Self {
+            stage: stage.parse()?,
+            model: KnownModelId::parse(model)
+                .map_err(|error| format!("invalid model id: {error}"))?,
+        })
+    }
 }
 
 /// One inference stage and its endpoint transition.
@@ -277,7 +328,7 @@ impl std::str::FromStr for StageEndpointArg {
         let (stage, endpoint) = value
             .split_once('=')
             .ok_or_else(|| "expected stage=preserve|provider-default|URL".to_owned())?;
-        let stage = parse_inference_stage(stage)?;
+        let stage = stage.parse()?;
         let endpoint = match endpoint {
             "preserve" => EndpointSelection::Preserve,
             "provider-default" => EndpointSelection::ProviderDefault,
@@ -305,7 +356,7 @@ impl std::str::FromStr for StageCredentialSourceArg {
             .split_once('=')
             .ok_or_else(|| "expected stage=credential-source-id".to_owned())?;
         Ok(Self {
-            stage: parse_inference_stage(stage)?,
+            stage: stage.parse()?,
             source: source
                 .parse()
                 .map_err(|error| format!("invalid credential source id: {error}"))?,
@@ -313,12 +364,27 @@ impl std::str::FromStr for StageCredentialSourceArg {
     }
 }
 
-fn parse_inference_stage(value: &str) -> Result<InferenceStageArg, String> {
-    match value {
-        "extraction" => Ok(InferenceStageArg::Extraction),
-        "triage" => Ok(InferenceStageArg::Triage),
-        "relation" => Ok(InferenceStageArg::Relation),
-        _ => Err(format!("unknown inference stage '{value}'")),
+/// One inference stage and the environment variable carrying its credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageEnvironmentCredentialArg {
+    pub stage: InferenceStageArg,
+    pub variable: String,
+}
+
+impl std::str::FromStr for StageEnvironmentCredentialArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (stage, variable) = value
+            .split_once('=')
+            .ok_or_else(|| "expected stage=environment-variable".to_owned())?;
+        if variable.is_empty() {
+            return Err("environment variable must not be empty".to_owned());
+        }
+        Ok(Self {
+            stage: stage.parse()?,
+            variable: variable.to_owned(),
+        })
     }
 }
 
@@ -453,7 +519,7 @@ pub struct BootstrapArgs {
         value_name = "STAGE=MODEL",
         help_heading = "Models"
     )]
-    pub model_selections: Vec<String>,
+    pub model_selections: Vec<StageModelArg>,
 
     /// Endpoint transition in `stage=preserve|provider-default|URL` form.
     #[arg(
@@ -469,7 +535,7 @@ pub struct BootstrapArgs {
         value_name = "STAGE=VARIABLE",
         help_heading = "Models"
     )]
-    pub model_credential_env: Vec<String>,
+    pub model_credential_env: Vec<StageEnvironmentCredentialArg>,
 
     /// Stored credential capability in `stage=credential-source-id` form.
     #[arg(

@@ -13,8 +13,9 @@ pub use command::{
     IntegrationAuthArg, IntegrationCommand, IntegrationMcpConfigArgs, ManageArgs, ManagerCommand,
     ModelCredentialSourceArgs, ModelsCommand, OutputArgs, ProjectCommand, ProjectListArgs,
     ProjectRegisterArgs, ReindexCommand, ReindexPruneArgs, ReindexRunArgs, RuntimeCommand,
-    ServeArgs, StageCredentialSourceArg, StageEndpointArg, ThreadsCommand, ThreadsPruneArgs,
-    TokenCommand, TokenCreateArgs, TokenListArgs, TokenRevokeAllArgs, TokenRevokeArgs,
+    ServeArgs, StageCredentialSourceArg, StageEndpointArg, StageEnvironmentCredentialArg,
+    StageModelArg, ThreadsCommand, ThreadsPruneArgs, TokenCommand, TokenCreateArgs, TokenListArgs,
+    TokenRevokeAllArgs, TokenRevokeArgs,
 };
 
 #[cfg(test)]
