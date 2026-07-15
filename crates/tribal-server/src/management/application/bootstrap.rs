@@ -724,7 +724,7 @@ mod tests {
         let mut request = harness.request();
         request.model_selections = vec![
             model(
-                "ollama.llama3.2",
+                "ollama.llama3.1-8b",
                 InferenceStage::Extraction,
                 EndpointSelection::ProviderDefault,
                 None,
@@ -783,13 +783,13 @@ mod tests {
         let mut duplicate = harness.request();
         duplicate.model_selections = vec![
             model(
-                "ollama.llama3.2",
+                "ollama.llama3.1-8b",
                 InferenceStage::Extraction,
                 EndpointSelection::ProviderDefault,
                 None,
             ),
             model(
-                "ollama.llama3.2",
+                "ollama.llama3.1-8b",
                 InferenceStage::Extraction,
                 EndpointSelection::ProviderDefault,
                 None,

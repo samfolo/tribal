@@ -8,6 +8,7 @@ use std::{
     fs::File,
     io,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
@@ -104,6 +105,11 @@ pub(super) enum CredentialCoordinatorError {
     },
     #[error(transparent)]
     Store(#[from] CredentialStoreError),
+    #[error("credential store task failed: {source}")]
+    StoreTask {
+        #[source]
+        source: tokio::task::JoinError,
+    },
     #[error("generated bearer token failed validation")]
     GeneratedToken,
 }
@@ -204,7 +210,7 @@ impl CredentialCoordinator {
         let (terminal_sender, terminal) = watch::channel(CredentialCoordinatorExit::Running);
         let task = tokio::spawn(run_coordinator(
             namespace.clone(),
-            CredentialStore::new(namespace),
+            Arc::new(CredentialStore::new(namespace)),
             receiver,
             shutdown,
             terminal_sender,
@@ -223,7 +229,7 @@ impl CredentialCoordinator {
     ) -> (Self, CredentialCoordinatorRuntime) {
         let (sender, receiver) = mpsc::channel(COORDINATOR_CAPACITY);
         let (terminal_sender, terminal) = watch::channel(CredentialCoordinatorExit::Running);
-        let store = CredentialStore::with_root(namespace.clone(), root);
+        let store = Arc::new(CredentialStore::with_root(namespace.clone(), root));
         let task = tokio::spawn(run_coordinator(
             namespace,
             store,
@@ -271,7 +277,7 @@ impl CredentialCoordinator {
     ) -> Result<BearerToken, CredentialCoordinatorError> {
         let operation = session.operation().clone();
         let (response, receiver) = oneshot::channel();
-        self.submit_cancel_safe(
+        self.submit_terminal(
             &operation,
             CredentialCommand::Export(ExportCommand {
                 session,
@@ -326,22 +332,6 @@ impl CredentialCoordinator {
             .await
             .map_err(|_| CredentialCoordinatorError::Unavailable)?
     }
-
-    async fn submit_cancel_safe<T>(
-        &self,
-        operation: &OperationContext,
-        command: CredentialCommand,
-        receiver: oneshot::Receiver<Result<T, CredentialCoordinatorError>>,
-    ) -> Result<T, CredentialCoordinatorError> {
-        operation
-            .cancel_safe(self.sender.send(command))
-            .await?
-            .map_err(|_| CredentialCoordinatorError::Unavailable)?;
-        operation
-            .cancel_safe(receiver)
-            .await?
-            .map_err(|_| CredentialCoordinatorError::Unavailable)?
-    }
 }
 
 impl CredentialCoordinatorRuntime {
@@ -362,7 +352,7 @@ impl CredentialCoordinatorRuntime {
 
 async fn run_coordinator(
     namespace: ConfigAuthorityNamespace,
-    store: CredentialStore,
+    store: Arc<CredentialStore>,
     mut receiver: mpsc::Receiver<CredentialCommand>,
     shutdown: CancellationToken,
     terminal: watch::Sender<CredentialCoordinatorExit>,
@@ -389,7 +379,7 @@ async fn run_coordinator(
 
 async fn run_command(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     command: CredentialCommand,
 ) {
     match command {
@@ -410,7 +400,7 @@ async fn run_command(
 
 async fn ensure_persisted(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     command: EnsureCommand,
 ) -> (
     Result<PersistedIssuance, CredentialCoordinatorError>,
@@ -428,31 +418,32 @@ async fn ensure_persisted(
 
 async fn ensure_persisted_inner(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     session: DatabaseSession,
     grant: CredentialGrant,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
-    let staged = session
-        .operation()
-        .cancel_safe(stage_ensure(namespace, store, &session, grant, now))
-        .await??;
-    session.operation().checkpoint()?;
-    let (disposition, commit) = staged.commit().await;
-    match disposition {
-        EnsureDisposition::Existing(issuance) => {
-            commit.map_err(|source| CredentialCoordinatorError::Connection { source })?;
-            Ok(issuance)
-        }
-        EnsureDisposition::Replacement(staged) => {
-            finish_replacement(namespace, store, &session, staged, commit).await
-        }
-    }
+    let operation = session.operation().clone();
+    operation
+        .terminal(async {
+            let staged = stage_ensure(namespace, store, &session, grant, now).await?;
+            let (disposition, commit) = staged.commit().await;
+            match disposition {
+                EnsureDisposition::Existing(issuance) => {
+                    commit.map_err(|source| CredentialCoordinatorError::Connection { source })?;
+                    Ok(issuance)
+                }
+                EnsureDisposition::Replacement(staged) => {
+                    finish_replacement(namespace, store, &session, staged, commit).await
+                }
+            }
+        })
+        .await?
 }
 
 async fn stage_ensure(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     session: &DatabaseSession,
     grant: CredentialGrant,
     now: chrono::DateTime<chrono::Utc>,
@@ -471,7 +462,7 @@ async fn stage_ensure(
         .find(&mut transaction, namespace.as_str())
         .await
         .map_err(database_error)?;
-    let disposition = store.recover(previous.as_ref())?;
+    let disposition = store.recover_async(previous.clone()).await?;
     if matches!(
         disposition,
         RecoveryDisposition::Stable | RecoveryDisposition::PromotedPending
@@ -499,7 +490,7 @@ async fn stage_ensure(
 }
 
 async fn reusable_issuance(
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     mapping: Option<&LocalDefaultCredential>,
     principal_key: &str,
@@ -511,7 +502,8 @@ async fn reusable_issuance(
         return Ok(None);
     };
     let Some(envelope) = store
-        .read_stable()?
+        .read_stable_async()
+        .await?
         .filter(|envelope| mapping_matches(mapping, envelope))
     else {
         return Ok(None);
@@ -546,7 +538,7 @@ async fn reusable_issuance(
 
 async fn export_persisted(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     command: ExportCommand,
 ) -> (
     Result<BearerToken, CredentialCoordinatorError>,
@@ -563,19 +555,19 @@ async fn export_persisted(
 
 async fn export_persisted_inner(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     session: DatabaseSession,
     audience: &str,
 ) -> Result<BearerToken, CredentialCoordinatorError> {
     let operation = session.operation().clone();
     operation
-        .cancel_safe(export_persisted_read(namespace, store, session, audience))
+        .terminal(export_persisted_read(namespace, store, session, audience))
         .await?
 }
 
 async fn export_persisted_read(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     session: DatabaseSession,
     audience: &str,
 ) -> Result<BearerToken, CredentialCoordinatorError> {
@@ -593,7 +585,7 @@ async fn export_persisted_read(
         .find(&mut transaction, namespace.as_str())
         .await
         .map_err(database_error)?;
-    let disposition = store.recover(mapping.as_ref())?;
+    let disposition = store.recover_async(mapping.clone()).await?;
     if !matches!(
         disposition,
         RecoveryDisposition::Stable | RecoveryDisposition::PromotedPending
@@ -601,7 +593,8 @@ async fn export_persisted_read(
         return Err(CredentialCoordinatorError::Unavailable);
     }
     let envelope = store
-        .read_stable()?
+        .read_stable_async()
+        .await?
         .filter(|envelope| {
             mapping
                 .as_ref()
@@ -627,7 +620,7 @@ async fn export_persisted_read(
 
 async fn issue_persisted(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     command: IssueCommand,
 ) -> (
     Result<PersistedIssuance, CredentialCoordinatorError>,
@@ -644,22 +637,23 @@ async fn issue_persisted(
 
 async fn issue_persisted_inner(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     session: DatabaseSession,
     grant: CredentialGrant,
 ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
-    let staged = session
-        .operation()
-        .cancel_safe(stage_issue(namespace, store, &session, grant))
-        .await??;
-    session.operation().checkpoint()?;
-    let (staged, commit) = staged.commit().await;
-    finish_replacement(namespace, store, &session, staged, commit).await
+    let operation = session.operation().clone();
+    operation
+        .terminal(async {
+            let staged = stage_issue(namespace, store, &session, grant).await?;
+            let (staged, commit) = staged.commit().await;
+            finish_replacement(namespace, store, &session, staged, commit).await
+        })
+        .await?
 }
 
 async fn stage_issue(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     session: &DatabaseSession,
     grant: CredentialGrant,
 ) -> Result<StagedCredentialTransaction<StagedIssuance>, CredentialCoordinatorError> {
@@ -677,7 +671,7 @@ async fn stage_issue(
         .find(&mut transaction, namespace.as_str())
         .await
         .map_err(database_error)?;
-    let _ = store.recover(previous.as_ref())?;
+    let _ = store.recover_async(previous.clone()).await?;
     let staged = replace_locked(namespace, store, &mut transaction, previous, grant).await?;
     Ok(StagedCredentialTransaction {
         transaction,
@@ -687,7 +681,7 @@ async fn stage_issue(
 
 async fn replace_locked(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     previous: Option<LocalDefaultCredential>,
     grant: CredentialGrant,
@@ -714,7 +708,7 @@ async fn replace_locked(
         token_id: token.id(),
         auth: Auth::Bearer { token: bearer },
     };
-    store.stage(&envelope)?;
+    store.stage_async(envelope.clone()).await?;
     if let Some(previous) = previous
         && previous.token_id != token.id()
     {
@@ -745,15 +739,15 @@ async fn replace_locked(
 
 async fn finish_replacement(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     session: &DatabaseSession,
     staged: StagedIssuance,
     commit: Result<(), sqlx::Error>,
 ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
     let failure = match commit {
-        Ok(()) => match store.promote_pending() {
+        Ok(()) => match store.promote_pending_async().await {
             Ok(()) => return Ok(staged.issuance),
-            Err(source) => CredentialCoordinatorError::Store(source),
+            Err(failure) => failure,
         },
         Err(source) => CredentialCoordinatorError::Connection { source },
     };
@@ -767,7 +761,7 @@ async fn finish_replacement(
 
 async fn reconcile_replacement(
     namespace: &ConfigAuthorityNamespace,
-    store: &CredentialStore,
+    store: &Arc<CredentialStore>,
     session: &DatabaseSession,
     staged: StagedIssuance,
     failure: CredentialCoordinatorError,
@@ -790,13 +784,13 @@ async fn reconcile_replacement(
         .find(&mut transaction, namespace.as_str())
         .await
         .map_err(database_error)?;
-    let disposition = store.recover(mapping.as_ref())?;
+    let disposition = store.recover_async(mapping.clone()).await?;
     let authoritative = mapping.as_ref().is_some_and(|mapping| {
         mapping.authority_namespace == namespace.as_str()
             && mapping.generation_id == staged.generation_id
             && mapping.token_id == staged.issuance.token.id()
     });
-    let stable = store.read_stable()?.is_some_and(|envelope| {
+    let stable = store.read_stable_async().await?.is_some_and(|envelope| {
         envelope.generation_id == staged.generation_id
             && envelope.token_id == staged.issuance.token.id()
     });
@@ -940,6 +934,34 @@ impl CredentialStore {
         }
     }
 
+    async fn stage_async(
+        self: &Arc<Self>,
+        envelope: PersistedCredentialEnvelope,
+    ) -> Result<(), CredentialCoordinatorError> {
+        let store = Arc::clone(self);
+        run_store_task(move || store.stage(&envelope)).await
+    }
+
+    async fn promote_pending_async(self: &Arc<Self>) -> Result<(), CredentialCoordinatorError> {
+        let store = Arc::clone(self);
+        run_store_task(move || store.promote_pending()).await
+    }
+
+    async fn recover_async(
+        self: &Arc<Self>,
+        mapping: Option<LocalDefaultCredential>,
+    ) -> Result<RecoveryDisposition, CredentialCoordinatorError> {
+        let store = Arc::clone(self);
+        run_store_task(move || store.recover(mapping.as_ref())).await
+    }
+
+    async fn read_stable_async(
+        self: &Arc<Self>,
+    ) -> Result<Option<PersistedCredentialEnvelope>, CredentialCoordinatorError> {
+        let store = Arc::clone(self);
+        run_store_task(move || store.read_stable()).await
+    }
+
     pub(super) fn stage(
         &self,
         envelope: &PersistedCredentialEnvelope,
@@ -1058,6 +1080,18 @@ impl CredentialStore {
             Err(source) => Err(file_error(path, source)),
         }
     }
+}
+
+async fn run_store_task<T>(
+    task: impl FnOnce() -> Result<T, CredentialStoreError> + Send + 'static,
+) -> Result<T, CredentialCoordinatorError>
+where
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(|source| CredentialCoordinatorError::StoreTask { source })?
+        .map_err(CredentialCoordinatorError::Store)
 }
 
 fn parent_directory(path: &Path) -> Result<&Path, CredentialStoreError> {
@@ -1194,7 +1228,7 @@ mod recovery {
         let database = tribal_test_utils::TestDb::new().await;
         let root = tempfile::tempdir().expect("temporary credential root");
         let namespace = namespace("1123456789abcdef01234567");
-        let store = CredentialStore::with_root(namespace.clone(), root.path());
+        let store = Arc::new(CredentialStore::with_root(namespace.clone(), root.path()));
         let revision = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"lost-ack"));
         let session = session(&database, &revision);
         let mut connection = session.pool.acquire().await.expect("connection");
@@ -1259,7 +1293,7 @@ mod recovery {
         let database = tribal_test_utils::TestDb::new().await;
         let root = tempfile::tempdir().expect("temporary credential root");
         let namespace = namespace("2123456789abcdef01234567");
-        let store = CredentialStore::with_root(namespace.clone(), root.path());
+        let store = Arc::new(CredentialStore::with_root(namespace.clone(), root.path()));
         let revision = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"promotion"));
         store.fail_next_promotion();
 

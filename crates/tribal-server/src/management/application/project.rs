@@ -235,17 +235,23 @@ pub(super) fn public_error(error: ProjectAdministrationError) -> ManagementRespo
             message: "project inventory cursor is invalid".to_owned(),
             error: ManagementError::ConfigurationInvalid { fields: Vec::new() },
         },
-        ProjectAdministrationError::Cursor(
+        error @ ProjectAdministrationError::Cursor(
             InventoryCursorError::Encoding { .. } | InventoryCursorError::InternalInvariant,
-        ) => ManagementResponseError {
-            message: "project inventory could not be encoded".to_owned(),
-            error: ManagementError::InternalInvariant,
-        },
+        ) => super::private_failure(
+            &error,
+            ManagementResponseError {
+                message: "project inventory could not be encoded".to_owned(),
+                error: ManagementError::InternalInvariant,
+            },
+        ),
         ProjectAdministrationError::Session(DatabaseAccessError::Configuration(error)) => {
             super::super::configuration::management_error(error)
         }
-        ProjectAdministrationError::Session(DatabaseAccessError::Connection { .. })
-        | ProjectAdministrationError::Repository { .. } => administration_error(
+        error @ (ProjectAdministrationError::Session(DatabaseAccessError::Connection {
+            ..
+        })
+        | ProjectAdministrationError::Repository { .. }) => super::private_administration_error(
+            &error,
             "project database is unavailable",
             AdministrationFailure::DatabaseUnavailable,
         ),

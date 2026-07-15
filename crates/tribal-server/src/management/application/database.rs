@@ -247,7 +247,7 @@ impl DatabaseAccess {
             .map_err(DatabaseAccessError::from)??;
 
         operation
-            .cancel_safe(run_migrations(&session.pool))
+            .terminal(run_migrations(&session.pool))
             .await
             .map_err(DatabaseAccessError::from)?
             .map_err(|source| DatabaseInitialiseError::Migration { source })?;

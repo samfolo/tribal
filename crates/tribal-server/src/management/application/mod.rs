@@ -25,10 +25,10 @@ use reindex::ReindexAdministration;
 use thread::ThreadAdministration;
 use token::TokenAdministration;
 use tribal_wire::management::{
-    BootstrapRunCall, CheckReportCall, ConfigGetAllCall, ConfigGetCall, ConfigPatchCall,
-    ConfigPathCall, ConfigSchemaCall, ConfigSetCall, ConfigValidateCall, ConfigValidation,
-    ConfigViolation, CredentialProbeCall, CredentialSourcesCall, DatabaseInitialiseCall,
-    DatabaseProbeCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall,
+    AdministrationFailure, BootstrapRunCall, CheckReportCall, ConfigGetAllCall, ConfigGetCall,
+    ConfigPatchCall, ConfigPathCall, ConfigSchemaCall, ConfigSetCall, ConfigValidateCall,
+    ConfigValidation, ConfigViolation, CredentialProbeCall, CredentialSourcesCall,
+    DatabaseInitialiseCall, DatabaseProbeCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall,
     GraphEmbeddingProfileCall, GraphGenesisOptionsCall, IntegrationMcpConfigCall, LogsTailCall,
     ManagementCall, ManagementError, ManagementMethod, ManagementResponseError,
     ManagerShutdownCall, ManagerSnapshotCall, ModelsCatalogueCall, ModelsSelectCall,
@@ -601,11 +601,18 @@ fn internal_error(message: &str) -> ManagementResponseError {
     }
 }
 
-fn probe_error(_error: ProbeError) -> ManagementResponseError {
-    ManagementResponseError {
-        message: "external probe is unavailable".to_owned(),
-        error: ManagementError::ProbeUnavailable,
-    }
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Result::map_err transfers ownership of the typed probe failure"
+)]
+fn probe_error(error: ProbeError) -> ManagementResponseError {
+    private_failure(
+        &error,
+        ManagementResponseError {
+            message: "external probe is unavailable".to_owned(),
+            error: ManagementError::ProbeUnavailable,
+        },
+    )
 }
 
 fn database_initialise_error(error: DatabaseInitialiseError) -> ManagementResponseError {
@@ -623,19 +630,22 @@ fn database_initialise_error(error: DatabaseInitialiseError) -> ManagementRespon
             message: "configuration changed before database initialisation".to_owned(),
             error: ManagementError::ConfigConflict { expected, actual },
         },
-        DatabaseInitialiseError::Migration { .. } => administration_error(
+        error @ DatabaseInitialiseError::Migration { .. } => private_administration_error(
+            &error,
             "database migration failed",
-            tribal_wire::management::AdministrationFailure::DatabaseMigrationFailed,
+            AdministrationFailure::DatabaseMigrationFailed,
         ),
-        DatabaseInitialiseError::EmptyMigrationCatalogue => {
-            internal_error("compiled database migration catalogue is empty")
-        }
-        DatabaseInitialiseError::Session(DatabaseAccessError::Connection { .. })
+        error @ DatabaseInitialiseError::EmptyMigrationCatalogue => private_failure(
+            &error,
+            internal_error("compiled database migration catalogue is empty"),
+        ),
+        error @ (DatabaseInitialiseError::Session(DatabaseAccessError::Connection { .. })
         | DatabaseInitialiseError::MigrationState { .. }
         | DatabaseInitialiseError::MigrationConnection { .. }
-        | DatabaseInitialiseError::Principal { .. } => administration_error(
+        | DatabaseInitialiseError::Principal { .. }) => private_administration_error(
+            &error,
             "database is unavailable",
-            tribal_wire::management::AdministrationFailure::DatabaseUnavailable,
+            AdministrationFailure::DatabaseUnavailable,
         ),
     }
 }
@@ -648,21 +658,35 @@ fn database_access_error(error: DatabaseAccessError) -> ManagementResponseError 
             message: "configuration changed before graph administration".to_owned(),
             error: ManagementError::ConfigConflict { expected, actual },
         },
-        DatabaseAccessError::Connection { .. } => administration_error(
+        error @ DatabaseAccessError::Connection { .. } => private_administration_error(
+            &error,
             "graph database is unavailable",
-            tribal_wire::management::AdministrationFailure::DatabaseUnavailable,
+            AdministrationFailure::DatabaseUnavailable,
         ),
     }
 }
 
-fn administration_error(
-    message: &str,
-    failure: tribal_wire::management::AdministrationFailure,
-) -> ManagementResponseError {
+fn administration_error(message: &str, failure: AdministrationFailure) -> ManagementResponseError {
     ManagementResponseError {
         message: message.to_owned(),
         error: ManagementError::Administration { failure },
     }
+}
+
+pub(super) fn private_failure(
+    error: &(impl std::error::Error + ?Sized),
+    response: ManagementResponseError,
+) -> ManagementResponseError {
+    tracing::error!(error = %error, "management application request failed");
+    response
+}
+
+pub(super) fn private_administration_error(
+    error: &(impl std::error::Error + ?Sized),
+    message: &str,
+    failure: AdministrationFailure,
+) -> ManagementResponseError {
+    private_failure(error, administration_error(message, failure))
 }
 
 fn integration_error(
@@ -674,7 +698,10 @@ fn integration_error(
         ))
         | integration::IntegrationAdministrationError::Credential {
             source: credential::CredentialCoordinatorError::Operation(failure),
-        } => operation::public_error(failure),
+        }
+        | integration::IntegrationAdministrationError::Configuration(
+            ConfigWorkerRequestError::Operation(failure),
+        ) => operation::public_error(failure),
         integration::IntegrationAdministrationError::Session(
             DatabaseAccessError::RevisionConflict { expected, actual },
         ) => ManagementResponseError {
@@ -684,12 +711,22 @@ fn integration_error(
         integration::IntegrationAdministrationError::Session(
             DatabaseAccessError::Configuration(error),
         )
-        | integration::IntegrationAdministrationError::Configuration(error) => {
-            management_error(error)
+        | integration::IntegrationAdministrationError::Configuration(
+            ConfigWorkerRequestError::Authority(error),
+        ) => management_error(error),
+        error @ (integration::IntegrationAdministrationError::IncompatibleTarget
+        | integration::IntegrationAdministrationError::ProjectSource
+        | integration::IntegrationAdministrationError::ProjectNotFound { .. }) => {
+            let failure = integration::public_failure(&error);
+            administration_error("integration configuration could not be rendered", failure)
         }
         error => {
             let failure = integration::public_failure(&error);
-            administration_error("integration configuration could not be rendered", failure)
+            private_administration_error(
+                &error,
+                "integration configuration could not be rendered",
+                failure,
+            )
         }
     }
 }
@@ -711,21 +748,26 @@ fn reindex_error(error: reindex::ReindexAdministrationError) -> ManagementRespon
         reindex::ReindexAdministrationError::Session(DatabaseAccessError::Configuration(error)) => {
             management_error(error)
         }
-        reindex::ReindexAdministrationError::Session(DatabaseAccessError::Connection {
-            ..
-        })
+        error @ (reindex::ReindexAdministrationError::Session(
+            DatabaseAccessError::Connection { .. },
+        )
         | reindex::ReindexAdministrationError::Database { .. }
         | reindex::ReindexAdministrationError::Operation {
             source: tribal_worker::ReindexOpError::Db(_),
-        } => administration_error(
+        }) => private_administration_error(
+            &error,
             "reindex database is unavailable",
-            tribal_wire::management::AdministrationFailure::DatabaseUnavailable,
+            AdministrationFailure::DatabaseUnavailable,
         ),
-        reindex::ReindexAdministrationError::Target
-        | reindex::ReindexAdministrationError::Gateway { .. }
-        | reindex::ReindexAdministrationError::Operation { .. } => administration_error(
+        reindex::ReindexAdministrationError::Target => administration_error(
             "reindex operation is unavailable",
-            tribal_wire::management::AdministrationFailure::ReindexUnavailable,
+            AdministrationFailure::ReindexUnavailable,
+        ),
+        error @ (reindex::ReindexAdministrationError::Gateway { .. }
+        | reindex::ReindexAdministrationError::Operation { .. }) => private_administration_error(
+            &error,
+            "reindex operation is unavailable",
+            AdministrationFailure::ReindexUnavailable,
         ),
     }
 }
@@ -745,14 +787,17 @@ fn thread_error(error: thread::ThreadAdministrationError) -> ManagementResponseE
         thread::ThreadAdministrationError::Session(DatabaseAccessError::Configuration(error)) => {
             management_error(error)
         }
-        thread::ThreadAdministrationError::Session(DatabaseAccessError::Connection { .. })
-        | thread::ThreadAdministrationError::Database { .. } => administration_error(
+        error @ (thread::ThreadAdministrationError::Session(DatabaseAccessError::Connection {
+            ..
+        })
+        | thread::ThreadAdministrationError::Database { .. }) => private_administration_error(
+            &error,
             "thread retention database is unavailable",
-            tribal_wire::management::AdministrationFailure::DatabaseUnavailable,
+            AdministrationFailure::DatabaseUnavailable,
         ),
         thread::ThreadAdministrationError::Retention => administration_error(
             "thread retention request was refused",
-            tribal_wire::management::AdministrationFailure::ThreadRetentionRefused,
+            AdministrationFailure::ThreadRetentionRefused,
         ),
     }
 }
@@ -769,5 +814,28 @@ mod dispatch {
             error.error,
             ManagementError::ConfigurationInvalid { .. }
         ));
+    }
+
+    #[test]
+    fn test_private_database_failure_is_logged_but_not_exposed() {
+        const PRIVATE_CONTEXT: &str = "private database diagnostic";
+        let (capture, _capture) = tribal_test_utils::TracingCapture::install();
+        let response = database_access_error(DatabaseAccessError::Connection {
+            source: tribal_db::DbError::QueryFailed {
+                context: PRIVATE_CONTEXT.to_owned(),
+                source: sqlx::Error::RowNotFound,
+            },
+        });
+
+        let encoded = serde_json::to_string(&response).expect("public error encodes");
+        assert!(!encoded.contains(PRIVATE_CONTEXT));
+        let event = capture
+            .event("management application request failed")
+            .expect("private failure emits one diagnostic event");
+        assert!(
+            event
+                .field("error")
+                .is_some_and(|error| error.contains(PRIVATE_CONTEXT))
+        );
     }
 }

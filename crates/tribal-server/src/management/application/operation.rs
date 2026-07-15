@@ -51,6 +51,15 @@ impl OperationContext {
             result = future => Ok(result),
         }
     }
+
+    /// Waits for an admitted effect to report its terminal result.
+    pub(in crate::management) async fn terminal<T>(
+        &self,
+        future: impl Future<Output = T>,
+    ) -> Result<T, OperationError> {
+        self.checkpoint()?;
+        Ok(future.await)
+    }
 }
 
 /// Safe interruption before a management effect begins.
@@ -103,6 +112,26 @@ mod tests {
                 failure: AdministrationFailure::OperationTimedOut
             }
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_terminal_work_finishes_after_the_active_deadline() {
+        let operation = OperationContext::new(CancellationToken::new());
+        let (started, admitted) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            operation
+                .terminal(async {
+                    let _ = started.send(());
+                    tokio::time::sleep(ACTIVE_WINDOW + Duration::from_secs(1)).await;
+                    7
+                })
+                .await
+        });
+
+        admitted.await.expect("terminal work begins");
+        tokio::time::advance(ACTIVE_WINDOW + Duration::from_secs(1)).await;
+
+        assert_eq!(task.await.expect("operation task joins").unwrap(), 7);
     }
 
     #[tokio::test]

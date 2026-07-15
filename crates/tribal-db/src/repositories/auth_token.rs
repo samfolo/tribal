@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sqlx::{PgConnection, Row};
+use sqlx::{FromRow as _, PgConnection};
 use tribal_domain::{AuthToken, AuthTokenId, PrincipalId, Scope};
 use typed_builder::TypedBuilder;
 
@@ -64,6 +64,18 @@ pub struct AuthTokenPageKey {
 pub struct AuthTokenInventoryRow {
     pub token: AuthToken,
     pub principal: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct AuthTokenDbRow {
+    id: uuid::Uuid,
+    token_hash: String,
+    principal_id: uuid::Uuid,
+    scopes: Vec<String>,
+    audience: String,
+    expires_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+    revoked_at: Option<DateTime<Utc>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -477,46 +489,52 @@ impl AuthTokenRepository for PgAuthTokenRepository {
 // Row mapping
 // ---------------------------------------------------------------------------
 
-/// Maps a raw `sqlx::Row` from an auth token query into an
-/// [`AuthToken`].
 fn map_auth_token_row(r: &sqlx::postgres::PgRow) -> Result<AuthToken, DbError> {
-    let scope_strings: Vec<String> = r.get("scopes");
-    let scopes = scope_strings
-        .iter()
-        .map(|scope| Scope::parse(scope).map_err(scope_decode_error))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(AuthToken::builder()
-        .id(AuthTokenId::from(r.get::<uuid::Uuid, _>("id")))
-        .token_hash(r.get("token_hash"))
-        .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
-        .scopes(scopes)
-        .audience(r.get("audience"))
-        .expires_at(r.get("expires_at"))
-        .created_at(r.get("created_at"))
-        .revoked_at(r.get("revoked_at"))
-        .build())
+    let row = AuthTokenDbRow::from_row(r).map_err(row_decode_error)?;
+    map_auth_token_db_row(row)
 }
 
-fn map_inventory_row(row: AuthTokenInventoryDbRow) -> Result<AuthTokenInventoryRow, DbError> {
+fn map_auth_token_db_row(row: AuthTokenDbRow) -> Result<AuthToken, DbError> {
     let scopes = row
         .scopes
         .into_iter()
         .map(|scope| Scope::parse(&scope).map_err(scope_decode_error))
         .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(AuthToken::builder()
+        .id(AuthTokenId::from(row.id))
+        .token_hash(row.token_hash)
+        .principal_id(PrincipalId::from(row.principal_id))
+        .scopes(scopes)
+        .audience(row.audience)
+        .expires_at(row.expires_at)
+        .created_at(row.created_at)
+        .revoked_at(row.revoked_at)
+        .build())
+}
+
+fn map_inventory_row(row: AuthTokenInventoryDbRow) -> Result<AuthTokenInventoryRow, DbError> {
+    let token = AuthTokenDbRow {
+        id: row.id,
+        token_hash: row.token_hash,
+        principal_id: row.principal_id,
+        scopes: row.scopes,
+        audience: row.audience,
+        expires_at: row.expires_at,
+        created_at: row.created_at,
+        revoked_at: row.revoked_at,
+    };
     Ok(AuthTokenInventoryRow {
-        token: AuthToken::builder()
-            .id(AuthTokenId::from(row.id))
-            .token_hash(row.token_hash)
-            .principal_id(PrincipalId::from(row.principal_id))
-            .scopes(scopes)
-            .audience(row.audience)
-            .expires_at(row.expires_at)
-            .created_at(row.created_at)
-            .revoked_at(row.revoked_at)
-            .build(),
+        token: map_auth_token_db_row(token)?,
         principal: row.principal_key,
     })
+}
+
+fn row_decode_error(source: sqlx::Error) -> DbError {
+    DbError::QueryFailed {
+        context: "decoding auth token row".to_owned(),
+        source,
+    }
 }
 
 fn scope_decode_error(source: tribal_domain::ScopeParseError) -> DbError {

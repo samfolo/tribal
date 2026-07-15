@@ -423,10 +423,6 @@ impl ConfigWorkerClient {
         receiver
     }
 
-    pub(crate) async fn path(&self) -> Result<ConfigFilePath, ConfigAuthorityError> {
-        self.request(ConfigCommand::Path).await
-    }
-
     pub(crate) async fn document(&self) -> Result<ConfigDocument, ConfigAuthorityError> {
         self.request(ConfigCommand::Document).await?
     }

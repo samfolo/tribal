@@ -456,7 +456,7 @@ mod tests {
     fn test_environment_model_credential_and_genesis_reuse_reach_the_wire_request() {
         let parts = request_parts(BootstrapArgs {
             model_selections: vec![
-                "extraction=ollama.llama3.2"
+                "extraction=ollama.llama3.1-8b"
                     .parse()
                     .expect("model selection parses"),
             ],

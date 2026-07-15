@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     commands::serve::ServeProjectMode,
-    management::{configuration::ConfigAuthorityError, worker::ConfigWorkerClient},
+    management::worker::{ConfigWorkerClient, ConfigWorkerRequestError},
     output::{resolved_advertised_url, snippet_key},
 };
 
@@ -26,7 +26,7 @@ pub(super) enum IntegrationAdministrationError {
     #[error(transparent)]
     Session(#[from] DatabaseAccessError),
     #[error("configuration path is unavailable: {0}")]
-    Configuration(#[from] ConfigAuthorityError),
+    Configuration(#[from] ConfigWorkerRequestError),
     #[error("integration target is incompatible with its exposure policy")]
     IncompatibleTarget,
     #[error("project source is invalid")]
@@ -164,7 +164,7 @@ impl IntegrationAdministration {
         let target = resolve_target(session.config.server.transport, request.target)?;
         let entry = match target {
             McpTarget::Stdio { context } => {
-                let config_path = self.config.path().await?;
+                let config_path = self.config.for_operation(operation).path().await?;
                 let (mode, server_name) = resolve_stdio(&session, context).await?;
                 PreparedMcpEntry::Public(PublicMcpConfigDocument {
                     server_name,
@@ -341,14 +341,16 @@ pub(super) fn public_failure(error: &IntegrationAdministrationError) -> Administ
         IntegrationAdministrationError::Credential {
             source:
                 CredentialCoordinatorError::Store(_)
+                | CredentialCoordinatorError::StoreTask { .. }
                 | CredentialCoordinatorError::ReconciliationTimedOut,
         } => AdministrationFailure::PersistedCredentialRecoveryFailed,
         IntegrationAdministrationError::Credential {
             source: CredentialCoordinatorError::Operation(failure),
         }
-        | IntegrationAdministrationError::Session(DatabaseAccessError::Operation(failure)) => {
-            failure.administration_failure()
-        }
+        | IntegrationAdministrationError::Session(DatabaseAccessError::Operation(failure))
+        | IntegrationAdministrationError::Configuration(ConfigWorkerRequestError::Operation(
+            failure,
+        )) => failure.administration_failure(),
         IntegrationAdministrationError::Session(DatabaseAccessError::Connection { .. })
         | IntegrationAdministrationError::ProjectRepository { .. }
         | IntegrationAdministrationError::Credential {
@@ -357,7 +359,7 @@ pub(super) fn public_failure(error: &IntegrationAdministrationError) -> Administ
                 | CredentialCoordinatorError::Database { .. },
         } => AdministrationFailure::DatabaseUnavailable,
         IntegrationAdministrationError::Session(_)
-        | IntegrationAdministrationError::Configuration(_)
+        | IntegrationAdministrationError::Configuration(ConfigWorkerRequestError::Authority(_))
         | IntegrationAdministrationError::Audience
         | IntegrationAdministrationError::Credential {
             source: CredentialCoordinatorError::GeneratedToken,

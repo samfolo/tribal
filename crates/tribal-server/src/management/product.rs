@@ -9,6 +9,7 @@ use tribal_db::{
     PgEmbeddingProfileRepository, advisory_locks,
 };
 use tribal_domain::{ConfigFieldPath, ProviderKind, normalise_endpoint_url};
+use tribal_inference::{KnownModel, known_models};
 use tribal_wire::management::{
     ConfigDocument, ConfigLiteral, ConfigPatchChange, ConfigPatchOutcome, ConfigPatchRequest,
     ConfigRevision, ConfigWriteEffect, CredentialCapabilityInvalidReason, CredentialInput,
@@ -33,47 +34,6 @@ use super::{
     configuration::CredentialMaterial,
     worker::{ConfigWorkerClient, ConfigWorkerRequestError},
 };
-
-struct ModelDescriptor {
-    id: &'static str,
-    provider: ProviderKind,
-    model: &'static str,
-    display_name: &'static str,
-    access: ModelAccess,
-}
-
-fn model_descriptors() -> [ModelDescriptor; 4] {
-    [
-        ModelDescriptor {
-            id: "ollama.llama3.2",
-            provider: ProviderKind::Ollama,
-            model: "llama3.2",
-            display_name: "Llama 3.2 (local)",
-            access: ModelAccess::BringYourOwn,
-        },
-        ModelDescriptor {
-            id: "anthropic.claude-3-5-haiku",
-            provider: ProviderKind::Anthropic,
-            model: "claude-3-5-haiku-latest",
-            display_name: "Claude 3.5 Haiku",
-            access: ModelAccess::BringYourOwn,
-        },
-        ModelDescriptor {
-            id: "openai.gpt-4o-mini",
-            provider: ProviderKind::OpenAi,
-            model: "gpt-4o-mini",
-            display_name: "GPT-4o mini",
-            access: ModelAccess::BringYourOwn,
-        },
-        ModelDescriptor {
-            id: "platform.default",
-            provider: ProviderKind::Platform,
-            model: "default",
-            display_name: "Tribal Platform",
-            access: ModelAccess::Platform,
-        },
-    ]
-}
 
 /// Factory for product sessions bound to individual management connections.
 #[derive(Debug, Clone)]
@@ -106,7 +66,7 @@ struct ResolvedCredential {
 struct PreparedModelSelection {
     values: serde_json::Value,
     revision: ConfigRevision,
-    descriptor: ModelDescriptor,
+    descriptor: KnownModel,
     use_case: CredentialUse,
     endpoints: Vec<String>,
 }
@@ -149,8 +109,9 @@ impl ProductSession {
                 .await
                 .map_err(ConfigWorkerRequestError::into_public_error)?,
         )?;
-        let models = model_descriptors()
-            .into_iter()
+        let models = known_models()
+            .iter()
+            .copied()
             .map(model_entry)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ModelsCatalogue { models, revision })
@@ -814,9 +775,10 @@ impl ProductSession {
     }
 }
 
-fn descriptor(id: &KnownModelId) -> Result<ModelDescriptor, ManagementResponseError> {
-    model_descriptors()
-        .into_iter()
+fn descriptor(id: &KnownModelId) -> Result<KnownModel, ManagementResponseError> {
+    known_models()
+        .iter()
+        .copied()
         .find(|model| model.id == id.as_str())
         .ok_or_else(|| {
             public_error(
@@ -926,14 +888,18 @@ fn profile_sql_error(error: &sqlx::Error) -> ManagementResponseError {
     )
 }
 
-fn model_entry(descriptor: ModelDescriptor) -> Result<KnownModelEntry, ManagementResponseError> {
+fn model_entry(descriptor: KnownModel) -> Result<KnownModelEntry, ManagementResponseError> {
     let endpoint = descriptor.provider.default_base_url();
     Ok(KnownModelEntry {
         id: KnownModelId::parse(descriptor.id).map_err(|_| invalid_contract())?,
         provider: descriptor.provider,
         model: descriptor.model.to_owned(),
         display_name: descriptor.display_name.to_owned(),
-        access: descriptor.access,
+        access: if descriptor.provider == ProviderKind::Platform {
+            ModelAccess::Platform
+        } else {
+            ModelAccess::BringYourOwn
+        },
         availability: if descriptor.provider == ProviderKind::Platform {
             ModelAvailability::Unavailable {
                 reason: ModelUnavailableReason::PlatformEndpointUnavailable,
@@ -1488,7 +1454,19 @@ mod tests {
             .models_catalogue(&operation)
             .await
             .expect("catalogue returns");
-        assert_eq!(catalogue.models.len(), 4);
+        assert_eq!(catalogue.models.len(), known_models().len());
+        assert!(
+            catalogue
+                .models
+                .iter()
+                .zip(known_models())
+                .all(|(entry, model)| {
+                    entry.id.as_str() == model.id
+                        && entry.provider == model.provider
+                        && entry.model == model.model
+                        && entry.display_name == model.display_name
+                })
+        );
         assert!(catalogue.models.iter().any(|entry| {
             entry.provider == ProviderKind::Platform
                 && matches!(entry.availability, ModelAvailability::Unavailable { .. })

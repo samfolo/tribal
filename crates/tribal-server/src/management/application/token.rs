@@ -528,19 +528,26 @@ pub(super) fn public_error(error: TokenAdministrationError) -> ManagementRespons
             message: "token inventory cursor is invalid".to_owned(),
             error: ManagementError::ConfigurationInvalid { fields: Vec::new() },
         },
-        TokenAdministrationError::Cursor(
+        error @ TokenAdministrationError::Cursor(
             InventoryCursorError::Encoding { .. } | InventoryCursorError::InternalInvariant,
-        ) => ManagementResponseError {
-            message: "token inventory could not be encoded".to_owned(),
-            error: ManagementError::InternalInvariant,
-        },
-        TokenAdministrationError::Credential { source } => {
+        ) => super::private_failure(
+            &error,
+            ManagementResponseError {
+                message: "token inventory could not be encoded".to_owned(),
+                error: ManagementError::InternalInvariant,
+            },
+        ),
+        ref error @ TokenAdministrationError::Credential { ref source } => {
             let failure = if matches!(source, CredentialCoordinatorError::Unavailable) {
                 AdministrationFailure::PersistedCredentialUnavailable
             } else {
                 AdministrationFailure::PersistedCredentialRecoveryFailed
             };
-            administration_error("persisted credential administration failed", failure)
+            super::private_administration_error(
+                error,
+                "persisted credential administration failed",
+                failure,
+            )
         }
         TokenAdministrationError::Issuance => administration_error(
             "token issuance was refused",
@@ -549,8 +556,9 @@ pub(super) fn public_error(error: TokenAdministrationError) -> ManagementRespons
         TokenAdministrationError::Session(DatabaseAccessError::Configuration(error)) => {
             super::super::configuration::management_error(error)
         }
-        TokenAdministrationError::Session(DatabaseAccessError::Connection { .. })
-        | TokenAdministrationError::Repository { .. } => administration_error(
+        error @ (TokenAdministrationError::Session(DatabaseAccessError::Connection { .. })
+        | TokenAdministrationError::Repository { .. }) => super::private_administration_error(
+            &error,
             "token database is unavailable",
             AdministrationFailure::DatabaseUnavailable,
         ),
