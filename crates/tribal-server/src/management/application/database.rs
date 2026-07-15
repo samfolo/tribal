@@ -13,9 +13,12 @@ use tribal_wire::management::{
     Revisioned,
 };
 
-use super::super::{
-    configuration::{ConfigAuthorityError, ResolvedConfigSnapshot},
-    worker::ConfigWorkerClient,
+use super::{
+    super::{
+        configuration::{ConfigAuthorityError, ResolvedConfigSnapshot},
+        worker::ConfigWorkerClient,
+    },
+    operation::{OperationContext, OperationError},
 };
 use crate::startup::run_migrations;
 
@@ -47,24 +50,51 @@ impl std::fmt::Debug for DatabaseAccess {
 }
 
 /// One pool and configuration view selected by the same durable revision.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DatabaseSession {
     pub(crate) revision: ConfigRevision,
     pub(crate) config: Arc<TribalConfig>,
     pub(crate) pool: PgPool,
+    operation: OperationContext,
 }
 
 impl DatabaseSession {
+    #[cfg(test)]
+    pub(super) fn for_test(
+        revision: ConfigRevision,
+        config: Arc<TribalConfig>,
+        pool: PgPool,
+    ) -> Self {
+        Self {
+            revision,
+            config,
+            pool,
+            operation: OperationContext::new(tokio_util::sync::CancellationToken::new()),
+        }
+    }
+
     pub(crate) fn revisioned<T>(&self, value: T) -> Revisioned<T> {
         Revisioned {
             config_revision: self.revision.clone(),
             value,
         }
     }
+
+    pub(super) fn checkpoint(&self) -> Result<(), DatabaseAccessError> {
+        self.operation
+            .checkpoint()
+            .map_err(DatabaseAccessError::from)
+    }
+
+    pub(in crate::management) fn operation(&self) -> &OperationContext {
+        &self.operation
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DatabaseAccessError {
+    #[error(transparent)]
+    Operation(#[from] OperationError),
     #[error(transparent)]
     Configuration(#[from] ConfigAuthorityError),
     #[error("configuration revision conflict")]
@@ -134,26 +164,32 @@ impl DatabaseAccess {
 
     pub(crate) async fn session(
         &self,
+        operation: &OperationContext,
         expected_revision: Option<&ConfigRevision>,
     ) -> Result<DatabaseSession, DatabaseAccessError> {
         let ResolvedConfigSnapshot { config, revision } =
-            self.config_snapshot(expected_revision).await?;
-        let pool = (self.pool_factory)(Arc::clone(&config))
-            .await
+            self.config_snapshot(operation, expected_revision).await?;
+        let pool = operation
+            .cancel_safe((self.pool_factory)(Arc::clone(&config)))
+            .await?
             .map_err(|source| DatabaseAccessError::Connection { source })?;
         Ok(DatabaseSession {
             revision,
             config,
             pool,
+            operation: operation.clone(),
         })
     }
 
     /// Resolves configuration without opening the operation's database pool.
     pub(super) async fn config_snapshot(
         &self,
+        operation: &OperationContext,
         expected_revision: Option<&ConfigRevision>,
     ) -> Result<ResolvedConfigSnapshot, DatabaseAccessError> {
-        let snapshot = self.config.resolved_snapshot().await?;
+        let snapshot = operation
+            .cancel_safe(self.config.resolved_snapshot())
+            .await??;
         if let Some(expected) = expected_revision
             && expected != &snapshot.revision
         {
@@ -165,55 +201,77 @@ impl DatabaseAccess {
         Ok(snapshot)
     }
 
-    pub(crate) async fn read_session(&self) -> Result<DatabaseSession, DatabaseAccessError> {
-        self.session(None).await
+    pub(crate) async fn read_session(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<DatabaseSession, DatabaseAccessError> {
+        self.session(operation, None).await
     }
 
     pub(crate) async fn mutation_session(
         &self,
+        operation: &OperationContext,
         expected_revision: &ConfigRevision,
     ) -> Result<DatabaseSession, DatabaseAccessError> {
-        self.session(Some(expected_revision)).await
+        self.session(operation, Some(expected_revision)).await
     }
 
     pub(crate) async fn initialise(
         &self,
+        operation: &OperationContext,
         request: DatabaseInitialiseRequest,
     ) -> Result<DatabaseInitialiseResult, DatabaseInitialiseError> {
-        let session = self.mutation_session(&request.expected_revision).await?;
+        let session = self
+            .mutation_session(operation, &request.expected_revision)
+            .await?;
         let expected_head = tribal_db::MIGRATOR
             .iter()
             .last()
             .ok_or(DatabaseInitialiseError::EmptyMigrationCatalogue)?
             .version;
-        let mut connection = session
-            .pool
-            .acquire()
+        let migration_state = operation
+            .cancel_safe(async {
+                let mut connection =
+                    session.pool.acquire().await.map_err(|source| {
+                        DatabaseInitialiseError::MigrationConnection { source }
+                    })?;
+                PgMigrationRepository
+                    .current_head_matches(&mut connection, expected_head)
+                    .await
+                    .map_err(|source| DatabaseInitialiseError::MigrationState { source })
+            })
             .await
-            .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })?;
-        let migration_state = PgMigrationRepository
-            .current_head_matches(&mut connection, expected_head)
-            .await
-            .map_err(|source| DatabaseInitialiseError::MigrationState { source })?;
-        drop(connection);
+            .map_err(DatabaseAccessError::from)??;
 
-        run_migrations(&session.pool)
+        operation
+            .cancel_safe(run_migrations(&session.pool))
             .await
+            .map_err(DatabaseAccessError::from)?
             .map_err(|source| DatabaseInitialiseError::Migration { source })?;
 
-        let mut connection = session
-            .pool
-            .acquire()
+        let (transaction, principal_existed) = operation
+            .cancel_safe(async {
+                let mut transaction =
+                    session.pool.begin().await.map_err(|source| {
+                        DatabaseInitialiseError::MigrationConnection { source }
+                    })?;
+                let principal_existed = tribal_db::PgPrincipalRepository
+                    .find_by_key(&mut transaction, LOCAL_PRINCIPAL_KEY)
+                    .await
+                    .map_err(|source| DatabaseInitialiseError::Principal { source })?
+                    .is_some();
+                find_or_create_principal(&mut transaction, LOCAL_PRINCIPAL_KEY)
+                    .await
+                    .map_err(|source| DatabaseInitialiseError::Principal { source })?;
+                Ok::<_, DatabaseInitialiseError>((transaction, principal_existed))
+            })
+            .await
+            .map_err(DatabaseAccessError::from)??;
+        session.checkpoint()?;
+        transaction
+            .commit()
             .await
             .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })?;
-        let principal_existed = tribal_db::PgPrincipalRepository
-            .find_by_key(&mut connection, LOCAL_PRINCIPAL_KEY)
-            .await
-            .map_err(|source| DatabaseInitialiseError::Principal { source })?
-            .is_some();
-        find_or_create_principal(&mut connection, LOCAL_PRINCIPAL_KEY)
-            .await
-            .map_err(|source| DatabaseInitialiseError::Principal { source })?;
 
         let outcome =
             if matches!(migration_state, MigrationHeadStatus::Matches) && principal_existed {
@@ -259,6 +317,10 @@ mod revision_session {
     use super::*;
     use crate::management::{configuration::ConfigAuthority, worker};
 
+    fn operation() -> OperationContext {
+        OperationContext::new(tokio_util::sync::CancellationToken::new())
+    }
+
     fn config_worker(
         database_url: &str,
     ) -> (
@@ -298,7 +360,10 @@ mod revision_session {
             &tribal_wire::management::ConfigDigest::from_bytes(b"stale"),
         );
 
-        let error = access.mutation_session(&stale).await.unwrap_err();
+        let error = access
+            .mutation_session(&operation(), &stale)
+            .await
+            .unwrap_err();
 
         assert!(matches!(
             error,
@@ -327,7 +392,7 @@ mod revision_session {
             }),
         );
 
-        let session = access.read_session().await.unwrap();
+        let session = access.read_session(&operation()).await.unwrap();
         let receipt = session.revisioned("captured");
         let later = worker.resolved_snapshot().await.unwrap();
 
@@ -345,15 +410,21 @@ mod revision_session {
         let access = DatabaseAccess::new(worker);
 
         let first = access
-            .initialise(DatabaseInitialiseRequest {
-                expected_revision: revision.clone(),
-            })
+            .initialise(
+                &operation(),
+                DatabaseInitialiseRequest {
+                    expected_revision: revision.clone(),
+                },
+            )
             .await
             .unwrap();
         let repeated = access
-            .initialise(DatabaseInitialiseRequest {
-                expected_revision: revision.clone(),
-            })
+            .initialise(
+                &operation(),
+                DatabaseInitialiseRequest {
+                    expected_revision: revision.clone(),
+                },
+            )
             .await
             .unwrap();
 

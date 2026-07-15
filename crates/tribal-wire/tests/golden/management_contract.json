@@ -8340,6 +8340,34 @@
               "code": {
                 "type": "string",
                 "enum": [
+                  "operation_timed_out"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "manager_shutting_down"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
                   "database_unavailable"
                 ]
               }

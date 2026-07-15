@@ -1,10 +1,7 @@
 //! Operator-facing reindex services: create, cancel, and prune.
 //!
-//! These wrap the reindex primitives behind one connection-and-registry
-//! interface so the MCP tool handlers and the `tribal reindex` CLI drive the
-//! same logic. The create path builds and probes the target provider before it
-//! opens any transaction, preserving the invariant that no provider call spans
-//! the single-flight lock.
+//! Provider preparation precedes persistence, so no network call spans the
+//! single-flight lock.
 
 use sqlx::PgPool;
 use tribal_db::{
@@ -108,7 +105,36 @@ pub struct ReindexRunOutcome {
     pub estimated_tags: u64,
 }
 
-/// Errors from [`reindex_run`].
+/// Provider-resolved input prepared before reindex persistence.
+pub struct PreparedReindexRun {
+    provider: ProviderKind,
+    model: String,
+    dimensions: u32,
+    normalised_base_url: String,
+    target: Option<super::reindex::ReindexTarget>,
+}
+
+/// Database work staged before the final durable commit.
+pub struct StagedReindexRun {
+    outcome: ReindexRunOutcome,
+    transaction: Option<sqlx::Transaction<'static, sqlx::Postgres>>,
+}
+
+impl StagedReindexRun {
+    /// Finishes staged work, committing when persistence is present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReindexOpError`] when the final database commit fails.
+    pub async fn finish(self) -> Result<ReindexRunOutcome, ReindexOpError> {
+        if let Some(transaction) = self.transaction {
+            transaction.commit().await.map_err(reindex_commit_error)?;
+        }
+        Ok(self.outcome)
+    }
+}
+
+/// Errors from the reindex operation.
 #[derive(Debug, thiserror::Error)]
 pub enum ReindexOpError {
     /// The provider string did not name a known embedding provider.
@@ -132,22 +158,16 @@ pub enum ReindexOpError {
     Db(#[from] DbError),
 }
 
-/// Resolves a named target, validates its credential, probes its drift signal,
-/// and creates a reindex run (or estimates only, for a dry run).
-///
-/// The provider build and probe precede the transaction, since no provider call
-/// may span the single-flight lock; the run is then created atomically.
+/// Resolves a target and probes applied requests without a database transaction.
 ///
 /// # Errors
 ///
 /// Returns [`ReindexOpError`] when the target cannot be parsed, resolved,
-/// built, probed, or persisted.
-pub async fn reindex_run(
-    pool: &PgPool,
+/// built, or probed.
+pub async fn prepare_reindex_run(
     gateway: &InferenceGateway,
     request: &ReindexRunRequest,
-    principal_id: PrincipalId,
-) -> Result<ReindexRunOutcome, ReindexOpError> {
+) -> Result<PreparedReindexRun, ReindexOpError> {
     let provider = request
         .provider
         .parse::<ProviderKind>()
@@ -164,10 +184,7 @@ pub async fn reindex_run(
         })?;
     let normalised_base_url = normalise_endpoint_url(&base_url)?;
     let dimensions = resolve_dimensions(provider, &request.model, request.dimensions)?;
-
-    // Preparing the target validates the credential fail-closed without a
-    // network call; the probe (drift signal) is deferred to the real run.
-    let target = EmbeddingTarget {
+    let embedding = EmbeddingTarget {
         provider,
         model: request.model.clone(),
         dimensions,
@@ -175,69 +192,132 @@ pub async fn reindex_run(
         profile_id: None,
     };
     gateway
-        .prepare_embedding_target(&target)
+        .prepare_embedding_target(&embedding)
         .map_err(ReindexOpError::Provider)?;
-
-    let (resolution, estimate_profile) = if request.dry_run {
-        let mut conn = acquire(pool, "resolving the reindex estimate target").await?;
-        let profile = dry_run_estimate_profile(
-            &mut conn,
-            provider,
-            &normalised_base_url,
-            &request.model,
-            dimensions,
-        )
-        .await?;
-        (ReindexResolution::Plan, Some(profile))
+    let target = if request.dry_run {
+        None
     } else {
-        let target = resolve_reindex_target(gateway, &target, DistanceMetric::Cosine)
-            .await
-            .map_err(ReindexOpError::Probe)?;
-
-        let mut tx = pool.begin().await.map_err(|source| {
-            ReindexOpError::Db(DbError::QueryFailed {
-                context: "beginning the reindex transaction".to_owned(),
-                source,
-            })
-        })?;
-        let outcome = create_reindex_run(&mut tx, &target, principal_id).await?;
-        tx.commit().await.map_err(|source| {
-            ReindexOpError::Db(DbError::QueryFailed {
-                context: "committing the reindex".to_owned(),
-                source,
-            })
-        })?;
-
-        match outcome {
-            ReindexCreationOutcome::Created(run) => (
-                ReindexResolution::Created { run_id: run.id() },
-                Some(run.target_profile_id()),
-            ),
-            ReindexCreationOutcome::AlreadyLive(run) => (
-                ReindexResolution::AlreadyLive { run_id: run.id() },
-                Some(run.target_profile_id()),
-            ),
-            ReindexCreationOutcome::Unchanged(_) => (ReindexResolution::Unchanged, None),
-            ReindexCreationOutcome::LockContended => (ReindexResolution::LockContended, None),
-        }
+        Some(
+            resolve_reindex_target(gateway, &embedding, DistanceMetric::Cosine)
+                .await
+                .map_err(ReindexOpError::Probe)?,
+        )
     };
-
-    let (estimated_items, estimated_tags) = match estimate_profile {
-        Some(profile) => {
-            let mut conn = acquire(pool, "estimating the reindex corpus").await?;
-            estimate_corpus(&mut conn, profile).await?
-        }
-        None => (0, 0),
-    };
-
-    Ok(ReindexRunOutcome {
-        resolution,
+    Ok(PreparedReindexRun {
         provider,
         model: request.model.clone(),
         dimensions,
         normalised_base_url,
-        estimated_items,
-        estimated_tags,
+        target,
+    })
+}
+
+/// Stages database work so cancellation can stop before the durable commit.
+///
+/// # Errors
+///
+/// Returns [`ReindexOpError`] when estimate or run staging fails.
+pub async fn stage_reindex_run(
+    pool: &PgPool,
+    prepared: PreparedReindexRun,
+    principal_id: PrincipalId,
+) -> Result<StagedReindexRun, ReindexOpError> {
+    let PreparedReindexRun {
+        provider,
+        model,
+        dimensions,
+        normalised_base_url,
+        target,
+    } = prepared;
+    let (resolution, estimated_items, estimated_tags, transaction) = match target {
+        None => {
+            let mut connection = acquire(pool, "resolving the reindex estimate target").await?;
+            let profile = dry_run_estimate_profile(
+                &mut connection,
+                provider,
+                &normalised_base_url,
+                &model,
+                dimensions,
+            )
+            .await?;
+            let (items, tags) = estimate_corpus(&mut connection, profile).await?;
+            (ReindexResolution::Plan, items, tags, None)
+        }
+        Some(target) => {
+            let mut transaction = pool.begin().await.map_err(reindex_begin_error)?;
+            let creation = create_reindex_run(&mut transaction, &target, principal_id).await?;
+            let estimate_profile = match &creation {
+                ReindexCreationOutcome::Created(run) | ReindexCreationOutcome::AlreadyLive(run) => {
+                    Some(run.target_profile_id())
+                }
+                ReindexCreationOutcome::Unchanged(profile) => Some(profile.id()),
+                ReindexCreationOutcome::LockContended => None,
+            };
+            let (items, tags) = match estimate_profile {
+                Some(profile) => estimate_corpus(&mut transaction, profile).await?,
+                None => (0, 0),
+            };
+            let resolution = match creation {
+                ReindexCreationOutcome::Created(run) => {
+                    ReindexResolution::Created { run_id: run.id() }
+                }
+                ReindexCreationOutcome::AlreadyLive(run) => {
+                    ReindexResolution::AlreadyLive { run_id: run.id() }
+                }
+                ReindexCreationOutcome::Unchanged(_) => ReindexResolution::Unchanged,
+                ReindexCreationOutcome::LockContended => ReindexResolution::LockContended,
+            };
+            (resolution, items, tags, Some(transaction))
+        }
+    };
+    Ok(StagedReindexRun {
+        outcome: ReindexRunOutcome {
+            resolution,
+            provider,
+            model,
+            dimensions,
+            normalised_base_url,
+            estimated_items,
+            estimated_tags,
+        },
+        transaction,
+    })
+}
+
+/// Resolves a named target, validates its credential, probes its drift signal,
+/// and creates a reindex run (or estimates only, for a dry run).
+///
+/// The provider build and probe precede the transaction, since no provider call
+/// may span the single-flight lock; the run is then created atomically.
+///
+/// # Errors
+///
+/// Returns [`ReindexOpError`] when the target cannot be parsed, resolved,
+/// built, probed, or persisted.
+pub async fn reindex_run(
+    pool: &PgPool,
+    gateway: &InferenceGateway,
+    request: &ReindexRunRequest,
+    principal_id: PrincipalId,
+) -> Result<ReindexRunOutcome, ReindexOpError> {
+    let prepared = prepare_reindex_run(gateway, request).await?;
+    stage_reindex_run(pool, prepared, principal_id)
+        .await?
+        .finish()
+        .await
+}
+
+fn reindex_begin_error(source: sqlx::Error) -> ReindexOpError {
+    ReindexOpError::Db(DbError::QueryFailed {
+        context: "beginning the reindex transaction".to_owned(),
+        source,
+    })
+}
+
+fn reindex_commit_error(source: sqlx::Error) -> ReindexOpError {
+    ReindexOpError::Db(DbError::QueryFailed {
+        context: "committing the reindex".to_owned(),
+        source,
     })
 }
 

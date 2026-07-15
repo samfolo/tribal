@@ -222,6 +222,7 @@ async fn handle_connection(
                 &services.probe,
                 &services.lifecycle,
                 services.credentials.clone(),
+                services.shutdown.clone(),
             ),
             shutdown: &services.shutdown,
         };
@@ -295,7 +296,8 @@ async fn serve_full(
                     Ok(result) => ManagementResponse::Success { id, result },
                     Err(error) => ManagementResponse::Failure { id, error },
                 };
-                if write_frame(write, &response).await.is_err() {
+                if let Err(error) = write_frame(write, &response).await {
+                    tracing::debug!(%error, request_id = id, "management response receiver disconnected");
                     return;
                 }
             }

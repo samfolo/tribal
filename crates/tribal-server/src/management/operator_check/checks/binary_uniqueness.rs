@@ -83,20 +83,18 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 /// Reads `state.path_var` and reports the outcome.
-// PATH lookup is sync, but the step dispatcher requires every action
-// to share the `async fn act` signature.
-#[allow(clippy::unused_async)]
+#[expect(
+    clippy::unused_async,
+    reason = "the step dispatcher gives every check one async action signature"
+)]
 pub(in crate::management::operator_check) async fn act(state: &mut CheckState) -> CheckOutcome {
     let binaries = find_tribal_binaries(&state.path_var, is_executable_file);
-    match binaries.len() {
-        0 => CheckOutcome::binary_absent(),
-        1 => CheckOutcome::binary_unique(
-            binaries
-                .into_iter()
-                .next()
-                .expect("len() == 1 guarantees at least one element"),
-        ),
-        _ => CheckOutcome::binary_duplicate(binaries),
+    if binaries.is_empty() {
+        CheckOutcome::binary_absent()
+    } else if let [binary] = binaries.as_slice() {
+        CheckOutcome::binary_unique(binary.clone())
+    } else {
+        CheckOutcome::binary_duplicate(binaries)
     }
 }
 

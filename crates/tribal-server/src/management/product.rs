@@ -4,7 +4,6 @@ use std::{collections::HashSet, sync::Mutex};
 
 use base64::Engine as _;
 use sha2::Digest as _;
-use sqlx::Connection as _;
 use tribal_db::{
     AdvisoryLockRepository, EmbeddingProfileRepository, PgAdvisoryLockRepository,
     PgEmbeddingProfileRepository, advisory_locks,
@@ -27,7 +26,7 @@ use tribal_wire::management::{
 };
 
 use super::{
-    application::DatabaseSession,
+    application::{DatabaseSession, operation},
     configuration::{CredentialMaterial, management_error},
     worker::ConfigWorkerClient,
 };
@@ -99,6 +98,21 @@ struct CredentialGrant {
 struct ResolvedCredential {
     secret: zeroize::Zeroizing<String>,
     restore: Option<CredentialIssuance>,
+}
+
+struct PreparedModelSelection {
+    values: serde_json::Value,
+    revision: ConfigRevision,
+    descriptor: ModelDescriptor,
+    use_case: CredentialUse,
+    endpoints: Vec<String>,
+}
+
+struct PreparedGenesis {
+    values: serde_json::Value,
+    revision: ConfigRevision,
+    endpoint: String,
+    use_case: CredentialUse,
 }
 
 impl std::fmt::Debug for ProductSession {
@@ -179,50 +193,22 @@ impl ProductSession {
         &self,
         request: ModelSelectionRequest,
     ) -> Result<ConfigPatchOutcome, ManagementResponseError> {
-        validate_stages(&request.stages)?;
-        let descriptor = descriptor(&request.model)?;
-        if descriptor.provider == ProviderKind::Platform {
-            return Err(public_error(
-                "platform model transport is unavailable",
-                ManagementError::ModelUnavailable {
-                    reason: ModelUnavailableReason::PlatformEndpointUnavailable,
-                },
-            ));
-        }
-        let (values, actual) = document(self.config.document().await.map_err(management_error)?)?;
-        if actual != request.expected_revision {
-            return Err(config_conflict(request.expected_revision, actual));
-        }
-        let use_case = CredentialUse::ModelSelection {
-            model: request.model.clone(),
-            stages: request.stages.clone(),
-            endpoint: request.endpoint.clone(),
-        };
-        let endpoints = selected_endpoints(
-            descriptor.provider,
-            &request.stages,
-            &request.endpoint,
-            &values,
-        )?;
-        let transition = request
-            .stages
-            .iter()
-            .zip(&endpoints)
-            .any(|(stage, endpoint)| {
-                stage_provider(&values, stage) != Some(descriptor.provider)
-                    || stage_endpoint(&values, stage)
-                        .or_else(|| descriptor.provider.default_base_url().map(str::to_owned))
-                        .is_none_or(|current| endpoints_differ(&current, endpoint))
-            });
-        if transition && request.credential.is_none() && descriptor.provider.requires_api_key() {
-            return Err(public_error(
-                "provider or endpoint transition requires a credential",
-                ManagementError::EndpointTransitionRefused {
-                    reason: EndpointTransitionRefusal::CredentialRequired,
-                },
-            ));
-        }
-        let mut credential = self.resolve_credential(request.credential, &use_case, &actual)?;
+        let PreparedModelSelection {
+            values,
+            revision,
+            descriptor,
+            use_case,
+            endpoints,
+        } = self
+            .prepare_model_selection(
+                &request.expected_revision,
+                &request.model,
+                &request.stages,
+                &request.endpoint,
+                request.credential.is_some(),
+            )
+            .await?;
+        let mut credential = self.resolve_credential(request.credential, &use_case, &revision)?;
         let mut changes = Vec::new();
         for (stage, endpoint) in request.stages.iter().zip(&endpoints) {
             let root = stage_root(stage);
@@ -277,7 +263,7 @@ impl ProductSession {
             .config
             .patch(ConfigPatchRequest {
                 changes,
-                expected_revision: actual,
+                expected_revision: revision,
             })
             .await
             .map_err(management_error);
@@ -285,6 +271,57 @@ impl ProductSession {
             self.restore(&mut credential)?;
         }
         result
+    }
+
+    async fn prepare_model_selection(
+        &self,
+        expected_revision: &ConfigRevision,
+        model: &KnownModelId,
+        stages: &[InferenceStage],
+        endpoint: &EndpointSelection,
+        credential_present: bool,
+    ) -> Result<PreparedModelSelection, ManagementResponseError> {
+        validate_stages(stages)?;
+        let descriptor = descriptor(model)?;
+        if descriptor.provider == ProviderKind::Platform {
+            return Err(public_error(
+                "platform model transport is unavailable",
+                ManagementError::ModelUnavailable {
+                    reason: ModelUnavailableReason::PlatformEndpointUnavailable,
+                },
+            ));
+        }
+        let (values, revision) = document(self.config.document().await.map_err(management_error)?)?;
+        if &revision != expected_revision {
+            return Err(config_conflict(expected_revision.clone(), revision));
+        }
+        let use_case = CredentialUse::ModelSelection {
+            model: model.clone(),
+            stages: stages.to_vec(),
+            endpoint: endpoint.clone(),
+        };
+        let endpoints = selected_endpoints(descriptor.provider, stages, endpoint, &values)?;
+        let transition = stages.iter().zip(&endpoints).any(|(stage, endpoint)| {
+            stage_provider(&values, stage) != Some(descriptor.provider)
+                || stage_endpoint(&values, stage)
+                    .or_else(|| descriptor.provider.default_base_url().map(str::to_owned))
+                    .is_none_or(|current| endpoints_differ(&current, endpoint))
+        });
+        if transition && !credential_present && descriptor.provider.requires_api_key() {
+            return Err(public_error(
+                "provider or endpoint transition requires a credential",
+                ManagementError::EndpointTransitionRefused {
+                    reason: EndpointTransitionRefusal::CredentialRequired,
+                },
+            ));
+        }
+        Ok(PreparedModelSelection {
+            values,
+            revision,
+            descriptor,
+            use_case,
+            endpoints,
+        })
     }
 
     pub(crate) async fn preflight_model_selection(
@@ -296,43 +333,18 @@ impl ProductSession {
         credential: Option<&CredentialInput>,
         reuse_api_key_for_embedding: bool,
     ) -> Result<Vec<String>, ManagementResponseError> {
-        validate_stages(stages)?;
-        let descriptor = descriptor(model)?;
-        if descriptor.provider == ProviderKind::Platform {
-            return Err(public_error(
-                "platform model transport is unavailable",
-                ManagementError::ModelUnavailable {
-                    reason: ModelUnavailableReason::PlatformEndpointUnavailable,
-                },
-            ));
-        }
-        let (values, actual) = document(self.config.document().await.map_err(management_error)?)?;
-        if &actual != expected_revision {
-            return Err(config_conflict(expected_revision.clone(), actual));
-        }
-        let use_case = CredentialUse::ModelSelection {
-            model: model.clone(),
-            stages: stages.to_vec(),
-            endpoint: endpoint.clone(),
-        };
-        self.inspect_credential(credential, &use_case, expected_revision)?;
-        let endpoints = selected_endpoints(descriptor.provider, stages, endpoint, &values)?;
-        let transition = stages.iter().zip(&endpoints).any(|(stage, endpoint)| {
-            stage_provider(&values, stage) != Some(descriptor.provider)
-                || stage_endpoint(&values, stage)
-                    .or_else(|| descriptor.provider.default_base_url().map(str::to_owned))
-                    .is_none_or(|current| endpoints_differ(&current, endpoint))
-        });
-        if transition && credential.is_none() && descriptor.provider.requires_api_key() {
-            return Err(public_error(
-                "provider or endpoint transition requires a credential",
-                ManagementError::EndpointTransitionRefused {
-                    reason: EndpointTransitionRefusal::CredentialRequired,
-                },
-            ));
-        }
+        let prepared = self
+            .prepare_model_selection(
+                expected_revision,
+                model,
+                stages,
+                endpoint,
+                credential.is_some(),
+            )
+            .await?;
+        self.inspect_credential(credential, &prepared.use_case, expected_revision)?;
         if reuse_api_key_for_embedding {
-            if descriptor.provider != ProviderKind::OpenAi {
+            if prepared.descriptor.provider != ProviderKind::OpenAi {
                 return Err(public_error(
                     "provider credential cannot back graph embeddings",
                     ManagementError::EmbeddingReuseRefused {
@@ -348,10 +360,10 @@ impl ProductSession {
                     },
                 ));
             }
-            let endpoint = one_endpoint(&endpoints)?;
-            let _ = reusable_connection(&values, descriptor.provider, &endpoint)?;
+            let endpoint = one_endpoint(&prepared.endpoints)?;
+            let _ = reusable_connection(&prepared.values, prepared.descriptor.provider, &endpoint)?;
         }
-        Ok(endpoints)
+        Ok(prepared.endpoints)
     }
 
     pub(crate) async fn genesis_options(&self) -> Result<GenesisOptions, ManagementResponseError> {
@@ -375,45 +387,20 @@ impl ProductSession {
         &self,
         request: GenesisConfigurationRequest,
     ) -> Result<ConfigPatchOutcome, ManagementResponseError> {
-        validate_genesis(&request.embedding)?;
-        let (values, actual) = document(self.config.document().await.map_err(management_error)?)?;
-        if actual != request.expected_revision {
-            return Err(config_conflict(request.expected_revision, actual));
-        }
-        let use_case = CredentialUse::Genesis {
-            embedding: request.embedding.clone(),
-        };
-        let endpoint = request
-            .embedding
-            .base_url
-            .clone()
-            .or_else(|| {
-                request
-                    .embedding
-                    .provider
-                    .default_base_url()
-                    .map(str::to_owned)
-            })
-            .ok_or_else(|| {
-                public_error(
-                    "provider requires an explicit endpoint",
-                    ManagementError::EndpointTransitionRefused {
-                        reason: EndpointTransitionRefusal::ProviderHasNoDefault,
-                    },
-                )
-            })?;
-        let mut credential = self.resolve_credential(request.credential, &use_case, &actual)?;
-        if request.embedding.provider.requires_api_key()
-            && credential.is_none()
-            && !existing_embedding_credential(&values, request.embedding.provider, &endpoint)?
-        {
-            return Err(public_error(
-                "genesis provider requires a credential",
-                ManagementError::EndpointTransitionRefused {
-                    reason: EndpointTransitionRefusal::CredentialRequired,
-                },
-            ));
-        }
+        let PreparedGenesis {
+            values,
+            revision,
+            endpoint,
+            use_case,
+        } = self
+            .prepare_genesis(
+                &request.expected_revision,
+                &request.embedding,
+                request.credential.is_some(),
+                false,
+            )
+            .await?;
+        let mut credential = self.resolve_credential(request.credential, &use_case, &revision)?;
         let mut changes = vec![
             change(
                 "init.embedding.provider",
@@ -448,7 +435,7 @@ impl ProductSession {
             .config
             .patch(ConfigPatchRequest {
                 changes,
-                expected_revision: actual,
+                expected_revision: revision,
             })
             .await
             .map_err(management_error);
@@ -458,22 +445,21 @@ impl ProductSession {
         result
     }
 
-    pub(crate) async fn preflight_genesis(
+    async fn prepare_genesis(
         &self,
         expected_revision: &ConfigRevision,
         embedding: &GenesisEmbeddingInput,
-        credential: Option<&CredentialInput>,
+        credential_present: bool,
         credential_will_exist: bool,
-    ) -> Result<(), ManagementResponseError> {
+    ) -> Result<PreparedGenesis, ManagementResponseError> {
         validate_genesis(embedding)?;
-        let (values, actual) = document(self.config.document().await.map_err(management_error)?)?;
-        if &actual != expected_revision {
-            return Err(config_conflict(expected_revision.clone(), actual));
+        let (values, revision) = document(self.config.document().await.map_err(management_error)?)?;
+        if &revision != expected_revision {
+            return Err(config_conflict(expected_revision.clone(), revision));
         }
         let use_case = CredentialUse::Genesis {
             embedding: embedding.clone(),
         };
-        self.inspect_credential(credential, &use_case, expected_revision)?;
         let endpoint = embedding
             .base_url
             .clone()
@@ -487,7 +473,7 @@ impl ProductSession {
                 )
             })?;
         if embedding.provider.requires_api_key()
-            && credential.is_none()
+            && !credential_present
             && !credential_will_exist
             && !existing_embedding_credential(&values, embedding.provider, &endpoint)?
         {
@@ -498,8 +484,32 @@ impl ProductSession {
                 },
             ));
         }
+        Ok(PreparedGenesis {
+            values,
+            revision,
+            endpoint,
+            use_case,
+        })
+    }
+
+    pub(crate) async fn preflight_genesis(
+        &self,
+        expected_revision: &ConfigRevision,
+        embedding: &GenesisEmbeddingInput,
+        credential: Option<&CredentialInput>,
+        credential_will_exist: bool,
+    ) -> Result<(), ManagementResponseError> {
+        let prepared = self
+            .prepare_genesis(
+                expected_revision,
+                embedding,
+                credential.is_some(),
+                credential_will_exist,
+            )
+            .await?;
+        self.inspect_credential(credential, &prepared.use_case, expected_revision)?;
         if credential.is_some() {
-            let _ = reusable_connection(&values, embedding.provider, &endpoint)?;
+            let _ = reusable_connection(&prepared.values, embedding.provider, &prepared.endpoint)?;
         }
         Ok(())
     }
@@ -508,31 +518,34 @@ impl ProductSession {
         &self,
         session: &DatabaseSession,
     ) -> Result<Revisioned<GraphEmbeddingProfile>, ManagementResponseError> {
-        let mut connection = session
-            .pool
-            .acquire()
+        let profile = session
+            .operation()
+            .cancel_safe(async {
+                let mut transaction = session
+                    .pool
+                    .begin()
+                    .await
+                    .map_err(|error| profile_sql_error(&error))?;
+                set_profile_lock_timeout(&mut transaction).await?;
+                PgAdvisoryLockRepository
+                    .acquire_shared_xact(
+                        &mut transaction,
+                        advisory_locks::EMBEDDING_PROFILE_AUTHORITY,
+                    )
+                    .await
+                    .map_err(|error| profile_db_error(&error))?;
+                let profile = PgEmbeddingProfileRepository
+                    .find_active(&mut transaction)
+                    .await
+                    .map_err(|error| profile_db_error(&error))?;
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|error| profile_sql_error(&error))?;
+                Ok::<_, ManagementResponseError>(profile)
+            })
             .await
-            .map_err(|error| profile_sql_error(&error))?;
-        let mut transaction = connection
-            .begin()
-            .await
-            .map_err(|error| profile_sql_error(&error))?;
-        set_profile_lock_timeout(&mut transaction).await?;
-        PgAdvisoryLockRepository
-            .acquire_shared_xact(
-                &mut transaction,
-                advisory_locks::EMBEDDING_PROFILE_AUTHORITY,
-            )
-            .await
-            .map_err(|error| profile_db_error(&error))?;
-        let profile = PgEmbeddingProfileRepository
-            .find_active(&mut transaction)
-            .await
-            .map_err(|error| profile_db_error(&error))?;
-        transaction
-            .commit()
-            .await
-            .map_err(|error| profile_sql_error(&error))?;
+            .map_err(operation::public_error)??;
         let Some(profile) = profile else {
             return Ok(session.revisioned(GraphEmbeddingProfile::NoProfile));
         };
@@ -553,45 +566,38 @@ impl ProductSession {
         session: &DatabaseSession,
         request: GenesisConvergenceRequest,
     ) -> Result<ConfigPatchOutcome, ManagementResponseError> {
-        let mut connection = session
-            .pool
-            .acquire()
+        let (transaction, profile) = session
+            .operation()
+            .cancel_safe(async {
+                let mut transaction = session
+                    .pool
+                    .begin()
+                    .await
+                    .map_err(|error| profile_sql_error(&error))?;
+                set_profile_lock_timeout(&mut transaction).await?;
+                PgAdvisoryLockRepository
+                    .acquire_shared_xact(
+                        &mut transaction,
+                        advisory_locks::EMBEDDING_PROFILE_AUTHORITY,
+                    )
+                    .await
+                    .map_err(|error| profile_db_error(&error))?;
+                let profile = PgEmbeddingProfileRepository
+                    .find_active(&mut transaction)
+                    .await
+                    .map_err(|error| profile_db_error(&error))?
+                    .ok_or_else(|| {
+                        public_error(
+                            "no active embedding profile is available",
+                            ManagementError::GenesisPolicyRefused {
+                                reason: tribal_wire::management::GenesisPolicyRefusal::ProfileUnavailable,
+                            },
+                        )
+                    })?;
+                Ok::<_, ManagementResponseError>((transaction, profile))
+            })
             .await
-            .map_err(|error| profile_sql_error(&error))?;
-        let mut transaction = connection
-            .begin()
-            .await
-            .map_err(|error| profile_sql_error(&error))?;
-        set_profile_lock_timeout(&mut transaction).await?;
-        if let Err(error) = PgAdvisoryLockRepository
-            .acquire_shared_xact(
-                &mut transaction,
-                advisory_locks::EMBEDDING_PROFILE_AUTHORITY,
-            )
-            .await
-        {
-            let _ = transaction.rollback().await;
-            return Err(profile_db_error(&error));
-        }
-        let profile = match PgEmbeddingProfileRepository
-            .find_active(&mut transaction)
-            .await
-        {
-            Ok(Some(profile)) => profile,
-            Ok(None) => {
-                let _ = transaction.rollback().await;
-                return Err(public_error(
-                    "no active embedding profile is available",
-                    ManagementError::GenesisPolicyRefused {
-                        reason: tribal_wire::management::GenesisPolicyRefusal::ProfileUnavailable,
-                    },
-                ));
-            }
-            Err(error) => {
-                let _ = transaction.rollback().await;
-                return Err(profile_db_error(&error));
-            }
-        };
+            .map_err(operation::public_error)??;
         let actual_profile_revision = profile_revision(&profile)?;
         if actual_profile_revision != request.expected_profile_revision {
             let _ = transaction.rollback().await;
@@ -622,6 +628,10 @@ impl ProductSession {
                 serde_json::Value::from(summary.dimensions),
             )?,
         ];
+        session
+            .operation()
+            .checkpoint()
+            .map_err(operation::public_error)?;
         let mut outcome = match self
             .config
             .patch(ConfigPatchRequest {

@@ -11,7 +11,10 @@ use tribal_wire::management::{
     ThreadPruneResult,
 };
 
-use super::database::{DatabaseAccess, DatabaseAccessError};
+use super::{
+    database::{DatabaseAccess, DatabaseAccessError},
+    operation::OperationContext,
+};
 
 const THREAD_PRUNE_ROOT_LIMIT: u32 = 500;
 
@@ -57,11 +60,12 @@ impl ThreadAdministration {
 
     pub(super) async fn prune(
         &self,
+        operation: &OperationContext,
         request: ThreadPruneRequest,
     ) -> Result<ThreadPruneResult, ThreadAdministrationError> {
         let session = self
             .database
-            .mutation_session(&request.expected_revision)
+            .mutation_session(operation, &request.expected_revision)
             .await?;
         let interval = Duration::try_days(i64::from(request.older_than.get()))
             .ok_or(ThreadAdministrationError::Retention)?;
@@ -74,15 +78,22 @@ impl ThreadAdministration {
             cascade: request.cascade,
             root_limit: self.root_limit,
         };
-        let mut transaction = session.pool.begin().await.map_err(transaction_error)?;
-        let refused = PgAgentThreadRepository
-            .count_refused_prune_roots(&mut transaction, &criteria)
+        let (transaction, refused, pruned) = session
+            .operation()
+            .cancel_safe(async {
+                let mut transaction = session.pool.begin().await.map_err(transaction_error)?;
+                let refused = PgAgentThreadRepository
+                    .count_refused_prune_roots(&mut transaction, &criteria)
+                    .await
+                    .map_err(database_error)?;
+                let pruned = PgAgentThreadRepository
+                    .prune_threads(&mut transaction, &criteria)
+                    .await
+                    .map_err(database_error)?;
+                Ok::<_, ThreadAdministrationError>((transaction, refused, pruned))
+            })
             .await
-            .map_err(database_error)?;
-        let pruned = PgAgentThreadRepository
-            .prune_threads(&mut transaction, &criteria)
-            .await
-            .map_err(database_error)?;
+            .map_err(DatabaseAccessError::from)??;
         let outcome = match request.mode {
             MutationMode::Preview => {
                 transaction.rollback().await.map_err(transaction_error)?;
@@ -94,6 +105,7 @@ impl ThreadAdministration {
                 }
             }
             MutationMode::Apply => {
+                session.checkpoint()?;
                 transaction.commit().await.map_err(transaction_error)?;
                 ThreadPruneOutcome::Applied {
                     result: ThreadPruneApplied { pruned, refused },
@@ -145,6 +157,7 @@ mod tests {
         temp: tempfile::TempDir,
         worker_runtime: worker::ConfigWorkerRuntime,
         administration: ThreadAdministration,
+        operation: OperationContext,
         revision: ConfigRevision,
     }
 
@@ -168,6 +181,7 @@ mod tests {
                 temp,
                 worker_runtime,
                 administration,
+                operation: OperationContext::new(tokio_util::sync::CancellationToken::new()),
                 revision,
             }
         }
@@ -188,6 +202,7 @@ mod tests {
                 temp,
                 worker_runtime,
                 administration,
+                operation: _,
                 revision: _,
             } = self;
             drop(administration);
@@ -320,7 +335,10 @@ mod tests {
 
         let preview = harness
             .administration
-            .prune(harness.request(false, MutationMode::Preview))
+            .prune(
+                &harness.operation,
+                harness.request(false, MutationMode::Preview),
+            )
             .await
             .unwrap();
         assert!(matches!(
@@ -336,7 +354,10 @@ mod tests {
 
         let applied = harness
             .administration
-            .prune(harness.request(false, MutationMode::Apply))
+            .prune(
+                &harness.operation,
+                harness.request(false, MutationMode::Apply),
+            )
             .await
             .unwrap();
         assert!(matches!(
@@ -364,7 +385,10 @@ mod tests {
 
         let refused = harness
             .administration
-            .prune(harness.request(false, MutationMode::Preview))
+            .prune(
+                &harness.operation,
+                harness.request(false, MutationMode::Preview),
+            )
             .await
             .unwrap();
         assert!(matches!(
@@ -378,7 +402,10 @@ mod tests {
         ));
         let cascaded = harness
             .administration
-            .prune(harness.request(true, MutationMode::Preview))
+            .prune(
+                &harness.operation,
+                harness.request(true, MutationMode::Preview),
+            )
             .await
             .unwrap();
         assert!(matches!(
@@ -393,7 +420,10 @@ mod tests {
         assert_eq!(thread_count(&harness.database).await, 2);
         harness
             .administration
-            .prune(harness.request(true, MutationMode::Apply))
+            .prune(
+                &harness.operation,
+                harness.request(true, MutationMode::Apply),
+            )
             .await
             .unwrap();
         assert_eq!(thread_count(&harness.database).await, 0);
@@ -405,7 +435,10 @@ mod tests {
         drop(connection);
         let live_refused = harness
             .administration
-            .prune(harness.request(true, MutationMode::Preview))
+            .prune(
+                &harness.operation,
+                harness.request(true, MutationMode::Preview),
+            )
             .await
             .unwrap();
         assert!(matches!(

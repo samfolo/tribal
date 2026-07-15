@@ -294,6 +294,20 @@ fn dispatch(
 }
 
 impl ConfigWorkerClient {
+    async fn request<T>(
+        &self,
+        command: impl FnOnce(oneshot::Sender<T>) -> ConfigCommand,
+    ) -> Result<T, ConfigAuthorityError> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(command(response))
+            .await
+            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
+        receiver
+            .await
+            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)
+    }
+
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<ConfigChangeEvent> {
         self.changes.subscribe()
     }
@@ -312,67 +326,35 @@ impl ConfigWorkerClient {
     }
 
     pub(crate) async fn path(&self) -> Result<ConfigFilePath, ConfigAuthorityError> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(ConfigCommand::Path(response))
-            .await
-            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
-        receiver
-            .await
-            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)
+        self.request(ConfigCommand::Path).await
     }
 
     pub(crate) async fn document(&self) -> Result<ConfigDocument, ConfigAuthorityError> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(ConfigCommand::Document(response))
-            .await
-            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
-        receiver
-            .await
-            .unwrap_or(Err(ConfigAuthorityError::WorkerUnavailable))
+        self.request(ConfigCommand::Document).await?
     }
 
     pub(crate) async fn get(
         &self,
         request: ConfigGetRequest,
     ) -> Result<ConfigValue, ConfigAuthorityError> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(ConfigCommand::Get { request, response })
-            .await
-            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
-        receiver
-            .await
-            .unwrap_or(Err(ConfigAuthorityError::WorkerUnavailable))
+        self.request(|response| ConfigCommand::Get { request, response })
+            .await?
     }
 
     pub(crate) async fn set(
         &self,
         request: ConfigSetRequest,
     ) -> Result<ConfigWriteOutcome, ConfigAuthorityError> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(ConfigCommand::Set { request, response })
-            .await
-            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
-        receiver
-            .await
-            .unwrap_or(Err(ConfigAuthorityError::WorkerUnavailable))
+        self.request(|response| ConfigCommand::Set { request, response })
+            .await?
     }
 
     pub(crate) async fn patch(
         &self,
         request: ConfigPatchRequest,
     ) -> Result<ConfigPatchOutcome, ConfigAuthorityError> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(ConfigCommand::Patch { request, response })
-            .await
-            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
-        receiver
-            .await
-            .unwrap_or(Err(ConfigAuthorityError::WorkerUnavailable))
+        self.request(|response| ConfigCommand::Patch { request, response })
+            .await?
     }
 
     pub(crate) async fn validate(
@@ -380,66 +362,32 @@ impl ConfigWorkerClient {
         key: String,
         value: serde_json::Value,
     ) -> Result<Vec<tribal_config::ConfigViolation>, ConfigAuthorityError> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(ConfigCommand::Validate {
-                key,
-                value,
-                response,
-            })
-            .await
-            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
-        receiver
-            .await
-            .unwrap_or(Err(ConfigAuthorityError::WorkerUnavailable))
+        self.request(|response| ConfigCommand::Validate {
+            key,
+            value,
+            response,
+        })
+        .await?
     }
 
     pub(crate) async fn credential_materials(
         &self,
     ) -> Result<Vec<CredentialMaterial>, ConfigAuthorityError> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(ConfigCommand::CredentialMaterials(response))
-            .await
-            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
-        receiver
-            .await
-            .unwrap_or(Err(ConfigAuthorityError::WorkerUnavailable))
+        self.request(ConfigCommand::CredentialMaterials).await?
     }
 
     pub(crate) async fn probe_snapshot(&self) -> Result<ConfigProbeSnapshot, ConfigAuthorityError> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(ConfigCommand::ProbeSnapshot(response))
-            .await
-            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
-        receiver
-            .await
-            .unwrap_or(Err(ConfigAuthorityError::WorkerUnavailable))
+        self.request(ConfigCommand::ProbeSnapshot).await?
     }
 
     pub(crate) async fn check_snapshot(&self) -> Result<ConfigCheckSnapshot, ConfigAuthorityError> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(ConfigCommand::CheckSnapshot(response))
-            .await
-            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
-        receiver
-            .await
-            .unwrap_or(Err(ConfigAuthorityError::WorkerUnavailable))
+        self.request(ConfigCommand::CheckSnapshot).await?
     }
 
     pub(crate) async fn resolved_snapshot(
         &self,
     ) -> Result<ResolvedConfigSnapshot, ConfigAuthorityError> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(ConfigCommand::ResolvedSnapshot(response))
-            .await
-            .map_err(|_| ConfigAuthorityError::WorkerUnavailable)?;
-        receiver
-            .await
-            .unwrap_or(Err(ConfigAuthorityError::WorkerUnavailable))
+        self.request(ConfigCommand::ResolvedSnapshot).await?
     }
 }
 

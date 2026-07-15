@@ -37,9 +37,10 @@ impl CheckOutcome {
 
 /// Loads the config file referenced by `state` and, on success, stores
 /// the parsed config back on state so downstream steps can consume it.
-// `load_config` is sync, but the step dispatcher requires every action
-// to share the `async fn act` signature.
-#[allow(clippy::unused_async)]
+#[expect(
+    clippy::unused_async,
+    reason = "the step dispatcher gives every check one async action signature"
+)]
 pub(in crate::management::operator_check) async fn act(state: &mut CheckState) -> CheckOutcome {
     if state.config.is_some() {
         return CheckOutcome::config_parse_loaded(state.config_path.clone());

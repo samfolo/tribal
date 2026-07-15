@@ -58,7 +58,6 @@ pub(crate) struct AuthorityDescriptor {
 
 /// Artifact paths derived from one canonical configuration path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(clippy::struct_field_names)] // each field names a distinct filesystem path artifact
 pub(crate) struct AuthorityPaths {
     pub(crate) namespace: ConfigAuthorityNamespace,
     pub(crate) canonical_config_path: PathBuf,

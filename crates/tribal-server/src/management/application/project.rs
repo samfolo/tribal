@@ -12,6 +12,7 @@ use tribal_wire::management::{
 
 use super::{
     database::{DatabaseAccess, DatabaseAccessError},
+    operation::OperationContext,
     pagination::{
         INVENTORY_RESULT_BUDGET, InventoryCursor, InventoryCursorError, InventoryMethod,
         InventoryPosition,
@@ -58,11 +59,12 @@ impl ProjectAdministration {
 
     pub(super) async fn register(
         &self,
+        operation: &OperationContext,
         request: ProjectRegisterRequest,
     ) -> Result<ProjectRegisterResult, ProjectAdministrationError> {
         let session = self
             .database
-            .mutation_session(&request.expected_revision)
+            .mutation_session(operation, &request.expected_revision)
             .await?;
         let remote = resolve_source(request.project.source)?;
         let name = request
@@ -80,7 +82,12 @@ impl ProjectAdministration {
             .schema_version(PROJECT_SCHEMA_VERSION)
             .settings(serde_json::json!({}))
             .build();
-        let mut connection = session.pool.acquire().await.map_err(database_connection)?;
+        let mut connection = operation
+            .cancel_safe(session.pool.acquire())
+            .await
+            .map_err(DatabaseAccessError::from)?
+            .map_err(database_connection)?;
+        operation.checkpoint().map_err(DatabaseAccessError::from)?;
         let outcome = match PgProjectRepository
             .insert(&mut connection, &candidate)
             .await
@@ -110,9 +117,10 @@ impl ProjectAdministration {
 
     pub(super) async fn list(
         &self,
+        operation: &OperationContext,
         request: ProjectListRequest,
     ) -> Result<ProjectList, ProjectAdministrationError> {
-        let session = self.database.read_session().await?;
+        let session = self.database.read_session(operation).await?;
         let cursor = request
             .page
             .after
@@ -191,6 +199,9 @@ impl ProjectAdministration {
 
 pub(super) fn public_error(error: ProjectAdministrationError) -> ManagementResponseError {
     match error {
+        ProjectAdministrationError::Session(DatabaseAccessError::Operation(failure)) => {
+            super::operation::public_error(failure)
+        }
         ProjectAdministrationError::Session(DatabaseAccessError::RevisionConflict {
             expected,
             actual,

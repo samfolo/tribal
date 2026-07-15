@@ -16,6 +16,7 @@ use tribal_wire::management::{
 use super::{
     database::DatabaseAccess,
     integration::IntegrationAdministration,
+    operation::OperationContext,
     project::ProjectAdministration,
     token::{PreparedBootstrapToken, TokenAdministration, public_error as token_error},
 };
@@ -31,6 +32,7 @@ pub(super) struct BootstrapAdministration<'a> {
     projects: ProjectAdministration,
     tokens: TokenAdministration,
     integration: IntegrationAdministration,
+    operation: OperationContext,
 }
 
 struct BootstrapPreflight {
@@ -46,6 +48,7 @@ impl<'a> BootstrapAdministration<'a> {
         projects: ProjectAdministration,
         tokens: TokenAdministration,
         integration: IntegrationAdministration,
+        operation: OperationContext,
     ) -> Self {
         Self {
             config: config.clone(),
@@ -54,6 +57,7 @@ impl<'a> BootstrapAdministration<'a> {
             projects,
             tokens,
             integration,
+            operation,
         }
     }
 
@@ -72,10 +76,11 @@ impl<'a> BootstrapAdministration<'a> {
             projects,
             tokens,
             integration,
+            operation: OperationContext::new(tokio_util::sync::CancellationToken::new()),
         }
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
         reason = "the ordered bootstrap effect chain is kept visible in one function"
     )]
@@ -84,7 +89,11 @@ impl<'a> BootstrapAdministration<'a> {
         product: &ProductSession,
         request: BootstrapRequest,
     ) -> Result<BootstrapResult, ManagementResponseError> {
-        let preflight = self.preflight(product, &request).await?;
+        let preflight = self
+            .operation
+            .cancel_safe(self.preflight(product, &request))
+            .await
+            .map_err(super::operation::public_error)??;
         let BootstrapRequest {
             expected_revision,
             storage,
@@ -98,6 +107,7 @@ impl<'a> BootstrapAdministration<'a> {
         let mut revision = expected_revision;
 
         if let BootstrapStorage::External { database_url } = storage {
+            self.checkpoint()?;
             revision = self
                 .patch_config(
                     revision,
@@ -109,6 +119,7 @@ impl<'a> BootstrapAdministration<'a> {
                 .await?;
         }
         for selection in model_selections {
+            self.checkpoint()?;
             let reuse = preflight
                 .reuse_stage
                 .as_ref()
@@ -127,6 +138,7 @@ impl<'a> BootstrapAdministration<'a> {
             revision = outcome.revision;
         }
         if let Some(genesis) = genesis {
+            self.checkpoint()?;
             let credential = match genesis.credential {
                 Some(BootstrapGenesisCredential::Explicit { credential }) => Some(credential),
                 Some(BootstrapGenesisCredential::ReuseInferenceStage { .. }) | None => None,
@@ -142,6 +154,7 @@ impl<'a> BootstrapAdministration<'a> {
             revision = outcome.revision;
         }
         if let Some(telemetry) = telemetry {
+            self.checkpoint()?;
             revision = self
                 .patch_config(
                     revision,
@@ -156,22 +169,30 @@ impl<'a> BootstrapAdministration<'a> {
                 .await?;
         }
 
+        self.checkpoint()?;
         let database = self
             .database
-            .initialise(DatabaseInitialiseRequest {
-                expected_revision: revision,
-            })
+            .initialise(
+                &self.operation,
+                DatabaseInitialiseRequest {
+                    expected_revision: revision,
+                },
+            )
             .await
             .map_err(super::database_initialise_error)?;
         let database_outcome = database.value;
         revision = database.config_revision.clone();
         let project_outcome = if let Some(project) = project {
+            self.checkpoint()?;
             let result = self
                 .projects
-                .register(ProjectRegisterRequest {
-                    expected_revision: revision,
-                    project,
-                })
+                .register(
+                    &self.operation,
+                    ProjectRegisterRequest {
+                        expected_revision: revision,
+                        project,
+                    },
+                )
                 .await
                 .map_err(super::project::public_error)?;
             revision = result.config_revision;
@@ -180,17 +201,22 @@ impl<'a> BootstrapAdministration<'a> {
             None
         };
 
+        self.checkpoint()?;
         let prepared = self
             .integration
-            .prepare(McpConfigRequest {
-                expected_revision: revision.clone(),
-                target: integration,
-            })
+            .prepare(
+                &self.operation,
+                McpConfigRequest {
+                    expected_revision: revision.clone(),
+                    target: integration,
+                },
+            )
             .await
             .map_err(super::integration_error)?;
+        self.checkpoint()?;
         let credential = self
             .tokens
-            .provision_bootstrap(revision, preflight.token)
+            .provision_bootstrap(&self.operation, revision, preflight.token)
             .await
             .map_err(token_error)?;
         if prepared.revision() != &credential.config_revision {
@@ -246,6 +272,12 @@ impl<'a> BootstrapAdministration<'a> {
         })
     }
 
+    fn checkpoint(&self) -> Result<(), ManagementResponseError> {
+        self.operation
+            .checkpoint()
+            .map_err(super::operation::public_error)
+    }
+
     async fn preflight(
         &self,
         product: &ProductSession,
@@ -261,7 +293,11 @@ impl<'a> BootstrapAdministration<'a> {
         self.preflight_config(request).await?;
         let token = self
             .tokens
-            .preflight_bootstrap(&request.expected_revision, request.token.clone())
+            .preflight_bootstrap(
+                &self.operation,
+                &request.expected_revision,
+                request.token.clone(),
+            )
             .await
             .map_err(token_error)?;
         if let Some(project) = &request.project {
@@ -269,7 +305,11 @@ impl<'a> BootstrapAdministration<'a> {
         }
         let target = self
             .integration
-            .preflight_target(&request.expected_revision, &request.integration)
+            .preflight_target(
+                &self.operation,
+                &request.expected_revision,
+                &request.integration,
+            )
             .await
             .map_err(super::integration_error)?;
         if request.project.is_some()

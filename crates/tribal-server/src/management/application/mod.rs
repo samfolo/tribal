@@ -4,6 +4,7 @@ mod bootstrap;
 pub(crate) mod credential;
 mod database;
 mod integration;
+pub(in crate::management) mod operation;
 mod pagination;
 mod project;
 mod reindex;
@@ -18,6 +19,7 @@ pub(crate) use database::{
 };
 use database::{DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
 use integration::IntegrationAdministration;
+use operation::OperationContext;
 use project::ProjectAdministration;
 use reindex::ReindexAdministration;
 use thread::ThreadAdministration;
@@ -57,6 +59,7 @@ pub(crate) struct ManagementApplication<'a> {
     integration: IntegrationAdministration,
     reindex: ReindexAdministration,
     threads: ThreadAdministration,
+    shutdown: tokio_util::sync::CancellationToken,
 }
 
 impl<'a> ManagementApplication<'a> {
@@ -66,6 +69,7 @@ impl<'a> ManagementApplication<'a> {
         probe: &'a ProbeService,
         lifecycle: &'a LifecycleController,
         credentials: CredentialCoordinator,
+        shutdown: tokio_util::sync::CancellationToken,
     ) -> Self {
         let database = DatabaseAccess::new(config.clone());
         Self {
@@ -83,10 +87,11 @@ impl<'a> ManagementApplication<'a> {
             reindex: ReindexAdministration::new(database.clone()),
             threads: ThreadAdministration::new(database.clone()),
             database,
+            shutdown,
         }
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
         reason = "the exhaustive registry dispatch remains explicit in one match"
     )]
@@ -95,42 +100,49 @@ impl<'a> ManagementApplication<'a> {
         method: ManagementMethod,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, ManagementResponseError> {
+        let operation = OperationContext::new(self.shutdown.clone());
+        operation.checkpoint().map_err(operation::public_error)?;
         match method {
-            ManagementMethod::ManagerSnapshot => {
-                encode_lifecycle::<ManagerSnapshotCall>(self.lifecycle.snapshot().await)
-            }
+            ManagementMethod::ManagerSnapshot => encode_lifecycle::<ManagerSnapshotCall>(
+                self.lifecycle.snapshot_for(&operation).await,
+            ),
             ManagementMethod::RuntimeStart => {
-                encode_lifecycle::<RuntimeStartCall>(self.lifecycle.start().await)
+                encode_lifecycle::<RuntimeStartCall>(self.lifecycle.start_for(&operation).await)
             }
             ManagementMethod::RuntimeStop => {
-                encode_lifecycle::<RuntimeStopCall>(self.lifecycle.stop().await)
+                encode_lifecycle::<RuntimeStopCall>(self.lifecycle.stop_for(&operation).await)
             }
             ManagementMethod::RuntimeRestart => {
-                encode_lifecycle::<RuntimeRestartCall>(self.lifecycle.restart().await)
+                encode_lifecycle::<RuntimeRestartCall>(self.lifecycle.restart_for(&operation).await)
             }
-            ManagementMethod::ManagerShutdown => {
-                encode_lifecycle::<ManagerShutdownCall>(self.lifecycle.shutdown().await)
-            }
-            ManagementMethod::ServerStatus => {
-                encode_lifecycle::<ServerStatusCall>(self.lifecycle.runtime_status().await)
-            }
+            ManagementMethod::ManagerShutdown => encode_lifecycle::<ManagerShutdownCall>(
+                self.lifecycle.shutdown_for(&operation).await,
+            ),
+            ManagementMethod::ServerStatus => encode_lifecycle::<ServerStatusCall>(
+                self.lifecycle.runtime_status_for(&operation).await,
+            ),
             ManagementMethod::LogsTail => {
                 let request = parse_call::<LogsTailCall>(params)?;
                 encode_lifecycle::<LogsTailCall>(
-                    self.lifecycle.runtime_logs_tail(request.lines).await,
+                    self.lifecycle
+                        .runtime_logs_tail_for(&operation, request.lines)
+                        .await,
                 )
             }
             ManagementMethod::TokenList => {
                 let request = parse_call::<TokenListCall>(params)?;
                 encode_call::<TokenListCall>(
-                    self.tokens.list(request).await.map_err(token::public_error),
+                    self.tokens
+                        .list(&operation, request)
+                        .await
+                        .map_err(token::public_error),
                 )
             }
             ManagementMethod::TokenCreate => {
                 let request = parse_call::<TokenCreateCall>(params)?;
                 encode_call::<TokenCreateCall>(
                     self.tokens
-                        .create(request)
+                        .create(&operation, request)
                         .await
                         .map_err(token::public_error),
                 )
@@ -139,7 +151,7 @@ impl<'a> ManagementApplication<'a> {
                 let request = parse_call::<TokenRevokeCall>(params)?;
                 encode_call::<TokenRevokeCall>(
                     self.tokens
-                        .revoke(request)
+                        .revoke(&operation, request)
                         .await
                         .map_err(token::public_error),
                 )
@@ -148,19 +160,19 @@ impl<'a> ManagementApplication<'a> {
                 let request = parse_call::<TokenRevokeAllCall>(params)?;
                 encode_call::<TokenRevokeAllCall>(
                     self.tokens
-                        .revoke_all(request)
+                        .revoke_all(&operation, request)
                         .await
                         .map_err(token::public_error),
                 )
             }
             ManagementMethod::CheckReport => {
-                encode_call::<CheckReportCall>(self.readiness_report().await)
+                encode_call::<CheckReportCall>(self.readiness_report(&operation).await)
             }
             ManagementMethod::DatabaseInitialise => {
                 let request = parse_call::<DatabaseInitialiseCall>(params)?;
                 encode_call::<DatabaseInitialiseCall>(
                     self.database
-                        .initialise(request)
+                        .initialise(&operation, request)
                         .await
                         .map_err(database_initialise_error),
                 )
@@ -169,7 +181,7 @@ impl<'a> ManagementApplication<'a> {
                 let request = parse_call::<ProjectRegisterCall>(params)?;
                 encode_call::<ProjectRegisterCall>(
                     self.projects
-                        .register(request)
+                        .register(&operation, request)
                         .await
                         .map_err(project::public_error),
                 )
@@ -178,7 +190,7 @@ impl<'a> ManagementApplication<'a> {
                 let request = parse_call::<ProjectListCall>(params)?;
                 encode_call::<ProjectListCall>(
                     self.projects
-                        .list(request)
+                        .list(&operation, request)
                         .await
                         .map_err(project::public_error),
                 )
@@ -187,7 +199,7 @@ impl<'a> ManagementApplication<'a> {
                 let request = parse_call::<IntegrationMcpConfigCall>(params)?;
                 encode_call::<IntegrationMcpConfigCall>(
                     self.integration
-                        .mcp_config(request)
+                        .mcp_config(&operation, request)
                         .await
                         .map_err(integration_error),
                 )
@@ -196,7 +208,7 @@ impl<'a> ManagementApplication<'a> {
                 let request = parse_call::<ReindexRunCall>(params)?;
                 encode_call::<ReindexRunCall>(
                     self.reindex
-                        .run(self.product, request)
+                        .run(&operation, self.product, request)
                         .await
                         .map_err(reindex_error),
                 )
@@ -204,19 +216,28 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::ReindexCancel => {
                 let request = parse_call::<ReindexCancelCall>(params)?;
                 encode_call::<ReindexCancelCall>(
-                    self.reindex.cancel(request).await.map_err(reindex_error),
+                    self.reindex
+                        .cancel(&operation, request)
+                        .await
+                        .map_err(reindex_error),
                 )
             }
             ManagementMethod::ReindexPrune => {
                 let request = parse_call::<ReindexPruneCall>(params)?;
                 encode_call::<ReindexPruneCall>(
-                    self.reindex.prune(request).await.map_err(reindex_error),
+                    self.reindex
+                        .prune(&operation, request)
+                        .await
+                        .map_err(reindex_error),
                 )
             }
             ManagementMethod::ThreadsPrune => {
                 let request = parse_call::<ThreadsPruneCall>(params)?;
                 encode_call::<ThreadsPruneCall>(
-                    self.threads.prune(request).await.map_err(thread_error),
+                    self.threads
+                        .prune(&operation, request)
+                        .await
+                        .map_err(thread_error),
                 )
             }
             ManagementMethod::BootstrapRun => {
@@ -228,17 +249,26 @@ impl<'a> ManagementApplication<'a> {
                     self.projects.clone(),
                     self.tokens.clone(),
                     self.integration.clone(),
+                    operation,
                 );
                 encode_call::<BootstrapRunCall>(bootstrap.run(self.product, request).await)
             }
             ManagementMethod::DatabaseProbe => {
-                let receipt = self.probe.database().await.map_err(probe_error)?;
-                self.refresh_readiness().await?;
+                let receipt = operation
+                    .cancel_safe(self.probe.database())
+                    .await
+                    .map_err(operation::public_error)?
+                    .map_err(probe_error)?;
+                self.refresh_readiness(&operation).await?;
                 encode_call::<DatabaseProbeCall>(Ok(receipt))
             }
             ManagementMethod::CredentialProbe => {
-                let receipts = self.probe.credentials().await.map_err(probe_error)?;
-                self.refresh_readiness().await?;
+                let receipts = operation
+                    .cancel_safe(self.probe.credentials())
+                    .await
+                    .map_err(operation::public_error)?
+                    .map_err(probe_error)?;
+                self.refresh_readiness(&operation).await?;
                 encode_call::<CredentialProbeCall>(Ok(receipts))
             }
             ManagementMethod::ConfigGetAll => {
@@ -341,7 +371,7 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::GraphEmbeddingProfile => {
                 let session = self
                     .database
-                    .read_session()
+                    .read_session(&operation)
                     .await
                     .map_err(database_access_error)?;
                 encode_call::<GraphEmbeddingProfileCall>(
@@ -363,7 +393,7 @@ impl<'a> ManagementApplication<'a> {
                 let request = parse_call::<GraphConvergeGenesisCall>(params)?;
                 let session = self
                     .database
-                    .mutation_session(&request.expected_revision)
+                    .mutation_session(&operation, &request.expected_revision)
                     .await
                     .map_err(database_access_error)?;
                 encode_call::<GraphConvergeGenesisCall>(
@@ -373,22 +403,33 @@ impl<'a> ManagementApplication<'a> {
         }
     }
 
-    async fn refresh_readiness(&self) -> Result<(), ManagementResponseError> {
-        let report = self.readiness_report().await?;
+    async fn refresh_readiness(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<(), ManagementResponseError> {
+        let report = self.readiness_report(operation).await?;
         self.lifecycle.update_readiness(report).await;
         Ok(())
     }
 
     async fn readiness_report(
         &self,
+        operation: &OperationContext,
     ) -> Result<tribal_wire::management::ReadinessReport, ManagementResponseError> {
         let runtime_present = self
             .lifecycle
-            .snapshot()
+            .snapshot_for(operation)
             .await
+            .map_err(operation::public_error)?
             .is_some_and(|snapshot| lifecycle_has_runtime(&snapshot.phase));
-        readiness::automatic(self.config, self.probe, runtime_present)
+        operation
+            .cancel_safe(readiness::automatic(
+                self.config,
+                self.probe,
+                runtime_present,
+            ))
             .await
+            .map_err(operation::public_error)?
             .map_err(|_| internal_error("readiness observation failed"))
     }
 }
@@ -404,12 +445,14 @@ where
 }
 
 fn encode_lifecycle<C: ManagementCall>(
-    result: Option<C::Response>,
+    result: Result<Option<C::Response>, operation::OperationError>,
 ) -> Result<serde_json::Value, ManagementResponseError>
 where
     C::Response: serde::Serialize,
 {
-    let value = result.ok_or_else(|| internal_error("lifecycle owner is unavailable"))?;
+    let value = result
+        .map_err(operation::public_error)?
+        .ok_or_else(|| internal_error("lifecycle owner is unavailable"))?;
     serde_json::to_value(value).map_err(|_| internal_error("lifecycle response encoding failed"))
 }
 
@@ -553,6 +596,9 @@ fn probe_error(_error: ProbeError) -> ManagementResponseError {
 
 fn database_initialise_error(error: DatabaseInitialiseError) -> ManagementResponseError {
     match error {
+        DatabaseInitialiseError::Session(DatabaseAccessError::Operation(failure)) => {
+            operation::public_error(failure)
+        }
         DatabaseInitialiseError::Session(DatabaseAccessError::Configuration(error)) => {
             management_error(error)
         }
@@ -582,6 +628,7 @@ fn database_initialise_error(error: DatabaseInitialiseError) -> ManagementRespon
 
 fn database_access_error(error: DatabaseAccessError) -> ManagementResponseError {
     match error {
+        DatabaseAccessError::Operation(failure) => operation::public_error(failure),
         DatabaseAccessError::Configuration(error) => management_error(error),
         DatabaseAccessError::RevisionConflict { expected, actual } => ManagementResponseError {
             message: "configuration changed before graph administration".to_owned(),
@@ -608,6 +655,12 @@ fn integration_error(
     error: integration::IntegrationAdministrationError,
 ) -> ManagementResponseError {
     match error {
+        integration::IntegrationAdministrationError::Session(DatabaseAccessError::Operation(
+            failure,
+        ))
+        | integration::IntegrationAdministrationError::Credential {
+            source: credential::CredentialCoordinatorError::Operation(failure),
+        } => operation::public_error(failure),
         integration::IntegrationAdministrationError::Session(
             DatabaseAccessError::RevisionConflict { expected, actual },
         ) => ManagementResponseError {
@@ -630,6 +683,10 @@ fn integration_error(
 fn reindex_error(error: reindex::ReindexAdministrationError) -> ManagementResponseError {
     match error {
         reindex::ReindexAdministrationError::Public(error) => error,
+        reindex::ReindexAdministrationError::Interrupted(failure)
+        | reindex::ReindexAdministrationError::Session(DatabaseAccessError::Operation(failure)) => {
+            operation::public_error(failure)
+        }
         reindex::ReindexAdministrationError::Session(DatabaseAccessError::RevisionConflict {
             expected,
             actual,
@@ -661,6 +718,9 @@ fn reindex_error(error: reindex::ReindexAdministrationError) -> ManagementRespon
 
 fn thread_error(error: thread::ThreadAdministrationError) -> ManagementResponseError {
     match error {
+        thread::ThreadAdministrationError::Session(DatabaseAccessError::Operation(failure)) => {
+            operation::public_error(failure)
+        }
         thread::ThreadAdministrationError::Session(DatabaseAccessError::RevisionConflict {
             expected,
             actual,

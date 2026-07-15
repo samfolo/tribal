@@ -26,6 +26,7 @@ use super::{
         PersistedIssuanceOrigin,
     },
     database::{DatabaseAccess, DatabaseAccessError, find_or_create_principal},
+    operation::OperationContext,
     pagination::{
         INVENTORY_RESULT_BUDGET, InventoryCursor, InventoryCursorError, InventoryMethod,
         InventoryPosition,
@@ -88,11 +89,12 @@ impl TokenAdministration {
 
     pub(super) async fn create(
         &self,
+        operation: &OperationContext,
         request: TokenCreateRequest,
     ) -> Result<TokenCreateResult, TokenAdministrationError> {
         let session = self
             .database
-            .mutation_session(&request.expected_revision)
+            .mutation_session(operation, &request.expected_revision)
             .await?;
         let principal = request
             .principal
@@ -104,6 +106,7 @@ impl TokenAdministration {
             .map_err(|_| TokenAdministrationError::Issuance)?
             .canonical_resource;
         let revision = session.revision.clone();
+        session.checkpoint()?;
         let (issued, credential) = if request.persist_as_default {
             (
                 self.credentials
@@ -113,25 +116,35 @@ impl TokenAdministration {
                 CredentialPersistenceResult::Persisted,
             )
         } else {
-            let mut connection = session.pool.acquire().await.map_err(connection_error)?;
-            let principal = find_or_create_principal(&mut connection, &principal)
+            let (transaction, issued, principal) = session
+                .operation()
+                .cancel_safe(async {
+                    let mut transaction = session.pool.begin().await.map_err(connection_error)?;
+                    let principal = find_or_create_principal(&mut transaction, &principal)
+                        .await
+                        .map_err(repository)?;
+                    let issued = issue_token_with_record(
+                        &mut transaction,
+                        &PgAuthTokenRepository,
+                        principal.id(),
+                        scopes,
+                        audience,
+                        expires_at,
+                    )
+                    .await
+                    .map_err(repository)?;
+                    let principal = principal.principal_key().to_owned();
+                    Ok::<_, TokenAdministrationError>((transaction, issued, principal))
+                })
                 .await
-                .map_err(repository)?;
-            let issued = issue_token_with_record(
-                &mut connection,
-                &PgAuthTokenRepository,
-                principal.id(),
-                scopes,
-                audience,
-                expires_at,
-            )
-            .await
-            .map_err(repository)?;
+                .map_err(DatabaseAccessError::from)??;
+            session.checkpoint()?;
+            transaction.commit().await.map_err(connection_error)?;
             (
                 PersistedIssuance {
                     raw: issued.raw,
                     token: issued.token,
-                    principal: principal.principal_key().to_owned(),
+                    principal,
                     origin: PersistedIssuanceOrigin::Issued,
                 },
                 CredentialPersistenceResult::NotRequested,
@@ -149,12 +162,13 @@ impl TokenAdministration {
 
     pub(super) async fn preflight_bootstrap(
         &self,
+        operation: &OperationContext,
         expected_revision: &ConfigRevision,
         policy: BootstrapTokenPolicy,
     ) -> Result<PreparedBootstrapToken, TokenAdministrationError> {
         let snapshot = self
             .database
-            .config_snapshot(Some(expected_revision))
+            .config_snapshot(operation, Some(expected_revision))
             .await?;
         let (ensure, principal, ttl_hours, scopes) = match policy {
             BootstrapTokenPolicy::EnsureLocalCredential {
@@ -188,10 +202,14 @@ impl TokenAdministration {
 
     pub(super) async fn provision_bootstrap(
         &self,
+        operation: &OperationContext,
         expected_revision: ConfigRevision,
         prepared: PreparedBootstrapToken,
     ) -> Result<Revisioned<BootstrapTokenReceipt>, TokenAdministrationError> {
-        let session = self.database.mutation_session(&expected_revision).await?;
+        let session = self
+            .database
+            .mutation_session(operation, &expected_revision)
+            .await?;
         let PreparedBootstrapToken {
             ensure,
             principal,
@@ -201,6 +219,7 @@ impl TokenAdministration {
             expires_at,
         } = prepared;
         let revision = session.revision.clone();
+        session.checkpoint()?;
         let issued = if ensure {
             self.credentials
                 .ensure_persisted(session, principal, scopes, audience, now, expires_at)
@@ -223,11 +242,12 @@ impl TokenAdministration {
 
     pub(super) async fn revoke(
         &self,
+        operation: &OperationContext,
         request: TokenRevokeRequest,
     ) -> Result<TokenRevokeResult, TokenAdministrationError> {
         let session = self
             .database
-            .mutation_session(&request.expected_revision)
+            .mutation_session(operation, &request.expected_revision)
             .await?;
         let mut connection = session.pool.acquire().await.map_err(connection_error)?;
         let Some(existing) = PgAuthTokenRepository
@@ -241,6 +261,7 @@ impl TokenAdministration {
             .find_by_id(&mut connection, existing.principal_id())
             .await
             .map_err(repository)?;
+        session.checkpoint()?;
         let (token, revoked) = PgAuthTokenRepository
             .revoke(&mut connection, request.id, Utc::now())
             .await
@@ -255,11 +276,12 @@ impl TokenAdministration {
 
     pub(super) async fn revoke_all(
         &self,
+        operation: &OperationContext,
         request: TokenRevokeAllRequest,
     ) -> Result<TokenRevokeAllResult, TokenAdministrationError> {
         let session = self
             .database
-            .mutation_session(&request.expected_revision)
+            .mutation_session(operation, &request.expected_revision)
             .await?;
         let mut connection = session.pool.acquire().await.map_err(connection_error)?;
         let principal_id = if let Some(principal) = request.principal {
@@ -274,6 +296,7 @@ impl TokenAdministration {
         } else {
             None
         };
+        session.checkpoint()?;
         let revoked = PgAuthTokenRepository
             .revoke_all(&mut connection, principal_id, Utc::now())
             .await
@@ -283,9 +306,10 @@ impl TokenAdministration {
 
     pub(super) async fn list(
         &self,
+        operation: &OperationContext,
         request: TokenListRequest,
     ) -> Result<TokenInventory, TokenAdministrationError> {
-        let session = self.database.read_session().await?;
+        let session = self.database.read_session(operation).await?;
         let cursor = request
             .page
             .after
@@ -456,6 +480,10 @@ fn token_cursor(
 
 pub(super) fn public_error(error: TokenAdministrationError) -> ManagementResponseError {
     match error {
+        TokenAdministrationError::Session(DatabaseAccessError::Operation(failure))
+        | TokenAdministrationError::Credential {
+            source: CredentialCoordinatorError::Operation(failure),
+        } => super::operation::public_error(failure),
         TokenAdministrationError::Session(DatabaseAccessError::RevisionConflict {
             expected,
             actual,
@@ -561,15 +589,19 @@ mod tests {
             tokio_util::sync::CancellationToken::new(),
         );
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
+        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
 
         let created = administration
-            .create(TokenCreateRequest {
-                expected_revision: revision.clone(),
-                principal: None,
-                ttl_hours: Some(2),
-                scopes: Vec::new(),
-                persist_as_default: false,
-            })
+            .create(
+                &operation,
+                TokenCreateRequest {
+                    expected_revision: revision.clone(),
+                    principal: None,
+                    ttl_hours: Some(2),
+                    scopes: Vec::new(),
+                    persist_as_default: false,
+                },
+            )
             .await
             .expect("token creates");
         assert_eq!(created.config_revision, revision);
@@ -578,12 +610,15 @@ mod tests {
         assert!(!created.value.token.expose_secret().is_empty());
 
         let inventory = administration
-            .list(TokenListRequest {
-                page: PageRequest {
-                    size: PageSize::try_from(10).unwrap(),
-                    after: None,
+            .list(
+                &operation,
+                TokenListRequest {
+                    page: PageRequest {
+                        size: PageSize::try_from(10).unwrap(),
+                        after: None,
+                    },
                 },
-            })
+            )
             .await
             .expect("tokens list");
         assert_eq!(inventory.config_revision, revision);
@@ -591,18 +626,24 @@ mod tests {
         assert_eq!(inventory.value.items[0].id, created.value.summary.id);
 
         let revoked = administration
-            .revoke(TokenRevokeRequest {
-                expected_revision: revision.clone(),
-                id: created.value.summary.id,
-            })
+            .revoke(
+                &operation,
+                TokenRevokeRequest {
+                    expected_revision: revision.clone(),
+                    id: created.value.summary.id,
+                },
+            )
             .await
             .expect("token revokes");
         assert!(matches!(revoked.value, TokenRevokeOutcome::Revoked { .. }));
         let repeated = administration
-            .revoke(TokenRevokeRequest {
-                expected_revision: revision,
-                id: created.value.summary.id,
-            })
+            .revoke(
+                &operation,
+                TokenRevokeRequest {
+                    expected_revision: revision,
+                    id: created.value.summary.id,
+                },
+            )
             .await
             .expect("repeated revoke is typed");
         assert!(matches!(
@@ -611,30 +652,39 @@ mod tests {
         ));
 
         let active = administration
-            .create(TokenCreateRequest {
-                expected_revision: repeated.config_revision.clone(),
-                principal: None,
-                ttl_hours: Some(2),
-                scopes: Vec::new(),
-                persist_as_default: false,
-            })
+            .create(
+                &operation,
+                TokenCreateRequest {
+                    expected_revision: repeated.config_revision.clone(),
+                    principal: None,
+                    ttl_hours: Some(2),
+                    scopes: Vec::new(),
+                    persist_as_default: false,
+                },
+            )
             .await
             .expect("second token creates");
         let revoked_all = administration
-            .revoke_all(TokenRevokeAllRequest {
-                expected_revision: repeated.config_revision.clone(),
-                principal: Some(LOCAL_PRINCIPAL_KEY.to_owned()),
-            })
+            .revoke_all(
+                &operation,
+                TokenRevokeAllRequest {
+                    expected_revision: repeated.config_revision.clone(),
+                    principal: Some(LOCAL_PRINCIPAL_KEY.to_owned()),
+                },
+            )
             .await
             .expect("active principal tokens revoke");
         assert_eq!(revoked_all.value.revoked, 1);
         let inventory = administration
-            .list(TokenListRequest {
-                page: PageRequest {
-                    size: PageSize::try_from(10).unwrap(),
-                    after: None,
+            .list(
+                &operation,
+                TokenListRequest {
+                    page: PageRequest {
+                        size: PageSize::try_from(10).unwrap(),
+                        after: None,
+                    },
                 },
-            })
+            )
             .await
             .expect("revoked tokens list");
         assert_eq!(inventory.value.items.len(), 2);
@@ -666,15 +716,21 @@ mod tests {
             tokio_util::sync::CancellationToken::new(),
         );
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
+        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
 
         let error = administration
-            .create(TokenCreateRequest {
-                expected_revision: ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"stale")),
-                principal: None,
-                ttl_hours: None,
-                scopes: Vec::new(),
-                persist_as_default: true,
-            })
+            .create(
+                &operation,
+                TokenCreateRequest {
+                    expected_revision: ConfigRevision::from_digest(&ConfigDigest::from_bytes(
+                        b"stale",
+                    )),
+                    principal: None,
+                    ttl_hours: None,
+                    scopes: Vec::new(),
+                    persist_as_default: true,
+                },
+            )
             .await
             .expect_err("stale revision is refused");
 
@@ -697,15 +753,19 @@ mod tests {
         );
         runtime.abort().await;
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
+        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
 
         let error = administration
-            .create(TokenCreateRequest {
-                expected_revision: revision,
-                principal: None,
-                ttl_hours: Some(1),
-                scopes: Vec::new(),
-                persist_as_default: true,
-            })
+            .create(
+                &operation,
+                TokenCreateRequest {
+                    expected_revision: revision,
+                    principal: None,
+                    ttl_hours: Some(1),
+                    scopes: Vec::new(),
+                    persist_as_default: true,
+                },
+            )
             .await
             .expect_err("dead coordinator refuses persisted issuance");
         let public = public_error(error);

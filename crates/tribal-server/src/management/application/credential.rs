@@ -1,5 +1,7 @@
 //! Namespace-bound credential durability and recovery.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
@@ -21,14 +23,23 @@ use tribal_db::{
 use tribal_domain::{AuthTokenId, BearerToken, CredentialGenerationId, Scope};
 
 use crate::management::{
-    application::database::{DatabaseSession, find_or_create_principal},
+    application::{
+        database::{DatabaseSession, find_or_create_principal},
+        operation::{OperationContext, OperationError},
+    },
     authority::{AuthorityError, AuthorityLease, ConfigAuthorityNamespace, credential_paths},
 };
 
 const OWNER_FILE_MODE: u32 = 0o600;
 const OWNER_DIRECTORY_MODE: u32 = 0o700;
-const COORDINATOR_CAPACITY: usize = 8;
+const COORDINATOR_CAPACITY: usize = 1;
 const CREDENTIAL_REUSE_WINDOW_MINUTES: i64 = 5;
+const CREDENTIAL_STATEMENT_TIMEOUT_SECONDS: u64 = 5;
+const RECONCILIATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
+#[cfg(test)]
+pub(super) const TERMINAL_WINDOW: std::time::Duration = std::time::Duration::from_secs(
+    CREDENTIAL_STATEMENT_TIMEOUT_SECONDS + RECONCILIATION_TIMEOUT.as_secs(),
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PersistedIssuanceOrigin {
@@ -49,8 +60,34 @@ struct StagedIssuance {
     generation_id: CredentialGenerationId,
 }
 
+struct CredentialGrant {
+    principal: String,
+    scopes: Vec<Scope>,
+    audience: String,
+    expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+struct StagedCredentialTransaction<T> {
+    transaction: sqlx::Transaction<'static, sqlx::Postgres>,
+    value: T,
+}
+
+impl<T> StagedCredentialTransaction<T> {
+    async fn commit(self) -> (T, Result<(), sqlx::Error>) {
+        let result = self.transaction.commit().await;
+        (self.value, result)
+    }
+}
+
+enum EnsureDisposition {
+    Existing(PersistedIssuance),
+    Replacement(StagedIssuance),
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(super) enum CredentialCoordinatorError {
+    #[error(transparent)]
+    Operation(#[from] OperationError),
     #[error("credential coordinator is unavailable")]
     Unavailable,
     #[error("credential database connection failed: {source}")]
@@ -115,10 +152,7 @@ pub(crate) fn read_persisted_bearer(
 
 struct IssueCommand {
     session: DatabaseSession,
-    principal: String,
-    scopes: Vec<Scope>,
-    audience: String,
-    expires_at: chrono::DateTime<chrono::Utc>,
+    grant: CredentialGrant,
     response: oneshot::Sender<Result<PersistedIssuance, CredentialCoordinatorError>>,
 }
 
@@ -130,11 +164,8 @@ struct ExportCommand {
 
 struct EnsureCommand {
     session: DatabaseSession,
-    principal: String,
-    scopes: Vec<Scope>,
-    audience: String,
+    grant: CredentialGrant,
     now: chrono::DateTime<chrono::Utc>,
-    expires_at: chrono::DateTime<chrono::Utc>,
     response: oneshot::Sender<Result<PersistedIssuance, CredentialCoordinatorError>>,
 }
 
@@ -212,21 +243,23 @@ impl CredentialCoordinator {
         audience: String,
         expires_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
+        let operation = session.operation().clone();
         let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(CredentialCommand::Issue(IssueCommand {
+        self.submit(
+            &operation,
+            CredentialCommand::Issue(IssueCommand {
                 session,
-                principal,
-                scopes,
-                audience,
-                expires_at,
+                grant: CredentialGrant {
+                    principal,
+                    scopes,
+                    audience,
+                    expires_at,
+                },
                 response,
-            }))
-            .await
-            .map_err(|_| CredentialCoordinatorError::Unavailable)?;
-        receiver
-            .await
-            .map_err(|_| CredentialCoordinatorError::Unavailable)?
+            }),
+            receiver,
+        )
+        .await
     }
 
     pub(super) async fn export_persisted(
@@ -234,18 +267,18 @@ impl CredentialCoordinator {
         session: DatabaseSession,
         audience: String,
     ) -> Result<BearerToken, CredentialCoordinatorError> {
+        let operation = session.operation().clone();
         let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(CredentialCommand::Export(ExportCommand {
+        self.submit(
+            &operation,
+            CredentialCommand::Export(ExportCommand {
                 session,
                 audience,
                 response,
-            }))
-            .await
-            .map_err(|_| CredentialCoordinatorError::Unavailable)?;
-        receiver
-            .await
-            .map_err(|_| CredentialCoordinatorError::Unavailable)?
+            }),
+            receiver,
+        )
+        .await
     }
 
     pub(super) async fn ensure_persisted(
@@ -257,18 +290,35 @@ impl CredentialCoordinator {
         now: chrono::DateTime<chrono::Utc>,
         expires_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
+        let operation = session.operation().clone();
         let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(CredentialCommand::Ensure(EnsureCommand {
+        self.submit(
+            &operation,
+            CredentialCommand::Ensure(EnsureCommand {
                 session,
-                principal,
-                scopes,
-                audience,
+                grant: CredentialGrant {
+                    principal,
+                    scopes,
+                    audience,
+                    expires_at,
+                },
                 now,
-                expires_at,
                 response,
-            }))
-            .await
+            }),
+            receiver,
+        )
+        .await
+    }
+
+    async fn submit<T>(
+        &self,
+        operation: &OperationContext,
+        command: CredentialCommand,
+        receiver: oneshot::Receiver<Result<T, CredentialCoordinatorError>>,
+    ) -> Result<T, CredentialCoordinatorError> {
+        operation
+            .cancel_safe(self.sender.send(command))
+            .await?
             .map_err(|_| CredentialCoordinatorError::Unavailable)?;
         receiver
             .await
@@ -350,43 +400,51 @@ async fn ensure_persisted(
 ) {
     let EnsureCommand {
         session,
-        principal,
-        scopes,
-        audience,
+        grant,
         now,
-        expires_at,
         response,
     } = command;
-    let result = ensure_persisted_inner(
-        namespace, store, session, principal, scopes, audience, now, expires_at,
-    )
-    .await;
+    let result = ensure_persisted_inner(namespace, store, session, grant, now).await;
     (result, response)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the ensure boundary carries the complete reusable token grant"
-)]
 async fn ensure_persisted_inner(
     namespace: &ConfigAuthorityNamespace,
     store: &CredentialStore,
     session: DatabaseSession,
-    principal_key: String,
-    scopes: Vec<Scope>,
-    audience: String,
+    grant: CredentialGrant,
     now: chrono::DateTime<chrono::Utc>,
-    expires_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
-    let mut connection = session
+    let staged = session
+        .operation()
+        .cancel_safe(stage_ensure(namespace, store, &session, grant, now))
+        .await??;
+    session.operation().checkpoint()?;
+    let (disposition, commit) = staged.commit().await;
+    match disposition {
+        EnsureDisposition::Existing(issuance) => {
+            commit.map_err(|source| CredentialCoordinatorError::Connection { source })?;
+            Ok(issuance)
+        }
+        EnsureDisposition::Replacement(staged) => {
+            finish_replacement(namespace, store, &session, staged, commit).await
+        }
+    }
+}
+
+async fn stage_ensure(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    session: &DatabaseSession,
+    grant: CredentialGrant,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<StagedCredentialTransaction<EnsureDisposition>, CredentialCoordinatorError> {
+    let mut transaction = session
         .pool
-        .acquire()
-        .await
-        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
-    let mut transaction = connection
         .begin()
         .await
         .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    set_statement_timeout(&mut transaction).await?;
     PgAdvisoryLockRepository
         .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
         .await
@@ -403,33 +461,23 @@ async fn ensure_persisted_inner(
         store,
         &mut transaction,
         previous.as_ref(),
-        &principal_key,
-        &scopes,
-        &audience,
+        &grant.principal,
+        &grant.scopes,
+        &grant.audience,
         now,
     )
     .await?
     {
-        transaction
-            .commit()
-            .await
-            .map_err(|source| CredentialCoordinatorError::Connection { source })?;
-        return Ok(existing);
+        return Ok(StagedCredentialTransaction {
+            transaction,
+            value: EnsureDisposition::Existing(existing),
+        });
     }
-    let staged = replace_locked(
-        namespace,
-        store,
-        &mut transaction,
-        previous,
-        principal_key,
-        scopes,
-        audience,
-        expires_at,
-    )
-    .await?;
-    let commit = transaction.commit().await;
-    drop(connection);
-    finish_replacement(namespace, store, &session, staged, commit).await
+    let staged = replace_locked(namespace, store, &mut transaction, previous, grant).await?;
+    Ok(StagedCredentialTransaction {
+        transaction,
+        value: EnsureDisposition::Replacement(staged),
+    })
 }
 
 async fn reusable_issuance(
@@ -501,15 +549,24 @@ async fn export_persisted_inner(
     session: DatabaseSession,
     audience: &str,
 ) -> Result<BearerToken, CredentialCoordinatorError> {
-    let mut connection = session
+    let operation = session.operation().clone();
+    operation
+        .cancel_safe(export_persisted_read(namespace, store, session, audience))
+        .await?
+}
+
+async fn export_persisted_read(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    session: DatabaseSession,
+    audience: &str,
+) -> Result<BearerToken, CredentialCoordinatorError> {
+    let mut transaction = session
         .pool
-        .acquire()
-        .await
-        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
-    let mut transaction = connection
         .begin()
         .await
         .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    set_statement_timeout(&mut transaction).await?;
     PgAdvisoryLockRepository
         .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
         .await
@@ -560,41 +617,40 @@ async fn issue_persisted(
 ) {
     let IssueCommand {
         session,
-        principal,
-        scopes,
-        audience,
-        expires_at,
+        grant,
         response,
     } = command;
-    let result = issue_persisted_inner(
-        namespace, store, session, principal, scopes, audience, expires_at,
-    )
-    .await;
+    let result = issue_persisted_inner(namespace, store, session, grant).await;
     (result, response)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the issuance boundary carries the complete token grant"
-)]
 async fn issue_persisted_inner(
     namespace: &ConfigAuthorityNamespace,
     store: &CredentialStore,
     session: DatabaseSession,
-    principal_key: String,
-    scopes: Vec<Scope>,
-    audience: String,
-    expires_at: chrono::DateTime<chrono::Utc>,
+    grant: CredentialGrant,
 ) -> Result<PersistedIssuance, CredentialCoordinatorError> {
-    let mut connection = session
+    let staged = session
+        .operation()
+        .cancel_safe(stage_issue(namespace, store, &session, grant))
+        .await??;
+    session.operation().checkpoint()?;
+    let (staged, commit) = staged.commit().await;
+    finish_replacement(namespace, store, &session, staged, commit).await
+}
+
+async fn stage_issue(
+    namespace: &ConfigAuthorityNamespace,
+    store: &CredentialStore,
+    session: &DatabaseSession,
+    grant: CredentialGrant,
+) -> Result<StagedCredentialTransaction<StagedIssuance>, CredentialCoordinatorError> {
+    let mut transaction = session
         .pool
-        .acquire()
-        .await
-        .map_err(|source| CredentialCoordinatorError::Connection { source })?;
-    let mut transaction = connection
         .begin()
         .await
         .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    set_statement_timeout(&mut transaction).await?;
     PgAdvisoryLockRepository
         .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
         .await
@@ -604,46 +660,30 @@ async fn issue_persisted_inner(
         .await
         .map_err(database_error)?;
     let _ = store.recover(previous.as_ref())?;
-    let staged = replace_locked(
-        namespace,
-        store,
-        &mut transaction,
-        previous,
-        principal_key,
-        scopes,
-        audience,
-        expires_at,
-    )
-    .await?;
-    let commit = transaction.commit().await;
-    drop(connection);
-    finish_replacement(namespace, store, &session, staged, commit).await
+    let staged = replace_locked(namespace, store, &mut transaction, previous, grant).await?;
+    Ok(StagedCredentialTransaction {
+        transaction,
+        value: staged,
+    })
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the replacement boundary carries the complete token grant"
-)]
 async fn replace_locked(
     namespace: &ConfigAuthorityNamespace,
     store: &CredentialStore,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     previous: Option<LocalDefaultCredential>,
-    principal_key: String,
-    scopes: Vec<Scope>,
-    audience: String,
-    expires_at: chrono::DateTime<chrono::Utc>,
+    grant: CredentialGrant,
 ) -> Result<StagedIssuance, CredentialCoordinatorError> {
-    let principal = find_or_create_principal(transaction, &principal_key)
+    let principal = find_or_create_principal(transaction, &grant.principal)
         .await
         .map_err(database_error)?;
     let IssuedAuthToken { raw, token } = issue_token_with_record(
         transaction,
         &PgAuthTokenRepository,
         principal.id(),
-        scopes,
-        audience,
-        expires_at,
+        grant.scopes,
+        grant.audience,
+        grant.expires_at,
     )
     .await
     .map_err(database_error)?;
@@ -699,7 +739,12 @@ async fn finish_replacement(
         },
         Err(source) => CredentialCoordinatorError::Connection { source },
     };
-    reconcile_replacement(namespace, store, session, staged, failure).await
+    tokio::time::timeout(
+        RECONCILIATION_TIMEOUT,
+        reconcile_replacement(namespace, store, session, staged, failure),
+    )
+    .await
+    .map_err(|_| CredentialCoordinatorError::Operation(OperationError::DeadlineElapsed))?
 }
 
 async fn reconcile_replacement(
@@ -718,6 +763,7 @@ async fn reconcile_replacement(
         .begin()
         .await
         .map_err(|source| CredentialCoordinatorError::Connection { source })?;
+    set_statement_timeout(&mut transaction).await?;
     PgAdvisoryLockRepository
         .acquire_credential_replacement_xact(&mut transaction, namespace.as_str())
         .await
@@ -760,6 +806,18 @@ async fn reconcile_replacement(
     } else {
         Err(failure)
     }
+}
+
+async fn set_statement_timeout(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), CredentialCoordinatorError> {
+    sqlx::query(&format!(
+        "SET LOCAL statement_timeout = '{CREDENTIAL_STATEMENT_TIMEOUT_SECONDS}s'"
+    ))
+    .execute(&mut **transaction)
+    .await
+    .map(|_| ())
+    .map_err(|source| CredentialCoordinatorError::Connection { source })
 }
 
 fn database_error(source: DbError) -> CredentialCoordinatorError {
@@ -873,7 +931,6 @@ impl CredentialStore {
         std::fs::create_dir_all(parent).map_err(|source| file_error(parent, source))?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(
                 parent,
                 std::fs::Permissions::from_mode(OWNER_DIRECTORY_MODE),
@@ -1060,13 +1117,13 @@ mod recovery {
     }
 
     fn session(database: &tribal_test_utils::TestDb, revision: &ConfigRevision) -> DatabaseSession {
-        DatabaseSession {
-            revision: revision.clone(),
-            config: Arc::new(tribal_config::TribalConfig::minimum_valid(
+        DatabaseSession::for_test(
+            revision.clone(),
+            Arc::new(tribal_config::TribalConfig::minimum_valid(
                 database.database_url(),
             )),
-            pool: database.pool().clone(),
-        }
+            database.pool().clone(),
+        )
     }
 
     fn mapping(envelope: &PersistedCredentialEnvelope) -> LocalDefaultCredential {
@@ -1133,10 +1190,12 @@ mod recovery {
             &store,
             &mut transaction,
             None,
-            tribal_domain::LOCAL_PRINCIPAL_KEY.to_owned(),
-            full_access_scopes(),
-            "http://localhost/mcp".to_owned(),
-            Utc::now() + chrono::Duration::hours(1),
+            CredentialGrant {
+                principal: tribal_domain::LOCAL_PRINCIPAL_KEY.to_owned(),
+                scopes: full_access_scopes(),
+                audience: "http://localhost/mcp".to_owned(),
+                expires_at: Utc::now() + chrono::Duration::hours(1),
+            },
         )
         .await
         .expect("replacement stages");
@@ -1190,10 +1249,12 @@ mod recovery {
             &namespace,
             &store,
             session(&database, &revision),
-            tribal_domain::LOCAL_PRINCIPAL_KEY.to_owned(),
-            full_access_scopes(),
-            "http://localhost/mcp".to_owned(),
-            Utc::now() + chrono::Duration::hours(1),
+            CredentialGrant {
+                principal: tribal_domain::LOCAL_PRINCIPAL_KEY.to_owned(),
+                scopes: full_access_scopes(),
+                audience: "http://localhost/mcp".to_owned(),
+                expires_at: Utc::now() + chrono::Duration::hours(1),
+            },
         )
         .await
         .expect("promotion failure reconciles");

@@ -93,9 +93,10 @@ fn base_url_hint(stage: ProviderStage) -> String {
 
 /// Validates the parsed config currently on `state` and, on failure,
 /// classifies the diagnostics into a [`SkipMask`] stored back on state.
-// `validate` is sync, but the step dispatcher requires every action
-// to share the `async fn act` signature.
-#[allow(clippy::unused_async)]
+#[expect(
+    clippy::unused_async,
+    reason = "the step dispatcher gives every check one async action signature"
+)]
 pub(in crate::management::operator_check) async fn act(state: &mut CheckState) -> CheckOutcome {
     let config = state
         .config

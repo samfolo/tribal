@@ -13,6 +13,7 @@ use tribal_wire::management::{
 use super::{
     credential::{CredentialCoordinator, CredentialCoordinatorError},
     database::{DatabaseAccess, DatabaseAccessError, DatabaseSession},
+    operation::OperationContext,
 };
 use crate::{
     commands::serve::ServeProjectMode,
@@ -107,18 +108,14 @@ impl IntegrationAdministration {
 
     pub(super) async fn preflight_target(
         &self,
+        operation: &OperationContext,
         expected_revision: &tribal_wire::management::ConfigRevision,
         selection: &McpTargetSelection,
     ) -> Result<McpTarget, IntegrationAdministrationError> {
-        let snapshot = self.config.resolved_snapshot().await?;
-        if &snapshot.revision != expected_revision {
-            return Err(IntegrationAdministrationError::Session(
-                DatabaseAccessError::RevisionConflict {
-                    expected: expected_revision.clone(),
-                    actual: snapshot.revision,
-                },
-            ));
-        }
+        let snapshot = self
+            .database
+            .config_snapshot(operation, Some(expected_revision))
+            .await?;
         let target = resolve_target(snapshot.config.server.transport, selection.clone())?;
         if let McpTarget::Stdio {
             context:
@@ -135,16 +132,17 @@ impl IntegrationAdministration {
 
     pub(super) async fn mcp_config(
         &self,
+        operation: &OperationContext,
         request: McpConfigRequest,
     ) -> Result<McpConfigResult, IntegrationAdministrationError> {
-        let prepared = self.prepare(request).await?;
+        let prepared = self.prepare(operation, request).await?;
         let bearer = if prepared.requires_bearer() {
             let audience = crate::startup::resolve_oauth_runtime(&prepared.session.config)
                 .map_err(|_| IntegrationAdministrationError::Audience)?
                 .canonical_resource;
             Some(
                 self.credentials
-                    .export_persisted(clone_session(&prepared.session), audience)
+                    .export_persisted(prepared.session.clone(), audience)
                     .await
                     .map_err(|source| IntegrationAdministrationError::Credential { source })?,
             )
@@ -156,11 +154,12 @@ impl IntegrationAdministration {
 
     pub(super) async fn prepare(
         &self,
+        operation: &OperationContext,
         request: McpConfigRequest,
     ) -> Result<PreparedMcpConfig, IntegrationAdministrationError> {
         let session = self
             .database
-            .mutation_session(&request.expected_revision)
+            .mutation_session(operation, &request.expected_revision)
             .await?;
         let target = resolve_target(session.config.server.transport, request.target)?;
         let entry = match target {
@@ -322,14 +321,6 @@ fn sensitive_network_document(
     }))
 }
 
-fn clone_session(session: &DatabaseSession) -> DatabaseSession {
-    DatabaseSession {
-        revision: session.revision.clone(),
-        config: session.config.clone(),
-        pool: session.pool.clone(),
-    }
-}
-
 pub(super) fn public_failure(error: &IntegrationAdministrationError) -> AdministrationFailure {
     match error {
         IntegrationAdministrationError::IncompatibleTarget => {
@@ -350,6 +341,12 @@ pub(super) fn public_failure(error: &IntegrationAdministrationError) -> Administ
         IntegrationAdministrationError::Credential {
             source: CredentialCoordinatorError::Store(_),
         } => AdministrationFailure::PersistedCredentialRecoveryFailed,
+        IntegrationAdministrationError::Credential {
+            source: CredentialCoordinatorError::Operation(failure),
+        }
+        | IntegrationAdministrationError::Session(DatabaseAccessError::Operation(failure)) => {
+            failure.administration_failure()
+        }
         IntegrationAdministrationError::Session(DatabaseAccessError::Connection { .. })
         | IntegrationAdministrationError::ProjectRepository { .. }
         | IntegrationAdministrationError::Credential {
@@ -388,6 +385,7 @@ mod tests {
         access: DatabaseAccess,
         credentials: CredentialCoordinator,
         administration: IntegrationAdministration,
+        operation: OperationContext,
         revision: ConfigRevision,
     }
 
@@ -419,6 +417,7 @@ mod tests {
                 access,
                 credentials,
                 administration,
+                operation: OperationContext::new(tokio_util::sync::CancellationToken::new()),
                 revision,
             }
         }
@@ -432,6 +431,7 @@ mod tests {
                 access,
                 credentials,
                 administration,
+                operation: _,
                 revision: _,
             } = self;
             drop(administration);
@@ -525,11 +525,14 @@ mod tests {
         let harness = Harness::new(TransportKind::Stdio).await;
         let result = harness
             .administration
-            .mcp_config(harness.request(McpTargetSelection::Configured {
-                policy: ConfiguredMcpTarget::Public {
-                    stdio_context: StdioProjectContext::Unscoped,
-                },
-            }))
+            .mcp_config(
+                &harness.operation,
+                harness.request(McpTargetSelection::Configured {
+                    policy: ConfiguredMcpTarget::Public {
+                        stdio_context: StdioProjectContext::Unscoped,
+                    },
+                }),
+            )
             .await
             .expect("configured stdio renders");
 
@@ -565,13 +568,16 @@ mod tests {
             .unwrap();
         let result = harness
             .administration
-            .mcp_config(harness.request(McpTargetSelection::Explicit {
-                target: McpTarget::Stdio {
-                    context: StdioProjectContext::Project {
-                        selector: ProjectSelector::Id { id: project.id() },
+            .mcp_config(
+                &harness.operation,
+                harness.request(McpTargetSelection::Explicit {
+                    target: McpTarget::Stdio {
+                        context: StdioProjectContext::Project {
+                            selector: ProjectSelector::Id { id: project.id() },
+                        },
                     },
-                },
-            }))
+                }),
+            )
             .await
             .expect("project stdio renders");
 
@@ -591,11 +597,14 @@ mod tests {
         let http = Harness::new(TransportKind::Http).await;
         let result = http
             .administration
-            .mcp_config(http.request(McpTargetSelection::Configured {
-                policy: ConfiguredMcpTarget::Public {
-                    stdio_context: StdioProjectContext::Unscoped,
-                },
-            }))
+            .mcp_config(
+                &http.operation,
+                http.request(McpTargetSelection::Configured {
+                    policy: ConfiguredMcpTarget::Public {
+                        stdio_context: StdioProjectContext::Unscoped,
+                    },
+                }),
+            )
             .await
             .expect("configured http renders");
         let McpConfigEntry::Public { document } = result.value else {
@@ -607,11 +616,14 @@ mod tests {
         let sse = Harness::new(TransportKind::Http).await;
         let result = sse
             .administration
-            .mcp_config(sse.request(McpTargetSelection::Explicit {
-                target: McpTarget::Sse {
-                    auth: NetworkIntegrationAuth::OAuth,
-                },
-            }))
+            .mcp_config(
+                &sse.operation,
+                sse.request(McpTargetSelection::Explicit {
+                    target: McpTarget::Sse {
+                        auth: NetworkIntegrationAuth::OAuth,
+                    },
+                }),
+            )
             .await
             .expect("explicit sse renders");
         let McpConfigEntry::Public { document } = result.value else {
@@ -626,7 +638,7 @@ mod tests {
         let harness = Harness::new(TransportKind::Http).await;
         let session = harness
             .access
-            .mutation_session(&harness.revision)
+            .mutation_session(&harness.operation, &harness.revision)
             .await
             .unwrap();
         let audience = crate::startup::resolve_oauth_runtime(&session.config)
@@ -646,11 +658,14 @@ mod tests {
         let secret = issued.raw;
         let result = harness
             .administration
-            .mcp_config(harness.request(McpTargetSelection::Explicit {
-                target: McpTarget::Http {
-                    auth: NetworkIntegrationAuth::ExportPersistedBearer,
-                },
-            }))
+            .mcp_config(
+                &harness.operation,
+                harness.request(McpTargetSelection::Explicit {
+                    target: McpTarget::Http {
+                        auth: NetworkIntegrationAuth::ExportPersistedBearer,
+                    },
+                }),
+            )
             .await
             .expect("persisted bearer renders");
 
@@ -674,18 +689,22 @@ mod tests {
             access,
             credentials,
             administration,
+            operation,
             revision,
         } = harness;
         credential_runtime.abort().await;
         let error = administration
-            .mcp_config(McpConfigRequest {
-                expected_revision: revision,
-                target: McpTargetSelection::Explicit {
-                    target: McpTarget::Sse {
-                        auth: NetworkIntegrationAuth::ExportPersistedBearer,
+            .mcp_config(
+                &operation,
+                McpConfigRequest {
+                    expected_revision: revision,
+                    target: McpTargetSelection::Explicit {
+                        target: McpTarget::Sse {
+                            auth: NetworkIntegrationAuth::ExportPersistedBearer,
+                        },
                     },
                 },
-            })
+            )
             .await
             .expect_err("dead coordinator refuses bearer export");
 

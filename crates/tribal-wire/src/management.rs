@@ -138,3 +138,5 @@ pub use crate::{
 
 /// The version of the public local-management contract.
 pub const MANAGEMENT_CONTRACT_VERSION: u16 = 3;
+/// Client deadline for one accepted management application call.
+pub const MANAGEMENT_REQUEST_TIMEOUT_SECONDS: u64 = 125;
