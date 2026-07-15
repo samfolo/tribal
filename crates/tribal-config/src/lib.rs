@@ -46,7 +46,8 @@ pub use paths::{TRIBAL_DIRECTORY_NAME, default_config_file_path};
 pub use redact::{is_secret_key, redact_secrets};
 pub use render::{ConfigPersistence, render_minimal_config, render_persisted_config};
 pub use sections::{
-    AgentsConfig, AuthConfig, CredentialCatalogue, CredentialEntry, DEFAULT_ACCESS_TOKEN_TTL_HOURS,
+    AgentsConfig, AuthConfig, ConnectionInitEmbeddingConfig, ConnectionStageInferenceConfig,
+    CredentialCatalogue, CredentialEntry, CustomProcessingSettings, DEFAULT_ACCESS_TOKEN_TTL_HOURS,
     DEFAULT_AGENTIC_EXECUTION_DEADLINE_SECONDS, DEFAULT_AGENTIC_MAX_TOTAL_TOKENS,
     DEFAULT_AGENTIC_MAX_TURNS, DEFAULT_AGENTIC_RECHECK_BOUND,
     DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS, DEFAULT_AGENTIC_VERIFY_ROUNDS,
@@ -54,14 +55,16 @@ pub use sections::{
     DEFAULT_DISCOVERY_MAX_LIMIT, DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL,
     DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT, DEFAULT_EXPLORATION_MAX_DEPTH,
     DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD,
-    DatabaseConfig, DiscoveryConfig, ExecutorChoice, ExplorationConfig, FileRotation,
-    InferenceConfig, InitConfig, InitEmbeddingConfig, LimitsConfig, LogFormat, LogOutput,
-    LoggingConfig, MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_LIFECYCLE_DURATION_MS,
+    DatabaseConfig, DiscoveryConfig, ExecutorChoice, ExplorationConfig, ExtractionStageSettings,
+    FileRotation, InferenceConfig, InitConfig, InitEmbeddingConfig, LimitsConfig, LogFormat,
+    LogOutput, LoggingConfig, MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_LIFECYCLE_DURATION_MS,
     MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS, MIN_AUTHORIZATION_CODE_TTL_SECONDS, MissingApiKey,
-    MissingApiKeyKind, OAuthConfig, PromptSource, PromptsConfig, ProviderLimitsConfig,
-    ServerConfig, SseConfig, StageAgentConfig, StageInferenceConfig, TelemetryConfig, TribalConfig,
-    VERSION, WorkerConfig, advertised_oauth_host, oauth_onboarding_is_url_only,
-    oauth_surface_is_routable,
+    MissingApiKeyKind, OAuthConfig, PresetModelSettings, ProcessingProfile, PromptSource,
+    PromptsConfig, ProviderConnectionConfig, ProviderConnectionUsage, ProviderConnectionViolation,
+    ProviderConnections, ProviderLimitsConfig, ServerConfig, SseConfig, StageAgentConfig,
+    StageExecutionSettings, StageInferenceConfig, StageModelSettings, TelemetryConfig,
+    TribalConfig, VERSION, VerifiedStageExecutionSettings, VerifiedStageSettings, WorkerConfig,
+    advertised_oauth_host, oauth_onboarding_is_url_only, oauth_surface_is_routable,
 };
 pub use validation::{
     ComputedFloor, ConfigPath, Diagnostics, Endpoint, FieldValue, Inclusion, NumericRange,

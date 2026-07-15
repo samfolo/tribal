@@ -11,7 +11,9 @@ mod init;
 mod limits;
 mod logging;
 mod oauth;
+mod processing;
 mod prompts;
+mod provider_connections;
 mod root;
 mod server;
 mod telemetry;
@@ -52,7 +54,16 @@ pub use oauth::{
     MIN_AUTHORIZATION_CODE_TTL_SECONDS, OAuthConfig, advertised_oauth_host,
     oauth_onboarding_is_url_only, oauth_surface_is_routable,
 };
+pub use processing::{
+    CustomProcessingSettings, ExtractionStageSettings, PresetModelSettings, ProcessingProfile,
+    StageExecutionSettings, StageModelSettings, VerifiedStageExecutionSettings,
+    VerifiedStageSettings,
+};
 pub use prompts::{PromptSource, PromptsConfig};
+pub use provider_connections::{
+    ConnectionInitEmbeddingConfig, ConnectionStageInferenceConfig, ProviderConnectionConfig,
+    ProviderConnectionUsage, ProviderConnectionViolation, ProviderConnections,
+};
 pub use root::{TribalConfig, VERSION};
 pub use server::{DEFAULT_BIND_ADDRESS, MAX_LIFECYCLE_DURATION_MS, ServerConfig, SseConfig};
 pub use telemetry::{FileRotation, TelemetryConfig};

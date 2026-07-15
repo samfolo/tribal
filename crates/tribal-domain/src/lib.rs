@@ -82,6 +82,7 @@ mod prompt_class;
 mod prompt_role;
 mod prompt_stage;
 mod prompt_version;
+mod provider_connection_name;
 mod provider_kind;
 mod redacted_secret;
 mod redaction;
@@ -162,6 +163,10 @@ pub use prompt_class::PromptClass;
 pub use prompt_role::PromptRole;
 pub use prompt_stage::PromptStage;
 pub use prompt_version::{PromptVersion, PromptVersionBuilder};
+pub use provider_connection_name::{
+    PROVIDER_CONNECTION_NAME_PATTERN, ProviderConnectionName, ProviderConnectionNameError,
+    is_valid_provider_connection_name,
+};
 pub use provider_kind::ProviderKind;
 pub use redaction::REDACTED;
 pub use reference::{Reference, ReferenceBuilder};
