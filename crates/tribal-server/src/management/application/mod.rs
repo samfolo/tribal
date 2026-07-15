@@ -23,12 +23,16 @@ use reindex::ReindexAdministration;
 use thread::ThreadAdministration;
 use token::TokenAdministration;
 use tribal_wire::management::{
-    BootstrapRunCall, ConfigGetCall, ConfigPatchCall, ConfigSetCall, ConfigValidateCall,
-    ConfigValidation, ConfigViolation, CredentialSourcesCall, DatabaseInitialiseCall,
-    GraphConfigureGenesisCall, GraphConvergeGenesisCall, IntegrationMcpConfigCall, LogsTailCall,
-    ManagementCall, ManagementError, ManagementMethod, ManagementResponseError, ModelsSelectCall,
+    BootstrapRunCall, CheckReportCall, ConfigGetAllCall, ConfigGetCall, ConfigPatchCall,
+    ConfigPathCall, ConfigSchemaCall, ConfigSetCall, ConfigValidateCall, ConfigValidation,
+    ConfigViolation, CredentialProbeCall, CredentialSourcesCall, DatabaseInitialiseCall,
+    DatabaseProbeCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall,
+    GraphEmbeddingProfileCall, GraphGenesisOptionsCall, IntegrationMcpConfigCall, LogsTailCall,
+    ManagementCall, ManagementError, ManagementMethod, ManagementResponseError,
+    ManagerShutdownCall, ManagerSnapshotCall, ModelsCatalogueCall, ModelsSelectCall,
     ProjectListCall, ProjectRegisterCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall,
-    ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
+    RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall, ThreadsPruneCall,
+    TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
 };
 
 use super::{
@@ -92,50 +96,164 @@ impl<'a> ManagementApplication<'a> {
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, ManagementResponseError> {
         match method {
-            ManagementMethod::ManagerSnapshot
-            | ManagementMethod::RuntimeStart
-            | ManagementMethod::RuntimeStop
-            | ManagementMethod::RuntimeRestart
-            | ManagementMethod::ManagerShutdown
-            | ManagementMethod::ServerStatus => self.lifecycle_value(method).await,
+            ManagementMethod::ManagerSnapshot => {
+                encode_lifecycle::<ManagerSnapshotCall>(self.lifecycle.snapshot().await)
+            }
+            ManagementMethod::RuntimeStart => {
+                encode_lifecycle::<RuntimeStartCall>(self.lifecycle.start().await)
+            }
+            ManagementMethod::RuntimeStop => {
+                encode_lifecycle::<RuntimeStopCall>(self.lifecycle.stop().await)
+            }
+            ManagementMethod::RuntimeRestart => {
+                encode_lifecycle::<RuntimeRestartCall>(self.lifecycle.restart().await)
+            }
+            ManagementMethod::ManagerShutdown => {
+                encode_lifecycle::<ManagerShutdownCall>(self.lifecycle.shutdown().await)
+            }
+            ManagementMethod::ServerStatus => {
+                encode_lifecycle::<ServerStatusCall>(self.lifecycle.runtime_status().await)
+            }
             ManagementMethod::LogsTail => {
                 let request = parse_call::<LogsTailCall>(params)?;
-                lifecycle_value(self.lifecycle.runtime_logs_tail(request.lines).await)
+                encode_lifecycle::<LogsTailCall>(
+                    self.lifecycle.runtime_logs_tail(request.lines).await,
+                )
             }
-            ManagementMethod::TokenList
-            | ManagementMethod::TokenCreate
-            | ManagementMethod::TokenRevoke
-            | ManagementMethod::TokenRevokeAll => self.token_value(method, params).await,
-            ManagementMethod::CheckReport => self.readiness_value().await,
-            ManagementMethod::DatabaseInitialise => self.initialise_database_value(params).await,
-            ManagementMethod::ProjectRegister => self.register_project_value(params).await,
-            ManagementMethod::ProjectList => self.list_projects_value(params).await,
-            ManagementMethod::IntegrationMcpConfig => self.integration_value(params).await,
-            ManagementMethod::ReindexRun
-            | ManagementMethod::ReindexCancel
-            | ManagementMethod::ReindexPrune => self.reindex_value(method, params).await,
-            ManagementMethod::ThreadsPrune => self.thread_value(params).await,
-            ManagementMethod::BootstrapRun => self.bootstrap_value(params).await,
+            ManagementMethod::TokenList => {
+                let request = parse_call::<TokenListCall>(params)?;
+                encode_call::<TokenListCall>(
+                    self.tokens.list(request).await.map_err(token::public_error),
+                )
+            }
+            ManagementMethod::TokenCreate => {
+                let request = parse_call::<TokenCreateCall>(params)?;
+                encode_call::<TokenCreateCall>(
+                    self.tokens
+                        .create(request)
+                        .await
+                        .map_err(token::public_error),
+                )
+            }
+            ManagementMethod::TokenRevoke => {
+                let request = parse_call::<TokenRevokeCall>(params)?;
+                encode_call::<TokenRevokeCall>(
+                    self.tokens
+                        .revoke(request)
+                        .await
+                        .map_err(token::public_error),
+                )
+            }
+            ManagementMethod::TokenRevokeAll => {
+                let request = parse_call::<TokenRevokeAllCall>(params)?;
+                encode_call::<TokenRevokeAllCall>(
+                    self.tokens
+                        .revoke_all(request)
+                        .await
+                        .map_err(token::public_error),
+                )
+            }
+            ManagementMethod::CheckReport => {
+                encode_call::<CheckReportCall>(self.readiness_report().await)
+            }
+            ManagementMethod::DatabaseInitialise => {
+                let request = parse_call::<DatabaseInitialiseCall>(params)?;
+                encode_call::<DatabaseInitialiseCall>(
+                    self.database
+                        .initialise(request)
+                        .await
+                        .map_err(database_initialise_error),
+                )
+            }
+            ManagementMethod::ProjectRegister => {
+                let request = parse_call::<ProjectRegisterCall>(params)?;
+                encode_call::<ProjectRegisterCall>(
+                    self.projects
+                        .register(request)
+                        .await
+                        .map_err(project::public_error),
+                )
+            }
+            ManagementMethod::ProjectList => {
+                let request = parse_call::<ProjectListCall>(params)?;
+                encode_call::<ProjectListCall>(
+                    self.projects
+                        .list(request)
+                        .await
+                        .map_err(project::public_error),
+                )
+            }
+            ManagementMethod::IntegrationMcpConfig => {
+                let request = parse_call::<IntegrationMcpConfigCall>(params)?;
+                encode_call::<IntegrationMcpConfigCall>(
+                    self.integration
+                        .mcp_config(request)
+                        .await
+                        .map_err(integration_error),
+                )
+            }
+            ManagementMethod::ReindexRun => {
+                let request = parse_call::<ReindexRunCall>(params)?;
+                encode_call::<ReindexRunCall>(
+                    self.reindex
+                        .run(self.product, request)
+                        .await
+                        .map_err(reindex_error),
+                )
+            }
+            ManagementMethod::ReindexCancel => {
+                let request = parse_call::<ReindexCancelCall>(params)?;
+                encode_call::<ReindexCancelCall>(
+                    self.reindex.cancel(request).await.map_err(reindex_error),
+                )
+            }
+            ManagementMethod::ReindexPrune => {
+                let request = parse_call::<ReindexPruneCall>(params)?;
+                encode_call::<ReindexPruneCall>(
+                    self.reindex.prune(request).await.map_err(reindex_error),
+                )
+            }
+            ManagementMethod::ThreadsPrune => {
+                let request = parse_call::<ThreadsPruneCall>(params)?;
+                encode_call::<ThreadsPruneCall>(
+                    self.threads.prune(request).await.map_err(thread_error),
+                )
+            }
+            ManagementMethod::BootstrapRun => {
+                let request = parse_call::<BootstrapRunCall>(params)?;
+                let bootstrap = BootstrapAdministration::new(
+                    self.config,
+                    self.lifecycle,
+                    self.database.clone(),
+                    self.projects.clone(),
+                    self.tokens.clone(),
+                    self.integration.clone(),
+                );
+                encode_call::<BootstrapRunCall>(bootstrap.run(self.product, request).await)
+            }
             ManagementMethod::DatabaseProbe => {
                 let receipt = self.probe.database().await.map_err(probe_error)?;
                 self.refresh_readiness().await?;
-                response_value(Ok(receipt))
+                encode_call::<DatabaseProbeCall>(Ok(receipt))
             }
             ManagementMethod::CredentialProbe => {
                 let receipts = self.probe.credentials().await.map_err(probe_error)?;
                 self.refresh_readiness().await?;
-                response_value(Ok(receipts))
+                encode_call::<CredentialProbeCall>(Ok(receipts))
             }
-            ManagementMethod::ConfigGetAll => config_value(self.config.document().await),
-            ManagementMethod::ConfigPath => config_value(self.config.path().await),
-            ManagementMethod::ConfigSchema => serde_json::to_value(
+            ManagementMethod::ConfigGetAll => {
+                encode_config::<ConfigGetAllCall>(self.config.document().await)
+            }
+            ManagementMethod::ConfigPath => {
+                encode_config::<ConfigPathCall>(self.config.path().await)
+            }
+            ManagementMethod::ConfigSchema => encode_call::<ConfigSchemaCall>(Ok(
                 config_schema::project(tribal_config::config_schema())
                     .map_err(|_| internal_error("configuration schema projection failed"))?,
-            )
-            .map_err(|_| internal_error("configuration schema encoding failed")),
-            ManagementMethod::ConfigGet => {
-                config_value(self.config.get(parse_call::<ConfigGetCall>(params)?).await)
-            }
+            )),
+            ManagementMethod::ConfigGet => encode_config::<ConfigGetCall>(
+                self.config.get(parse_call::<ConfigGetCall>(params)?).await,
+            ),
             ManagementMethod::ConfigValidate => {
                 let request = parse_call::<ConfigValidateCall>(params)?;
                 let violations = self
@@ -143,7 +261,7 @@ impl<'a> ManagementApplication<'a> {
                     .validate(request.key.as_str().to_owned(), request.value)
                     .await
                     .map_err(management_error)?;
-                response_value(Ok(ConfigValidation {
+                encode_call::<ConfigValidateCall>(Ok(ConfigValidation {
                     valid: violations.is_empty(),
                     violations: violations
                         .into_iter()
@@ -177,7 +295,7 @@ impl<'a> ManagementApplication<'a> {
                 ) {
                     self.lifecycle.config_changed().await;
                 }
-                response_value(Ok(outcome))
+                encode_call::<ConfigSetCall>(Ok(outcome))
             }
             ManagementMethod::ConfigPatch => {
                 let request = parse_call::<ConfigPatchCall>(params)?;
@@ -196,10 +314,10 @@ impl<'a> ManagementApplication<'a> {
                 if patch_requires_lifecycle_update(&outcome) {
                     self.lifecycle.config_changed().await;
                 }
-                response_value(Ok(outcome))
+                encode_call::<ConfigPatchCall>(Ok(outcome))
             }
             ManagementMethod::ModelsCatalogue => {
-                response_value(self.product.models_catalogue().await)
+                encode_call::<ModelsCatalogueCall>(self.product.models_catalogue().await)
             }
             ManagementMethod::ModelsSelect => {
                 let mut outcome = self
@@ -210,15 +328,15 @@ impl<'a> ManagementApplication<'a> {
                 if patch_requires_lifecycle_update(&outcome) {
                     self.lifecycle.config_changed().await;
                 }
-                response_value(Ok(outcome))
+                encode_call::<ModelsSelectCall>(Ok(outcome))
             }
-            ManagementMethod::CredentialSources => response_value(
+            ManagementMethod::CredentialSources => encode_call::<CredentialSourcesCall>(
                 self.product
                     .credential_sources(parse_call::<CredentialSourcesCall>(params)?)
                     .await,
             ),
             ManagementMethod::GraphGenesisOptions => {
-                response_value(self.product.genesis_options().await)
+                encode_call::<GraphGenesisOptionsCall>(self.product.genesis_options().await)
             }
             ManagementMethod::GraphEmbeddingProfile => {
                 let session = self
@@ -226,7 +344,9 @@ impl<'a> ManagementApplication<'a> {
                     .read_session()
                     .await
                     .map_err(database_access_error)?;
-                response_value(self.product.embedding_profile(&session).await)
+                encode_call::<GraphEmbeddingProfileCall>(
+                    self.product.embedding_profile(&session).await,
+                )
             }
             ManagementMethod::GraphConfigureGenesis => {
                 let mut outcome = self
@@ -237,7 +357,7 @@ impl<'a> ManagementApplication<'a> {
                 if patch_requires_lifecycle_update(&outcome) {
                     self.lifecycle.config_changed().await;
                 }
-                response_value(Ok(outcome))
+                encode_call::<GraphConfigureGenesisCall>(Ok(outcome))
             }
             ManagementMethod::GraphConvergeGenesis => {
                 let request = parse_call::<GraphConvergeGenesisCall>(params)?;
@@ -246,176 +366,11 @@ impl<'a> ManagementApplication<'a> {
                     .mutation_session(&request.expected_revision)
                     .await
                     .map_err(database_access_error)?;
-                response_value(self.product.converge_genesis(&session, request).await)
-            }
-        }
-    }
-
-    async fn readiness_value(&self) -> Result<serde_json::Value, ManagementResponseError> {
-        let report = self.readiness_report().await?;
-        serde_json::to_value(report)
-            .map_err(|_| internal_error("readiness response encoding failed"))
-    }
-
-    async fn lifecycle_value(
-        &self,
-        method: ManagementMethod,
-    ) -> Result<serde_json::Value, ManagementResponseError> {
-        match method {
-            ManagementMethod::ManagerSnapshot => lifecycle_value(self.lifecycle.snapshot().await),
-            ManagementMethod::RuntimeStart => lifecycle_value(self.lifecycle.start().await),
-            ManagementMethod::RuntimeStop => lifecycle_value(self.lifecycle.stop().await),
-            ManagementMethod::RuntimeRestart => lifecycle_value(self.lifecycle.restart().await),
-            ManagementMethod::ManagerShutdown => lifecycle_value(self.lifecycle.shutdown().await),
-            ManagementMethod::ServerStatus => {
-                lifecycle_value(self.lifecycle.runtime_status().await)
-            }
-            _ => Err(internal_error("lifecycle dispatch invariant failed")),
-        }
-    }
-
-    async fn token_value(
-        &self,
-        method: ManagementMethod,
-        params: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, ManagementResponseError> {
-        match method {
-            ManagementMethod::TokenList => {
-                let request = parse_call::<TokenListCall>(params)?;
-                response_value(self.tokens.list(request).await.map_err(token::public_error))
-            }
-            ManagementMethod::TokenCreate => {
-                let request = parse_call::<TokenCreateCall>(params)?;
-                response_value(
-                    self.tokens
-                        .create(request)
-                        .await
-                        .map_err(token::public_error),
+                encode_call::<GraphConvergeGenesisCall>(
+                    self.product.converge_genesis(&session, request).await,
                 )
             }
-            ManagementMethod::TokenRevoke => {
-                let request = parse_call::<TokenRevokeCall>(params)?;
-                response_value(
-                    self.tokens
-                        .revoke(request)
-                        .await
-                        .map_err(token::public_error),
-                )
-            }
-            ManagementMethod::TokenRevokeAll => {
-                let request = parse_call::<TokenRevokeAllCall>(params)?;
-                response_value(
-                    self.tokens
-                        .revoke_all(request)
-                        .await
-                        .map_err(token::public_error),
-                )
-            }
-            _ => Err(internal_error("token dispatch invariant failed")),
         }
-    }
-
-    async fn initialise_database_value(
-        &self,
-        params: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, ManagementResponseError> {
-        let request = parse_call::<DatabaseInitialiseCall>(params)?;
-        response_value(
-            self.database
-                .initialise(request)
-                .await
-                .map_err(database_initialise_error),
-        )
-    }
-
-    async fn register_project_value(
-        &self,
-        params: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, ManagementResponseError> {
-        let request = parse_call::<ProjectRegisterCall>(params)?;
-        response_value(
-            self.projects
-                .register(request)
-                .await
-                .map_err(project::public_error),
-        )
-    }
-
-    async fn list_projects_value(
-        &self,
-        params: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, ManagementResponseError> {
-        let request = parse_call::<ProjectListCall>(params)?;
-        response_value(
-            self.projects
-                .list(request)
-                .await
-                .map_err(project::public_error),
-        )
-    }
-
-    async fn integration_value(
-        &self,
-        params: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, ManagementResponseError> {
-        let request = parse_call::<IntegrationMcpConfigCall>(params)?;
-        response_value(
-            self.integration
-                .mcp_config(request)
-                .await
-                .map_err(integration_error),
-        )
-    }
-
-    async fn reindex_value(
-        &self,
-        method: ManagementMethod,
-        params: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, ManagementResponseError> {
-        match method {
-            ManagementMethod::ReindexRun => {
-                let request = parse_call::<ReindexRunCall>(params)?;
-                response_value(
-                    self.reindex
-                        .run(self.product, request)
-                        .await
-                        .map_err(reindex_error),
-                )
-            }
-            ManagementMethod::ReindexCancel => {
-                let request = parse_call::<ReindexCancelCall>(params)?;
-                response_value(self.reindex.cancel(request).await.map_err(reindex_error))
-            }
-            ManagementMethod::ReindexPrune => {
-                let request = parse_call::<ReindexPruneCall>(params)?;
-                response_value(self.reindex.prune(request).await.map_err(reindex_error))
-            }
-            _ => Err(internal_error("reindex dispatch invariant failed")),
-        }
-    }
-
-    async fn thread_value(
-        &self,
-        params: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, ManagementResponseError> {
-        let request = parse_call::<ThreadsPruneCall>(params)?;
-        response_value(self.threads.prune(request).await.map_err(thread_error))
-    }
-
-    async fn bootstrap_value(
-        &self,
-        params: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, ManagementResponseError> {
-        let request = parse_call::<BootstrapRunCall>(params)?;
-        let bootstrap = BootstrapAdministration::new(
-            self.config,
-            self.lifecycle,
-            self.database.clone(),
-            self.projects.clone(),
-            self.tokens.clone(),
-            self.integration.clone(),
-        );
-        response_value(bootstrap.run(self.product, request).await)
     }
 
     async fn refresh_readiness(&self) -> Result<(), ManagementResponseError> {
@@ -448,23 +403,31 @@ where
         .map_err(|_| invalid_request("management request parameters are invalid"))
 }
 
-fn lifecycle_value<T: serde::Serialize>(
-    result: Option<T>,
-) -> Result<serde_json::Value, ManagementResponseError> {
+fn encode_lifecycle<C: ManagementCall>(
+    result: Option<C::Response>,
+) -> Result<serde_json::Value, ManagementResponseError>
+where
+    C::Response: serde::Serialize,
+{
     let value = result.ok_or_else(|| internal_error("lifecycle owner is unavailable"))?;
     serde_json::to_value(value).map_err(|_| internal_error("lifecycle response encoding failed"))
 }
 
-fn config_value<T: serde::Serialize>(
-    result: Result<T, ConfigAuthorityError>,
-) -> Result<serde_json::Value, ManagementResponseError> {
-    let value = result.map_err(management_error)?;
-    serde_json::to_value(value).map_err(|_| internal_error("management response encoding failed"))
+fn encode_config<C: ManagementCall>(
+    result: Result<C::Response, ConfigAuthorityError>,
+) -> Result<serde_json::Value, ManagementResponseError>
+where
+    C::Response: serde::Serialize,
+{
+    encode_call::<C>(result.map_err(management_error))
 }
 
-fn response_value<T: serde::Serialize>(
-    result: Result<T, ManagementResponseError>,
-) -> Result<serde_json::Value, ManagementResponseError> {
+fn encode_call<C: ManagementCall>(
+    result: Result<C::Response, ManagementResponseError>,
+) -> Result<serde_json::Value, ManagementResponseError>
+where
+    C::Response: serde::Serialize,
+{
     let value = result?;
     serde_json::to_value(value).map_err(|_| internal_error("management response encoding failed"))
 }
