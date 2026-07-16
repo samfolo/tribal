@@ -7,7 +7,7 @@
 use std::io;
 
 use thiserror::Error;
-use tribal_config::{ConfigError, MissingApiKeyKind};
+use tribal_config::{ConfigError, ProviderConnectionResolutionError};
 use tribal_db::DbError;
 use tribal_domain::{ProviderKind, TransportKind};
 use tribal_inference::ProviderRegistryError;
@@ -337,25 +337,21 @@ pub enum AppError {
     },
 
     /// The active embedding profile's provider requires a credential the
-    /// catalogue cannot supply, so the server cannot embed and refuses to
+    /// provider connections cannot supply, so the server cannot embed and refuses to
     /// start (fail-closed). The message names which fail-closed shape this
     /// is and the connection an operator must fix or add.
     #[error(
-        "active embedding profile expects credentials for {provider} at {base_url}, \
-         but {kind}; supply the matching entry's api_key, or add \
-         `credentials.{provider}_default` with that provider_kind/base_url and an \
-         api_key, or set TRIBAL_CREDENTIALS__{provider_upper}_DEFAULT__API_KEY"
+        "active embedding profile expects credentials for {provider} at {base_url}: \
+         {source}; add or repair the matching named provider connection"
     )]
     EmbeddingCredentialUnresolved {
         /// The active profile's provider kind.
         provider: ProviderKind,
         /// The active profile's normalised base URL.
         base_url: String,
-        /// Which fail-closed shape the lookup hit: no matching entry, or a
-        /// matching entry whose key is empty.
-        kind: MissingApiKeyKind,
-        /// The upper-cased provider kind for the env-var hint.
-        provider_upper: String,
+        /// Typed provider-connection resolution failure.
+        #[source]
+        source: ProviderConnectionResolutionError,
     },
 }
 
@@ -682,8 +678,10 @@ mod tests {
         let err = AppError::EmbeddingCredentialUnresolved {
             provider: ProviderKind::OpenAi,
             base_url: "https://api.openai.com:443/v1".to_owned(),
-            kind: MissingApiKeyKind::NoMatchingEntry,
-            provider_upper: "OPENAI".to_owned(),
+            source: ProviderConnectionResolutionError::MissingEndpoint {
+                provider: ProviderKind::OpenAi,
+                normalised_base_url: "https://api.openai.com:443/v1".to_owned(),
+            },
         };
         let display = err.to_string();
         assert!(display.contains("openai"), "got: {display}");
@@ -692,11 +690,11 @@ mod tests {
             "got: {display}",
         );
         assert!(
-            display.contains("no catalogue entry matches"),
+            display.contains("no provider connection owns"),
             "got: {display}",
         );
         assert!(
-            display.contains("TRIBAL_CREDENTIALS__OPENAI_DEFAULT__API_KEY"),
+            display.contains("matching named provider connection"),
             "got: {display}",
         );
     }
@@ -706,14 +704,14 @@ mod tests {
         let err = AppError::EmbeddingCredentialUnresolved {
             provider: ProviderKind::OpenAi,
             base_url: "https://api.openai.com:443/v1".to_owned(),
-            kind: MissingApiKeyKind::EmptyKey,
-            provider_upper: "OPENAI".to_owned(),
+            source: ProviderConnectionResolutionError::MissingCredential {
+                connection: tribal_domain::ProviderConnectionName::parse("openai_default")
+                    .expect("fixture connection name is valid"),
+                provider: ProviderKind::OpenAi,
+            },
         };
         let display = err.to_string();
-        assert!(
-            display.contains("the matching catalogue entry has an empty key"),
-            "got: {display}",
-        );
+        assert!(display.contains("has no usable API key"), "got: {display}");
     }
 
     #[test]

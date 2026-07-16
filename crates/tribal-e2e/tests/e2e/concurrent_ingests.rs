@@ -1,8 +1,10 @@
 use serde_json::json;
+use tribal_config::InferenceStage;
 use tribal_domain::ProviderKind;
 
 use crate::harness::{
     assertions::assert_success,
+    config::use_inference_provider,
     fixtures::{ExtractionFixture, RelationFixture, candidate, novel},
     server::{DEFAULT_PRINCIPAL_KEY, TestHarness},
     tool_call::tool_result_json,
@@ -26,9 +28,12 @@ async fn test_concurrent_identical_ingests() {
     let mut harness = TestHarness::init(|setup| {
         // OpenAI relation exercises the OpenAI envelope abstraction.
         setup.config(|c| {
-            c.inference.relation.provider = ProviderKind::OpenAi;
-            c.inference.relation.api_key =
-                Some("sk-e2e-000000".parse().expect("test fixture is valid"));
+            use_inference_provider(
+                c,
+                InferenceStage::Relation,
+                ProviderKind::OpenAi,
+                Some("sk-e2e-000000"),
+            );
         });
     })
     .await;

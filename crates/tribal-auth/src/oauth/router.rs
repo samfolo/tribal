@@ -153,7 +153,9 @@ mod tests {
     fn runtime() -> Arc<OAuthRuntimeConfig> {
         let issuer = Url::parse("http://127.0.0.1:8080").unwrap();
         let resource = Url::parse("http://127.0.0.1:8080/mcp").unwrap();
-        Arc::new(OAuthRuntimeConfig::build(&OAuthConfig::default(), &issuer, &resource).unwrap())
+        Arc::new(
+            OAuthRuntimeConfig::build(&OAuthConfig::default(), &issuer, &resource, true).unwrap(),
+        )
     }
 
     async fn body_as_json(response: axum::response::Response) -> serde_json::Value {

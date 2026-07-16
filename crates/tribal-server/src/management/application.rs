@@ -1,5 +1,7 @@
 //! Manager-private operator application façade.
 
+use std::collections::BTreeMap;
+
 mod bootstrap;
 pub(crate) mod credential;
 mod database;
@@ -25,16 +27,19 @@ use reindex::ReindexAdministration;
 use thread::ThreadAdministration;
 use token::TokenAdministration;
 use tribal_wire::management::{
-    AdministrationFailure, BootstrapRunCall, CheckReportCall, ConfigGetAllCall, ConfigGetCall,
-    ConfigPatchCall, ConfigPathCall, ConfigSchemaCall, ConfigSetCall, ConfigValidateCall,
-    ConfigValidation, ConfigViolation, CredentialProbeCall, CredentialSourcesCall,
+    AdministrationFailure, AuthenticationSettingsCall, BootstrapRunCall, CheckReportCall,
+    ConfigGetAllCall, ConfigGetCall, ConfigPatchCall, ConfigPatchValidation, ConfigPathCall,
+    ConfigSchemaCall, ConfigSetCall, ConfigValidatePatchCall, DatabaseConnectionCall,
     DatabaseInitialiseCall, DatabaseProbeCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall,
     GraphEmbeddingProfileCall, GraphGenesisOptionsCall, IntegrationMcpConfigCall, LogsTailCall,
     ManagementCall, ManagementError, ManagementMethod, ManagementResponseError,
-    ManagerShutdownCall, ManagerSnapshotCall, ModelsCatalogueCall, ModelsSelectCall,
-    ProjectListCall, ProjectRegisterCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall,
-    RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall, ThreadsPruneCall,
-    TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
+    ManagerShutdownCall, ManagerSnapshot, ManagerSnapshotCall, ModelsCatalogueCall,
+    PatchConfigViolation, ProcessingProfileCall, ProcessingProfileSetCall, ProjectListCall,
+    ProjectRegisterCall, ProviderConnectionRemoveCall, ProviderConnectionUpsertCall,
+    ProviderConnectionsCall, ProviderProbeCall, ReindexCancelCall, ReindexPruneCall,
+    ReindexRunCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall,
+    SettingsResetPreviewCall, ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall,
+    TokenRevokeCall,
 };
 
 use super::{
@@ -103,9 +108,19 @@ impl<'a> ManagementApplication<'a> {
         let operation = OperationContext::new(self.shutdown.clone());
         operation.checkpoint().map_err(operation::public_error)?;
         match method {
-            ManagementMethod::ManagerSnapshot => encode_lifecycle::<ManagerSnapshotCall>(
-                self.lifecycle.snapshot_for(&operation).await,
-            ),
+            ManagementMethod::ManagerSnapshot => {
+                let lifecycle = self
+                    .lifecycle
+                    .snapshot_for(&operation)
+                    .await
+                    .map_err(operation::public_error)?
+                    .ok_or_else(|| internal_error("lifecycle owner is unavailable"))?;
+                let settings = self.product.setup_snapshot(&operation, &lifecycle).await?;
+                encode_call::<ManagerSnapshotCall>(Ok(ManagerSnapshot {
+                    lifecycle,
+                    settings,
+                }))
+            }
             ManagementMethod::RuntimeStart => {
                 encode_lifecycle::<RuntimeStartCall>(self.lifecycle.start_for(&operation).await)
             }
@@ -254,22 +269,71 @@ impl<'a> ManagementApplication<'a> {
                 encode_call::<BootstrapRunCall>(bootstrap.run(self.product, request).await)
             }
             ManagementMethod::DatabaseProbe => {
+                let request = parse_call::<DatabaseProbeCall>(params)?;
                 let receipt = operation
-                    .cancel_safe(self.probe.database())
+                    .cancel_safe(self.probe.database(request))
                     .await
                     .map_err(operation::public_error)?
                     .map_err(probe_error)?;
                 self.refresh_readiness(&operation).await?;
                 encode_call::<DatabaseProbeCall>(Ok(receipt))
             }
-            ManagementMethod::CredentialProbe => {
-                let receipts = operation
-                    .cancel_safe(self.probe.credentials())
+            ManagementMethod::DatabaseConnection => encode_call::<DatabaseConnectionCall>(
+                self.product.database_connection(&operation).await,
+            ),
+            ManagementMethod::AuthenticationSettings => encode_call::<AuthenticationSettingsCall>(
+                self.product.authentication_settings(&operation).await,
+            ),
+            ManagementMethod::ProviderConnections => {
+                let receipts = self.probe.provider_receipts().await.map_err(probe_error)?;
+                encode_call::<ProviderConnectionsCall>(
+                    self.product
+                        .provider_connections(&operation, &receipts)
+                        .await,
+                )
+            }
+            ManagementMethod::ProviderConnectionUpsert => {
+                let mut receipt = self
+                    .product
+                    .upsert_provider_connection(
+                        &operation,
+                        parse_call::<ProviderConnectionUpsertCall>(params)?,
+                    )
+                    .await?;
+                project_patch_effects(self.lifecycle, &mut receipt.outcome, Vec::new()).await;
+                if patch_requires_lifecycle_update(&receipt.outcome) {
+                    self.lifecycle.config_changed().await;
+                }
+                encode_call::<ProviderConnectionUpsertCall>(Ok(receipt))
+            }
+            ManagementMethod::ProviderConnectionRemove => {
+                let request = parse_call::<ProviderConnectionRemoveCall>(params)?;
+                let session = self
+                    .database
+                    .mutation_session(&operation, &request.expected_revision)
+                    .await
+                    .map_err(database_access_error)?;
+                let mut receipt = self
+                    .product
+                    .remove_provider_connection(&session, request)
+                    .await?;
+                project_patch_effects(self.lifecycle, &mut receipt.outcome, Vec::new()).await;
+                if patch_requires_lifecycle_update(&receipt.outcome) {
+                    self.lifecycle.config_changed().await;
+                }
+                encode_call::<ProviderConnectionRemoveCall>(Ok(receipt))
+            }
+            ManagementMethod::ProviderProbe => {
+                let response = operation
+                    .cancel_safe(
+                        self.probe
+                            .provider(parse_call::<ProviderProbeCall>(params)?),
+                    )
                     .await
                     .map_err(operation::public_error)?
                     .map_err(probe_error)?;
                 self.refresh_readiness(&operation).await?;
-                encode_call::<CredentialProbeCall>(Ok(receipts))
+                encode_call::<ProviderProbeCall>(Ok(response))
             }
             ManagementMethod::ConfigGetAll => encode_call::<ConfigGetAllCall>(
                 self.config
@@ -296,22 +360,28 @@ impl<'a> ManagementApplication<'a> {
                     .await
                     .map_err(ConfigWorkerRequestError::into_public_error),
             ),
-            ManagementMethod::ConfigValidate => {
-                let request = parse_call::<ConfigValidateCall>(params)?;
-                let violations = self
+            ManagementMethod::ConfigValidatePatch => {
+                let request = parse_call::<ConfigValidatePatchCall>(params)?;
+                let (revision, violations) = self
                     .config
                     .for_operation(&operation)
-                    .validate(request.key.as_str().to_owned(), request.value)
+                    .validate_patch(request)
                     .await
                     .map_err(ConfigWorkerRequestError::into_public_error)?;
-                encode_call::<ConfigValidateCall>(Ok(ConfigValidation {
-                    valid: violations.is_empty(),
-                    violations: violations
+                let mut grouped = BTreeMap::<String, Vec<_>>::new();
+                for violation in violations {
+                    if let Ok(field) = tribal_domain::ConfigFieldPath::parse(&violation.key) {
+                        let fields = grouped.entry(violation.message).or_default();
+                        if !fields.contains(&field) {
+                            fields.push(field);
+                        }
+                    }
+                }
+                encode_call::<ConfigValidatePatchCall>(Ok(ConfigPatchValidation {
+                    revision,
+                    violations: grouped
                         .into_iter()
-                        .map(|violation| ConfigViolation {
-                            key: violation.key,
-                            message: violation.message,
-                        })
+                        .map(|(message, fields)| PatchConfigViolation { fields, message })
                         .collect(),
                 }))
             }
@@ -372,20 +442,26 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::ModelsCatalogue => {
                 encode_call::<ModelsCatalogueCall>(self.product.models_catalogue(&operation).await)
             }
-            ManagementMethod::ModelsSelect => {
+            ManagementMethod::ProcessingProfile => encode_call::<ProcessingProfileCall>(
+                self.product.processing_profile(&operation).await,
+            ),
+            ManagementMethod::ProcessingProfileSet => {
                 let mut outcome = self
                     .product
-                    .select_model(&operation, parse_call::<ModelsSelectCall>(params)?)
+                    .set_processing_profile(
+                        &operation,
+                        parse_call::<ProcessingProfileSetCall>(params)?,
+                    )
                     .await?;
                 project_patch_effects(self.lifecycle, &mut outcome, Vec::new()).await;
                 if patch_requires_lifecycle_update(&outcome) {
                     self.lifecycle.config_changed().await;
                 }
-                encode_call::<ModelsSelectCall>(Ok(outcome))
+                encode_call::<ProcessingProfileSetCall>(Ok(outcome))
             }
-            ManagementMethod::CredentialSources => encode_call::<CredentialSourcesCall>(
+            ManagementMethod::SettingsResetPreview => encode_call::<SettingsResetPreviewCall>(
                 self.product
-                    .credential_sources(&operation, parse_call::<CredentialSourcesCall>(params)?)
+                    .reset_preview(&operation, parse_call::<SettingsResetPreviewCall>(params)?)
                     .await,
             ),
             ManagementMethod::GraphGenesisOptions => encode_call::<GraphGenesisOptionsCall>(
@@ -601,18 +677,20 @@ fn internal_error(message: &str) -> ManagementResponseError {
     }
 }
 
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Result::map_err transfers ownership of the typed probe failure"
-)]
 fn probe_error(error: ProbeError) -> ManagementResponseError {
-    private_failure(
-        &error,
-        ManagementResponseError {
-            message: "external probe is unavailable".to_owned(),
-            error: ManagementError::ProbeUnavailable,
+    match error {
+        ProbeError::RevisionConflict { expected, actual } => ManagementResponseError {
+            message: "configuration changed during the probe".to_owned(),
+            error: ManagementError::ConfigConflict { expected, actual },
         },
-    )
+        other => private_failure(
+            &other,
+            ManagementResponseError {
+                message: "external probe is unavailable".to_owned(),
+                error: ManagementError::ProbeUnavailable,
+            },
+        ),
+    }
 }
 
 fn database_initialise_error(error: DatabaseInitialiseError) -> ManagementResponseError {

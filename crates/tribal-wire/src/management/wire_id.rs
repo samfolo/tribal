@@ -156,13 +156,6 @@ define_canonical_id!(
     "canonical-base64url-32"
 );
 define_canonical_id!(
-    redacted,
-    CredentialSourceId,
-    "credsrc_",
-    r"^credsrc_[A-Za-z0-9_-]{43}$",
-    "redacted-canonical-base64url-32"
-);
-define_canonical_id!(
     visible,
     PanicCorrelationId,
     "pcorr_",

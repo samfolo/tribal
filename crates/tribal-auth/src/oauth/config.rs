@@ -58,7 +58,8 @@ impl OAuthRuntimeConfig {
     ///
     /// `fallback_issuer` is used when `config.issuer_url` is `None` and
     /// `fallback_resource` is used when `config.resource_url` is `None`.
-    /// Callers supply these from the server's bind address at startup.
+    /// Callers supply these from the server's bind address at startup and
+    /// derive `dcr_enabled` from the admitted transport surface.
     ///
     /// # Errors
     ///
@@ -67,6 +68,7 @@ impl OAuthRuntimeConfig {
         config: &OAuthConfig,
         fallback_issuer: &Url,
         fallback_resource: &Url,
+        dcr_enabled: bool,
     ) -> Result<Self, OAuthRuntimeConfigError> {
         let issuer_url = parse_optional_url(config.issuer_url.as_deref(), fallback_issuer)
             .map_err(|input| OAuthRuntimeConfigError::IssuerUrlMalformed { input })?;
@@ -79,7 +81,7 @@ impl OAuthRuntimeConfig {
             resource_url,
             access_token_ttl: Duration::from_secs(config.access_token_ttl_hours * 3_600),
             authorization_code_ttl: Duration::from_secs(config.authorization_code_ttl_seconds),
-            dcr_enabled: config.dcr_enabled,
+            dcr_enabled,
         })
     }
 }
@@ -228,7 +230,7 @@ mod tests {
         };
         let issuer = url("http://127.0.0.1:8080");
         let resource = url("http://127.0.0.1:8080/mcp");
-        let runtime = OAuthRuntimeConfig::build(&config, &issuer, &resource).unwrap();
+        let runtime = OAuthRuntimeConfig::build(&config, &issuer, &resource, true).unwrap();
         assert_eq!(runtime.issuer_url, issuer);
         assert_eq!(runtime.resource_url, resource);
         assert_eq!(runtime.canonical_resource, "http://127.0.0.1:8080/mcp");
@@ -242,7 +244,7 @@ mod tests {
         };
         let issuer = url("http://127.0.0.1:8080");
         let resource = url("http://127.0.0.1:8080/mcp");
-        let err = OAuthRuntimeConfig::build(&config, &issuer, &resource).unwrap_err();
+        let err = OAuthRuntimeConfig::build(&config, &issuer, &resource, true).unwrap_err();
         assert!(matches!(
             err,
             OAuthRuntimeConfigError::IssuerUrlMalformed { .. }

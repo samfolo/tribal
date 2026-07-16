@@ -274,26 +274,6 @@ pub enum ConfigDiagnosticLocation {
         /// The validated schema-field identity.
         path: ConfigFieldPath,
     },
-    /// An entry in the dynamic credential catalogue.
-    CredentialEntry {
-        /// The raw user-authored map key.
-        key: String,
-        /// The invalid member, or none when the key itself is invalid.
-        member: Option<CredentialEntryMember>,
-    },
-}
-
-/// A member of a dynamic credential entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialEntryMember {
-    /// Credential provider kind.
-    ProviderKind,
-    /// Credential endpoint URL.
-    BaseUrl,
-    /// Credential API key.
-    ApiKey,
 }
 
 /// The active configuration file's location.
@@ -410,17 +390,5 @@ mod tests {
             result.unwrap_err(),
             ReadinessRefinementError::HealthIsNotDegraded,
         );
-    }
-
-    #[test]
-    fn test_dynamic_credential_keys_remain_data_not_field_paths() {
-        let location = ConfigDiagnosticLocation::CredentialEntry {
-            key: "openai.prod-west".to_owned(),
-            member: Some(CredentialEntryMember::ApiKey),
-        };
-        let encoded = serde_json::to_value(&location).expect("location serialises");
-        let decoded: ConfigDiagnosticLocation =
-            serde_json::from_value(encoded).expect("location deserialises");
-        assert_eq!(decoded, location);
     }
 }

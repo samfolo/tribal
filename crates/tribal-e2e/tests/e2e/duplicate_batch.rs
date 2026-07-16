@@ -1,9 +1,11 @@
 use serde_json::json;
+use tribal_config::InferenceStage;
 use tribal_domain::{JobOutcome, KnowledgeKind, ProviderKind};
 use tribal_test_utils::item;
 
 use crate::harness::{
     assertions::assert_success,
+    config::use_inference_provider,
     fixtures::{ExtractionFixture, RelationFixture, candidate, duplicate},
     server::TestHarness,
     tool_call::tool_result_json,
@@ -24,9 +26,12 @@ async fn test_duplicate_only_batch() {
         // envelope handling across all three provider implementations.
         setup.config(|c| {
             crate::harness::config::use_openai_embedding(c, "sk-e2e-000000");
-            c.inference.extraction.provider = ProviderKind::Anthropic;
-            c.inference.extraction.api_key =
-                Some("sk-ant-e2e-000000".parse().expect("test fixture is valid"));
+            use_inference_provider(
+                c,
+                InferenceStage::Extraction,
+                ProviderKind::Anthropic,
+                Some("sk-ant-e2e-000000"),
+            );
         });
 
         setup.graph(|g| {

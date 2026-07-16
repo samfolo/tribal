@@ -28,11 +28,11 @@ use crate::{
     commands::serve::ServeProjectMode,
     error::AppError,
     startup::{
-        CatalogueCredentialResolver, POOL_NAME_MCP, POOL_NAME_WORKER, build_provider_registry,
-        check_first_run, completion_stage_specs, create_pool_with_retry, ensure_prompt_files,
-        generate_instance_id, init_prompt_watcher, load_prompts, load_prompts_embedded,
-        probe_startup_providers, provision_genesis, read_active_profile, resolve_project_mode,
-        run_migrations, validate_embedding_identity,
+        POOL_NAME_MCP, POOL_NAME_WORKER, ProviderConnectionCredentialResolver,
+        build_provider_registry, check_first_run, completion_stage_specs, create_pool_with_retry,
+        ensure_prompt_files, generate_instance_id, init_prompt_watcher, load_prompts,
+        load_prompts_embedded, probe_startup_providers, provision_genesis, read_active_profile,
+        resolve_project_mode, run_migrations, validate_embedding_identity,
     },
 };
 
@@ -408,6 +408,7 @@ async fn bootstrap(
     // identity; the registry and provider are built from it, not from config.
     let active_profile = read_active_profile(&pool_mcp).await?;
     let registry = build_provider_registry(config, &active_profile)?;
+    let stage_specs = completion_stage_specs(config)?;
 
     // The gateway owns provider construction, credentials, permits, and
     // accounting; the ledger sink writes through the worker pool.
@@ -415,8 +416,10 @@ async fn bootstrap(
     let gateway = Arc::new(
         InferenceGateway::new(
             registry,
-            &completion_stage_specs(config),
-            Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
+            &stage_specs,
+            Arc::new(ProviderConnectionCredentialResolver::new(
+                config.provider_connections.clone(),
+            )),
             sink,
         )
         .map_err(|e| AppError::ProviderSetup {
@@ -447,7 +450,7 @@ async fn bootstrap(
     let worker = Arc::new(Worker::new(
         pool_worker.clone(),
         Arc::clone(&gateway),
-        completion_stage_specs(config),
+        stage_specs.clone(),
         config.agents.clone(),
         Arc::new(SharedActivePrompts(Arc::clone(&active_prompt_versions))),
         cancellation_token.clone(),
@@ -472,7 +475,7 @@ async fn bootstrap(
         .pool_worker(pool_worker)
         .instance_id(instance_id)
         .build_version(Arc::from(env!("TRIBAL_GIT_DESCRIBE")))
-        .stage_specs(completion_stage_specs(config))
+        .stage_specs(stage_specs)
         .embedding_dimensions(active_profile.dimensions())
         .pipeline_parameters(pipeline_parameters)
         .agents_config(config.agents.clone())

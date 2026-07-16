@@ -6,7 +6,7 @@
 
 use std::{borrow::Cow, fmt};
 
-use tribal_domain::ProviderKind;
+use tribal_domain::{ProviderConnectionName, ProviderKind};
 
 use crate::env::env_var_for_path;
 
@@ -310,14 +310,21 @@ pub enum ValidationError {
         floor: ComputedFloor,
     },
     // -- Semantic -------------------------------------------------------
-    /// Cloud-provider stage is missing its api-key.
-    MissingApiKey {
-        stage: ProviderStage,
-        provider: ProviderKind,
+    /// A typed provider reference does not resolve.
+    ProviderConnectionMissing {
+        field: ConfigPath,
+        connection: ProviderConnectionName,
     },
-    /// Provider stage has no endpoint URL and the provider has no default.
-    MissingBaseUrl {
-        stage: ProviderStage,
+    /// A provider connection cannot serve its referenced capability.
+    ProviderConnectionUnsupported {
+        field: ConfigPath,
+        connection: ProviderConnectionName,
+        provider: ProviderKind,
+        capability: &'static str,
+    },
+    /// A credential-bearing provider connection has no key.
+    ProviderConnectionCredentialMissing {
+        connection: ProviderConnectionName,
         provider: ProviderKind,
     },
     /// `server.bind_address` is set while `server.transport` is stdio.
@@ -334,21 +341,19 @@ pub enum ValidationError {
         value: String,
         requirement: &'static str,
     },
-    /// `oauth.dcr_enabled` is set with a non-loopback `server.bind_address`.
-    NonLoopbackDcrConflict,
-    /// `embedding.provider` is a provider that does not support
-    /// embedding.  Renders the provider name in both clauses for clarity.
-    EmbeddingProviderUnsupported { provider: ProviderKind },
     /// The embedding genesis seed selects the platform provider, which is
     /// served through the managed gateway, not addressed as a local provider.
-    PlatformProviderNotLocal { stage: ProviderStage },
-    /// A credential connection name does not match the `[a-z][a-z0-9_]*`
-    /// grammar required by the environment-override path.
-    InvalidCredentialName { name: String },
-    /// Two credential connections resolve to the same
-    /// `(provider_kind, normalised base URL)` endpoint, so resolution would
-    /// be ambiguous.
-    DuplicateCredentialEndpoint { first: String, second: String },
+    PlatformProviderNotLocal {
+        field: ConfigPath,
+        connection: ProviderConnectionName,
+    },
+    /// Two provider connections resolve to one endpoint identity.
+    DuplicateProviderConnectionEndpoint {
+        first: ProviderConnectionName,
+        second: ProviderConnectionName,
+        provider: ProviderKind,
+        normalised_base_url: String,
+    },
     /// `telemetry.file_export` requires `telemetry.enabled = true`.
     TelemetryFileExportRequiresEnabled,
     /// `logging.level` is not a parseable tracing filter directive.
@@ -365,6 +370,50 @@ impl ValidationError {
             field,
             value: 0,
             min: 1,
+        }
+    }
+
+    /// Returns every configuration field that participates in the violation.
+    #[must_use]
+    pub fn fields(&self) -> Vec<ConfigPath> {
+        match self {
+            Self::Empty { field }
+            | Self::ContainsWhitespace { field }
+            | Self::BelowMin { field, .. }
+            | Self::AboveMax { field, .. }
+            | Self::OutOfRange { field, .. }
+            | Self::ProviderConnectionMissing { field, .. }
+            | Self::ProviderConnectionUnsupported { field, .. }
+            | Self::UrlMalformed { field, .. }
+            | Self::UrlUnsupportedForm { field, .. }
+            | Self::PlatformProviderNotLocal { field, .. } => vec![field.clone()],
+            Self::FieldOrdering { subject, bound, .. } => {
+                vec![subject.field.clone(), bound.field.clone()]
+            }
+            Self::DerivedFloor { field, floor, .. } => {
+                vec![field.clone(), floor.addend.clone()]
+            }
+            Self::ProviderConnectionCredentialMissing { connection, .. } => vec![
+                ConfigPath::child("provider_connections", connection.as_str()).extend("api_key"),
+            ],
+            Self::BindAddressStdioConflict => vec![
+                ConfigPath::from_static("server.transport"),
+                ConfigPath::from_static("server.bind_address"),
+            ],
+            Self::BindAddressMalformed { .. } => {
+                vec![ConfigPath::from_static("server.bind_address")]
+            }
+            Self::DuplicateProviderConnectionEndpoint { first, second, .. } => vec![
+                ConfigPath::child("provider_connections", first.as_str()).extend("base_url"),
+                ConfigPath::child("provider_connections", second.as_str()).extend("base_url"),
+            ],
+            Self::TelemetryFileExportRequiresEnabled => vec![
+                ConfigPath::from_static("telemetry.enabled"),
+                ConfigPath::from_static("telemetry.file_export"),
+            ],
+            Self::LogFilterMalformed { .. } => {
+                vec![ConfigPath::from_static("logging.level")]
+            }
         }
     }
 }
@@ -429,18 +478,27 @@ impl fmt::Display for ValidationError {
             ),
 
             // -- Semantic ---------------------------------------------------
-            Self::MissingApiKey { stage, provider } => write!(
+            Self::ProviderConnectionMissing { field, connection } => {
+                write!(
+                    f,
+                    "{field} references missing provider connection '{connection}'"
+                )
+            }
+            Self::ProviderConnectionUnsupported {
+                field,
+                connection,
+                provider,
+                capability,
+            } => write!(
                 f,
-                "{} is required when {} is {provider}",
-                stage.api_key_path(),
-                stage.provider_path(),
+                "{field} references '{connection}', but {provider} does not support {capability}",
             ),
-
-            Self::MissingBaseUrl { stage, provider } => write!(
+            Self::ProviderConnectionCredentialMissing {
+                connection,
+                provider,
+            } => write!(
                 f,
-                "{} is required when {} is {provider}",
-                stage.base_url_path(),
-                stage.provider_path(),
+                "provider_connections.{connection}.api_key is required for {provider}",
             ),
 
             Self::BindAddressStdioConflict => {
@@ -464,38 +522,20 @@ impl fmt::Display for ValidationError {
                 write!(f, "{field} {requirement}: {value}")
             }
 
-            Self::NonLoopbackDcrConflict => write!(
+            Self::PlatformProviderNotLocal { field, connection } => write!(
                 f,
-                "oauth.dcr_enabled is not supported with a non-loopback \
-                 oauth.issuer_url or oauth.resource_url: dynamic client \
-                 registration is loopback-only, so set oauth.dcr_enabled = \
-                 false to use static tokens for a networked deployment",
-            ),
-
-            Self::EmbeddingProviderUnsupported { provider } => write!(
-                f,
-                "embedding.provider cannot be {provider}: \
-                 {provider} does not provide an embedding API",
-            ),
-
-            Self::PlatformProviderNotLocal { stage } => write!(
-                f,
-                "{} cannot be platform: the platform provider is served by the \
+                "{field} cannot reference '{connection}': the platform provider is served by the \
                  managed gateway, not a local provider",
-                stage.provider_path(),
             ),
-
-            Self::InvalidCredentialName { name } => write!(
+            Self::DuplicateProviderConnectionEndpoint {
+                first,
+                second,
+                provider,
+                normalised_base_url,
+            } => write!(
                 f,
-                "credential connection name {name:?} is invalid: names must \
-                 match [a-z][a-z0-9_]* (lowercase, no hyphens)",
-            ),
-
-            Self::DuplicateCredentialEndpoint { first, second } => write!(
-                f,
-                "credential connections {first:?} and {second:?} resolve to \
-                 the same endpoint: each (provider_kind, base_url) must be \
-                 unique",
+                "provider connections '{first}' and '{second}' both resolve to \
+                 {provider} endpoint '{normalised_base_url}'",
             ),
 
             Self::TelemetryFileExportRequiresEnabled => {
@@ -877,45 +917,26 @@ mod tests {
     // -- ValidationError Display: semantic ----------------------------------
 
     #[test]
-    fn test_display_missing_api_key_per_stage() {
-        // The embedding stage is omitted: its credential is catalogue-resolved,
-        // so `MissingApiKey` is never produced for it (the fail-closed
-        // diagnostic names the catalogue instead).
-        for (stage, expected) in [
-            (
-                ProviderStage::Extraction,
-                "inference.extraction.api_key is required when \
-                 inference.extraction.provider is openai",
-            ),
-            (
-                ProviderStage::Triage,
-                "inference.triage.api_key is required when \
-                 inference.triage.provider is openai",
-            ),
-            (
-                ProviderStage::Relation,
-                "inference.relation.api_key is required when \
-                 inference.relation.provider is openai",
-            ),
-        ] {
-            let err = ValidationError::MissingApiKey {
-                stage,
-                provider: ProviderKind::OpenAi,
-            };
-            assert_eq!(err.to_string(), expected);
-        }
-    }
-
-    #[test]
-    fn test_display_missing_base_url() {
-        let err = ValidationError::MissingBaseUrl {
-            stage: ProviderStage::Extraction,
-            provider: ProviderKind::Platform,
+    fn test_display_missing_provider_connection() {
+        let err = ValidationError::ProviderConnectionMissing {
+            field: ConfigPath::from_static("inference.extraction.connection"),
+            connection: ProviderConnectionName::parse("missing").unwrap(),
         };
         assert_eq!(
             err.to_string(),
-            "inference.extraction.base_url is required when \
-             inference.extraction.provider is platform",
+            "inference.extraction.connection references missing provider connection 'missing'",
+        );
+    }
+
+    #[test]
+    fn test_display_missing_provider_credential() {
+        let err = ValidationError::ProviderConnectionCredentialMissing {
+            connection: ProviderConnectionName::parse("openai_default").unwrap(),
+            provider: ProviderKind::OpenAi,
+        };
+        assert_eq!(
+            err.to_string(),
+            "provider_connections.openai_default.api_key is required for openai",
         );
     }
 
@@ -966,49 +987,31 @@ mod tests {
     }
 
     #[test]
-    fn test_display_non_loopback_dcr_conflict() {
-        let err = ValidationError::NonLoopbackDcrConflict;
-        assert_eq!(
-            err.to_string(),
-            "oauth.dcr_enabled is not supported with a non-loopback \
-             oauth.issuer_url or oauth.resource_url: dynamic client \
-             registration is loopback-only, so set oauth.dcr_enabled = \
-             false to use static tokens for a networked deployment",
-        );
-    }
-
-    #[test]
-    fn test_display_embedding_provider_unsupported() {
-        let err = ValidationError::EmbeddingProviderUnsupported {
+    fn test_display_provider_connection_unsupported() {
+        let err = ValidationError::ProviderConnectionUnsupported {
+            field: ConfigPath::from_static("init.embedding.connection"),
+            connection: ProviderConnectionName::parse("anthropic_default").unwrap(),
             provider: ProviderKind::Anthropic,
+            capability: "embedding",
         };
         assert_eq!(
             err.to_string(),
-            "embedding.provider cannot be anthropic: \
-             anthropic does not provide an embedding API",
+            "init.embedding.connection references 'anthropic_default', but anthropic does not support embedding",
         );
     }
 
     #[test]
-    fn test_display_invalid_credential_name() {
-        let err = ValidationError::InvalidCredentialName {
-            name: "open-ai".to_owned(),
+    fn test_display_duplicate_provider_endpoint() {
+        let err = ValidationError::DuplicateProviderConnectionEndpoint {
+            first: ProviderConnectionName::parse("a").unwrap(),
+            second: ProviderConnectionName::parse("b").unwrap(),
+            provider: ProviderKind::Ollama,
+            normalised_base_url: "http://localhost:11434".to_owned(),
         };
         let display = err.to_string();
-        assert!(display.contains("\"open-ai\""), "got: {display}");
-        assert!(display.contains("[a-z][a-z0-9_]*"), "got: {display}");
-    }
-
-    #[test]
-    fn test_display_duplicate_credential_endpoint() {
-        let err = ValidationError::DuplicateCredentialEndpoint {
-            first: "a".to_owned(),
-            second: "b".to_owned(),
-        };
-        let display = err.to_string();
-        assert!(display.contains("\"a\""), "got: {display}");
-        assert!(display.contains("\"b\""), "got: {display}");
-        assert!(display.contains("same endpoint"), "got: {display}");
+        assert!(display.contains("'a'"), "got: {display}");
+        assert!(display.contains("'b'"), "got: {display}");
+        assert!(display.contains("localhost:11434"), "got: {display}");
     }
 
     #[test]

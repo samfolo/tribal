@@ -27,13 +27,53 @@ use tribal_wire::management::{
     ManagementBootstrapRequest, ManagementBootstrapResponse, ManagementClientHello,
     ManagementError, ManagementResponseError, ManagementServerHello, ManagerAnnouncement,
     ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord, ManagerShutdownCall,
-    PageCursor, PageRequest, PageSize, ProjectList, ProjectListRequest, ProjectRegisterInput,
-    ProjectRegisterOutcome, ProjectRegisterRequest, ProjectRegistrationSource, RuntimeIdentity,
-    RuntimeStartResult, TokenCreateRequest, TokenCreateResult,
+    ManagerSnapshot, PageCursor, PageRequest, PageSize, ProjectList, ProjectListRequest,
+    ProjectRegisterInput, ProjectRegisterOutcome, ProjectRegisterRequest,
+    ProjectRegistrationSource, RuntimeIdentity, RuntimeStartResult, TokenCreateRequest,
+    TokenCreateResult,
 };
 
 /// Upper bound for manager replacement and child-process observations.
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(20);
+
+#[test]
+fn test_manager_ipc_telemetry_excludes_request_payloads() {
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    std::fs::write(&config_path, "database: [").expect("invalid config writes");
+    let mut manager = manager_command(&config_path, temp.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("manager spawns");
+    let announcement = continuing_announcement(read_manager_record(&mut manager));
+    let mut client = handshake(&announcement);
+    let sentinel = "sentinel-management-request-secret";
+
+    let _ = call_error(
+        &mut client,
+        1,
+        "graph.embedding_profile",
+        Some(&serde_json::json!({ "secret": sentinel })),
+    );
+    let _: tribal_wire::management::ManagerShutdownResult =
+        call(&mut client, 2, "manager.shutdown", None);
+    wait_for_success(&mut manager, "manager telemetry shutdown");
+
+    let mut stderr = String::new();
+    manager
+        .stderr
+        .take()
+        .expect("manager stderr is piped")
+        .read_to_string(&mut stderr)
+        .expect("manager stderr reads");
+    assert!(stderr.contains("management request refused"));
+    assert!(stderr.contains("graph.embedding_profile"));
+    assert!(!stderr.contains(sentinel));
+}
 
 #[test]
 fn manager_shutdown_projection() {
@@ -255,12 +295,14 @@ async fn connector_concurrent_first_launch() {
         .client_mut()
         .call::<tribal_wire::management::ManagerSnapshotCall>(&())
         .await
-        .expect("first connector calls manager");
+        .expect("first connector calls manager")
+        .lifecycle;
     let second_snapshot: LifecycleSnapshot = second
         .client_mut()
         .call::<tribal_wire::management::ManagerSnapshotCall>(&())
         .await
-        .expect("second connector calls manager");
+        .expect("second connector calls manager")
+        .lifecycle;
     assert_eq!(
         first_snapshot.header.manager_instance_id,
         second_snapshot.header.manager_instance_id
@@ -469,7 +511,7 @@ fn test_invalid_config_manager_repairs_without_restart() {
 
     let mut reader = handshake(&announcement);
 
-    let snapshot: LifecycleSnapshot = call(&mut reader, 1, "manager.snapshot", None);
+    let snapshot = lifecycle_snapshot(&mut reader, 1);
     assert_eq!(phase(&snapshot), "unconfigured");
     let initial_revision = snapshot.header.revision;
     let document: ConfigDocument = call(&mut reader, 2, "config.getAll", None);
@@ -493,7 +535,7 @@ fn test_invalid_config_manager_repairs_without_restart() {
 
     let mut request_id = 4;
     let repaired = poll_until(|| {
-        let snapshot: LifecycleSnapshot = call(&mut reader, request_id, "manager.snapshot", None);
+        let snapshot = lifecycle_snapshot(&mut reader, request_id);
         request_id += 1;
         (snapshot.header.revision > initial_revision && configuration_is_valid(&snapshot))
             .then_some(())
@@ -1400,7 +1442,7 @@ fn handshake_version(
 fn wait_for_start_clear(reader: &mut BufReader<UnixStream>) {
     let mut id = 10;
     let clear = poll_until(|| {
-        let snapshot: LifecycleSnapshot = call(reader, id, "manager.snapshot", None);
+        let snapshot = lifecycle_snapshot(reader, id);
         id += 1;
         if matches!(
             snapshot.phase,
@@ -1418,7 +1460,7 @@ fn wait_for_start_clear(reader: &mut BufReader<UnixStream>) {
 fn wait_for_runtime(reader: &mut BufReader<UnixStream>, expected: &RuntimeIdentity) {
     let mut id = 20;
     let recovered = poll_until(|| {
-        let snapshot: LifecycleSnapshot = call(reader, id, "manager.snapshot", None);
+        let snapshot = lifecycle_snapshot(reader, id);
         id += 1;
         if runtime_from_snapshot(&snapshot) == Some(expected) {
             return Some(());
@@ -1429,6 +1471,11 @@ fn wait_for_runtime(reader: &mut BufReader<UnixStream>, expected: &RuntimeIdenti
         recovered.is_some(),
         "recovered manager did not publish the expected runtime"
     );
+}
+
+fn lifecycle_snapshot(reader: &mut BufReader<UnixStream>, id: u64) -> LifecycleSnapshot {
+    let snapshot: ManagerSnapshot = call(reader, id, "manager.snapshot", None);
+    snapshot.lifecycle
 }
 
 fn runtime_from_snapshot(snapshot: &LifecycleSnapshot) -> Option<&RuntimeIdentity> {

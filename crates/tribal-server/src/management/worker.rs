@@ -11,15 +11,16 @@ use hmac::Mac as _;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tribal_wire::management::{
     ConfigChangeEvent, ConfigChangeSource, ConfigDocument, ConfigFilePath, ConfigGetRequest,
-    ConfigPatchOutcome, ConfigPatchRequest, ConfigSetRequest, ConfigValue, ConfigWriteEffect,
-    ConfigWriteOutcome, ManagementResponseError, PanicCorrelationId,
+    ConfigPatchOutcome, ConfigPatchRequest, ConfigRevision, ConfigSetRequest,
+    ConfigValidatePatchRequest, ConfigValue, ConfigWriteEffect, ConfigWriteOutcome,
+    ManagementResponseError, PanicCorrelationId,
 };
 
 use super::{
     application::operation::{self, OperationContext, OperationError},
     configuration::{
         ConfigAuthority, ConfigAuthorityError, ConfigCheckSnapshot, ConfigProbeSnapshot,
-        CredentialMaterial, ResolvedConfigSnapshot, management_error,
+        ResolvedConfigSnapshot, management_error,
     },
 };
 
@@ -127,12 +128,12 @@ enum ConfigCommand {
         request: ConfigPatchRequest,
         response: ConfigResponse<Result<ConfigPatchOutcome, ConfigAuthorityError>>,
     },
-    Validate {
-        key: String,
-        value: serde_json::Value,
-        response: ConfigResponse<Result<Vec<tribal_config::ConfigViolation>, ConfigAuthorityError>>,
+    ValidatePatch {
+        request: ConfigValidatePatchRequest,
+        response: ConfigResponse<
+            Result<(ConfigRevision, Vec<tribal_config::ConfigViolation>), ConfigAuthorityError>,
+        >,
     },
-    CredentialMaterials(ConfigResponse<Result<Vec<CredentialMaterial>, ConfigAuthorityError>>),
     ProbeSnapshot(ConfigResponse<Result<ConfigProbeSnapshot, ConfigAuthorityError>>),
     CheckSnapshot(ConfigResponse<Result<ConfigCheckSnapshot, ConfigAuthorityError>>),
     ResolvedSnapshot(ConfigResponse<Result<ResolvedConfigSnapshot, ConfigAuthorityError>>),
@@ -312,15 +313,8 @@ fn dispatch(
             }
             let _ = response.send(result);
         }
-        ConfigCommand::Validate {
-            key,
-            value,
-            response,
-        } => {
-            let _ = response.send(admitted.map(|()| authority.validate_value(&key, value)));
-        }
-        ConfigCommand::CredentialMaterials(response) => {
-            let _ = response.send(admitted.map(|()| authority.credential_materials()));
+        ConfigCommand::ValidatePatch { request, response } => {
+            let _ = response.send(admitted.map(|()| authority.validate_patch(&request)));
         }
         ConfigCommand::ProbeSnapshot(response) => {
             let _ = response.send(admitted.map(|()| authority.probe_snapshot()));
@@ -536,29 +530,14 @@ impl ConfigWorkerOperation<'_> {
         .map_err(ConfigWorkerRequestError::from)
     }
 
-    pub(in crate::management) async fn validate(
+    pub(in crate::management) async fn validate_patch(
         &self,
-        key: String,
-        value: serde_json::Value,
-    ) -> Result<Vec<tribal_config::ConfigViolation>, ConfigWorkerRequestError> {
+        request: ConfigValidatePatchRequest,
+    ) -> Result<(ConfigRevision, Vec<tribal_config::ConfigViolation>), ConfigWorkerRequestError>
+    {
         self.request(ConfigCompletion::CancelSafe, |response| {
-            ConfigCommand::Validate {
-                key,
-                value,
-                response,
-            }
+            ConfigCommand::ValidatePatch { request, response }
         })
-        .await?
-        .map_err(ConfigWorkerRequestError::from)
-    }
-
-    pub(in crate::management) async fn credential_materials(
-        &self,
-    ) -> Result<Vec<CredentialMaterial>, ConfigWorkerRequestError> {
-        self.request(
-            ConfigCompletion::CancelSafe,
-            ConfigCommand::CredentialMaterials,
-        )
         .await?
         .map_err(ConfigWorkerRequestError::from)
     }

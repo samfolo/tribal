@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tribal::{ServerHandle, start_server};
 use tribal_auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy};
 use tribal_config::{
-    DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL, TribalConfig, validate,
+    DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL, InferenceStage, TribalConfig, validate,
 };
 use tribal_db::{
     NewProject, PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
@@ -39,7 +39,7 @@ use wiremock::{
 };
 
 use super::{
-    config::{seed_genesis_from_init, test_config},
+    config::{embedding_provider, inference_provider, seed_genesis_from_init, test_config},
     diagnostics::{DiagnosticContext, ServerDiagnostic},
     mocks::{
         envelope::{
@@ -589,7 +589,7 @@ impl TestHarness {
     ///
     /// Panics if the closure does not configure at least one mock response.
     pub async fn mount_extraction(&self, f: impl FnOnce(&mut StageMountBuilder<'_>)) {
-        let provider = self.config.inference.extraction.provider;
+        let provider = inference_provider(&self.config, InferenceStage::Extraction);
         self.mount_stage(&self.extraction_server, "extraction", provider, f)
             .await;
     }
@@ -600,7 +600,7 @@ impl TestHarness {
     ///
     /// Panics if the closure does not configure at least one mock response.
     pub async fn mount_triage(&self, f: impl FnOnce(&mut StageMountBuilder<'_>)) {
-        let provider = self.config.inference.triage.provider;
+        let provider = inference_provider(&self.config, InferenceStage::Triage);
         self.mount_stage(&self.triage_server, "triage", provider, f)
             .await;
     }
@@ -611,7 +611,7 @@ impl TestHarness {
     ///
     /// Panics if the closure does not configure at least one mock response.
     pub async fn mount_relation(&self, f: impl FnOnce(&mut StageMountBuilder<'_>)) {
-        let provider = self.config.inference.relation.provider;
+        let provider = inference_provider(&self.config, InferenceStage::Relation);
         self.mount_stage(&self.relation_server, "relation", provider, f)
             .await;
     }
@@ -669,25 +669,25 @@ impl TestHarness {
                 ServerDiagnostic {
                     name: "embedding",
                     server: &self.embedding_server,
-                    provider: self.config.init.embedding.provider,
+                    provider: embedding_provider(&self.config),
                     request_class: RequestClass::Embedding,
                 },
                 ServerDiagnostic {
                     name: "extraction",
                     server: &self.extraction_server,
-                    provider: self.config.inference.extraction.provider,
+                    provider: inference_provider(&self.config, InferenceStage::Extraction),
                     request_class: RequestClass::Inference,
                 },
                 ServerDiagnostic {
                     name: "triage",
                     server: &self.triage_server,
-                    provider: self.config.inference.triage.provider,
+                    provider: inference_provider(&self.config, InferenceStage::Triage),
                     request_class: RequestClass::Inference,
                 },
                 ServerDiagnostic {
                     name: "relation",
                     server: &self.relation_server,
-                    provider: self.config.inference.relation.provider,
+                    provider: inference_provider(&self.config, InferenceStage::Relation),
                     request_class: RequestClass::Inference,
                 },
             ],
@@ -887,7 +887,7 @@ async fn mount_infrastructure_mocks(
     triage_server: &MockServer,
     relation_server: &MockServer,
 ) {
-    let embedding_provider = config.init.embedding.provider;
+    let embedding_provider = embedding_provider(config);
 
     // -- Embedding server ----------------------------------------------------
     if let Some(tags_endpoint) = tags_path(embedding_provider) {
@@ -918,17 +918,17 @@ async fn mount_infrastructure_mocks(
     let stages: &[(&MockServer, ProviderKind, &str)] = &[
         (
             extraction_server,
-            config.inference.extraction.provider,
+            inference_provider(config, InferenceStage::Extraction),
             &config.inference.extraction.model,
         ),
         (
             triage_server,
-            config.inference.triage.provider,
+            inference_provider(config, InferenceStage::Triage),
             &config.inference.triage.model,
         ),
         (
             relation_server,
-            config.inference.relation.provider,
+            inference_provider(config, InferenceStage::Relation),
             &config.inference.relation.model,
         ),
     ];

@@ -4050,14 +4050,8 @@ fn readiness_focus(
         let CheckSubject::Configuration { location } = subject else {
             continue;
         };
-        match location {
-            ConfigDiagnosticLocation::Field { path } => return Some(path.clone()),
-            ConfigDiagnosticLocation::CredentialEntry { .. } => {
-                if let Ok(path) = tribal_domain::ConfigFieldPath::parse("credentials") {
-                    return Some(path);
-                }
-            }
-        }
+        let ConfigDiagnosticLocation::Field { path } = location;
+        return Some(path.clone());
     }
     None
 }

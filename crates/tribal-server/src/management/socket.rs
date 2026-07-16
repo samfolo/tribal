@@ -12,6 +12,7 @@ use tokio::{
     net::{UnixListener, UnixStream},
 };
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 use tribal_wire::management::{
     BootstrapShutdownRefusal, MANAGEMENT_BOOTSTRAP_TIMEOUT_SECONDS, MANAGEMENT_CONTRACT_VERSION,
     MANAGEMENT_FRAME_WRITE_TIMEOUT_SECONDS, ManagementBootstrapRequest,
@@ -307,13 +308,34 @@ async fn serve_full(
                     return;
                 };
                 let id = request.id;
-                let result = services.application.dispatch(request.method, request.params).await;
-                let response = match result {
-                    Ok(result) => ManagementResponse::Success { id, result },
-                    Err(error) => ManagementResponse::Failure { id, error },
-                };
-                if let Err(error) = write_frame(write, &response).await {
-                    tracing::debug!(%error, request_id = id, "management response receiver disconnected");
+                let method = request.method;
+                let span = tracing::info_span!(
+                    "management.request",
+                    rpc.system = "jsonrpc",
+                    rpc.method = method.wire_name(),
+                    request_id = id,
+                );
+                let connected = async {
+                    let result = services.application.dispatch(method, request.params).await;
+                    if let Err(error) = &result {
+                        tracing::warn!(
+                            error = ?error.error,
+                            "management request refused"
+                        );
+                    }
+                    let response = match result {
+                        Ok(result) => ManagementResponse::Success { id, result },
+                        Err(error) => ManagementResponse::Failure { id, error },
+                    };
+                    if let Err(error) = write_frame(write, &response).await {
+                        tracing::debug!(%error, "management response receiver disconnected");
+                        return false;
+                    }
+                    true
+                }
+                .instrument(span)
+                .await;
+                if !connected {
                     return;
                 }
             }

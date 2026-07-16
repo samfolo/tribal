@@ -8,6 +8,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
+use tribal_domain::TransportKind;
 use url::{Host, Url};
 
 use super::{root::TribalConfig, server::DEFAULT_BIND_ADDRESS};
@@ -119,7 +120,30 @@ pub fn oauth_surface_is_routable(config: &TribalConfig) -> bool {
 /// never disagree.
 #[must_use]
 pub fn oauth_onboarding_is_url_only(config: &TribalConfig) -> bool {
-    config.oauth.dcr_enabled && !oauth_surface_is_routable(config)
+    matches!(
+        client_registration_mode(config),
+        ClientRegistrationMode::Automatic
+    )
+}
+
+/// Whether the configured transport can safely expose automatic client registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientRegistrationMode {
+    Automatic,
+    NoNetworkTransport,
+    RoutableOauthSurface,
+}
+
+/// Classifies automatic client registration from transport and routability alone.
+#[must_use]
+pub fn client_registration_mode(config: &TribalConfig) -> ClientRegistrationMode {
+    match config.server.transport {
+        TransportKind::Stdio => ClientRegistrationMode::NoNetworkTransport,
+        TransportKind::Http | TransportKind::Sse if oauth_surface_is_routable(config) => {
+            ClientRegistrationMode::RoutableOauthSurface
+        }
+        TransportKind::Http | TransportKind::Sse => ClientRegistrationMode::Automatic,
+    }
 }
 
 /// Whether `value` is a present, non-empty string.
@@ -196,10 +220,6 @@ pub struct OAuthConfig {
     /// Authorisation-code TTL in seconds.
     #[serde(default = "default_authorization_code_ttl_seconds")]
     pub authorization_code_ttl_seconds: u64,
-
-    /// Whether the DCR `/register` endpoint is enabled.
-    #[serde(default = "default_dcr_enabled")]
-    pub dcr_enabled: bool,
 }
 
 const fn default_access_token_ttl_hours() -> u64 {
@@ -210,10 +230,6 @@ const fn default_authorization_code_ttl_seconds() -> u64 {
     DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS
 }
 
-const fn default_dcr_enabled() -> bool {
-    true
-}
-
 impl Default for OAuthConfig {
     fn default() -> Self {
         Self {
@@ -221,7 +237,6 @@ impl Default for OAuthConfig {
             resource_url: None,
             access_token_ttl_hours: DEFAULT_ACCESS_TOKEN_TTL_HOURS,
             authorization_code_ttl_seconds: DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS,
-            dcr_enabled: true,
         }
     }
 }
@@ -241,7 +256,6 @@ mod tests {
             config.authorization_code_ttl_seconds,
             DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS,
         );
-        assert!(config.dcr_enabled);
     }
 
     #[test]

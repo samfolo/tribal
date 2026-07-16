@@ -3,17 +3,21 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BootstrapRequest, BootstrapResult, ConfigDocument, ConfigFilePath, ConfigGetRequest,
-    ConfigPatchOutcome, ConfigPatchRequest, ConfigSchema, ConfigSetRequest, ConfigValidateRequest,
-    ConfigValidation, ConfigValue, ConfigWriteOutcome, CredentialSources, CredentialSourcesRequest,
-    DatabaseInitialiseRequest, DatabaseInitialiseResult, GenesisConfigurationRequest,
-    GenesisConvergenceRequest, GenesisOptions, GraphEmbeddingProfile, LifecycleSnapshot,
-    ManagedRuntimeStatusResult, ManagerShutdownResult, McpConfigRequest, McpConfigResult,
-    ModelSelectionRequest, ModelsCatalogue, ProbeReceipt, ProjectList, ProjectListRequest,
-    ProjectRegisterRequest, ProjectRegisterResult, ReadinessReport, ReindexCancelRequest,
-    ReindexCancelResult, ReindexPruneRequest, ReindexPruneResult, ReindexRunRequest,
-    ReindexRunResult, Revisioned, RuntimeLogsTailRequest, RuntimeLogsTailResult,
-    RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult, ThreadPruneRequest,
+    AuthenticationSettingsSnapshot, BootstrapRequest, BootstrapResult, ConfigDocument,
+    ConfigFilePath, ConfigGetRequest, ConfigPatchOutcome, ConfigPatchRequest,
+    ConfigPatchValidation, ConfigSchema, ConfigSetRequest, ConfigValidatePatchRequest, ConfigValue,
+    ConfigWriteOutcome, DatabaseConnectionSummary, DatabaseInitialiseRequest,
+    DatabaseInitialiseResult, DatabaseProbeRequest, GenesisConfigurationRequest,
+    GenesisConvergenceRequest, GenesisOptions, GraphEmbeddingProfile, ManagedRuntimeStatusResult,
+    ManagerShutdownResult, ManagerSnapshot, McpConfigRequest, McpConfigResult, ModelsCatalogue,
+    ProbeReceipt, ProcessingProfileSetRequest, ProcessingProfileSnapshot, ProjectList,
+    ProjectListRequest, ProjectRegisterRequest, ProjectRegisterResult,
+    ProviderConnectionMutationReceipt, ProviderConnectionRemoveRequest,
+    ProviderConnectionUpsertRequest, ProviderConnectionsCatalogue, ProviderProbeRequest,
+    ProviderProbeResponse, ReadinessReport, ReindexCancelRequest, ReindexCancelResult,
+    ReindexPruneRequest, ReindexPruneResult, ReindexRunRequest, ReindexRunResult, Revisioned,
+    RuntimeLogsTailRequest, RuntimeLogsTailResult, RuntimeRestartResult, RuntimeStartResult,
+    RuntimeStopResult, SettingsResetPreview, SettingsResetPreviewRequest, ThreadPruneRequest,
     ThreadPruneResult, TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest,
     TokenRevokeAllRequest, TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
 };
@@ -108,7 +112,7 @@ management_calls! {
         wire: "manager.snapshot",
         call: ManagerSnapshotCall,
         request: (),
-        response: LifecycleSnapshot,
+        response: ManagerSnapshot,
     },
     RuntimeStart => {
         wire: "runtime.start",
@@ -233,14 +237,44 @@ management_calls! {
     DatabaseProbe => {
         wire: "database.probe",
         call: DatabaseProbeCall,
-        request: (),
+        request: DatabaseProbeRequest,
         response: ProbeReceipt,
     },
-    CredentialProbe => {
-        wire: "credential.probe",
-        call: CredentialProbeCall,
+    DatabaseConnection => {
+        wire: "database.connection",
+        call: DatabaseConnectionCall,
         request: (),
-        response: Vec<ProbeReceipt>,
+        response: DatabaseConnectionSummary,
+    },
+    AuthenticationSettings => {
+        wire: "authentication.settings",
+        call: AuthenticationSettingsCall,
+        request: (),
+        response: AuthenticationSettingsSnapshot,
+    },
+    ProviderConnections => {
+        wire: "providers.catalogue",
+        call: ProviderConnectionsCall,
+        request: (),
+        response: ProviderConnectionsCatalogue,
+    },
+    ProviderConnectionUpsert => {
+        wire: "providers.upsert",
+        call: ProviderConnectionUpsertCall,
+        request: ProviderConnectionUpsertRequest,
+        response: ProviderConnectionMutationReceipt,
+    },
+    ProviderConnectionRemove => {
+        wire: "providers.remove",
+        call: ProviderConnectionRemoveCall,
+        request: ProviderConnectionRemoveRequest,
+        response: ProviderConnectionMutationReceipt,
+    },
+    ProviderProbe => {
+        wire: "providers.probe",
+        call: ProviderProbeCall,
+        request: ProviderProbeRequest,
+        response: ProviderProbeResponse,
     },
     ConfigGetAll => {
         wire: "config.getAll",
@@ -266,11 +300,11 @@ management_calls! {
         request: ConfigGetRequest,
         response: ConfigValue,
     },
-    ConfigValidate => {
-        wire: "config.validate",
-        call: ConfigValidateCall,
-        request: ConfigValidateRequest,
-        response: ConfigValidation,
+    ConfigValidatePatch => {
+        wire: "config.validatePatch",
+        call: ConfigValidatePatchCall,
+        request: ConfigValidatePatchRequest,
+        response: ConfigPatchValidation,
     },
     ConfigSet => {
         wire: "config.set",
@@ -290,17 +324,23 @@ management_calls! {
         request: (),
         response: ModelsCatalogue,
     },
-    ModelsSelect => {
-        wire: "models.select",
-        call: ModelsSelectCall,
-        request: ModelSelectionRequest,
+    ProcessingProfile => {
+        wire: "processing.profile",
+        call: ProcessingProfileCall,
+        request: (),
+        response: ProcessingProfileSnapshot,
+    },
+    ProcessingProfileSet => {
+        wire: "processing.set",
+        call: ProcessingProfileSetCall,
+        request: ProcessingProfileSetRequest,
         response: ConfigPatchOutcome,
     },
-    CredentialSources => {
-        wire: "credential.sources",
-        call: CredentialSourcesCall,
-        request: CredentialSourcesRequest,
-        response: CredentialSources,
+    SettingsResetPreview => {
+        wire: "settings.resetPreview",
+        call: SettingsResetPreviewCall,
+        request: SettingsResetPreviewRequest,
+        response: SettingsResetPreview,
     },
     GraphGenesisOptions => {
         wire: "graph.genesisOptions",

@@ -6,8 +6,8 @@ use clap::{CommandFactory, Parser};
 
 use crate::{
     cli::{
-        Cli, Command, ConfigCommand, CredentialCommand, CredentialSourcesCommand, DatabaseCommand,
-        GraphCommand, IntegrationCommand, ManagerCommand, ModelsCommand, ProjectCommand,
+        Cli, Command, ConfigCommand, DatabaseCommand, GraphCommand, IntegrationCommand,
+        ManagerCommand, ModelsCommand, ProcessingCommand, ProjectCommand, ProvidersCommand,
         ReindexCommand, ThreadsCommand, TokenCommand,
     },
     commands,
@@ -87,13 +87,44 @@ impl App {
             Command::Models(ModelsCommand::List { output }) => {
                 run_async(commands::discovery::models(&self.cli.global.config, output))?;
             }
-            Command::Credential(CredentialCommand::Sources(command)) => match command {
-                CredentialSourcesCommand::Model { args } => run_async(
-                    commands::discovery::model_credentials(&self.cli.global.config, args),
-                )?,
-                CredentialSourcesCommand::Genesis { args } => run_async(
-                    commands::discovery::genesis_credentials(&self.cli.global.config, args),
-                )?,
+            Command::Providers(command) => match command {
+                ProvidersCommand::List { output } => {
+                    run_async(commands::providers::list(&self.cli.global.config, output))?;
+                }
+                ProvidersCommand::Upsert { args } => {
+                    run_async(commands::providers::upsert(&self.cli.global.config, args))?;
+                }
+                ProvidersCommand::Remove { name, output } => {
+                    run_async(commands::providers::remove(
+                        &self.cli.global.config,
+                        name,
+                        output,
+                    ))?;
+                }
+                ProvidersCommand::Probe { name, output } => {
+                    run_async(commands::providers::probe(
+                        &self.cli.global.config,
+                        name,
+                        output,
+                    ))?;
+                }
+            },
+            Command::Processing(command) => match command {
+                ProcessingCommand::Show { output } => {
+                    run_async(commands::processing::show(&self.cli.global.config, output))?;
+                }
+                ProcessingCommand::Set {
+                    profile,
+                    connection,
+                    model,
+                    output,
+                } => run_async(commands::processing::set(
+                    &self.cli.global.config,
+                    profile,
+                    connection,
+                    model,
+                    output,
+                ))?,
             },
             Command::Graph(GraphCommand::GenesisOptions { output }) => {
                 run_async(commands::discovery::genesis_options(

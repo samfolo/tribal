@@ -21,7 +21,7 @@ mod validation;
 pub use atomic_write::write_atomically;
 pub use cli_overrides::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
-    InferenceStageCliOverrides, InitCliOverrides, PersistedCredentialEntry, ServerCliOverrides,
+    InferenceStageCliOverrides, InitCliOverrides, PersistedProviderConnection, ServerCliOverrides,
     TelemetryCliOverrides,
 };
 pub use config_schema::{AudienceTier, GENESIS_KEYS, ReloadClass, audience_tier, reload_class};
@@ -35,32 +35,36 @@ pub use env::{
     ENV_OPENAI_API_KEY, ENV_PREFIX, ENV_PROJECT_ID, ENV_PUBLIC_MCP_URL, env_var_for_path,
     public_mcp_url_override, standard_env_var_name,
 };
-pub use error::{ConfigError, RemovedEmbeddingSource};
+pub use error::{ConfigError, RemovedProviderShapeSource};
 pub use loader::{load_config, load_config_from_yaml};
 pub use operations::{
     CliShadow, ConfigViolation, Persisted, PersistedPatch, SetError, UnknownConfigKey, WriteEffect,
     get, get_all, patch, patch_from_yaml, repair_patch, set, set_from_yaml, shadowed_by,
-    validate_write,
+    validate_patch, validate_write,
 };
 pub use paths::{TRIBAL_DIRECTORY_NAME, default_config_file_path};
 pub use redact::{is_secret_key, redact_secrets};
 pub use render::{ConfigPersistence, render_minimal_config, render_persisted_config};
 pub use sections::{
-    AgentsConfig, AuthConfig, CredentialCatalogue, CredentialEntry, DEFAULT_ACCESS_TOKEN_TTL_HOURS,
-    DEFAULT_AGENTIC_EXECUTION_DEADLINE_SECONDS, DEFAULT_AGENTIC_MAX_TOTAL_TOKENS,
-    DEFAULT_AGENTIC_MAX_TURNS, DEFAULT_AGENTIC_RECHECK_BOUND,
+    AgentsConfig, AuthConfig, ClientRegistrationMode, CustomProcessingSettings,
+    DEFAULT_ACCESS_TOKEN_TTL_HOURS, DEFAULT_AGENTIC_EXECUTION_DEADLINE_SECONDS,
+    DEFAULT_AGENTIC_MAX_TOTAL_TOKENS, DEFAULT_AGENTIC_MAX_TURNS, DEFAULT_AGENTIC_RECHECK_BOUND,
     DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS, DEFAULT_AGENTIC_VERIFY_ROUNDS,
     DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS, DEFAULT_BIND_ADDRESS, DEFAULT_DISCOVERY_LIMIT,
     DEFAULT_DISCOVERY_MAX_LIMIT, DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL,
     DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT, DEFAULT_EXPLORATION_MAX_DEPTH,
-    DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD,
-    DatabaseConfig, DiscoveryConfig, ExecutorChoice, ExplorationConfig, FileRotation,
-    InferenceConfig, InitConfig, InitEmbeddingConfig, LimitsConfig, LogFormat, LogOutput,
-    LoggingConfig, MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_LIFECYCLE_DURATION_MS,
-    MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS, MIN_AUTHORIZATION_CODE_TTL_SECONDS, MissingApiKey,
-    MissingApiKeyKind, OAuthConfig, PromptSource, PromptsConfig, ProviderLimitsConfig,
-    ServerConfig, SseConfig, StageAgentConfig, StageInferenceConfig, TelemetryConfig, TribalConfig,
-    VERSION, WorkerConfig, advertised_oauth_host, oauth_onboarding_is_url_only,
+    DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_PROVIDER_CONNECTION_NAME,
+    DEFAULT_SIMILARITY_THRESHOLD, DatabaseConfig, DiscoveryConfig, ExecutorChoice,
+    ExplorationConfig, ExtractionStageSettings, FileRotation, InferenceConfig, InferenceStage,
+    InitConfig, InitEmbeddingConfig, LimitsConfig, LogFormat, LogOutput, LoggingConfig,
+    MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER,
+    MAX_TTL_HOURS, MIN_AUTHORIZATION_CODE_TTL_SECONDS, OAuthConfig, PresetModelSettings,
+    ProcessingProfile, PromptSource, PromptsConfig, ProviderConnectionConfig,
+    ProviderConnectionResolutionError, ProviderConnectionUsage, ProviderConnectionViolation,
+    ProviderConnections, ProviderLimitsConfig, ServerConfig, SseConfig, StageAgentConfig,
+    StageExecutionSettings, StageInferenceConfig, StageModelSettings, TelemetryConfig,
+    TribalConfig, VERSION, VerifiedStageExecutionSettings, VerifiedStageSettings, WorkerConfig,
+    advertised_oauth_host, client_registration_mode, oauth_onboarding_is_url_only,
     oauth_surface_is_routable,
 };
 pub use validation::{

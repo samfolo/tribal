@@ -1,14 +1,13 @@
 //! Atomic bootstrap request and hand-off DTOs.
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::Scope;
+use tribal_domain::{ProviderConnectionName, Scope};
 use url::Url;
 
 use super::{
-    ConfigRevision, CredentialInput, DatabaseInitialiseOutcome, EndpointSelection,
-    GenesisEmbeddingInput, InferenceStage, IssuedBearerToken, KnownModelId, McpTargetSelection,
-    ProjectRegisterInput, ProjectRegisterOutcome, PublicMcpConfigDocument, Revisioned,
-    SecretLiteral, SensitiveMcpConfigDocument, TokenSummary,
+    ConfigRevision, DatabaseInitialiseOutcome, IssuedBearerToken, McpTargetSelection,
+    ProcessingProfile, ProjectRegisterInput, ProjectRegisterOutcome, ProviderConnectionInput,
+    PublicMcpConfigDocument, Revisioned, SecretLiteral, SensitiveMcpConfigDocument, TokenSummary,
 };
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -17,15 +16,6 @@ use super::{
 pub enum BootstrapStorage {
     Configured,
     External { database_url: SecretLiteral },
-}
-
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ModelSelectionInput {
-    pub model: KnownModelId,
-    pub stages: Vec<InferenceStage>,
-    pub endpoint: EndpointSelection,
-    pub credential: Option<CredentialInput>,
 }
 
 /// Absolute OTLP HTTP endpoint accepted at the contract boundary.
@@ -97,17 +87,17 @@ pub struct BootstrapTelemetryInput {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "source", content = "data", rename_all = "snake_case")]
-pub enum BootstrapGenesisCredential {
-    Explicit { credential: CredentialInput },
-    ReuseInferenceStage { stage: InferenceStage },
+pub struct BootstrapGenesisInput {
+    pub connection: ProviderConnectionName,
+    pub model: String,
+    pub dimensions: Option<u32>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct BootstrapGenesisInput {
-    pub embedding: GenesisEmbeddingInput,
-    pub credential: Option<BootstrapGenesisCredential>,
+pub struct BootstrapProviderConnectionInput {
+    pub name: ProviderConnectionName,
+    pub connection: ProviderConnectionInput,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,7 +121,8 @@ pub enum BootstrapTokenPolicy {
 pub struct BootstrapRequest {
     pub expected_revision: ConfigRevision,
     pub storage: BootstrapStorage,
-    pub model_selections: Vec<ModelSelectionInput>,
+    pub provider_connections: Vec<BootstrapProviderConnectionInput>,
+    pub processing: Option<ProcessingProfile>,
     pub genesis: Option<BootstrapGenesisInput>,
     pub telemetry: Option<BootstrapTelemetryInput>,
     pub project: Option<ProjectRegisterInput>,

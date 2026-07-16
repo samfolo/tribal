@@ -1,9 +1,11 @@
 use serde_json::json;
+use tribal_config::InferenceStage;
 use tribal_domain::{KnowledgeKind, ProviderKind, RelationKind};
 use tribal_test_utils::item;
 
 use crate::harness::{
-    assertions::assert_success, server::TestHarness, tool_call::tool_result_json,
+    assertions::assert_success, config::use_inference_provider, server::TestHarness,
+    tool_call::tool_result_json,
 };
 
 /// Verifies that discover and explore correctly reflect standing
@@ -29,9 +31,12 @@ async fn test_standing_and_supersession() {
     let mut harness = TestHarness::init(|setup| {
         // Anthropic relation exercises the Anthropic envelope abstraction.
         setup.config(|c| {
-            c.inference.relation.provider = ProviderKind::Anthropic;
-            c.inference.relation.api_key =
-                Some("sk-ant-e2e-000000".parse().expect("test fixture is valid"));
+            use_inference_provider(
+                c,
+                InferenceStage::Relation,
+                ProviderKind::Anthropic,
+                Some("sk-ant-e2e-000000"),
+            );
         });
 
         setup.graph(|g| {

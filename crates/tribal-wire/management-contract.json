@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "bootstrapTimeoutSeconds": 5,
   "requestTimeoutSeconds": 125
 }

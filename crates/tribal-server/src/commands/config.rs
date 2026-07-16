@@ -3,8 +3,8 @@
 use tribal_domain::ConfigFieldPathError;
 use tribal_wire::management::{
     ConfigDocument, ConfigFieldPath, ConfigGetAllCall, ConfigGetCall, ConfigGetRequest,
-    ConfigPathCall, ConfigRevision, ConfigSetCall, ConfigSetRequest, ConfigValidateCall,
-    ConfigValidateRequest,
+    ConfigPatchChange, ConfigPathCall, ConfigRevision, ConfigSetCall, ConfigSetRequest,
+    ConfigValidatePatchCall, ConfigValidatePatchRequest,
 };
 
 use super::presentation;
@@ -96,10 +96,19 @@ pub(crate) async fn set(config_path: &str, args: &ConfigSetArgs) -> Result<(), A
 pub(crate) async fn validate(config_path: &str, args: &ConfigValidateArgs) -> Result<(), AppError> {
     let key = ConfigFieldPath::parse(&args.key).map_err(field_error)?;
     let mut connection = connect(config_path).await?;
+    let expected_revision = stable_revision(
+        connection
+            .call::<ConfigGetAllCall>(&())
+            .await
+            .map_err(client_error)?,
+    )?;
     let validation = connection
-        .call::<ConfigValidateCall>(&ConfigValidateRequest {
-            key,
-            value: parse_value(&args.value),
+        .call::<ConfigValidatePatchCall>(&ConfigValidatePatchRequest {
+            changes: vec![ConfigPatchChange {
+                key,
+                value: tribal_wire::management::ConfigLiteral::new(parse_value(&args.value)),
+            }],
+            expected_revision,
         })
         .await
         .map_err(client_error)?;

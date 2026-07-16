@@ -26,7 +26,9 @@ use super::{
 use crate::{
     error::AppError,
     management::product::ProductSession,
-    startup::{CatalogueCredentialResolver, build_command_registry, completion_stage_specs},
+    startup::{
+        ProviderConnectionCredentialResolver, build_command_registry, completion_stage_specs,
+    },
 };
 
 const INDEX_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -90,7 +92,12 @@ impl ReindexAdministration {
             provider: request.target.provider.to_string(),
             model: request.target.model,
             dimensions: request.target.dimensions,
-            base_url: request.target.base_url,
+            base_url: session
+                .config
+                .provider_connections
+                .get(request.target.connection.as_str())
+                .and_then(tribal_config::ProviderConnectionConfig::base_url)
+                .map(str::to_owned),
             dry_run: matches!(request.mode, MutationMode::Preview),
         };
         let staged = operation
@@ -187,8 +194,9 @@ impl ReindexAdministration {
                 },
             ));
         }
-        let available = options.providers.into_iter().any(|option| {
-            option.provider == target.provider
+        let available = options.connections.into_iter().any(|option| {
+            option.connection == target.connection
+                && option.provider == target.provider
                 && matches!(
                     option.availability,
                     GenesisProviderAvailability::Available { .. }
@@ -214,11 +222,13 @@ fn gateway(session: &DatabaseSession) -> Result<InferenceGateway, ReindexAdminis
         session.pool.clone(),
         tribal_telemetry::noop_recorder(),
     ));
+    let stage_specs = completion_stage_specs(&session.config)
+        .map_err(|source| ReindexAdministrationError::Gateway { source })?;
     InferenceGateway::new(
         registry,
-        &completion_stage_specs(&session.config),
-        Arc::new(CatalogueCredentialResolver::new(
-            session.config.credentials.clone(),
+        &stage_specs,
+        Arc::new(ProviderConnectionCredentialResolver::new(
+            session.config.provider_connections.clone(),
         )),
         sink,
     )
@@ -355,11 +365,19 @@ mod tests {
     }
 
     impl Harness {
-        async fn new() -> Self {
+        async fn new(provider_base_url: Option<&str>) -> Self {
             let database = tribal_test_utils::TestDb::new().await;
             let temp = tempfile::tempdir().expect("temporary reindex root");
             let config_path = temp.path().join("tribal.yaml");
-            let config = tribal_config::TribalConfig::minimum_valid(database.database_url());
+            let mut config = tribal_config::TribalConfig::minimum_valid(database.database_url());
+            if let Some(base_url) = provider_base_url {
+                config.provider_connections.insert(
+                    tribal_domain::ProviderConnectionName::parse("ollama_default").unwrap(),
+                    tribal_config::ProviderConnectionConfig::Ollama {
+                        base_url: base_url.to_owned(),
+                    },
+                );
+            }
             std::fs::write(&config_path, serde_yaml::to_string(&config).unwrap()).unwrap();
             let (worker, worker_runtime) =
                 worker::spawn(ConfigAuthority::new(config_path)).expect("config worker starts");
@@ -394,14 +412,15 @@ mod tests {
             drop(database);
         }
 
-        fn run_request(&self, base_url: &str, mode: MutationMode) -> ReindexRunRequest {
+        fn run_request(&self, mode: MutationMode) -> ReindexRunRequest {
             ReindexRunRequest {
                 expected_revision: self.revision.clone(),
                 target: GenesisEmbeddingInput {
+                    connection: tribal_domain::ProviderConnectionName::parse("ollama_default")
+                        .unwrap(),
                     provider: ProviderKind::Ollama,
                     model: "test-embedding".to_owned(),
                     dimensions: Some(3),
-                    base_url: Some(base_url.to_owned()),
                 },
                 mode,
             }
@@ -465,8 +484,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_preview_estimates_without_probe_ledger_or_durable_run() {
-        let harness = Harness::new().await;
         let server = ProbeServer::start().await;
+        let harness = Harness::new(Some(&server.base_url)).await;
         let profiles_before = row_count(&harness.database, "embedding_profiles").await;
         let runs_before = row_count(&harness.database, "reindex_runs").await;
         let ledger_before = row_count(&harness.database, "token_usage").await;
@@ -476,7 +495,7 @@ mod tests {
             .run(
                 &harness.operation,
                 &harness.product,
-                harness.run_request(&server.base_url, MutationMode::Preview),
+                harness.run_request(MutationMode::Preview),
             )
             .await
             .expect("preview succeeds");
@@ -501,8 +520,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_ledgers_one_probe_and_preserves_single_flight_and_cancel_idempotence() {
-        let harness = Harness::new().await;
         let server = ProbeServer::start().await;
+        let harness = Harness::new(Some(&server.base_url)).await;
         let mut connection = harness.database.pool().acquire().await.unwrap();
         find_or_create_principal(&mut connection, LOCAL_PRINCIPAL_KEY)
             .await
@@ -514,7 +533,7 @@ mod tests {
             .run(
                 &harness.operation,
                 &harness.product,
-                harness.run_request(&server.base_url, MutationMode::Apply),
+                harness.run_request(MutationMode::Apply),
             )
             .await
             .expect("apply creates a run");
@@ -534,7 +553,7 @@ mod tests {
             .run(
                 &harness.operation,
                 &harness.product,
-                harness.run_request(&server.base_url, MutationMode::Apply),
+                harness.run_request(MutationMode::Apply),
             )
             .await
             .expect("repeat apply resumes the live run");
@@ -587,7 +606,7 @@ mod tests {
             .run(
                 &harness.operation,
                 &harness.product,
-                harness.run_request(&server.base_url, MutationMode::Apply),
+                harness.run_request(MutationMode::Apply),
             )
             .await
             .expect("contention is an outcome");
@@ -608,7 +627,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prune_preview_rolls_back_and_apply_returns_the_same_counts() {
-        let harness = Harness::new().await;
+        let harness = Harness::new(None).await;
         let mut connection = harness.database.pool().acquire().await.unwrap();
         let profile = PgEmbeddingProfileRepository
             .insert(

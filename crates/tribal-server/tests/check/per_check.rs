@@ -127,11 +127,9 @@ async fn test_valid_token_fails_on_routable_http_without_token() {
     let mut config = TribalConfig::minimum_valid(ctx.database_url());
     config.server.transport = TransportKind::Http;
     config.server.bind_address = Some("127.0.0.1:8725".into());
-    // A routable advertised surface with open registration off: the
-    // static token is the only auth path, so its absence leaves clients
-    // unable to authenticate. That is a readiness failure, not advice.
+    // A routable advertised surface cannot offer automatic local registration.
+    // The static token is therefore the only authentication path.
     config.oauth.resource_url = Some("https://tribal.example.com/mcp".into());
-    config.oauth.dcr_enabled = false;
     write_config(&env.config_path, &config);
 
     let (stdout, _stderr, _output) = run_check(CheckRun {
@@ -185,37 +183,6 @@ async fn test_valid_token_skips_on_docker_wildcard_loopback_shape() {
     // healthcheck reads green.
     let parsed = parse_json(&stdout);
     assert_eq!(row_status(&parsed, "valid_token_exists"), Some("skip"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_valid_token_fails_on_loopback_http_with_dcr_disabled() {
-    let _env = env_lock().await;
-    let ctx = TestDb::new().await;
-    let env = TestEnv::new();
-    let _pool = fresh_db(&ctx).await;
-    let mut config = TribalConfig::minimum_valid(ctx.database_url());
-    config.server.transport = TransportKind::Http;
-    config.server.bind_address = Some("127.0.0.1:8725".into());
-    // Loopback, but DCR off: a fresh client cannot register, so the static
-    // token is the only auth path. Its absence is a readiness failure even
-    // on loopback, proving the decision turns on the onboarding mode rather
-    // than routability alone.
-    config.oauth.dcr_enabled = false;
-    write_config(&env.config_path, &config);
-
-    let (stdout, _stderr, output) = run_check(CheckRun {
-        config_path: &env.config_path,
-        json: true,
-        providers: false,
-        project: None,
-        token: None,
-    })
-    .await
-    .expect("check runs");
-
-    let parsed = parse_json(&stdout);
-    assert_eq!(row_status(&parsed, "valid_token_exists"), Some("fail"));
-    assert!(!output.ok, "loopback + DCR off + no token is not ready");
 }
 
 #[tokio::test(flavor = "multi_thread")]

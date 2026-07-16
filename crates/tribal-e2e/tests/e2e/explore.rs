@@ -1,8 +1,10 @@
 use serde_json::json;
+use tribal_config::InferenceStage;
 use tribal_domain::ProviderKind;
 
 use crate::harness::{
     assertions::assert_success,
+    config::use_inference_provider,
     fixtures::{ExtractionFixture, RelationFixture, candidate, novel, relate},
     server::TestHarness,
     tool_call::tool_result_json,
@@ -23,9 +25,12 @@ async fn test_explore_graph_traversal() {
     let mut harness = TestHarness::init(|setup| {
         // Anthropic extraction exercises the Anthropic envelope abstraction.
         setup.config(|c| {
-            c.inference.extraction.provider = ProviderKind::Anthropic;
-            c.inference.extraction.api_key =
-                Some("sk-ant-e2e-000000".parse().expect("test fixture is valid"));
+            use_inference_provider(
+                c,
+                InferenceStage::Extraction,
+                ProviderKind::Anthropic,
+                Some("sk-ant-e2e-000000"),
+            );
         });
     })
     .await;

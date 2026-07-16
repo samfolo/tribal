@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use tribal_config::{CredentialCatalogue, StageInferenceConfig, TribalConfig};
+use tribal_config::{
+    ProviderConnectionResolutionError, ProviderConnections, StageInferenceConfig, TribalConfig,
+};
 use tribal_domain::{EmbeddingProfile, ProviderKind, TaskType};
 use tribal_inference::{
     CompletionStageSpec, CompletionStageSpecs, CredentialError, EmbeddingCredentialResolver,
@@ -46,15 +48,15 @@ pub(crate) fn build_provider_registry(
     )?;
 
     // Inference provider entries (extraction, triage, relation).
-    for stage in &[
-        &config.inference.extraction,
-        &config.inference.triage,
-        &config.inference.relation,
-    ] {
+    for (_, stage) in config.inference.stages() {
+        let connection = config
+            .provider_connections
+            .require(&stage.connection)
+            .map_err(|source| connection_error(&source))?;
         add_entry(
             &mut entries,
-            stage.provider,
-            stage.base_url.as_ref(),
+            connection.provider(),
+            connection.base_url(),
             RequestClass::Inference,
             config,
         )?;
@@ -68,15 +70,15 @@ pub(crate) fn build_provider_registry(
 /// endpoints register dynamically when the gateway first resolves them.
 pub(crate) fn build_command_registry(config: &TribalConfig) -> Result<ProviderRegistry, AppError> {
     let mut entries: Vec<(ProviderKey, ProviderLimits)> = Vec::new();
-    for stage in &[
-        &config.inference.extraction,
-        &config.inference.triage,
-        &config.inference.relation,
-    ] {
+    for (_, stage) in config.inference.stages() {
+        let connection = config
+            .provider_connections
+            .require(&stage.connection)
+            .map_err(|source| connection_error(&source))?;
         add_entry(
             &mut entries,
-            stage.provider,
-            stage.base_url.as_ref(),
+            connection.provider(),
+            connection.base_url(),
             RequestClass::Inference,
             config,
         )?;
@@ -87,66 +89,81 @@ pub(crate) fn build_command_registry(config: &TribalConfig) -> Result<ProviderRe
 /// Translates the per-stage inference configuration into the gateway's
 /// completion specifications, resolving each stage's base URL, key, and
 /// effective (post-reconcile) sampling parameters.
-pub(crate) fn completion_stage_specs(config: &TribalConfig) -> CompletionStageSpecs {
-    CompletionStageSpecs {
-        extraction: completion_stage_spec("extraction", &config.inference.extraction),
-        triage: completion_stage_spec("triage", &config.inference.triage),
-        relation: completion_stage_spec("relation", &config.inference.relation),
-    }
+pub(crate) fn completion_stage_specs(
+    config: &TribalConfig,
+) -> Result<CompletionStageSpecs, AppError> {
+    Ok(CompletionStageSpecs {
+        extraction: completion_stage_spec("extraction", &config.inference.extraction, config)?,
+        triage: completion_stage_spec("triage", &config.inference.triage, config)?,
+        relation: completion_stage_spec("relation", &config.inference.relation, config)?,
+    })
 }
 
-fn completion_stage_spec(stage: &str, config: &StageInferenceConfig) -> CompletionStageSpec {
-    CompletionStageSpec {
-        provider: config.provider,
-        model: config.model.clone(),
+fn completion_stage_spec(
+    stage: &str,
+    stage_config: &StageInferenceConfig,
+    config: &TribalConfig,
+) -> Result<CompletionStageSpec, AppError> {
+    let connection = config
+        .provider_connections
+        .require(&stage_config.connection)
+        .map_err(|source| connection_error(&source))?;
+    let provider = connection.provider();
+    let api_key = config
+        .provider_connections
+        .resolve_api_key(&stage_config.connection)
+        .map_err(|source| connection_error(&source))?;
+    Ok(CompletionStageSpec {
+        provider,
+        model: stage_config.model.clone(),
         // The spec keeps the configured spelling so the binding hash is
         // unchanged by normalisation; the resume-route guard canonicalises
         // both sides when it compares, and the gateway normalises when it
         // routes.
-        base_url: resolve_base_url(config.provider, config.base_url.as_ref()),
-        api_key: api_key_str(config.api_key.as_ref()).to_owned(),
+        base_url: resolve_base_url(provider, connection.base_url()),
+        api_key: api_key.to_owned(),
         parameters: effective_stage_parameters(
             stage,
-            config.provider,
-            &config.model,
-            config.temperature,
-            config.max_tokens,
+            provider,
+            &stage_config.model,
+            stage_config.temperature,
+            stage_config.max_tokens,
         ),
+    })
+}
+
+/// The gateway's embedding credential resolver, backed by named provider
+/// connections: fail-closed for key-requiring providers, empty for providers
+/// that need none.
+pub(crate) struct ProviderConnectionCredentialResolver {
+    connections: ProviderConnections,
+}
+
+impl ProviderConnectionCredentialResolver {
+    pub(crate) fn new(connections: ProviderConnections) -> Self {
+        Self { connections }
     }
 }
 
-/// The gateway's embedding credential resolver, backed by the config
-/// catalogue: fail-closed for key-requiring providers, empty for
-/// providers that need none.
-pub(crate) struct CatalogueCredentialResolver {
-    catalogue: CredentialCatalogue,
-}
-
-impl CatalogueCredentialResolver {
-    pub(crate) fn new(catalogue: CredentialCatalogue) -> Self {
-        Self { catalogue }
-    }
-}
-
-impl EmbeddingCredentialResolver for CatalogueCredentialResolver {
+impl EmbeddingCredentialResolver for ProviderConnectionCredentialResolver {
     fn resolve(
         &self,
         provider: ProviderKind,
         normalised_base_url: &str,
     ) -> Result<String, CredentialError> {
-        self.catalogue
-            .resolve_api_key(provider, normalised_base_url)
+        self.connections
+            .resolve_endpoint_api_key(provider, normalised_base_url)
             .map(ToOwned::to_owned)
             .map_err(|e| CredentialError {
-                provider: e.provider,
-                base_url: e.base_url.clone(),
+                provider,
+                base_url: normalised_base_url.to_owned(),
                 message: e.to_string(),
             })
     }
 }
 
 /// Validates the active embedding identity fail-closed at boot: a
-/// key-requiring provider with no catalogue credential, or a provider
+/// key-requiring provider with no matching connection credential, or a provider
 /// kind with no embedding API, aborts startup with the endpoint named
 /// rather than booting into a server whose every ingest and discover
 /// fails.
@@ -169,13 +186,12 @@ pub(crate) fn validate_embedding_identity(
     let provider = active_profile.provider_kind();
     if provider.supports_embedding() {
         config
-            .credentials
-            .resolve_api_key(provider, active_profile.normalised_base_url())
-            .map_err(|e| AppError::EmbeddingCredentialUnresolved {
-                provider: e.provider,
-                base_url: e.base_url.clone(),
-                kind: e.kind,
-                provider_upper: provider.as_str().to_uppercase(),
+            .provider_connections
+            .resolve_endpoint_api_key(provider, active_profile.normalised_base_url())
+            .map_err(|source| AppError::EmbeddingCredentialUnresolved {
+                provider,
+                base_url: active_profile.normalised_base_url().to_owned(),
+                source,
             })?;
     }
     gateway
@@ -222,10 +238,15 @@ pub(crate) async fn probe_startup_providers(
 fn add_entry(
     entries: &mut Vec<(ProviderKey, ProviderLimits)>,
     provider: ProviderKind,
-    base_url: Option<&String>,
+    base_url: Option<&str>,
     request_class: RequestClass,
     config: &TribalConfig,
 ) -> Result<(), AppError> {
+    if provider == ProviderKind::Platform && base_url.is_none() {
+        return Err(AppError::ProviderSetup {
+            context: "the platform provider requires the managed gateway transport".to_owned(),
+        });
+    }
     let url = resolve_base_url(provider, base_url);
     let key = ProviderKey::new(provider.to_string(), &url, request_class)
         .map_err(|source| AppError::ProviderRegistry { source })?;
@@ -258,19 +279,17 @@ fn add_entry(
 /// default (the platform, whose gateway endpoint is deployment-bound, not
 /// defaulted). An empty result is not a usable endpoint — it is rejected where
 /// the provider URL is parsed, never silently accepted.
-pub(super) fn resolve_base_url(provider: ProviderKind, config_url: Option<&String>) -> String {
+pub(super) fn resolve_base_url(provider: ProviderKind, config_url: Option<&str>) -> String {
     config_url
-        .map(String::as_str)
         .or_else(|| provider.default_base_url())
         .unwrap_or_default()
         .to_owned()
 }
 
-/// Renders an optional API key as the `&str` the concrete provider
-/// constructors expect — empty when absent, matching the prior
-/// `.unwrap_or_default()` chain at each call site.
-fn api_key_str(key: Option<&tribal_domain::ApiKey>) -> &str {
-    key.map(tribal_domain::ApiKey::as_str).unwrap_or_default()
+fn connection_error(source: &ProviderConnectionResolutionError) -> AppError {
+    AppError::ConfigInvariant {
+        reason: source.to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +300,8 @@ fn api_key_str(key: Option<&tribal_domain::ApiKey>) -> &str {
 mod tests {
     use std::sync::Arc;
 
-    use tribal_config::MissingApiKeyKind;
+    use tribal_config::{ProviderConnectionConfig, ProviderConnectionResolutionError};
+    use tribal_domain::ProviderConnectionName;
     use tribal_inference::NoopLedgerSink;
     use tribal_test_utils::an_embedding_profile;
 
@@ -315,20 +335,19 @@ mod tests {
     }
 
     #[test]
-    fn test_catalogue_resolver_fails_closed_for_keyless_cloud_provider() {
-        // OpenAI requires a key; an empty catalogue resolves to the
-        // fail-closed error naming the connection.
-        let resolver = CatalogueCredentialResolver::new(CredentialCatalogue::default());
+    fn test_connection_resolver_fails_closed_for_unowned_cloud_endpoint() {
+        let resolver = ProviderConnectionCredentialResolver::new(ProviderConnections::default());
         let err = resolver
             .resolve(ProviderKind::OpenAi, "https://api.openai.com:443/v1")
             .expect_err("a keyless cloud provider must fail closed");
         assert_eq!(err.provider, ProviderKind::OpenAi);
         assert_eq!(err.base_url, "https://api.openai.com:443/v1");
+        assert!(err.message.contains("no provider connection owns"));
     }
 
     #[test]
-    fn test_catalogue_resolver_allows_keyless_ollama() {
-        let resolver = CatalogueCredentialResolver::new(CredentialCatalogue::default());
+    fn test_connection_resolver_allows_keyless_ollama() {
+        let resolver = ProviderConnectionCredentialResolver::new(ProviderConnections::default());
         let key = resolver
             .resolve(ProviderKind::Ollama, "http://localhost:11434")
             .expect("ollama needs no key");
@@ -336,24 +355,19 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_accepts_platform_inference_provider() {
+    fn test_registry_refuses_platform_until_managed_transport_exists() {
         let mut config = TribalConfig::default();
-        config.inference.extraction.provider = ProviderKind::Platform;
-        config.inference.extraction.base_url = Some("https://gateway.example.com".to_owned());
+        let name = ProviderConnectionName::parse("managed").expect("fixture name is valid");
+        config
+            .provider_connections
+            .insert(name.clone(), ProviderConnectionConfig::Platform {});
+        config.inference.extraction.connection = name;
 
-        let registry = build_command_registry(&config).expect("platform has a gateway endpoint");
-        let gateway = InferenceGateway::new(
-            registry,
-            &completion_stage_specs(&config),
-            Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
-            Arc::new(NoopLedgerSink),
-        )
-        .expect("a platform stage builds a gateway");
-
-        assert_eq!(
-            gateway.completion_identity(TaskType::Extraction).name,
-            ProviderKind::Platform.as_str(),
-            "the extraction stage is bound to the platform provider",
+        let error = build_command_registry(&config)
+            .expect_err("platform has no local endpoint before managed transport exists");
+        assert!(
+            error.to_string().contains("managed gateway transport"),
+            "unexpected error: {error}",
         );
     }
 
@@ -361,10 +375,13 @@ mod tests {
 
     fn a_gateway(config: &TribalConfig) -> InferenceGateway {
         let registry = build_command_registry(config).expect("a registry from default config");
+        let specs = completion_stage_specs(config).expect("completion specs from default config");
         InferenceGateway::new(
             registry,
-            &completion_stage_specs(config),
-            Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
+            &specs,
+            Arc::new(ProviderConnectionCredentialResolver::new(
+                config.provider_connections.clone(),
+            )),
             Arc::new(NoopLedgerSink),
         )
         .expect("a gateway from registered endpoints")
@@ -398,7 +415,7 @@ mod tests {
             err,
             AppError::EmbeddingCredentialUnresolved {
                 provider: ProviderKind::OpenAi,
-                kind: MissingApiKeyKind::NoMatchingEntry,
+                source: ProviderConnectionResolutionError::MissingEndpoint { .. },
                 ..
             }
         ));

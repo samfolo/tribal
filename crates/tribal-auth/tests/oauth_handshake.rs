@@ -50,7 +50,7 @@ const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 fn runtime_config() -> Arc<OAuthRuntimeConfig> {
     let issuer = Url::parse(ISSUER).unwrap();
     let resource = Url::parse(RESOURCE).unwrap();
-    Arc::new(OAuthRuntimeConfig::build(&OAuthConfig::default(), &issuer, &resource).unwrap())
+    Arc::new(OAuthRuntimeConfig::build(&OAuthConfig::default(), &issuer, &resource, true).unwrap())
 }
 
 fn bearer_challenge(runtime: &OAuthRuntimeConfig) -> BearerChallenge {

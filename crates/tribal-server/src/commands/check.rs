@@ -1,7 +1,10 @@
 //! Manager-backed readiness projection and private readiness evaluation.
 
 use tribal_wire::{
-    management::{CheckReportCall, CredentialProbeCall},
+    management::{
+        CheckReportCall, ProviderConnectionsCall, ProviderProbeCall, ProviderProbeRequest,
+        ProviderProbeTarget,
+    },
     operator_check::CheckResult,
 };
 
@@ -37,10 +40,21 @@ pub(crate) async fn run(config_path: &str, args: CheckArgs) -> Result<(), AppErr
         .await
         .map_err(connector_error)?;
     if args.providers {
-        connection
-            .call::<CredentialProbeCall>(&())
+        let catalogue = connection
+            .call::<ProviderConnectionsCall>(&())
             .await
             .map_err(client_error)?;
+        for provider in catalogue.connections {
+            connection
+                .call::<ProviderProbeCall>(&ProviderProbeRequest {
+                    target: ProviderProbeTarget::Stored {
+                        name: provider.name,
+                    },
+                    expected_revision: catalogue.revision.clone(),
+                })
+                .await
+                .map_err(client_error)?;
+        }
     }
     let report = connection
         .call::<CheckReportCall>(&())

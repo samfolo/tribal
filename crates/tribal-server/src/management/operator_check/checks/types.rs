@@ -8,9 +8,10 @@
 use std::path::PathBuf;
 
 use tribal_config::{
-    Diagnostics, MissingApiKeyKind, ProviderStage, ValidationError, standard_env_var_name,
+    Diagnostics, ProviderConnectionResolutionError, ProviderStage, ValidationError,
+    standard_env_var_name,
 };
-use tribal_domain::{ProjectId, ProviderKind, ReindexRunState};
+use tribal_domain::{ProjectId, ProviderConnectionName, ProviderKind, ReindexRunState};
 use tribal_wire::operator_check::CheckName;
 
 use crate::error::FIRST_RUN_REQUIRED;
@@ -167,13 +168,11 @@ pub(in crate::management::operator_check) enum CheckDetail {
         dimensions: u32,
         genesis_drift: Option<String>,
     },
-    /// The active profile's provider endpoint has no resolvable credential in
-    /// the catalogue, the fail-closed condition the next server boot trips.
-    /// `kind` distinguishes "no entry matches" from "entry present, key empty".
+    /// The active profile's provider endpoint has no resolvable connection.
     EmbeddingCredentialUnresolved {
         provider: ProviderKind,
         base_url: String,
-        kind: MissingApiKeyKind,
+        source: ProviderConnectionResolutionError,
     },
     /// A reindex run is live and/or items are quarantined out of the active
     /// space, conditions that warrant operator attention.
@@ -213,8 +212,7 @@ pub(in crate::management::operator_check) enum SkipReason {
     /// A `server.bind_address` validation error blocks advertised-URL
     /// resolution, so the probe is skipped.
     ConfigValidateFailedTransportBind,
-    /// The named target has a missing `api_key` validation error, so
-    /// its provider probe is skipped.
+    /// The named target has an invalid provider connection, so its probe is skipped.
     ConfigValidateFailedApiKey { target: ProviderStage },
     /// The database was not reachable, so checks that require a
     /// connection are skipped.
@@ -402,7 +400,7 @@ impl CheckDetail {
                 }
                 SkipReason::ConfigValidateFailedApiKey { target } => format!(
                     "skipped because `{}` validation failed",
-                    target.api_key_path()
+                    target.section_path().extend("connection")
                 ),
                 SkipReason::DatabaseUnreachable => {
                     "skipped because the database is unreachable".into()
@@ -439,8 +437,8 @@ impl CheckDetail {
             Self::EmbeddingCredentialUnresolved {
                 provider,
                 base_url,
-                kind,
-            } => render_embedding_credential_unresolved(*provider, base_url, *kind),
+                source,
+            } => render_embedding_credential_unresolved(*provider, base_url, source),
             Self::EmbeddingReindexAttention {
                 live_run,
                 quarantined,
@@ -475,15 +473,9 @@ fn render_embedding_profile_live(
 fn render_embedding_credential_unresolved(
     provider: ProviderKind,
     base_url: &str,
-    kind: MissingApiKeyKind,
+    source: &ProviderConnectionResolutionError,
 ) -> String {
-    let cause = match kind {
-        MissingApiKeyKind::NoMatchingEntry => "no catalogue entry matches",
-        MissingApiKeyKind::EmptyKey => "the matching catalogue entry has an empty api_key",
-    };
-    format!(
-        "the active embedding profile expects credentials for {provider} at {base_url}; {cause}"
-    )
+    format!("the active embedding profile expects {provider} at {base_url}; {source}")
 }
 
 /// Renders the reindex-attention warning, joining the live-run and
@@ -559,17 +551,19 @@ pub(in crate::management::operator_check) enum CheckRemediation {
         target: ProviderStage,
         provider: ProviderKind,
     },
-    /// The genesis-embedding probe failed; name `init.embedding.base_url`
-    /// (the genesis endpoint) and the catalogue credential that backs it,
-    /// because the embedding credential resolves through the catalogue, not
-    /// an `init.embedding.api_key` field.
+    /// The genesis-embedding probe failed; inspect its named provider
+    /// connection because the embedding identity owns no stage-local endpoint
+    /// or credential.
     FixEmbeddingProviderConfig { provider: ProviderKind },
-    /// Add a catalogue credential for the active embedding provider's
-    /// endpoint so the next server boot resolves it.
-    AddEmbeddingCredential { provider: ProviderKind },
-    /// A catalogue entry already matches the active endpoint, but its `api_key`
-    /// is empty; set the key on the existing connection rather than adding one.
-    SetEmbeddingCredentialKey { provider: ProviderKind },
+    /// Add a provider connection for the active embedding endpoint so the next
+    /// server boot resolves it.
+    AddEmbeddingConnection { provider: ProviderKind },
+    /// A provider connection already matches the active endpoint, but its
+    /// `api_key` is empty; set the key on the existing connection.
+    SetEmbeddingCredentialKey {
+        connection: ProviderConnectionName,
+        provider: ProviderKind,
+    },
     /// Inspect the live reindex run and any quarantined items.
     InspectReindexRun,
 }
@@ -628,39 +622,31 @@ impl CheckRemediation {
                     .into()
             }
             Self::FixProviderConfig { target, provider } => {
-                let api_key_path = target.api_key_path();
-                let base_url_path = target.section_path().extend("base_url");
-                let head = match standard_env_var_name(*provider) {
-                    Some(standard) => {
-                        let figment = api_key_path.env_var();
-                        format!(
-                            "check `{api_key_path}` (or export `{figment}` / `{standard}`) \
-                             and `{base_url_path}`"
-                        )
-                    }
-                    None => {
-                        format!("check `{base_url_path}` and confirm the provider is reachable")
-                    }
-                };
-                format!("{head}, or run `tribal serve` to see the underlying startup probe warning")
-            }
-            Self::FixEmbeddingProviderConfig { provider } => {
-                let base_url_path = ProviderStage::Embedding.section_path().extend("base_url");
+                let path = target.section_path().extend("connection");
                 format!(
-                    "check `{base_url_path}` and {}, or run `tribal serve` to see the \
-                     underlying startup probe warning",
-                    embedding_credential_phrase(*provider),
+                    "check `{path}` and its `provider_connections` entry for {provider}, or run \
+                     `tribal serve` to see the underlying startup probe warning"
                 )
             }
-            Self::AddEmbeddingCredential { provider } => embedding_credential_phrase(*provider),
-            Self::SetEmbeddingCredentialKey { provider } => {
-                let connection = format!("{provider}_default");
-                let path = format!("credentials.{connection}.api_key");
+            Self::FixEmbeddingProviderConfig { provider } => {
+                let connection_path = ProviderStage::Embedding.section_path().extend("connection");
+                format!(
+                    "check `{connection_path}` and {}, or run `tribal serve` to see the \
+                     underlying startup probe warning",
+                    embedding_connection_phrase(*provider),
+                )
+            }
+            Self::AddEmbeddingConnection { provider } => embedding_connection_phrase(*provider),
+            Self::SetEmbeddingCredentialKey {
+                connection,
+                provider,
+            } => {
+                let path = format!("provider_connections.{connection}.api_key");
                 match standard_env_var_name(*provider) {
                     Some(standard) => format!(
                         "the `{connection}` connection exists but has no key; set `{path}` (or \
-                         export `TRIBAL_CREDENTIALS__{}__API_KEY` / `{standard}`)",
-                        connection.to_uppercase()
+                         export `TRIBAL_PROVIDER_CONNECTIONS__{}__API_KEY` / `{standard}`)",
+                        connection.as_str().to_uppercase()
                     ),
                     None => format!(
                         "the `{connection}` connection exists but has no key; set its `api_key`"
@@ -676,19 +662,18 @@ impl CheckRemediation {
     }
 }
 
-/// Renders the "set the catalogue credential" phrase shared by the
-/// embedding-credential remediations, naming the `<provider>_default`
-/// connection and the env-override paths that satisfy it.
-fn embedding_credential_phrase(provider: ProviderKind) -> String {
+/// Renders the connection repair shared by embedding remediations, naming the
+/// conventional `<provider>_default` connection and its environment overrides.
+fn embedding_connection_phrase(provider: ProviderKind) -> String {
     let connection = format!("{provider}_default");
-    let path = format!("credentials.{connection}.api_key");
+    let path = format!("provider_connections.{connection}.api_key");
     match standard_env_var_name(provider) {
         Some(standard) => format!(
-            "set `{path}` (or export `TRIBAL_CREDENTIALS__{}__API_KEY` / `{standard}`) so the \
+            "set `{path}` (or export `TRIBAL_PROVIDER_CONNECTIONS__{}__API_KEY` / `{standard}`) so the \
              endpoint resolves",
             connection.to_uppercase()
         ),
-        None => format!("add `credentials.{connection}` for the endpoint"),
+        None => format!("add `provider_connections.{connection}` for the endpoint"),
     }
 }
 
@@ -741,12 +726,12 @@ mod tests {
         }
         .render();
         assert!(
-            rendered.contains("init.embedding.base_url"),
-            "should name the genesis endpoint field: {rendered}",
+            rendered.contains("init.embedding.connection"),
+            "should name the genesis connection field: {rendered}",
         );
         assert!(
-            rendered.contains("credentials.openai_default.api_key"),
-            "should name the catalogue credential: {rendered}",
+            rendered.contains("provider_connections.openai_default.api_key"),
+            "should name the provider connection credential: {rendered}",
         );
         assert!(
             !rendered.contains("embedding.api_key") && !rendered.contains("TRIBAL_EMBEDDING__"),
