@@ -8,6 +8,7 @@ use std::{
 };
 
 use tokio_util::sync::CancellationToken;
+use tribal_config::{LoggingConfig, TelemetryConfig};
 use tribal_wire::management::{
     AuthorityUnavailableReason, ConfigDocument, ConfigFilePath, ConfigRevision,
     ConflictingRuntimeIdentity, MANAGEMENT_CONTRACT_VERSION, ManagerAnnouncement,
@@ -120,6 +121,15 @@ pub(crate) enum ManageError {
 
 /// Acquires or attaches to the authority and blocks while a winning manager serves.
 pub(crate) async fn run(config_path: &str, args: &ManageArgs) -> Result<(), AppError> {
+    // Control-plane telemetry cannot depend on the configuration it exists to repair.
+    let manager_telemetry = TelemetryConfig {
+        service_name: "tribal-manager".to_owned(),
+        // Request events carry span context without duplicating every span onto app stderr.
+        console_export: false,
+        ..TelemetryConfig::default()
+    };
+    let (_telemetry_guard, _metrics) =
+        tribal_telemetry::init_subscriber(&LoggingConfig::default(), &manager_telemetry)?;
     let stdout = io::stdout();
     let stdout_fd = stdout.as_raw_fd();
     let mut writer = stdout.lock();
