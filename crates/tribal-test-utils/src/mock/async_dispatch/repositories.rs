@@ -25,7 +25,7 @@ pub use auth_token::MockAuthTokenRepository;
 pub use error_factories::{
     DbErrorFactory, a_not_found, a_pool_exhausted, a_query_failed, a_unique_violation,
 };
-pub use job::MockJobRepository;
+pub use job::{MockIngestJobRepository, MockJobRepository};
 pub use knowledge_item::MockKnowledgeItemRepository;
 pub use migration::MockMigrationRepository;
 pub use principal::MockPrincipalRepository;

@@ -657,7 +657,7 @@ const RECENT_LIMIT_CAP: u16 = 50;
 const PREVIEW_SCALAR_LIMIT: usize = 160;
 
 /// Outcome of idempotency-arbitrated job admission.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IngestInsertOutcome {
     /// No key was supplied, or the key was unclaimed: a job was created.
     Inserted(Job),

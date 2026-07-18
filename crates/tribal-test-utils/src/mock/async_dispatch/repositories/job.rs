@@ -1,8 +1,12 @@
 //! Mock implementation of [`JobRepository`].
 
-use tribal_db::{JobRepository, JobStatusTransition, NewJob};
+use tribal_db::{
+    IngestInsertOutcome, IngestJobRepository, JobRepository, JobStatusTransition, NewJob,
+    RecentIngestionPage, RecentIngestionsQuery,
+};
 use tribal_domain::{
-    ExtractionCommitOutcome, InferenceIdentity, Job, JobId, ProjectId, RelationBatchId,
+    ExtractionCommitOutcome, InferenceIdentity, Job, JobId, PrincipalId, ProjectId,
+    RelationBatchId,
 };
 
 use super::mock_repository;
@@ -27,6 +31,17 @@ mock_repository! {
             () { () };
         find_stuck_triaging_jobs(() => Vec<JobId>)
             () { () }
+    }
+}
+
+mock_repository! {
+    MockIngestJobRepository for IngestJobRepository, tribal_db::DbError {
+        insert_or_resolve_idempotency(NewJob => IngestInsertOutcome)
+            (job: &NewJob) { job.clone() };
+        find_by_id_for_principal((JobId, PrincipalId) => Job)
+            (job_id: JobId, principal_id: PrincipalId) { (job_id, principal_id) };
+        list_recent_for_principal((PrincipalId, RecentIngestionsQuery) => RecentIngestionPage)
+            (principal_id: PrincipalId, query: &RecentIngestionsQuery) { (principal_id, query.clone()) };
     }
 }
 

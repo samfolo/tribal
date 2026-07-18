@@ -18,7 +18,7 @@ use tribal_inference::{
 };
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
-    MockEmbeddingProvider, MockInferenceProvider, MockJobRepository, MockKnowledgeItemRepository,
+    MockEmbeddingProvider, MockInferenceProvider, MockIngestJobRepository, MockKnowledgeItemRepository,
     MockPrincipalRepository, MockProjectRepository, MockPromptVersionRepository,
     MockReferenceRepository, MockRelationRepository, MockRetrievalFeedbackRepository,
     MockStandingRepository, MockSystemFingerprintRepository, MockTaskRepository,
@@ -55,7 +55,7 @@ pub(crate) fn test_repositories() -> ConnectionRepositories {
     ConnectionRepositories {
         knowledge_item: Arc::new(MockKnowledgeItemRepository::builder().build()),
         project: Arc::new(MockProjectRepository::builder().build()),
-        job: Arc::new(MockJobRepository::builder().build()),
+        job: Arc::new(MockIngestJobRepository::builder().build()),
         task: Arc::new(MockTaskRepository::builder().build()),
         retrieval_feedback: Arc::new(MockRetrievalFeedbackRepository::builder().build()),
         standing: Arc::new(MockStandingRepository::builder().build()),

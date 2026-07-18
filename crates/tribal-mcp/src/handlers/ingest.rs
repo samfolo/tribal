@@ -10,7 +10,7 @@ use sqlx::PgConnection;
 use tokio::sync::watch;
 use tracing::Instrument;
 use tribal_common::JobWatchEntry;
-use tribal_db::{DbError, NewJob, NewTask};
+use tribal_db::{DbError, IngestInsertOutcome, NewJob, NewTask};
 use tribal_domain::{
     JobId, JobState, McpErrorCode, PrincipalId, ProjectId, SourceContextV1, TaskType, span_attrs,
 };
@@ -40,6 +40,7 @@ struct IngestParams {
     principal_id: PrincipalId,
     source_context: serde_json::Value,
     content: String,
+    idempotency_key: Option<uuid::Uuid>,
     active_prompts: ActivePromptVersions,
     build_version: Arc<str>,
     fingerprint_inputs: FingerprintInputs,
@@ -59,6 +60,10 @@ enum IngestError {
 
     #[error(transparent)]
     Fingerprint(#[from] FingerprintError),
+
+    /// The idempotency key names a job whose project or content differ.
+    #[error("idempotency key reused with a different project or content")]
+    IdempotencyConflict,
 }
 
 impl IntoMcpError for IngestError {
@@ -66,6 +71,11 @@ impl IntoMcpError for IngestError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
             Self::Fingerprint(e) => e.into_mcp_error(),
+            Self::IdempotencyConflict => McpToolError {
+                code: McpErrorCode::Conflict,
+                message: "idempotency key reused with a different project or content".to_owned(),
+                details: serde_json::json!({}),
+            },
         }
     }
 }
@@ -170,6 +180,7 @@ impl TribalServerHandler {
             principal_id,
             source_context,
             content: request.content,
+            idempotency_key: request.idempotency_key,
             active_prompts,
             build_version: Arc::clone(&self.state.build_version),
             fingerprint_inputs,
@@ -257,16 +268,27 @@ async fn execute_ingest(
         .relation_user_prompt_version_id(params.active_prompts.relation_user_prompt_version_id)
         .system_fingerprint_hash(fingerprint_hash)
         .trace_context(trace_context)
+        .ingest_idempotency_key(params.idempotency_key)
         .build();
 
-    let job = repositories.job.insert(conn, &new_job).await?;
-
-    let new_task = NewTask::builder()
-        .job_id(job.id())
-        .task_type(TaskType::Extraction)
-        .build();
-
-    repositories.task.insert(conn, &new_task).await?;
+    // The extraction task exists only for a job this call created: a
+    // recovered job already has its task, and a conflict creates nothing.
+    let job = match repositories
+        .job
+        .insert_or_resolve_idempotency(conn, &new_job)
+        .await?
+    {
+        IngestInsertOutcome::Inserted(job) => {
+            let new_task = NewTask::builder()
+                .job_id(job.id())
+                .task_type(TaskType::Extraction)
+                .build();
+            repositories.task.insert(conn, &new_task).await?;
+            job
+        }
+        IngestInsertOutcome::Existing(job) => job,
+        IngestInsertOutcome::Conflict => return Err(IngestError::IdempotencyConflict),
+    };
 
     Ok(IngestResult { job_id: job.id() })
 }
@@ -289,7 +311,8 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt;
     use tribal_domain::{IngestChannel, KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
-        MockJobRepository, MockProjectRepository, MockPromptVersionRepository, MockTaskRepository,
+        MockIngestJobRepository, MockProjectRepository, MockPromptVersionRepository,
+        MockTaskRepository,
         TestDb, a_job, a_project, a_prompt_version, a_task,
     };
 
@@ -324,6 +347,7 @@ mod tests {
             principal_id: PrincipalId::new(),
             source_context: serde_json::json!({"type": "ManualCapture", "capture_method": "mcp"}),
             content: "some knowledge".into(),
+            idempotency_key: None,
             active_prompts: test_active_prompt_versions(),
             build_version: Arc::from("test-build"),
             fingerprint_inputs: test_fingerprint_inputs(),
@@ -442,9 +466,9 @@ mod tests {
                 .build(),
         );
         repos.job = Arc::new(
-            MockJobRepository::builder()
-                .when_insert(move |new_job| new_job.principal_id == prin_id)
-                .respond_with(job.clone(), None)
+            MockIngestJobRepository::builder()
+                .when_insert_or_resolve_idempotency(move |new_job| new_job.principal_id == prin_id)
+                .respond_with(IngestInsertOutcome::Inserted(job.clone()), None)
                 .build(),
         );
         repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
@@ -455,6 +479,7 @@ mod tests {
             principal_id: prin_id,
             source_context: serde_json::json!({"type": "ManualCapture", "capture_method": "mcp"}),
             content: "learned something".into(),
+            idempotency_key: None,
             active_prompts,
             build_version: Arc::from("test-build"),
             fingerprint_inputs: test_fingerprint_inputs(),
@@ -482,8 +507,8 @@ mod tests {
             prompts.relation_user_prompt_version_id,
         ];
 
-        let job_mock = MockJobRepository::builder()
-            .when_insert(move |new_job| {
+        let job_mock = MockIngestJobRepository::builder()
+            .when_insert_or_resolve_idempotency(move |new_job| {
                 let actual_ids = [
                     new_job.extraction_system_prompt_version_id,
                     new_job.extraction_user_prompt_version_id,
@@ -494,7 +519,7 @@ mod tests {
                 ];
                 actual_ids.iter().zip(&expected_ids).all(|(a, e)| a == e)
             })
-            .respond_with(job.clone(), None)
+            .respond_with(IngestInsertOutcome::Inserted(job.clone()), None)
             .build();
 
         let mut repos = test_repositories();
@@ -512,6 +537,7 @@ mod tests {
             principal_id: prin_id,
             source_context: serde_json::json!({}),
             content: "test content".into(),
+            idempotency_key: None,
             active_prompts: prompts,
             build_version: Arc::from("test-build"),
             fingerprint_inputs: test_fingerprint_inputs(),
@@ -537,9 +563,9 @@ mod tests {
         });
         let expected_ctx = source_ctx.clone();
 
-        let job_mock = MockJobRepository::builder()
-            .when_insert(move |new_job| new_job.source_context == expected_ctx)
-            .respond_with(job.clone(), None)
+        let job_mock = MockIngestJobRepository::builder()
+            .when_insert_or_resolve_idempotency(move |new_job| new_job.source_context == expected_ctx)
+            .respond_with(IngestInsertOutcome::Inserted(job.clone()), None)
             .build();
 
         let mut repos = test_repositories();
@@ -557,6 +583,7 @@ mod tests {
             principal_id: prin_id,
             source_context: source_ctx,
             content: "test content".into(),
+            idempotency_key: None,
             active_prompts,
             build_version: Arc::from("test-build"),
             fingerprint_inputs: test_fingerprint_inputs(),
@@ -721,15 +748,15 @@ mod tests {
         let task = a_task().job_id(job.id()).build();
         let active_prompts = test_active_prompt_versions();
 
-        let job_mock = MockJobRepository::builder()
-            .when_insert(move |new_job| {
+        let job_mock = MockIngestJobRepository::builder()
+            .when_insert_or_resolve_idempotency(move |new_job| {
                 if let Some(tc) = &new_job.trace_context {
                     let valid = tribal_telemetry::trace_id_from_traceparent(tc).is_some();
                     saw_clone.store(valid, Ordering::SeqCst);
                 }
                 true
             })
-            .respond_with(job.clone(), None)
+            .respond_with(IngestInsertOutcome::Inserted(job.clone()), None)
             .build();
 
         let mut repos = test_repositories();
@@ -747,6 +774,7 @@ mod tests {
             principal_id: prin_id,
             source_context: serde_json::json!({}),
             content: "trace test".into(),
+            idempotency_key: None,
             active_prompts,
             build_version: Arc::from("test-build"),
             fingerprint_inputs: test_fingerprint_inputs(),

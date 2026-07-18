@@ -13,7 +13,7 @@ use rmcp::{
 use tokio::sync::RwLock;
 use tribal_auth::{AuthenticatedPrincipal, TransportAuthStrategy};
 use tribal_db::{
-    JobRepository, KnowledgeItemRepository, PgJobRepository, PgKnowledgeItemRepository,
+    IngestJobRepository, KnowledgeItemRepository, PgJobRepository, PgKnowledgeItemRepository,
     PgPrincipalRepository, PgProjectRepository, PgPromptVersionRepository, PgReferenceRepository,
     PgRelationRepository, PgRetrievalFeedbackRepository, PgStandingRepository,
     PgSystemFingerprintRepository, PgTaskRepository, PgTriageResultRepository, PrincipalRepository,
@@ -67,7 +67,7 @@ pub(crate) const DISPATCHED_TOOLS: &[&str] = &[
 pub struct ConnectionRepositories {
     pub(crate) knowledge_item: Arc<dyn KnowledgeItemRepository + Send + Sync>,
     pub(crate) project: Arc<dyn ProjectRepository + Send + Sync>,
-    pub(crate) job: Arc<dyn JobRepository + Send + Sync>,
+    pub(crate) job: Arc<dyn IngestJobRepository>,
     pub(crate) task: Arc<dyn TaskRepository + Send + Sync>,
     pub(crate) retrieval_feedback: Arc<dyn RetrievalFeedbackRepository + Send + Sync>,
     pub(crate) standing: Arc<dyn StandingRepository + Send + Sync>,
