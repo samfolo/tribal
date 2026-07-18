@@ -3,6 +3,7 @@
 
 mod app_state;
 mod config;
+pub mod contract;
 mod error;
 mod fingerprint;
 mod format;
