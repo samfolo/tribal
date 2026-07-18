@@ -10,6 +10,7 @@
 //! type-check these casts.
 
 use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
@@ -37,6 +38,7 @@ const COLUMNS: Columns = Columns(&[
     "committed_batch_id",
     "source_context",
     "raw_input",
+    "ingest_idempotency_key",
     "extraction_original_count",
     "error_message",
     "extraction_system_prompt_version_id",
@@ -85,6 +87,9 @@ pub struct NewJob {
     pub source_context: serde_json::Value,
     /// Verbatim text from ingestion; primary input to extraction.
     pub raw_input: String,
+    /// Producer-supplied key converging retries of one logical ingest.
+    #[builder(default)]
+    pub ingest_idempotency_key: Option<uuid::Uuid>,
     /// Extraction system prompt version at job creation time.
     pub extraction_system_prompt_version_id: PromptVersionId,
     /// Extraction user prompt version at job creation time.
@@ -280,12 +285,12 @@ impl JobRepository for PgJobRepository {
         let sql = format!(
             "INSERT INTO jobs \
                  (correlation_id, project_id, principal_id, actor_id, \
-                  source_context, raw_input, \
+                  source_context, raw_input, ingest_idempotency_key, \
                   extraction_system_prompt_version_id, extraction_user_prompt_version_id, \
                   triage_system_prompt_version_id, triage_user_prompt_version_id, \
                   relation_system_prompt_version_id, relation_user_prompt_version_id, \
                   system_fingerprint_hash, trace_context) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
              RETURNING {COLUMNS}",
         );
 
@@ -296,6 +301,7 @@ impl JobRepository for PgJobRepository {
             .bind(new_job.actor_id.map(|id| *id.inner()))
             .bind(&new_job.source_context)
             .bind(&new_job.raw_input)
+            .bind(new_job.ingest_idempotency_key)
             .bind(new_job.extraction_system_prompt_version_id.inner())
             .bind(new_job.extraction_user_prompt_version_id.inner())
             .bind(new_job.triage_system_prompt_version_id.inner())
@@ -639,6 +645,356 @@ impl JobRepository for PgJobRepository {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// IngestJobRepository
+// ---------------------------------------------------------------------------
+
+/// Most recent-listing rows returned in one page.
+const RECENT_LIMIT_CAP: u16 = 50;
+
+/// Unicode scalar values a listing preview carries.
+const PREVIEW_SCALAR_LIMIT: usize = 160;
+
+/// Outcome of idempotency-arbitrated job admission.
+#[derive(Debug)]
+pub enum IngestInsertOutcome {
+    /// No key was supplied, or the key was unclaimed: a job was created.
+    Inserted(Job),
+    /// The key already names a job with this project and raw input.
+    Existing(Job),
+    /// The key already names a job whose project or raw input differ.
+    Conflict,
+}
+
+/// Cursor into the `(created_at DESC, id DESC)` recent-listing order,
+/// carried on the wire as base64url-without-padding JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecentIngestionCursor {
+    /// Creation instant of the last row the caller has seen.
+    pub created_at: DateTime<Utc>,
+    /// Identifier of that row, breaking creation-instant ties.
+    pub job_id: JobId,
+}
+
+impl RecentIngestionCursor {
+    /// Encodes the cursor for the wire.
+    #[must_use]
+    pub fn encode(&self) -> String {
+        let json = serde_json::to_vec(self).expect("cursor serialises to JSON");
+        URL_SAFE_NO_PAD.encode(json)
+    }
+
+    /// Decodes a wire cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::InvalidCursor`] when the value is not the
+    /// base64url JSON this type emits.
+    pub fn decode(raw: &str) -> Result<Self, DbError> {
+        let bytes = URL_SAFE_NO_PAD
+            .decode(raw)
+            .map_err(|e| DbError::InvalidCursor {
+                detail: format!("not base64url: {e}"),
+            })?;
+        serde_json::from_slice(&bytes).map_err(|e| DbError::InvalidCursor {
+            detail: format!("not a recent-ingestion cursor: {e}"),
+        })
+    }
+}
+
+/// Query for the principal-scoped recent-ingestion listing.
+#[derive(Debug, Clone, Default)]
+pub struct RecentIngestionsQuery {
+    /// Restrict to one project.
+    pub project_id: Option<ProjectId>,
+    /// Restrict to these statuses; empty means all.
+    pub statuses: Vec<JobStatus>,
+    /// Return rows strictly before this position.
+    pub before: Option<RecentIngestionCursor>,
+    /// Requested page size; the repository caps it.
+    pub limit: u16,
+}
+
+/// One listed ingestion: monitoring fields plus a bounded preview.
+#[derive(Debug, Clone)]
+pub struct RecentIngestionSummary {
+    /// The job's identifier.
+    pub job_id: JobId,
+    /// The project the ingest resolved to.
+    pub project_id: ProjectId,
+    /// Current lifecycle status.
+    pub status: JobStatus,
+    /// Terminal outcome, when the job has one.
+    pub outcome: Option<JobOutcome>,
+    /// Whitespace-collapsed raw-input preview, at most
+    /// [`PREVIEW_SCALAR_LIMIT`] scalar values.
+    pub preview: String,
+    /// When the job was created.
+    pub created_at: DateTime<Utc>,
+    /// When the job last changed.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One page of the recent-ingestion listing.
+#[derive(Debug, Clone)]
+pub struct RecentIngestionPage {
+    /// The page's rows, newest first.
+    pub ingestions: Vec<RecentIngestionSummary>,
+    /// Position to resume from, absent on the last page.
+    pub next_cursor: Option<RecentIngestionCursor>,
+}
+
+/// The narrowed data-plane capability handed to the MCP boundary: no
+/// unscoped job read exists on it, so a handler cannot reach another
+/// principal's rows even by mistake. Workers keep the wider internal
+/// [`JobRepository`].
+#[async_trait]
+pub trait IngestJobRepository: Send + Sync {
+    /// Admits an ingest with database-side idempotency arbitration: a
+    /// keyless job inserts as today, an unclaimed key inserts and claims,
+    /// a claimed key resolves to the existing job when project and raw
+    /// input match exactly, and conflicts otherwise — without echoing
+    /// content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn insert_or_resolve_idempotency(
+        &self,
+        conn: &mut PgConnection,
+        job: &NewJob,
+    ) -> Result<IngestInsertOutcome, DbError>;
+
+    /// Finds a job the principal owns. A missing and a foreign job are
+    /// the same [`DbError::NotFound`], so existence never leaks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::NotFound`] for a missing or foreign job.
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_by_id_for_principal(
+        &self,
+        conn: &mut PgConnection,
+        job_id: JobId,
+        principal_id: PrincipalId,
+    ) -> Result<Job, DbError>;
+
+    /// Lists the principal's ingestions in `(created_at DESC, id DESC)`
+    /// order with keyset pagination; the page size is capped at
+    /// [`RECENT_LIMIT_CAP`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn list_recent_for_principal(
+        &self,
+        conn: &mut PgConnection,
+        principal_id: PrincipalId,
+        query: &RecentIngestionsQuery,
+    ) -> Result<RecentIngestionPage, DbError>;
+}
+
+#[async_trait]
+impl IngestJobRepository for PgJobRepository {
+    async fn insert_or_resolve_idempotency(
+        &self,
+        conn: &mut PgConnection,
+        job: &NewJob,
+    ) -> Result<IngestInsertOutcome, DbError> {
+        let Some(key) = job.ingest_idempotency_key else {
+            return Ok(IngestInsertOutcome::Inserted(self.insert(conn, job).await?));
+        };
+
+        let sql = format!(
+            "INSERT INTO jobs \
+                 (correlation_id, project_id, principal_id, actor_id, \
+                  source_context, raw_input, ingest_idempotency_key, \
+                  extraction_system_prompt_version_id, extraction_user_prompt_version_id, \
+                  triage_system_prompt_version_id, triage_user_prompt_version_id, \
+                  relation_system_prompt_version_id, relation_user_prompt_version_id, \
+                  system_fingerprint_hash, trace_context) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
+             ON CONFLICT (principal_id, ingest_idempotency_key) \
+                 WHERE ingest_idempotency_key IS NOT NULL \
+                 DO NOTHING \
+             RETURNING {COLUMNS}",
+        );
+
+        let inserted = sqlx::query(&sql)
+            .bind(job.correlation_id.map(|id| *id.inner()))
+            .bind(job.project_id.inner())
+            .bind(job.principal_id.inner())
+            .bind(job.actor_id.map(|id| *id.inner()))
+            .bind(&job.source_context)
+            .bind(&job.raw_input)
+            .bind(key)
+            .bind(job.extraction_system_prompt_version_id.inner())
+            .bind(job.extraction_user_prompt_version_id.inner())
+            .bind(job.triage_system_prompt_version_id.inner())
+            .bind(job.triage_user_prompt_version_id.inner())
+            .bind(job.relation_system_prompt_version_id.inner())
+            .bind(job.relation_user_prompt_version_id.inner())
+            .bind(&job.system_fingerprint_hash)
+            .bind(&job.trace_context)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("admitting ingest under idempotency key {key}"),
+                source: e,
+            })?;
+
+        if let Some(row) = inserted {
+            return Ok(IngestInsertOutcome::Inserted(map_job_row(&row)));
+        }
+
+        let sql = format!(
+            "SELECT {COLUMNS} FROM jobs \
+             WHERE principal_id = $1 AND ingest_idempotency_key = $2",
+        );
+        let row = sqlx::query(&sql)
+            .bind(job.principal_id.inner())
+            .bind(key)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("resolving ingest idempotency key {key}"),
+                source: e,
+            })?
+            .ok_or_else(|| DbError::NotFound {
+                entity: "job",
+                id: key.to_string(),
+            })?;
+        let existing = map_job_row(&row);
+
+        if existing.project_id() == job.project_id && existing.raw_input() == job.raw_input {
+            Ok(IngestInsertOutcome::Existing(existing))
+        } else {
+            Ok(IngestInsertOutcome::Conflict)
+        }
+    }
+
+    async fn find_by_id_for_principal(
+        &self,
+        conn: &mut PgConnection,
+        job_id: JobId,
+        principal_id: PrincipalId,
+    ) -> Result<Job, DbError> {
+        let sql = format!("SELECT {COLUMNS} FROM jobs WHERE id = $1 AND principal_id = $2");
+
+        let row = sqlx::query(&sql)
+            .bind(job_id.inner())
+            .bind(principal_id.inner())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding job {job_id} for principal"),
+                source: e,
+            })?
+            .ok_or_else(|| DbError::NotFound {
+                entity: "job",
+                id: job_id.to_string(),
+            })?;
+
+        Ok(map_job_row(&row))
+    }
+
+    async fn list_recent_for_principal(
+        &self,
+        conn: &mut PgConnection,
+        principal_id: PrincipalId,
+        query: &RecentIngestionsQuery,
+    ) -> Result<RecentIngestionPage, DbError> {
+        let limit = query.limit.clamp(1, RECENT_LIMIT_CAP);
+
+        let mut sql = format!("SELECT {COLUMNS} FROM jobs WHERE principal_id = $1");
+        let mut next_bind = 2;
+        if query.project_id.is_some() {
+            sql.push_str(&format!(" AND project_id = ${next_bind}"));
+            next_bind += 1;
+        }
+        if !query.statuses.is_empty() {
+            sql.push_str(&format!(" AND status = ANY(${next_bind}::text[])"));
+            next_bind += 1;
+        }
+        if query.before.is_some() {
+            sql.push_str(&format!(
+                " AND (created_at, id) < (${}, ${})",
+                next_bind,
+                next_bind + 1
+            ));
+            next_bind += 2;
+        }
+        sql.push_str(&format!(
+            " ORDER BY created_at DESC, id DESC LIMIT ${next_bind}"
+        ));
+
+        let mut q = sqlx::query(&sql).bind(principal_id.inner());
+        if let Some(project_id) = query.project_id {
+            q = q.bind(*project_id.inner());
+        }
+        if !query.statuses.is_empty() {
+            let statuses: Vec<String> = query
+                .statuses
+                .iter()
+                .map(|s| s.as_str().to_owned())
+                .collect();
+            q = q.bind(statuses);
+        }
+        if let Some(before) = query.before {
+            q = q.bind(before.created_at).bind(*before.job_id.inner());
+        }
+        // One row past the page decides whether a next cursor exists.
+        q = q.bind(i64::from(limit) + 1);
+
+        let rows = q
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "listing recent ingestions".to_owned(),
+                source: e,
+            })?;
+
+        let mut jobs: Vec<Job> = rows.iter().map(map_job_row).collect();
+        let has_more = jobs.len() > usize::from(limit);
+        jobs.truncate(usize::from(limit));
+
+        let next_cursor = if has_more {
+            jobs.last().map(|job| RecentIngestionCursor {
+                created_at: job.created_at(),
+                job_id: job.id(),
+            })
+        } else {
+            None
+        };
+
+        let ingestions = jobs
+            .into_iter()
+            .map(|job| RecentIngestionSummary {
+                job_id: job.id(),
+                project_id: job.project_id(),
+                status: job.status(),
+                outcome: job.outcome(),
+                preview: preview_of(job.raw_input()),
+                created_at: job.created_at(),
+                updated_at: job.updated_at(),
+            })
+            .collect();
+
+        Ok(RecentIngestionPage {
+            ingestions,
+            next_cursor,
+        })
+    }
+}
+
+/// Collapses whitespace runs to single spaces and bounds the result at
+/// [`PREVIEW_SCALAR_LIMIT`] Unicode scalar values.
+fn preview_of(raw_input: &str) -> String {
+    let collapsed = raw_input.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.chars().take(PREVIEW_SCALAR_LIMIT).collect()
+}
+
 // ---------------------------------------------------------------------------
 // Row mapping
 // ---------------------------------------------------------------------------
@@ -676,6 +1032,7 @@ fn map_job_row(r: &sqlx::postgres::PgRow) -> Job {
         )
         .source_context(r.get("source_context"))
         .raw_input(r.get("raw_input"))
+        .ingest_idempotency_key(r.get("ingest_idempotency_key"))
         .extraction_original_count(
             r.get::<Option<i32>, _>("extraction_original_count")
                 .map(|v| u32::try_from(v).expect(EXTRACTION_ORIGINAL_COUNT_OVERFLOW)),

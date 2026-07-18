@@ -188,6 +188,9 @@ pub struct Job {
     source_context: serde_json::Value,
     /// Verbatim text from ingestion; primary input to extraction.
     raw_input: String,
+    /// Producer-supplied key converging retries of one logical ingest.
+    #[builder(default)]
+    ingest_idempotency_key: Option<uuid::Uuid>,
     /// Pre-cap candidate count from extraction.
     #[builder(default)]
     extraction_original_count: Option<u32>,
@@ -274,6 +277,11 @@ impl Job {
     /// Returns the verbatim ingest content read by the extraction worker.
     pub fn raw_input(&self) -> &str {
         &self.raw_input
+    }
+
+    /// Returns the producer-supplied ingest idempotency key.
+    pub fn ingest_idempotency_key(&self) -> Option<uuid::Uuid> {
+        self.ingest_idempotency_key
     }
 
     /// Returns the pre-cap extraction candidate count.

@@ -76,7 +76,11 @@ pub use item_observation::{
 };
 #[cfg(feature = "test-helpers")]
 pub use job::JobStateOverride;
-pub use job::{JobRepository, JobStatusTransition, NewJob, PgJobRepository};
+pub use job::{
+    IngestInsertOutcome, IngestJobRepository, JobRepository, JobStatusTransition, NewJob,
+    PgJobRepository, RecentIngestionCursor, RecentIngestionPage, RecentIngestionSummary,
+    RecentIngestionsQuery,
+};
 pub use knowledge_item::{
     KnowledgeItemRepository, NewKnowledgeItem, PgKnowledgeItemRepository, SemanticSearchParams,
     SemanticSearchResponse, SemanticSearchResult,
