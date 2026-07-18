@@ -293,12 +293,12 @@ pub(super) fn marked_string_schema(
         })
     });
     schema.extensions.insert(
-        "x-cortex-swift-type".to_owned(),
+        "x-tribal-swift-type".to_owned(),
         serde_json::Value::String(swift_type.to_owned()),
     );
     if let Some(prefix) = base64url_prefix {
         schema.extensions.insert(
-            "x-cortex-base64url-prefix".to_owned(),
+            "x-tribal-base64url-prefix".to_owned(),
             serde_json::Value::String(prefix.to_owned()),
         );
     }
