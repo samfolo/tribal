@@ -278,7 +278,457 @@ fn db_read_error(error: DbError) -> McpError {
 
 #[cfg(test)]
 mod tests {
+    use rmcp::{
+        handler::server::ServerHandler,
+        model::{ErrorCode, Extensions as RmcpExtensions, ReadResourceResult, ResourceContents},
+    };
+    use sqlx::PgConnection;
+    use tribal_auth::AuthContext;
+    use tribal_db::{
+        JobRepository, NewJob, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
+        PrincipalRepository, ProjectRepository,
+    };
+    use tribal_domain::{GitRemote, JobOutcome, ProjectId, PromptVersionId};
+    use tribal_test_utils::{
+        TestDb, a_job_status_transition, a_new_job, a_new_principal, a_new_project,
+        a_new_prompt_version, a_new_system_fingerprint, insert_prompt_version,
+        upsert_system_fingerprint,
+    };
+
     use super::*;
+    use crate::{
+        mapping::McpRecentIngestionsResponse,
+        server_handler::ConnectionRepositories,
+        test_utils::{TestHandler, test_request_context},
+    };
+
+    // -- Helpers -------------------------------------------------------
+
+    /// Inserts a principal, project, prompt version, and system
+    /// fingerprint via the real repositories, returning IDs a real job
+    /// insert can bind against.
+    async fn setup_ingestion_prerequisites(
+        conn: &mut PgConnection,
+        suffix: &str,
+    ) -> (PrincipalId, ProjectId, PromptVersionId, String) {
+        let principal = PgPrincipalRepository
+            .insert(
+                conn,
+                &a_new_principal()
+                    .principal_key(format!("user:ingestions-{suffix}"))
+                    .build(),
+            )
+            .await
+            .expect("insert principal");
+        let project = PgProjectRepository
+            .insert(
+                conn,
+                &a_new_project()
+                    .git_remote(GitRemote::from_parts(
+                        "github.com",
+                        &format!("test/ingestions-{suffix}"),
+                        None,
+                    ))
+                    .build(),
+            )
+            .await
+            .expect("insert project");
+        let pv_id = insert_prompt_version(conn, &a_new_prompt_version().build()).await;
+        let fingerprint_hash =
+            upsert_system_fingerprint(conn, &a_new_system_fingerprint().build()).await;
+        (principal.id(), project.id(), pv_id, fingerprint_hash)
+    }
+
+    /// Builds a `NewJob` bound to the given prerequisites, with
+    /// distinguishing raw-input content.
+    fn a_job_for(
+        project_id: ProjectId,
+        principal_id: PrincipalId,
+        pv_id: PromptVersionId,
+        fingerprint_hash: &str,
+        content: &str,
+    ) -> NewJob {
+        a_new_job()
+            .project_id(project_id)
+            .principal_id(principal_id)
+            .raw_input(content.to_owned())
+            .extraction_system_prompt_version_id(pv_id)
+            .extraction_user_prompt_version_id(pv_id)
+            .triage_system_prompt_version_id(pv_id)
+            .triage_user_prompt_version_id(pv_id)
+            .relation_system_prompt_version_id(pv_id)
+            .relation_user_prompt_version_id(pv_id)
+            .system_fingerprint_hash(fingerprint_hash.to_owned())
+            .build()
+    }
+
+    fn knowledge_read_scope() -> Scope {
+        "tribal.knowledge:read".parse().expect("valid scope")
+    }
+
+    fn jobs_read_scope() -> Scope {
+        "tribal.jobs:read".parse().expect("valid scope")
+    }
+
+    /// Decodes a `tribal://ingestions/recent` read into its wire response.
+    fn recent_ingestions_response(result: &ReadResourceResult) -> McpRecentIngestionsResponse {
+        let ResourceContents::TextResourceContents { text, .. } = &result.contents[0] else {
+            panic!("expected text resource content");
+        };
+        serde_json::from_str(text).expect("recent-ingestions response deserialises")
+    }
+
+    // -- Handler: recent-ingestions reads through a real database -------
+
+    #[tokio::test]
+    async fn test_a_knowledge_read_principal_reads_only_its_own_rows_newest_first_with_no_further_page()
+     {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, project_id, pv_id, fp_hash) =
+            setup_ingestion_prerequisites(&mut conn, "own-rows").await;
+        let (stranger_id, stranger_project, stranger_pv, stranger_fp) =
+            setup_ingestion_prerequisites(&mut conn, "own-rows-stranger").await;
+
+        let repo = PgJobRepository;
+        let older = repo
+            .insert(
+                &mut conn,
+                &a_job_for(project_id, principal_id, pv_id, &fp_hash, "older note"),
+            )
+            .await
+            .expect("insert older job");
+        let newer = repo
+            .insert(
+                &mut conn,
+                &a_job_for(project_id, principal_id, pv_id, &fp_hash, "newer note"),
+            )
+            .await
+            .expect("insert newer job");
+        let foreign = repo
+            .insert(
+                &mut conn,
+                &a_job_for(
+                    stranger_project,
+                    stranger_id,
+                    stranger_pv,
+                    &stranger_fp,
+                    "foreign note",
+                ),
+            )
+            .await
+            .expect("insert foreign job");
+        drop(conn);
+
+        let handler = TestHandler::builder()
+            .pool(ctx.pool().clone())
+            .repositories(ConnectionRepositories::new())
+            .build();
+        let principal = AuthenticatedPrincipal::for_test(
+            principal_id,
+            "user:own-rows",
+            vec![knowledge_read_scope()],
+        );
+
+        let result = handler
+            .read_ingestion_resource(RECENT_INGESTIONS_URI, &principal)
+            .await
+            .expect("read must succeed");
+        let response = recent_ingestions_response(&result);
+
+        assert_eq!(
+            response.ingestions.len(),
+            2,
+            "only the principal's own jobs list"
+        );
+        let ids: Vec<&str> = response
+            .ingestions
+            .iter()
+            .map(|i| i.job_id.as_str())
+            .collect();
+        assert!(ids.contains(&newer.id().to_string().as_str()));
+        assert!(ids.contains(&older.id().to_string().as_str()));
+        assert!(
+            !ids.contains(&foreign.id().to_string().as_str()),
+            "a foreign job must never list"
+        );
+        assert!(
+            response.ingestions[0].created_at >= response.ingestions[1].created_at,
+            "newest first",
+        );
+        assert!(response.next_cursor.is_none(), "the page covers everything");
+    }
+
+    #[tokio::test]
+    async fn test_the_cursor_from_a_page_of_one_fetches_the_remaining_row() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, project_id, pv_id, fp_hash) =
+            setup_ingestion_prerequisites(&mut conn, "cursor").await;
+        let repo = PgJobRepository;
+        let first = repo
+            .insert(
+                &mut conn,
+                &a_job_for(project_id, principal_id, pv_id, &fp_hash, "first"),
+            )
+            .await
+            .expect("insert first job");
+        let second = repo
+            .insert(
+                &mut conn,
+                &a_job_for(project_id, principal_id, pv_id, &fp_hash, "second"),
+            )
+            .await
+            .expect("insert second job");
+        drop(conn);
+
+        let handler = TestHandler::builder()
+            .pool(ctx.pool().clone())
+            .repositories(ConnectionRepositories::new())
+            .build();
+        let principal = AuthenticatedPrincipal::for_test(
+            principal_id,
+            "user:cursor",
+            vec![knowledge_read_scope()],
+        );
+
+        let page_one = handler
+            .read_ingestion_resource(&format!("{RECENT_INGESTIONS_URI}?limit=1"), &principal)
+            .await
+            .expect("first page reads");
+        let response_one = recent_ingestions_response(&page_one);
+        assert_eq!(response_one.ingestions.len(), 1);
+        let cursor = response_one
+            .next_cursor
+            .clone()
+            .expect("a further page exists");
+
+        let page_two = handler
+            .read_ingestion_resource(
+                &format!("{RECENT_INGESTIONS_URI}?cursor={cursor}&limit=1"),
+                &principal,
+            )
+            .await
+            .expect("second page reads");
+        let response_two = recent_ingestions_response(&page_two);
+        assert_eq!(response_two.ingestions.len(), 1);
+        assert_ne!(
+            response_one.ingestions[0].job_id, response_two.ingestions[0].job_id,
+            "the second page returns the other row",
+        );
+        assert!(
+            response_two.next_cursor.is_none(),
+            "the second page is the last"
+        );
+
+        let seen: std::collections::HashSet<&str> = [
+            response_one.ingestions[0].job_id.as_str(),
+            response_two.ingestions[0].job_id.as_str(),
+        ]
+        .into_iter()
+        .collect();
+        assert!(seen.contains(first.id().to_string().as_str()));
+        assert!(seen.contains(second.id().to_string().as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_statuses_filters_the_listing_and_an_unknown_status_is_refused() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, project_id, pv_id, fp_hash) =
+            setup_ingestion_prerequisites(&mut conn, "status-filter").await;
+        let repo = PgJobRepository;
+        let queued = repo
+            .insert(
+                &mut conn,
+                &a_job_for(project_id, principal_id, pv_id, &fp_hash, "queued note"),
+            )
+            .await
+            .expect("insert queued job");
+        let completed = repo
+            .insert(
+                &mut conn,
+                &a_job_for(project_id, principal_id, pv_id, &fp_hash, "completed note"),
+            )
+            .await
+            .expect("insert completing job");
+        repo.update_status_if_live(
+            &mut conn,
+            completed.id(),
+            &a_job_status_transition()
+                .status(JobStatus::Completed)
+                .outcome(Some(JobOutcome::Success))
+                .completed_at(Some(chrono::Utc::now()))
+                .build(),
+        )
+        .await
+        .expect("complete job");
+        drop(conn);
+
+        let handler = TestHandler::builder()
+            .pool(ctx.pool().clone())
+            .repositories(ConnectionRepositories::new())
+            .build();
+        let principal = AuthenticatedPrincipal::for_test(
+            principal_id,
+            "user:status-filter",
+            vec![knowledge_read_scope()],
+        );
+
+        let both = handler
+            .read_ingestion_resource(
+                &format!("{RECENT_INGESTIONS_URI}?statuses=queued,completed"),
+                &principal,
+            )
+            .await
+            .expect("valid statuses read");
+        assert_eq!(recent_ingestions_response(&both).ingestions.len(), 2);
+
+        let completed_only = handler
+            .read_ingestion_resource(
+                &format!("{RECENT_INGESTIONS_URI}?statuses=completed"),
+                &principal,
+            )
+            .await
+            .expect("filtered read");
+        let response = recent_ingestions_response(&completed_only);
+        assert_eq!(response.ingestions.len(), 1);
+        assert_eq!(response.ingestions[0].job_id, completed.id().to_string());
+        assert_ne!(response.ingestions[0].job_id, queued.id().to_string());
+
+        let err = handler
+            .read_ingestion_resource(
+                &format!("{RECENT_INGESTIONS_URI}?statuses=queued,nonsense"),
+                &principal,
+            )
+            .await
+            .expect_err("an unknown status value must be refused");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    // -- Handler: input reads and non-disclosure -------------------------
+
+    #[tokio::test]
+    async fn test_a_foreign_job_and_a_missing_job_fail_the_input_read_identically() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (owner_id, project_id, pv_id, fp_hash) =
+            setup_ingestion_prerequisites(&mut conn, "non-disclosure-owner").await;
+        let (stranger_id, _, _, _) =
+            setup_ingestion_prerequisites(&mut conn, "non-disclosure-stranger").await;
+        let foreign_job = PgJobRepository
+            .insert(
+                &mut conn,
+                &a_job_for(project_id, owner_id, pv_id, &fp_hash, "owner-only content"),
+            )
+            .await
+            .expect("insert foreign job");
+        drop(conn);
+
+        let handler = TestHandler::builder()
+            .pool(ctx.pool().clone())
+            .repositories(ConnectionRepositories::new())
+            .build();
+        let stranger = AuthenticatedPrincipal::for_test(
+            stranger_id,
+            "user:stranger",
+            vec![knowledge_read_scope()],
+        );
+
+        let foreign_uri = format!("tribal://ingestions/{}/input", foreign_job.id());
+        let missing_uri = format!("tribal://ingestions/{}/input", JobId::new());
+
+        let foreign_err = handler
+            .read_ingestion_resource(&foreign_uri, &stranger)
+            .await
+            .expect_err("a foreign job must not be readable");
+        let missing_err = handler
+            .read_ingestion_resource(&missing_uri, &stranger)
+            .await
+            .expect_err("a missing job must fail the same way");
+
+        assert_eq!(
+            foreign_err, missing_err,
+            "foreign and missing must be indistinguishable",
+        );
+        assert_eq!(foreign_err.code, ErrorCode::RESOURCE_NOT_FOUND);
+    }
+
+    // -- Handler: scope enforcement ---------------------------------------
+
+    #[tokio::test]
+    async fn test_a_principal_without_knowledge_read_is_refused_the_recent_listing() {
+        let handler = TestHandler::builder().build();
+        let principal = AuthenticatedPrincipal::for_test(
+            PrincipalId::new(),
+            "user:jobs-only",
+            vec![jobs_read_scope()],
+        );
+
+        let err = handler
+            .read_ingestion_resource(RECENT_INGESTIONS_URI, &principal)
+            .await
+            .expect_err("jobs:read alone must not grant the ingestion resources");
+
+        assert_eq!(err.code, ErrorCode::INVALID_REQUEST);
+        assert!(
+            err.message.contains(INGESTIONS_REQUIRED_SCOPE),
+            "the refusal must name the missing scope: {}",
+            err.message,
+        );
+    }
+
+    // -- ServerHandler: resource template advertisement -------------------
+
+    #[tokio::test]
+    async fn test_list_resource_templates_advertises_the_ingestion_templates_to_a_knowledge_read_principal()
+     {
+        let principal = AuthenticatedPrincipal::for_test(
+            PrincipalId::new(),
+            "user:templates-knowledge",
+            vec![knowledge_read_scope()],
+        );
+        let handler = TestHandler::builder()
+            .auth(AuthContext::new(principal))
+            .build();
+        let context = test_request_context(RmcpExtensions::new());
+
+        let result = handler
+            .list_resource_templates(None, context)
+            .await
+            .expect("must succeed");
+
+        assert_eq!(result.resource_templates.len(), 2);
+        let names: Vec<String> = result
+            .resource_templates
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert!(names.contains(&"recent_ingestions".to_owned()));
+        assert!(names.contains(&"ingestion_input".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn test_list_resource_templates_advertises_nothing_to_a_jobs_read_only_principal() {
+        let principal = AuthenticatedPrincipal::for_test(
+            PrincipalId::new(),
+            "user:templates-jobs",
+            vec![jobs_read_scope()],
+        );
+        let handler = TestHandler::builder()
+            .auth(AuthContext::new(principal))
+            .build();
+        let context = test_request_context(RmcpExtensions::new());
+
+        let result = handler
+            .list_resource_templates(None, context)
+            .await
+            .expect("must succeed");
+
+        assert!(result.resource_templates.is_empty());
+    }
+
+    // -- URI and query parsing ---------------------------------------------
 
     #[test]
     fn test_the_input_uri_parses_only_its_exact_shape() {

@@ -307,17 +307,23 @@ mod tests {
     use opentelemetry::trace::TracerProvider;
     use opentelemetry_sdk::trace::SdkTracerProvider;
     use rmcp::model::ErrorCode;
+    use tokio::sync::RwLock;
     use tracing::Instrument;
     use tracing_subscriber::layer::SubscriberExt;
-    use tribal_domain::{IngestChannel, KnowledgeItemId, PrincipalId, ProjectId};
+    use tribal_db::{
+        PgPrincipalRepository, PgProjectRepository, PgTaskRepository, PrincipalRepository,
+        ProjectRepository, TaskRepository,
+    };
+    use tribal_domain::{GitRemote, IngestChannel, KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
         MockIngestJobRepository, MockProjectRepository, MockPromptVersionRepository,
-        MockTaskRepository,
-        TestDb, a_job, a_project, a_prompt_version, a_task,
+        MockTaskRepository, TestDb, a_job, a_new_principal, a_new_project, a_new_prompt_version,
+        a_project, a_prompt_version, a_task, insert_prompt_version,
     };
 
     use super::*;
     use crate::{
+        error::ERROR_META_KEY,
         session::SessionActor,
         test_utils::{
             NO_STRUCTURED_CONTENT, TestHandler, configure_fingerprint_mocks, first_text_content,
@@ -329,6 +335,7 @@ mod tests {
     // -- Constants ---------------------------------------------------------
 
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
+    const STRUCTURED_CONTENT: &str = "structured_content must be present";
 
     // -- Helpers -----------------------------------------------------------
 
@@ -444,6 +451,194 @@ mod tests {
         assert!(
             message.contains("pool") || message.contains("query failed"),
             "error should originate from the pool, not the precondition check: {message}",
+        );
+    }
+
+    // -- Adapter: idempotency arbitration through a real database ----------
+
+    /// Inserts a principal, project, and prompt version via the real
+    /// repositories, returning IDs a real ingest call can bind against.
+    /// The same prompt version id is reused for all six active-prompt
+    /// slots, as the arbitration suite in `tribal-db` does.
+    async fn setup_real_ingest_prerequisites(
+        conn: &mut PgConnection,
+        suffix: &str,
+    ) -> (PrincipalId, ProjectId, ActivePromptVersions) {
+        let principal = PgPrincipalRepository
+            .insert(
+                conn,
+                &a_new_principal()
+                    .principal_key(format!("user:ingest-real-{suffix}"))
+                    .build(),
+            )
+            .await
+            .expect("insert principal");
+        let project = PgProjectRepository
+            .insert(
+                conn,
+                &a_new_project()
+                    .git_remote(GitRemote::from_parts(
+                        "github.com",
+                        &format!("test/ingest-real-{suffix}"),
+                        None,
+                    ))
+                    .build(),
+            )
+            .await
+            .expect("insert project");
+        let pv_id = insert_prompt_version(conn, &a_new_prompt_version().build()).await;
+        (
+            principal.id(),
+            project.id(),
+            ActivePromptVersions::new(pv_id, pv_id, pv_id, pv_id, pv_id, pv_id),
+        )
+    }
+
+    /// Builds a handler wired to a real, migrated database through the
+    /// production repositories, with the active prompt versions the caller
+    /// resolved against that same database.
+    fn real_ingest_handler(
+        pool: sqlx::PgPool,
+        active_prompts: ActivePromptVersions,
+    ) -> TribalServerHandler {
+        TestHandler::builder()
+            .pool(pool)
+            .repositories(ConnectionRepositories::new())
+            .active_prompt_versions(Arc::new(RwLock::new(active_prompts)))
+            .build()
+    }
+
+    #[tokio::test]
+    async fn test_a_retried_ingest_call_converges_on_one_job_and_one_extraction_task() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, project_id, active_prompts) =
+            setup_real_ingest_prerequisites(&mut conn, "retry").await;
+        drop(conn);
+
+        let handler = real_ingest_handler(ctx.pool().clone(), active_prompts);
+        let key = uuid::Uuid::new_v4();
+        let params = serde_json::json!({
+            "project_id": project_id.to_string(),
+            "content": "shared knowledge",
+            "idempotency_key": key,
+        });
+
+        let first = handler
+            .apply_ingest(params.clone(), principal_id)
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+        let retry = handler
+            .apply_ingest(params, principal_id)
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(first.is_error, Some(false));
+        assert_eq!(retry.is_error, Some(false));
+        let first_structured = first.structured_content.expect(STRUCTURED_CONTENT);
+        let retry_structured = retry.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(
+            first_structured["job_id"], retry_structured["job_id"],
+            "a retried key must resolve to the same job",
+        );
+
+        let job_id: JobId = first_structured["job_id"]
+            .as_str()
+            .expect("job_id is a string")
+            .parse()
+            .expect("job id parses");
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let tasks = PgTaskRepository
+            .find_by_job_id(&mut conn, job_id)
+            .await
+            .expect("find tasks");
+        assert_eq!(
+            tasks.len(),
+            1,
+            "a retry must not create a second extraction task",
+        );
+        assert_eq!(tasks[0].task_type(), TaskType::Extraction);
+    }
+
+    #[tokio::test]
+    async fn test_a_reused_key_with_different_content_is_refused_as_conflict_without_echoing_it() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, project_id, active_prompts) =
+            setup_real_ingest_prerequisites(&mut conn, "conflict").await;
+        drop(conn);
+
+        let handler = real_ingest_handler(ctx.pool().clone(), active_prompts);
+        let key = uuid::Uuid::new_v4();
+        let original_content = "the original secret note";
+
+        let first = handler
+            .apply_ingest(
+                serde_json::json!({
+                    "project_id": project_id.to_string(),
+                    "content": original_content,
+                    "idempotency_key": key,
+                }),
+                principal_id,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+        assert_eq!(first.is_error, Some(false));
+
+        let conflicting = handler
+            .apply_ingest(
+                serde_json::json!({
+                    "project_id": project_id.to_string(),
+                    "content": "a completely different note",
+                    "idempotency_key": key,
+                }),
+                principal_id,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(conflicting.is_error, Some(true));
+        let message = first_text_content(&conflicting).to_owned();
+        assert!(
+            !message.contains(original_content),
+            "a conflict must not echo the original content: {message}",
+        );
+
+        let meta = conflicting.meta.expect("error results carry meta");
+        let typed = meta.get(ERROR_META_KEY).expect("the typed error member");
+        assert_eq!(typed["code"], "conflict");
+    }
+
+    #[tokio::test]
+    async fn test_a_keyless_ingest_call_twice_creates_two_jobs() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, project_id, active_prompts) =
+            setup_real_ingest_prerequisites(&mut conn, "keyless").await;
+        drop(conn);
+
+        let handler = real_ingest_handler(ctx.pool().clone(), active_prompts);
+        let params = serde_json::json!({
+            "project_id": project_id.to_string(),
+            "content": "a keyless note",
+        });
+
+        let first = handler
+            .apply_ingest(params.clone(), principal_id)
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+        let second = handler
+            .apply_ingest(params, principal_id)
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(first.is_error, Some(false));
+        assert_eq!(second.is_error, Some(false));
+        let first_structured = first.structured_content.expect(STRUCTURED_CONTENT);
+        let second_structured = second.structured_content.expect(STRUCTURED_CONTENT);
+        assert_ne!(
+            first_structured["job_id"], second_structured["job_id"],
+            "a keyless call inserts a job on every call",
         );
     }
 
