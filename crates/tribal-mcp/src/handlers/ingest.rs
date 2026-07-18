@@ -98,6 +98,9 @@ impl TribalServerHandler {
             { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
             { span_attrs::TRANSPORT } = self.transport_name(),
             { span_attrs::PROJECT_ID } = tracing::field::Empty,
+            { span_attrs::INGEST_IDEMPOTENCY_KEY } = tracing::field::Empty,
+            { span_attrs::INGEST_ARBITRATION } = tracing::field::Empty,
+            { span_attrs::INGEST_SOURCE_TYPE } = tracing::field::Empty,
         );
         self.apply_ingest(params, principal.principal_id())
             .instrument(span)
@@ -153,6 +156,16 @@ impl TribalServerHandler {
             .record(span_attrs::PROJECT_ID, tracing::field::display(&project_id));
 
         let context = SourceContextV1::from_claims(self.channel, claimed_actor);
+        tracing::Span::current().record(
+            span_attrs::INGEST_SOURCE_TYPE,
+            context.source_type().as_str(),
+        );
+        if let Some(key) = request.idempotency_key {
+            tracing::Span::current().record(
+                span_attrs::INGEST_IDEMPOTENCY_KEY,
+                tracing::field::display(key),
+            );
+        }
         let source_context = match serde_json::to_value(&context) {
             Ok(value) => value,
             Err(e) => {
@@ -279,6 +292,7 @@ async fn execute_ingest(
         .await?
     {
         IngestInsertOutcome::Inserted(job) => {
+            tracing::Span::current().record(span_attrs::INGEST_ARBITRATION, "created");
             let new_task = NewTask::builder()
                 .job_id(job.id())
                 .task_type(TaskType::Extraction)
@@ -286,8 +300,14 @@ async fn execute_ingest(
             repositories.task.insert(conn, &new_task).await?;
             job
         }
-        IngestInsertOutcome::Existing(job) => job,
-        IngestInsertOutcome::Conflict => return Err(IngestError::IdempotencyConflict),
+        IngestInsertOutcome::Existing(job) => {
+            tracing::Span::current().record(span_attrs::INGEST_ARBITRATION, "recovered");
+            job
+        }
+        IngestInsertOutcome::Conflict => {
+            tracing::Span::current().record(span_attrs::INGEST_ARBITRATION, "conflict");
+            return Err(IngestError::IdempotencyConflict);
+        }
     };
 
     Ok(IngestResult { job_id: job.id() })
