@@ -1,4 +1,4 @@
--- Normalize recognised flat job source contexts to the typed V1 shape.
+-- Normalise recognised flat job source contexts to the typed V1 shape.
 --
 -- The flat shape carries a PascalCase discriminator with top-level
 -- provider/model ("AgentMediated") or a capture_method ("ManualCapture").

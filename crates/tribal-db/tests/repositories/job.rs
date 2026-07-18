@@ -1101,22 +1101,22 @@ async fn test_extraction_identity_on_a_flat_context_is_unreadable() {
 }
 
 // ---------------------------------------------------------------------------
-// source-context normalization migration
+// source-context normalisation migration
 // ---------------------------------------------------------------------------
 
 /// The shipped migration, re-executed against rows this test writes in the
 /// flat shape, so the transform is proven against the exact SQL production
 /// ran. The statement is idempotent by its own version guard.
-const NORMALIZE_SOURCE_CONTEXT_SQL: &str =
-    include_str!("../../migrations/20260718185340_normalize_job_source_context_to_v1.sql");
+const NORMALISE_SOURCE_CONTEXT_SQL: &str =
+    include_str!("../../migrations/20260718185340_normalise_job_source_context_to_v1.sql");
 
 #[tokio::test]
-async fn test_the_normalization_migrates_flat_shapes_and_leaves_the_rest() {
+async fn test_the_normalisation_migrates_flat_shapes_and_leaves_the_rest() {
     let ctx = TestDb::new().await;
     let mut txn = ctx.begin().await.expect("begin");
     let repo = PgJobRepository;
     let (principal_id, project_id, pv_id, fp_hash) =
-        setup_job_prerequisites(&mut txn, "normalize-migration").await;
+        setup_job_prerequisites(&mut txn, "normalise-migration").await;
     let insert = |context: serde_json::Value| {
         a_new_job()
             .project_id(project_id)
@@ -1158,10 +1158,10 @@ async fn test_the_normalization_migrates_flat_shapes_and_leaves_the_rest() {
         .await
         .expect("insert v1 job");
 
-    sqlx::raw_sql(NORMALIZE_SOURCE_CONTEXT_SQL)
+    sqlx::raw_sql(NORMALISE_SOURCE_CONTEXT_SQL)
         .execute(&mut *txn)
         .await
-        .expect("re-run the normalization");
+        .expect("re-run the normalisation");
 
     let agent = repo
         .find_by_id(&mut txn, agent_flat.id())

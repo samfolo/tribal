@@ -458,9 +458,9 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
         // interval can refresh the heartbeat between the backdate
         // and reclaim_stale calls, silently undoing the backdate.
         heartbeat_interval_ms: 1_000,
-        // Disable reclaim sweep so it does not interfere with the
-        // manual reclaim injection below.
-        reclaim_interval_ms: 120_000,
+        // The sweep must not interfere with the manual reclaim
+        // injection below.
+        reclaim_interval_ms: QUIET_PUMP_INTERVAL_MS,
         ..test_config()
     };
 
@@ -623,12 +623,12 @@ async fn test_ownership_loss_rolls_back_extraction_attribution() {
 
     let config = WorkerConfig {
         max_concurrent_tasks: 1,
-        // Long enough that the heartbeat pump never ticks during this
-        // test: ownership loss must be caught by the commit's own
-        // claim-token CAS, not raced away before the stage produces
-        // its result (that race is the sibling test's scenario).
-        heartbeat_interval_ms: 60_000,
-        reclaim_interval_ms: 120_000,
+        // Neither pump may tick during this test: ownership loss must
+        // be caught by the commit's own claim-token check, not raced
+        // away before the stage produces its result (that race is the
+        // sibling test's scenario).
+        heartbeat_interval_ms: QUIET_PUMP_INTERVAL_MS,
+        reclaim_interval_ms: QUIET_PUMP_INTERVAL_MS,
         ..test_config()
     };
 
