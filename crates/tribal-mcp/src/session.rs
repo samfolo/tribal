@@ -175,6 +175,47 @@ mod tests {
     }
 
     #[test]
+    fn test_a_declared_client_alone_yields_a_client_only_claim() {
+        let actor = SessionActor {
+            client_name: Some("tribal-mac".into()),
+            client_version: Some("1.2.0".into()),
+            model: None,
+            provider: None,
+        };
+
+        let claimed = actor.claimed().expect("a declared client is a claim");
+
+        let client = claimed.client.expect("client claim present");
+        assert_eq!(client.name, "tribal-mac");
+        assert_eq!(client.version, "1.2.0");
+        assert!(claimed.inference.is_none());
+    }
+
+    #[test]
+    fn test_a_name_without_a_version_makes_no_client_claim() {
+        let actor = SessionActor {
+            client_name: Some("tribal-mac".into()),
+            client_version: None,
+            model: None,
+            provider: None,
+        };
+
+        assert!(actor.claimed().is_none());
+    }
+
+    #[test]
+    fn test_an_undeclared_actor_makes_no_claim() {
+        let actor = SessionActor {
+            client_name: None,
+            client_version: None,
+            model: None,
+            provider: None,
+        };
+
+        assert!(actor.claimed().is_none());
+    }
+
+    #[test]
     fn test_session_resource_descriptor() {
         let resource = session_resource();
         assert_eq!(resource.uri, SESSION_RESOURCE_URI);
