@@ -6,7 +6,10 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tribal_domain::{Confidence, KnowledgeItem, KnowledgeKind, Reference, ReferenceKind, Standing};
+use tribal_domain::{
+    Confidence, KnowledgeItem, KnowledgeKind, Reference, ReferenceKind, SourceContextV1,
+    SourceType, Standing, stored_source_type,
+};
 
 // ---------------------------------------------------------------------------
 // McpSourceType
@@ -48,17 +51,32 @@ pub struct McpSourceContext {
     pub model: Option<String>,
 }
 
+impl From<SourceType> for McpSourceType {
+    fn from(source_type: SourceType) -> Self {
+        match source_type {
+            SourceType::AgentMediated => Self::AgentMediated,
+            SourceType::Derived => Self::Derived,
+            // Manual capture and file watch are both human-initiated on
+            // this surface.
+            SourceType::ManualCapture | SourceType::FileWatch => Self::Manual,
+        }
+    }
+}
+
 impl From<&serde_json::Value> for McpSourceContext {
     fn from(value: &serde_json::Value) -> Self {
-        let source_type = value
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .map_or(McpSourceType::Manual, |t| match t {
-                "agent_mediated" => McpSourceType::AgentMediated,
-                "derived" => McpSourceType::Derived,
-                // "manual_capture", "file_watch", and unknown values map to Manual.
-                _ => McpSourceType::Manual,
-            });
+        // A typed V1 context projects its committed extraction binding;
+        // anything else is a retained flat shape, read leniently from
+        // its top-level fields.
+        if let Ok(context) = serde_json::from_value::<SourceContextV1>(value.clone()) {
+            return Self {
+                source_type: context.source_type().into(),
+                provider: context
+                    .extraction()
+                    .map(|identity| identity.provider.clone()),
+                model: context.extraction().map(|identity| identity.model.clone()),
+            };
+        }
 
         let provider = value
             .get("provider")
@@ -71,7 +89,7 @@ impl From<&serde_json::Value> for McpSourceContext {
             .map(String::from);
 
         Self {
-            source_type,
+            source_type: stored_source_type(value).into(),
             provider,
             model,
         }
@@ -330,6 +348,50 @@ mod tests {
         let null = serde_json::Value::Null;
         let ctx_null = McpSourceContext::from(&null);
         assert_eq!(ctx_null.source_type, McpSourceType::Manual);
+    }
+
+    #[test]
+    fn test_source_context_v1_projects_the_committed_extraction() {
+        let json = serde_json::json!({
+            "version": 1,
+            "type": "agent_mediated",
+            "channel": "mcp_http",
+            "claimed_actor": {
+                "client": { "name": "tribal-mac", "version": "1.2.0" },
+                "inference": { "provider": "claimed-provider" },
+            },
+            "extraction": { "provider": "anthropic", "model": "claude-opus-4-6" },
+        });
+        let ctx = McpSourceContext::from(&json);
+        assert_eq!(ctx.source_type, McpSourceType::AgentMediated);
+        assert_eq!(ctx.provider.as_deref(), Some("anthropic"));
+        assert_eq!(ctx.model.as_deref(), Some("claude-opus-4-6"));
+    }
+
+    #[test]
+    fn test_source_context_v1_without_extraction_carries_no_identity() {
+        let json = serde_json::json!({
+            "version": 1,
+            "type": "manual_capture",
+            "channel": "mcp_stdio",
+        });
+        let ctx = McpSourceContext::from(&json);
+        assert_eq!(ctx.source_type, McpSourceType::Manual);
+        assert!(ctx.provider.is_none());
+        assert!(ctx.model.is_none());
+    }
+
+    #[test]
+    fn test_source_context_flat_pascal_case_stays_readable() {
+        let json = serde_json::json!({
+            "type": "AgentMediated",
+            "provider": "anthropic",
+            "model": "claude-opus-4-6",
+        });
+        let ctx = McpSourceContext::from(&json);
+        assert_eq!(ctx.source_type, McpSourceType::AgentMediated);
+        assert_eq!(ctx.provider.as_deref(), Some("anthropic"));
+        assert_eq!(ctx.model.as_deref(), Some("claude-opus-4-6"));
     }
 
     // -- McpStanding ------------------------------------------------------
