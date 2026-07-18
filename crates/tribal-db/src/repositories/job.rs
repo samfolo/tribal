@@ -479,7 +479,7 @@ impl JobRepository for PgJobRepository {
             .commit_extraction_identity(identity)
             .map_err(|source| DbError::SourceContextRejected {
                 job_id: id.to_string(),
-                source,
+                source: Box::new(source),
             })?;
 
         if outcome == ExtractionCommitOutcome::Recorded {

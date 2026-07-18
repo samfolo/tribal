@@ -70,13 +70,14 @@ pub enum DbError {
 
     /// A job's stored source context refused an extraction-identity
     /// commit — the job is already attributed to a different binding.
+    /// Boxed so the identity pair does not widen every `DbError` carrier.
     #[error("job {job_id} source context: {source}")]
     SourceContextRejected {
         /// The job whose context refused the write.
         job_id: String,
         /// The refusing invariant.
         #[source]
-        source: SourceContextError,
+        source: Box<SourceContextError>,
     },
 
     /// A job's stored source context does not parse as its typed shape.

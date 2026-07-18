@@ -258,7 +258,7 @@ pub enum IngestChannel {
 // ---------------------------------------------------------------------------
 
 /// Reads the source type out of any stored context shape: the typed V1
-/// discriminator, the flat shape's PascalCase and snake_case
+/// discriminator, the flat shape's `PascalCase` and `snake_case`
 /// discriminators, and typeless flat contexts — which, like unknown
 /// values, read as `manual_capture` rather than inventing a stronger
 /// classification.
@@ -272,9 +272,9 @@ pub fn stored_source_type(context: &serde_json::Value) -> SourceType {
     }
     match discriminator {
         "AgentMediated" => SourceType::AgentMediated,
-        "ManualCapture" => SourceType::ManualCapture,
         "Derived" => SourceType::Derived,
         "FileWatch" => SourceType::FileWatch,
+        // "ManualCapture" lands here with every unknown discriminator.
         _ => SourceType::ManualCapture,
     }
 }
