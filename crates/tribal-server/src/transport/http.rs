@@ -13,7 +13,7 @@ use tribal_auth::{
     require_bearer_auth,
 };
 use tribal_config::ServerConfig;
-use tribal_domain::TransportKind;
+use tribal_domain::{IngestChannel, TransportKind};
 use tribal_mcp::{AppState, HandlerConfig};
 
 use super::common;
@@ -67,7 +67,7 @@ pub async fn run_http_transport(
         handler_config,
         server_config,
         cancellation_token.clone(),
-        "http",
+        IngestChannel::McpHttp,
     );
 
     let oauth = oauth_router(OAuthRouterState::new(

@@ -3,7 +3,9 @@ use rmcp::{
     service::{Peer, RoleServer},
 };
 use tokio::sync::RwLock;
-use tribal_domain::{GitRemote, ProjectId};
+use tribal_domain::{
+    ClaimedActor, ClaimedClientIdentity, ClaimedInferenceIdentity, GitRemote, ProjectId,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -36,6 +38,29 @@ pub struct SessionActor {
     pub client_version: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
+}
+
+impl SessionActor {
+    /// Assembles the declared identity into the stored claim shape:
+    /// the client claim only when name and version were both declared,
+    /// the inference claim only when it would be non-empty, and `None`
+    /// when the session declared nothing at all.
+    #[must_use]
+    pub fn claimed(&self) -> Option<ClaimedActor> {
+        let client = match (&self.client_name, &self.client_version) {
+            (Some(name), Some(version)) => Some(ClaimedClientIdentity {
+                name: name.clone(),
+                version: version.clone(),
+            }),
+            _ => None,
+        };
+        let inference =
+            ClaimedInferenceIdentity::new(self.provider.clone(), self.model.clone()).ok();
+        if client.is_none() && inference.is_none() {
+            return None;
+        }
+        Some(ClaimedActor { client, inference })
+    }
 }
 
 // ---------------------------------------------------------------------------

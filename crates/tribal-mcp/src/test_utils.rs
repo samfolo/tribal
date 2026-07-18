@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tribal_auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy};
 use tribal_common::JobStateTxs;
 use tribal_config::{ServerConfig, WorkerConfig};
-use tribal_domain::{PrincipalId, ProjectId, PromptVersionId, ProviderKind};
+use tribal_domain::{IngestChannel, PrincipalId, ProjectId, PromptVersionId, ProviderKind};
 use tribal_inference::{
     CompletionStageSpec, CompletionStageSpecs, EmbeddingProvider, InferenceProvider,
     ProviderIdentity,
@@ -135,7 +135,7 @@ impl From<TestHandler> for TribalServerHandler {
             th.repositories,
             th.session,
             th.config,
-            "stdio",
+            IngestChannel::McpStdio,
         )
     }
 }
