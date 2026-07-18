@@ -92,6 +92,7 @@ mod reindex;
 mod relation;
 mod retrieval_feedback;
 mod scope;
+mod source_context;
 mod source_type;
 pub mod span_attrs;
 mod standing;
@@ -183,6 +184,10 @@ pub use retrieval_feedback::{RetrievalFeedback, RetrievalFeedbackBuilder};
 pub use scope::{
     Scope, ScopeParseError, full_access_scopes, is_authorised, is_mintable_scope,
     stdio_principal_scopes,
+};
+pub use source_context::{
+    ClaimedActor, ClaimedClientIdentity, ClaimedInferenceIdentity, ExtractionCommitOutcome,
+    IngestChannel, InferenceIdentity, SourceContextError, SourceContextV1, stored_source_type,
 };
 pub use source_type::SourceType;
 pub use standing::{Standing, StandingBuilder};
