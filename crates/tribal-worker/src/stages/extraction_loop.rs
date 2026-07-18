@@ -19,8 +19,8 @@ use tribal_common::clamp_to_u32;
 use tribal_config::{DEFAULT_AGENTIC_RECHECK_BOUND, DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS};
 use tribal_db::{NewExtractionResult, NewTask, PgPromptVersionRepository, PromptVersionRepository};
 use tribal_domain::{
-    AgentBinding, Candidate, Job, PromptClass, PromptRole, PromptStage, PromptVersion,
-    RelationHint, Task, TaskType, span_attrs,
+    AgentBinding, Candidate, InferenceIdentity, Job, PromptClass, PromptRole, PromptStage,
+    PromptVersion, RelationHint, Task, TaskType, span_attrs,
 };
 
 use super::{StageCommit, StageTerminal, common::attribution_with_prompts};
@@ -148,7 +148,11 @@ impl Worker {
                                 raw_response: Some(raw),
                             }
                         })?;
-                    let commit = Self::extraction_submission_commit(task, submission);
+                    let commit = Self::extraction_submission_commit(
+                        task,
+                        submission,
+                        stage_thread.binding.definition().inference_identity(),
+                    );
                     Ok(Some((commit, StageTerminal::Submission(accepted))))
                 }
                 LoopOutcome::Suspended => Ok(None),
@@ -229,7 +233,11 @@ impl Worker {
     /// Maps an accepted submission onto the extraction commit: the candidates
     /// fan out one triage task each. The validators already enforced the cap
     /// and the hint indices, so the commit caps nothing and filters nothing.
-    fn extraction_submission_commit(task: &Task, submission: ExtractionSubmission) -> StageCommit {
+    fn extraction_submission_commit(
+        task: &Task,
+        submission: ExtractionSubmission,
+        extraction_identity: InferenceIdentity,
+    ) -> StageCommit {
         let candidates: Vec<Candidate> = submission.candidates;
         let hints: Vec<RelationHint> = submission.relation_hints;
         let batch_size = clamp_to_u32(candidates.len());
@@ -252,6 +260,7 @@ impl Worker {
 
         StageCommit::Extraction {
             extraction_result,
+            extraction_identity,
             triage_tasks,
             batch_size,
             // The validators bounce an over-cap submission, so what commits

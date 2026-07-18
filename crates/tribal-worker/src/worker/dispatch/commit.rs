@@ -17,9 +17,9 @@ use tribal_db::{
     TriageResultRepository, TriageSimilarItemDecisionRepository, advisory_locks,
 };
 use tribal_domain::{
-    AgentThread, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, Job, JobId, JobOutcome,
-    JobState, JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task, TriageOutcome,
-    span_attrs,
+    AgentThread, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, InferenceIdentity, Job,
+    JobId, JobOutcome, JobState, JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task,
+    TriageOutcome, span_attrs,
 };
 use tribal_inference::{
     EmbedGroupError, EmbeddingRequest, EmbeddingTarget, InferenceError, InferenceGateway,
@@ -59,6 +59,7 @@ impl Worker {
         match commit {
             StageCommit::Extraction {
                 extraction_result,
+                extraction_identity,
                 triage_tasks,
                 batch_size,
                 original_count,
@@ -67,6 +68,7 @@ impl Worker {
                     task,
                     job,
                     extraction_result,
+                    extraction_identity,
                     triage_tasks,
                     batch_size,
                     original_count,
@@ -99,8 +101,9 @@ impl Worker {
     }
 
     /// Commits extraction stage effects within a single transaction: the
-    /// extraction result, the triage tasks it fanned out (none on an empty
-    /// batch), the job's batch size and its status transition to triaging (or
+    /// extraction identity onto the job's source context, the extraction
+    /// result, the triage tasks it fanned out (none on an empty batch),
+    /// the job's batch size and its status transition to triaging (or
     /// straight to completed with an empty outcome when no candidates were
     /// extracted), and the claim-guarded task completion.
     // The commit transaction's full guard context (task, thread, claim,
@@ -112,6 +115,7 @@ impl Worker {
         task: &Task,
         job: &Job,
         extraction_result: NewExtractionResult,
+        extraction_identity: InferenceIdentity,
         triage_tasks: Vec<NewTask>,
         batch_size: u32,
         original_count: u32,
@@ -141,6 +145,11 @@ impl Worker {
             let mut txn = sqlx::Connection::begin(&mut *conn)
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_EXTRACTION, "beginning transaction", e))?;
+
+            PgJobRepository
+                .set_extraction_identity(&mut txn, task.job_id(), &extraction_identity)
+                .await
+                .map_err(|e| stage_db_error(STAGE_EXTRACTION, "committing extraction identity", e))?;
 
             PgExtractionResultRepository
                 .insert(&mut txn, &extraction_result)

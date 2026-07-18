@@ -16,8 +16,8 @@ use tribal_db::{
 };
 use tribal_domain::{
     AgentThread, AgentThreadSuspension, CompletionResponse, EmbeddingProfile, EmbeddingProfileId,
-    Job, ProjectId, PromptVersion, PromptVersionId, SuggestedReference, TagRegistryEntry, Task,
-    TaskType, UsageOwner, span_attrs,
+    InferenceIdentity, Job, ProjectId, PromptVersion, PromptVersionId, SuggestedReference,
+    TagRegistryEntry, Task, TaskType, UsageOwner, span_attrs,
 };
 use tribal_inference::{
     CompletionRequest, EmbeddingTarget, InferenceError, Message, Role, UsageAttribution,
@@ -39,6 +39,9 @@ use crate::{
 pub(crate) enum StageCommit {
     Extraction {
         extraction_result: NewExtractionResult,
+        /// The loaded binding the stage actually ran under, committed
+        /// onto the job's source context before fan-out.
+        extraction_identity: InferenceIdentity,
         /// One triage task per candidate in the batch.
         triage_tasks: Vec<NewTask>,
         /// Capped candidate count.

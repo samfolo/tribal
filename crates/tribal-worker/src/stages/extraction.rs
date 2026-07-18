@@ -199,6 +199,7 @@ impl Worker {
             Ok(Some((
                 StageCommit::Extraction {
                     extraction_result,
+                    extraction_identity: stage_thread.binding.definition().inference_identity(),
                     triage_tasks,
                     batch_size,
                     original_count,
