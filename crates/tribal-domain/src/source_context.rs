@@ -173,7 +173,9 @@ pub struct ClaimedInferenceIdentity {
 }
 
 impl ClaimedInferenceIdentity {
-    /// Builds a claim carrying at least one of provider and model.
+    /// Builds a claim carrying at least one of provider and model. A
+    /// value that is blank after trimming carries nothing and reads as
+    /// absent, so a content-free string can never become a claim.
     ///
     /// # Errors
     ///
@@ -182,6 +184,8 @@ impl ClaimedInferenceIdentity {
         provider: Option<String>,
         model: Option<String>,
     ) -> Result<Self, SourceContextError> {
+        let provider = provider.filter(|value| !value.trim().is_empty());
+        let model = model.filter(|value| !value.trim().is_empty());
         if provider.is_none() && model.is_none() {
             return Err(SourceContextError::EmptyInferenceClaim);
         }
@@ -408,6 +412,34 @@ mod tests {
         let err = ClaimedInferenceIdentity::new(None, None).unwrap_err();
 
         assert!(matches!(err, SourceContextError::EmptyInferenceClaim));
+    }
+
+    #[test]
+    fn test_blank_strings_carry_no_claim() {
+        let err =
+            ClaimedInferenceIdentity::new(Some(String::new()), Some("  ".into())).unwrap_err();
+        assert!(matches!(err, SourceContextError::EmptyInferenceClaim));
+
+        let claim =
+            ClaimedInferenceIdentity::new(Some("  ".into()), Some("claude-opus-4-6".into()))
+                .expect("a real model beside a blank provider is a model-only claim");
+        assert!(claim.provider().is_none());
+        assert_eq!(claim.model(), Some("claude-opus-4-6"));
+    }
+
+    #[test]
+    fn test_a_blank_provider_claim_classifies_manual_capture() {
+        let claim = ClaimedActor {
+            client: None,
+            inference: Some(
+                ClaimedInferenceIdentity::new(Some(" ".into()), Some("claude-opus-4-6".into()))
+                    .expect("model-only claim is valid"),
+            ),
+        };
+
+        let context = SourceContextV1::from_claims(IngestChannel::McpHttp, Some(claim));
+
+        assert_eq!(context.source_type(), SourceType::ManualCapture);
     }
 
     #[test]
