@@ -257,11 +257,11 @@ pub enum IngestChannel {
 // Lenient stored reads
 // ---------------------------------------------------------------------------
 
-/// Reads the source type out of any stored context shape: V1 and legacy
-/// snake_case discriminators, the PascalCase discriminators the old
-/// ingest writer produced, and typeless legacy knowledge contexts —
-/// which, like unknown values, read as `manual_capture` rather than
-/// inventing a stronger classification.
+/// Reads the source type out of any stored context shape: the typed V1
+/// discriminator, the flat shape's PascalCase and snake_case
+/// discriminators, and typeless flat contexts — which, like unknown
+/// values, read as `manual_capture` rather than inventing a stronger
+/// classification.
 #[must_use]
 pub fn stored_source_type(context: &serde_json::Value) -> SourceType {
     let Some(discriminator) = context.get("type").and_then(serde_json::Value::as_str) else {
@@ -462,15 +462,15 @@ mod tests {
     }
 
     #[test]
-    fn test_stored_source_type_reads_v1_and_legacy_shapes() {
+    fn test_stored_source_type_reads_every_stored_shape() {
         let v1 = json!({ "version": 1, "type": "agent_mediated" });
-        let legacy_pascal = json!({ "type": "AgentMediated", "provider": "anthropic" });
-        let legacy_knowledge = json!({ "provider": "anthropic", "model": "claude-opus-4-6" });
+        let flat_pascal = json!({ "type": "AgentMediated", "provider": "anthropic" });
+        let flat_typeless = json!({ "provider": "anthropic", "model": "claude-opus-4-6" });
         let unknown = json!({ "type": "Telepathy" });
 
         assert_eq!(stored_source_type(&v1), SourceType::AgentMediated);
-        assert_eq!(stored_source_type(&legacy_pascal), SourceType::AgentMediated);
-        assert_eq!(stored_source_type(&legacy_knowledge), SourceType::ManualCapture);
+        assert_eq!(stored_source_type(&flat_pascal), SourceType::AgentMediated);
+        assert_eq!(stored_source_type(&flat_typeless), SourceType::ManualCapture);
         assert_eq!(stored_source_type(&unknown), SourceType::ManualCapture);
     }
 }
