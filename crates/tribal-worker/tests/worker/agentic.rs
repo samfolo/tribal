@@ -956,6 +956,15 @@ async fn test_the_loop_executor_completes_an_extraction_job_end_to_end() {
         binding.definition().executor,
         StageExecutorKind::BuiltInLoop
     );
+
+    // The commit attributes the job to the recorded binding's identity,
+    // the built-in-loop twin of the one-shot extraction commit.
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("find job");
+    assert_eq!(job.source_context()["extraction"]["provider"], "ollama");
+    assert_eq!(job.source_context()["extraction"]["model"], "mock-model");
 }
 
 /// A deterministic validator bounce drives a second turn before fan-out:

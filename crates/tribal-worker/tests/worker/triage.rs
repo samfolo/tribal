@@ -1,4 +1,4 @@
-use tribal_domain::TagRegistryEntry;
+use tribal_domain::{InferenceIdentity, TagRegistryEntry};
 
 use super::{
     common::*,
@@ -143,6 +143,120 @@ async fn test_triage_novel_path() {
     assert!(
         tag_names.contains(&"performance"),
         "tag registry should contain 'performance': {tag_names:?}",
+    );
+}
+
+/// Verifies that a novel item's source context is the job's, verbatim —
+/// including a committed extraction identity — never a reconstruction
+/// from the current gateway configuration.
+#[tokio::test]
+async fn test_a_novel_item_inherits_the_job_context_verbatim() {
+    let ctx = TestDb::new().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(&ctx, "triage-inherits-context").await;
+
+    let candidates = vec![
+        a_candidate()
+            .content("Rust has zero-cost abstractions".to_owned())
+            .build(),
+    ];
+
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(&ctx).await;
+        let (job_id, task_id) = seed_triage_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await;
+
+        // Simulate a completed extraction stage, which commits the binding
+        // identity onto the job's context before triage ever runs.
+        PgJobRepository
+            .set_extraction_identity(
+                &mut conn,
+                job_id,
+                &InferenceIdentity {
+                    provider: "anthropic".to_owned(),
+                    model: "claude-opus-4-6".to_owned(),
+                },
+            )
+            .await
+            .expect("commit extraction identity");
+
+        (job_id, task_id)
+    };
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(triage_novel_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    let mut conn = raw_conn(&ctx).await;
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("find job");
+    let triage_result = PgTriageResultRepository
+        .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
+        .await
+        .expect("find triage result")
+        .expect("triage result should exist");
+    let TriageOutcome::Created { item_id } = triage_result.outcome() else {
+        panic!(
+            "expected Created outcome, got {:?}",
+            triage_result.outcome()
+        );
+    };
+
+    let item = PgKnowledgeItemRepository
+        .find_by_id(&mut conn, *item_id)
+        .await
+        .expect("find knowledge item");
+
+    assert_eq!(
+        item.source_context(),
+        job.source_context(),
+        "the item's context is the job's, including the committed extraction identity",
+    );
+    assert_eq!(item.source_context()["extraction"]["provider"], "anthropic");
+    assert!(
+        item.source_context().get("provider").is_none(),
+        "the context is the typed V1 shape, not a flat {{provider, model}} object: {:?}",
+        item.source_context(),
     );
 }
 
@@ -388,6 +502,124 @@ async fn test_triage_duplicate_path() {
         .await
         .expect("find observations");
     assert_eq!(observations.len(), 1, "should have one observation");
+}
+
+/// Verifies that a duplicate observation's source type is derived from the
+/// job's context rather than hard-coded: the seeded job carries the V1
+/// `manual_capture` stdio context, so the recorded observation does too.
+#[tokio::test]
+async fn test_a_duplicate_observation_derives_its_source_from_the_job_context() {
+    let ctx = TestDb::new().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let mut conn = raw_conn(&ctx).await;
+    let seed_result = Seed::new()
+        .define_project("proj", "git@github.com:test/triage-dup-source.git")
+        .define_principal("user", "user:triage-dup-source")
+        .define_prompt_version("system-pv", a_new_prompt_version().build())
+        .define_prompt_version(
+            "user-pv",
+            a_new_prompt_version()
+                .role(tribal_domain::PromptRole::User)
+                .content_hash("c".repeat(64))
+                .content("test user prompt content".to_owned())
+                .build(),
+        )
+        .set_embedding_model("mock-model", 768)
+        .as_principal("user")
+        .for_project("proj", |store| {
+            store.add_item("existing", item(KnowledgeKind::Fact, "existing knowledge"));
+        })
+        .execute(&mut conn)
+        .await;
+
+    let principal_id = seed_result.principal_id("user");
+    let project_id = seed_result.project_id("proj");
+    let ki_id = seed_result.item_id("existing");
+    let system_pv_id = seed_result.prompt_version_id("system-pv");
+    let user_pv_id = seed_result.prompt_version_id("user-pv");
+
+    let seeded_embedding = find_active_embedding(&mut conn, ki_id)
+        .await
+        .expect("find seeded embedding")
+        .expect("seeded embedding should exist");
+    let embedding_vector = seeded_embedding.embedding().to_vec();
+
+    let candidates = vec![
+        a_candidate()
+            .content("duplicate content".to_owned())
+            .build(),
+    ];
+
+    // The job's context defaults to the V1 manual_capture stdio shape
+    // (a_new_job()'s factory default) — no override needed.
+    let (job_id, task_id) = seed_triage_job(
+        &mut conn,
+        principal_id,
+        project_id,
+        system_pv_id,
+        user_pv_id,
+        &candidates,
+    )
+    .await;
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("find job");
+    assert_eq!(
+        job.source_context()["type"],
+        "manual_capture",
+        "the seeded job is the manual_capture fixture this test relies on",
+    );
+    drop(conn);
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(embedding_vector), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(
+                a_completion_response(triage_duplicate_response_json(0)),
+                None,
+            )
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    let mut conn = raw_conn(&ctx).await;
+    let observations = PgItemObservationRepository
+        .find_by_knowledge_item_id(&mut conn, ki_id)
+        .await
+        .expect("find observations");
+    assert_eq!(observations.len(), 1, "should have one observation");
+    assert_eq!(
+        observations[0].source_type(),
+        SourceType::ManualCapture,
+        "the observation's source derives from the job's manual_capture context",
+    );
 }
 
 /// Verifies the downgrade path end-to-end: a duplicate whose matched index
