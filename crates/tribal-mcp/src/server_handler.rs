@@ -4,7 +4,8 @@ use rmcp::{
     handler::server::ServerHandler,
     model::{
         CallToolRequestParams, CallToolResult, ErrorCode, ErrorData as McpError, Implementation,
-        InitializeRequestParams, InitializeResult, ListResourcesResult, ListToolsResult,
+        InitializeRequestParams, InitializeResult, ListResourceTemplatesResult,
+        ListResourcesResult, ListToolsResult,
         PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
         ServerCapabilities, ServerInfo, SubscribeRequestParams, Tool, UnsubscribeRequestParams,
     },
@@ -353,6 +354,9 @@ impl TribalServerHandler {
         uri: &str,
         principal: &AuthenticatedPrincipal,
     ) -> Result<ReadResourceResult, McpError> {
+        if crate::handlers::is_ingestion_uri(uri) {
+            return self.read_ingestion_resource(uri, principal).await;
+        }
         if uri != SESSION_RESOURCE_URI {
             return Err(McpError::invalid_params("unknown resource URI", None));
         }
@@ -473,6 +477,27 @@ impl ServerHandler for TribalServerHandler {
         _context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourcesResult, McpError>> + Send + '_ {
         std::future::ready(Ok(Self::list_resources_inner()))
+    }
+
+    fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListResourceTemplatesResult, McpError>> + Send + '_
+    {
+        // The same scope filter as dispatch: a token without knowledge
+        // authority is never shown the content-bearing templates.
+        let advertised = match self.resolve_principal(&context) {
+            Ok(principal)
+                if is_authorised(principal.scopes(), &crate::handlers::INGESTIONS_SCOPE) => {
+                crate::handlers::ingestion_resource_templates()
+            }
+            _ => Vec::new(),
+        };
+        std::future::ready(Ok(ListResourceTemplatesResult {
+            resource_templates: advertised,
+            ..Default::default()
+        }))
     }
 
     async fn read_resource(
