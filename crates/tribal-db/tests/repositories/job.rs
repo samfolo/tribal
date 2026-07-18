@@ -1043,7 +1043,10 @@ async fn test_a_differing_extraction_identity_is_refused() {
 
     assert!(matches!(err, DbError::SourceContextRejected { .. }));
     let stored = repo.find_by_id(&mut txn, job.id()).await.expect("reload");
-    assert_eq!(stored.source_context()["extraction"]["provider"], "anthropic");
+    assert_eq!(
+        stored.source_context()["extraction"]["provider"],
+        "anthropic"
+    );
 }
 
 #[tokio::test]
@@ -1104,9 +1107,8 @@ async fn test_extraction_identity_on_a_flat_context_is_unreadable() {
 /// The shipped migration, re-executed against rows this test writes in the
 /// flat shape, so the transform is proven against the exact SQL production
 /// ran. The statement is idempotent by its own version guard.
-const NORMALIZE_SOURCE_CONTEXT_SQL: &str = include_str!(
-    "../../migrations/20260718185340_normalize_job_source_context_to_v1.sql"
-);
+const NORMALIZE_SOURCE_CONTEXT_SQL: &str =
+    include_str!("../../migrations/20260718185340_normalize_job_source_context_to_v1.sql");
 
 #[tokio::test]
 async fn test_the_normalization_migrates_flat_shapes_and_leaves_the_rest() {
@@ -1130,15 +1132,21 @@ async fn test_the_normalization_migrates_flat_shapes_and_leaves_the_rest() {
             .build()
     };
     let agent_flat = repo
-        .insert(&mut txn, &insert(serde_json::json!({
-            "type": "AgentMediated", "provider": "anthropic", "model": "",
-        })))
+        .insert(
+            &mut txn,
+            &insert(serde_json::json!({
+                "type": "AgentMediated", "provider": "anthropic", "model": "",
+            })),
+        )
         .await
         .expect("insert agent-mediated flat job");
     let manual_flat = repo
-        .insert(&mut txn, &insert(serde_json::json!({
-            "type": "ManualCapture", "capture_method": "mcp",
-        })))
+        .insert(
+            &mut txn,
+            &insert(serde_json::json!({
+                "type": "ManualCapture", "capture_method": "mcp",
+            })),
+        )
         .await
         .expect("insert manual-capture flat job");
     let unrecognised = repo
@@ -1155,7 +1163,10 @@ async fn test_the_normalization_migrates_flat_shapes_and_leaves_the_rest() {
         .await
         .expect("re-run the normalization");
 
-    let agent = repo.find_by_id(&mut txn, agent_flat.id()).await.expect("reload");
+    let agent = repo
+        .find_by_id(&mut txn, agent_flat.id())
+        .await
+        .expect("reload");
     assert_eq!(
         agent.source_context(),
         &serde_json::json!({
@@ -1166,15 +1177,27 @@ async fn test_the_normalization_migrates_flat_shapes_and_leaves_the_rest() {
         "the empty model is dropped, the provider becomes a claim, and no channel is invented",
     );
 
-    let manual = repo.find_by_id(&mut txn, manual_flat.id()).await.expect("reload");
+    let manual = repo
+        .find_by_id(&mut txn, manual_flat.id())
+        .await
+        .expect("reload");
     assert_eq!(
         manual.source_context(),
         &serde_json::json!({ "version": 1, "type": "manual_capture" }),
     );
 
-    let untouched = repo.find_by_id(&mut txn, unrecognised.id()).await.expect("reload");
-    assert_eq!(untouched.source_context(), &serde_json::json!({ "shape": "unknown" }));
+    let untouched = repo
+        .find_by_id(&mut txn, unrecognised.id())
+        .await
+        .expect("reload");
+    assert_eq!(
+        untouched.source_context(),
+        &serde_json::json!({ "shape": "unknown" })
+    );
 
-    let v1 = repo.find_by_id(&mut txn, already_v1.id()).await.expect("reload");
+    let v1 = repo
+        .find_by_id(&mut txn, already_v1.id())
+        .await
+        .expect("reload");
     assert_eq!(v1.source_context(), &a_v1_source_context());
 }

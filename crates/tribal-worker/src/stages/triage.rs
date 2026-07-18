@@ -9,8 +9,8 @@ use tribal_db::{
 };
 use tribal_domain::{
     Candidate, CompletionResponse, Confidence, EmbeddingProfile, EmbeddingPurpose, Job, JobId,
-    KnowledgeItemId, PrincipalId, StageExecutorKind, TagRegistryEntry, Task, TaskType,
-    span_attrs, stored_source_type,
+    KnowledgeItemId, PrincipalId, StageExecutorKind, TagRegistryEntry, Task, TaskType, span_attrs,
+    stored_source_type,
 };
 use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, EmbeddingTarget, PermitWait, UsageAttribution,

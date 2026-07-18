@@ -483,12 +483,11 @@ impl JobRepository for PgJobRepository {
             })?;
 
         if outcome == ExtractionCommitOutcome::Recorded {
-            let written = serde_json::to_value(&context).map_err(|e| {
-                DbError::SourceContextUnreadable {
+            let written =
+                serde_json::to_value(&context).map_err(|e| DbError::SourceContextUnreadable {
                     job_id: id.to_string(),
                     detail: e.to_string(),
-                }
-            })?;
+                })?;
             sqlx::query("UPDATE jobs SET source_context = $2, updated_at = now() WHERE id = $1")
                 .bind(id.inner())
                 .bind(written)

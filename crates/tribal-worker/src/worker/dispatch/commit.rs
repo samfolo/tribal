@@ -149,7 +149,9 @@ impl Worker {
             PgJobRepository
                 .set_extraction_identity(&mut txn, task.job_id(), &extraction_identity)
                 .await
-                .map_err(|e| stage_db_error(STAGE_EXTRACTION, "committing extraction identity", e))?;
+                .map_err(|e| {
+                    stage_db_error(STAGE_EXTRACTION, "committing extraction identity", e)
+                })?;
 
             PgExtractionResultRepository
                 .insert(&mut txn, &extraction_result)

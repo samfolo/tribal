@@ -187,7 +187,7 @@ pub use scope::{
 };
 pub use source_context::{
     ClaimedActor, ClaimedClientIdentity, ClaimedInferenceIdentity, ExtractionCommitOutcome,
-    IngestChannel, InferenceIdentity, SourceContextError, SourceContextV1, stored_source_type,
+    InferenceIdentity, IngestChannel, SourceContextError, SourceContextV1, stored_source_type,
 };
 pub use source_type::SourceType;
 pub use standing::{Standing, StandingBuilder};

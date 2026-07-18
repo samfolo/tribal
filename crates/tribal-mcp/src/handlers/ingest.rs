@@ -287,13 +287,11 @@ mod tests {
     use rmcp::model::ErrorCode;
     use tracing::Instrument;
     use tracing_subscriber::layer::SubscriberExt;
-    use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId};
+    use tribal_domain::{IngestChannel, KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
         MockJobRepository, MockProjectRepository, MockPromptVersionRepository, MockTaskRepository,
         TestDb, a_job, a_project, a_prompt_version, a_task,
     };
-
-    use tribal_domain::IngestChannel;
 
     use super::*;
     use crate::{

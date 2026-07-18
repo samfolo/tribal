@@ -370,7 +370,10 @@ mod tests {
         assert_eq!(value["version"], json!(1));
         assert_eq!(value["type"], json!("agent_mediated"));
         assert_eq!(value["channel"], json!("mcp_http"));
-        assert_eq!(value["claimed_actor"]["client"]["name"], json!("tribal-mac"));
+        assert_eq!(
+            value["claimed_actor"]["client"]["name"],
+            json!("tribal-mac")
+        );
         assert_eq!(value.get("extraction"), None);
     }
 
@@ -394,7 +397,10 @@ mod tests {
 
         let err = serde_json::from_value::<SourceContextV1>(value).unwrap_err();
 
-        assert!(err.to_string().contains("unsupported source context version 2"));
+        assert!(
+            err.to_string()
+                .contains("unsupported source context version 2")
+        );
     }
 
     #[test]
@@ -470,7 +476,10 @@ mod tests {
 
         assert_eq!(stored_source_type(&v1), SourceType::AgentMediated);
         assert_eq!(stored_source_type(&flat_pascal), SourceType::AgentMediated);
-        assert_eq!(stored_source_type(&flat_typeless), SourceType::ManualCapture);
+        assert_eq!(
+            stored_source_type(&flat_typeless),
+            SourceType::ManualCapture
+        );
         assert_eq!(stored_source_type(&unknown), SourceType::ManualCapture);
     }
 }

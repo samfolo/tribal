@@ -1,8 +1,8 @@
 use chrono::Utc;
 use tribal_db::{JobStatusTransition, NewJob};
 use tribal_domain::{
-    IngestChannel, Job, JobId, JobStatus, PrincipalId, ProjectId, PromptVersionId,
-    RelationBatchId, SourceContextV1,
+    IngestChannel, Job, JobId, JobStatus, PrincipalId, ProjectId, PromptVersionId, RelationBatchId,
+    SourceContextV1,
 };
 
 /// The context production writes for a bare stdio ingest — the factory
