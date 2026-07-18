@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::{AgentBindingVersionId, ProviderKind, StageParameters, TaskType};
+use crate::{AgentBindingVersionId, InferenceIdentity, ProviderKind, StageParameters, TaskType};
 
 // ---------------------------------------------------------------------------
 // Executor kinds
@@ -271,6 +271,16 @@ impl AgentDefinition {
     /// Returns the underlying serde error when serialisation fails.
     pub fn canonical_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
+    }
+
+    /// The complete inference identity this definition binds — the value
+    /// an extraction commit attributes its job to.
+    #[must_use]
+    pub fn inference_identity(&self) -> InferenceIdentity {
+        InferenceIdentity {
+            provider: self.provider.as_str().to_owned(),
+            model: self.model.clone(),
+        }
     }
 }
 
