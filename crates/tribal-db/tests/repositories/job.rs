@@ -4,8 +4,8 @@ use tribal_db::{
     PgTaskRepository, PrincipalRepository, ProjectRepository,
 };
 use tribal_domain::{
-    EpisodeId, GitRemote, JobId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId,
-    RelationBatchId, TaskStatus, TaskType,
+    EpisodeId, ExtractionCommitOutcome, GitRemote, InferenceIdentity, JobId, JobOutcome, JobStatus,
+    PrincipalId, ProjectId, PromptVersionId, RelationBatchId, TaskStatus, TaskType,
 };
 use tribal_test_utils::{
     TestDb, a_job_status_transition, a_new_job, a_new_principal, a_new_project,
@@ -904,4 +904,300 @@ async fn test_find_stuck_triaging_skips_a_job_with_a_blocked_sibling() {
         .expect("complete the blocked sibling");
     let stuck = repo.find_stuck_triaging_jobs(&mut txn).await.expect("scan");
     assert_eq!(stuck, vec![job.id()]);
+}
+
+// ---------------------------------------------------------------------------
+// set_extraction_identity
+// ---------------------------------------------------------------------------
+
+/// A V1 manual-capture context as the ingest writer stores it.
+fn a_v1_source_context() -> serde_json::Value {
+    serde_json::json!({
+        "version": 1,
+        "type": "manual_capture",
+        "channel": "mcp_http",
+    })
+}
+
+fn an_extraction_identity() -> InferenceIdentity {
+    InferenceIdentity {
+        provider: "anthropic".to_owned(),
+        model: "claude-opus-4-6".to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn test_a_first_extraction_identity_is_recorded_on_the_context() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgJobRepository;
+    let (principal_id, project_id, pv_id, fp_hash) =
+        setup_job_prerequisites(&mut txn, "extraction-identity-record").await;
+    let job = repo
+        .insert(
+            &mut txn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .source_context(a_v1_source_context())
+                .extraction_system_prompt_version_id(pv_id)
+                .extraction_user_prompt_version_id(pv_id)
+                .triage_system_prompt_version_id(pv_id)
+                .triage_user_prompt_version_id(pv_id)
+                .relation_system_prompt_version_id(pv_id)
+                .relation_user_prompt_version_id(pv_id)
+                .system_fingerprint_hash(fp_hash)
+                .build(),
+        )
+        .await
+        .expect("insert job");
+
+    let outcome = repo
+        .set_extraction_identity(&mut txn, job.id(), &an_extraction_identity())
+        .await
+        .expect("first commit records");
+
+    assert_eq!(outcome, ExtractionCommitOutcome::Recorded);
+    let stored = repo.find_by_id(&mut txn, job.id()).await.expect("reload");
+    assert_eq!(
+        stored.source_context()["extraction"],
+        serde_json::json!({ "provider": "anthropic", "model": "claude-opus-4-6" }),
+    );
+    assert_eq!(stored.source_context()["type"], "manual_capture");
+}
+
+#[tokio::test]
+async fn test_an_identical_extraction_identity_recommit_is_a_no_op() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgJobRepository;
+    let (principal_id, project_id, pv_id, fp_hash) =
+        setup_job_prerequisites(&mut txn, "extraction-identity-noop").await;
+    let job = repo
+        .insert(
+            &mut txn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .source_context(a_v1_source_context())
+                .extraction_system_prompt_version_id(pv_id)
+                .extraction_user_prompt_version_id(pv_id)
+                .triage_system_prompt_version_id(pv_id)
+                .triage_user_prompt_version_id(pv_id)
+                .relation_system_prompt_version_id(pv_id)
+                .relation_user_prompt_version_id(pv_id)
+                .system_fingerprint_hash(fp_hash)
+                .build(),
+        )
+        .await
+        .expect("insert job");
+    repo.set_extraction_identity(&mut txn, job.id(), &an_extraction_identity())
+        .await
+        .expect("first commit records");
+
+    let outcome = repo
+        .set_extraction_identity(&mut txn, job.id(), &an_extraction_identity())
+        .await
+        .expect("identical recommit is accepted");
+
+    assert_eq!(outcome, ExtractionCommitOutcome::AlreadyRecorded);
+}
+
+#[tokio::test]
+async fn test_a_differing_extraction_identity_is_refused() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgJobRepository;
+    let (principal_id, project_id, pv_id, fp_hash) =
+        setup_job_prerequisites(&mut txn, "extraction-identity-conflict").await;
+    let job = repo
+        .insert(
+            &mut txn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .source_context(a_v1_source_context())
+                .extraction_system_prompt_version_id(pv_id)
+                .extraction_user_prompt_version_id(pv_id)
+                .triage_system_prompt_version_id(pv_id)
+                .triage_user_prompt_version_id(pv_id)
+                .relation_system_prompt_version_id(pv_id)
+                .relation_user_prompt_version_id(pv_id)
+                .system_fingerprint_hash(fp_hash)
+                .build(),
+        )
+        .await
+        .expect("insert job");
+    repo.set_extraction_identity(&mut txn, job.id(), &an_extraction_identity())
+        .await
+        .expect("first commit records");
+    let other = InferenceIdentity {
+        provider: "openai".to_owned(),
+        model: "gpt-6".to_owned(),
+    };
+
+    let err = repo
+        .set_extraction_identity(&mut txn, job.id(), &other)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, DbError::SourceContextRejected { .. }));
+    let stored = repo.find_by_id(&mut txn, job.id()).await.expect("reload");
+    assert_eq!(
+        stored.source_context()["extraction"]["provider"],
+        "anthropic"
+    );
+}
+
+#[tokio::test]
+async fn test_extraction_identity_on_a_missing_job_is_not_found() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+
+    let err = PgJobRepository
+        .set_extraction_identity(&mut txn, JobId::new(), &an_extraction_identity())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, DbError::NotFound { entity: "job", .. }));
+}
+
+#[tokio::test]
+async fn test_extraction_identity_on_a_flat_context_is_unreadable() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgJobRepository;
+    let (principal_id, project_id, pv_id, fp_hash) =
+        setup_job_prerequisites(&mut txn, "extraction-identity-flat").await;
+    let job = repo
+        .insert(
+            &mut txn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .source_context(serde_json::json!({
+                    "type": "AgentMediated",
+                    "provider": "anthropic",
+                    "model": "",
+                }))
+                .extraction_system_prompt_version_id(pv_id)
+                .extraction_user_prompt_version_id(pv_id)
+                .triage_system_prompt_version_id(pv_id)
+                .triage_user_prompt_version_id(pv_id)
+                .relation_system_prompt_version_id(pv_id)
+                .relation_user_prompt_version_id(pv_id)
+                .system_fingerprint_hash(fp_hash)
+                .build(),
+        )
+        .await
+        .expect("insert job");
+
+    let err = repo
+        .set_extraction_identity(&mut txn, job.id(), &an_extraction_identity())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, DbError::SourceContextUnreadable { .. }));
+}
+
+// ---------------------------------------------------------------------------
+// source-context normalisation migration
+// ---------------------------------------------------------------------------
+
+/// The shipped migration, re-executed against rows this test writes in the
+/// flat shape, so the transform is proven against the exact SQL production
+/// ran. The statement is idempotent by its own version guard.
+const NORMALISE_SOURCE_CONTEXT_SQL: &str =
+    include_str!("../../migrations/20260718185340_normalise_job_source_context_to_v1.sql");
+
+#[tokio::test]
+async fn test_the_normalisation_migrates_flat_shapes_and_leaves_the_rest() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgJobRepository;
+    let (principal_id, project_id, pv_id, fp_hash) =
+        setup_job_prerequisites(&mut txn, "normalise-migration").await;
+    let insert = |context: serde_json::Value| {
+        a_new_job()
+            .project_id(project_id)
+            .principal_id(principal_id)
+            .source_context(context)
+            .extraction_system_prompt_version_id(pv_id)
+            .extraction_user_prompt_version_id(pv_id)
+            .triage_system_prompt_version_id(pv_id)
+            .triage_user_prompt_version_id(pv_id)
+            .relation_system_prompt_version_id(pv_id)
+            .relation_user_prompt_version_id(pv_id)
+            .system_fingerprint_hash(fp_hash.clone())
+            .build()
+    };
+    let agent_flat = repo
+        .insert(
+            &mut txn,
+            &insert(serde_json::json!({
+                "type": "AgentMediated", "provider": "anthropic", "model": "",
+            })),
+        )
+        .await
+        .expect("insert agent-mediated flat job");
+    let manual_flat = repo
+        .insert(
+            &mut txn,
+            &insert(serde_json::json!({
+                "type": "ManualCapture", "capture_method": "mcp",
+            })),
+        )
+        .await
+        .expect("insert manual-capture flat job");
+    let unrecognised = repo
+        .insert(&mut txn, &insert(serde_json::json!({ "shape": "unknown" })))
+        .await
+        .expect("insert unrecognised job");
+    let already_v1 = repo
+        .insert(&mut txn, &insert(a_v1_source_context()))
+        .await
+        .expect("insert v1 job");
+
+    sqlx::raw_sql(NORMALISE_SOURCE_CONTEXT_SQL)
+        .execute(&mut *txn)
+        .await
+        .expect("re-run the normalisation");
+
+    let agent = repo
+        .find_by_id(&mut txn, agent_flat.id())
+        .await
+        .expect("reload");
+    assert_eq!(
+        agent.source_context(),
+        &serde_json::json!({
+            "version": 1,
+            "type": "agent_mediated",
+            "claimed_actor": { "inference": { "provider": "anthropic" } },
+        }),
+        "the empty model is dropped, the provider becomes a claim, and no channel is invented",
+    );
+
+    let manual = repo
+        .find_by_id(&mut txn, manual_flat.id())
+        .await
+        .expect("reload");
+    assert_eq!(
+        manual.source_context(),
+        &serde_json::json!({ "version": 1, "type": "manual_capture" }),
+    );
+
+    let untouched = repo
+        .find_by_id(&mut txn, unrecognised.id())
+        .await
+        .expect("reload");
+    assert_eq!(
+        untouched.source_context(),
+        &serde_json::json!({ "shape": "unknown" })
+    );
+
+    let v1 = repo
+        .find_by_id(&mut txn, already_v1.id())
+        .await
+        .expect("reload");
+    assert_eq!(v1.source_context(), &a_v1_source_context());
 }

@@ -1,8 +1,16 @@
 use chrono::Utc;
 use tribal_db::{JobStatusTransition, NewJob};
 use tribal_domain::{
-    Job, JobId, JobStatus, PrincipalId, ProjectId, PromptVersionId, RelationBatchId,
+    IngestChannel, Job, JobId, JobStatus, PrincipalId, ProjectId, PromptVersionId, RelationBatchId,
+    SourceContextV1,
 };
+
+/// The context production writes for a bare stdio ingest — the factory
+/// default, so seeded jobs carry what the pipeline actually stores.
+fn a_v1_source_context() -> serde_json::Value {
+    serde_json::to_value(SourceContextV1::from_claims(IngestChannel::McpStdio, None))
+        .expect("source context serialises")
+}
 
 define_factory! {
     /// Factory for [`Job`] instances.
@@ -19,7 +27,7 @@ define_factory! {
         outcome: Option<tribal_domain::JobOutcome> = None,
         batch_size: Option<u32> = None,
         committed_batch_id: Option<RelationBatchId> = None,
-        source_context: serde_json::Value = serde_json::json!({}),
+        source_context: serde_json::Value = a_v1_source_context(),
         raw_input: String = "test raw input".to_owned(),
         extraction_original_count: Option<u32> = None,
         error_message: Option<String> = None,
@@ -49,7 +57,7 @@ define_factory! {
         project_id: ProjectId = ProjectId::new(),
         principal_id: PrincipalId = PrincipalId::new(),
         actor_id: Option<PrincipalId> = None,
-        source_context: serde_json::Value = serde_json::json!({}),
+        source_context: serde_json::Value = a_v1_source_context(),
         raw_input: String = "test raw input".to_owned(),
         extraction_system_prompt_version_id: PromptVersionId = PromptVersionId::new(),
         extraction_user_prompt_version_id: PromptVersionId = PromptVersionId::new(),
@@ -96,7 +104,7 @@ mod tests {
     #[test]
     fn test_new_job_builds_with_defaults() {
         let new = a_new_job().build();
-        assert_eq!(new.source_context, serde_json::json!({}));
+        assert_eq!(new.source_context, a_v1_source_context());
         assert!(new.actor_id.is_none());
     }
 

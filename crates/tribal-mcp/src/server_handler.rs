@@ -4,9 +4,9 @@ use rmcp::{
     handler::server::ServerHandler,
     model::{
         CallToolRequestParams, CallToolResult, ErrorCode, ErrorData as McpError, Implementation,
-        ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
-        ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
-        SubscribeRequestParams, Tool, UnsubscribeRequestParams,
+        InitializeRequestParams, InitializeResult, ListResourcesResult, ListToolsResult,
+        PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+        ServerCapabilities, ServerInfo, SubscribeRequestParams, Tool, UnsubscribeRequestParams,
     },
     service::{RequestContext, RoleServer},
 };
@@ -21,7 +21,9 @@ use tribal_db::{
     RetrievalFeedbackRepository, StandingRepository, SystemFingerprintRepository, TaskRepository,
     TriageResultRepository,
 };
-use tribal_domain::{PromptClass, PromptRole, PromptStage, PromptVersionId, is_authorised};
+use tribal_domain::{
+    IngestChannel, PromptClass, PromptRole, PromptStage, PromptVersionId, is_authorised,
+};
 
 use crate::{
     app_state::AppState,
@@ -265,8 +267,9 @@ pub struct TribalServerHandler {
     pub(crate) repositories: ConnectionRepositories,
     pub(crate) session: Arc<RwLock<SessionContext>>,
     pub(crate) config: HandlerConfig,
-    /// Transport name for span attributes (e.g. `"stdio"`, `"http"`, `"sse"`).
-    pub(crate) transport_name: &'static str,
+    /// The transport this connection arrived over; also the source of the
+    /// span-attribute transport label.
+    pub(crate) channel: IngestChannel,
 }
 
 impl TribalServerHandler {
@@ -281,7 +284,7 @@ impl TribalServerHandler {
         repositories: ConnectionRepositories,
         session: SessionContext,
         config: HandlerConfig,
-        transport_name: &'static str,
+        channel: IngestChannel,
     ) -> Self {
         Self {
             state,
@@ -289,7 +292,16 @@ impl TribalServerHandler {
             repositories,
             session: Arc::new(RwLock::new(session)),
             config,
-            transport_name,
+            channel,
+        }
+    }
+
+    /// The transport label recorded on request spans.
+    pub(crate) fn transport_name(&self) -> &'static str {
+        match self.channel {
+            IngestChannel::McpHttp => "http",
+            IngestChannel::McpSse => "sse",
+            IngestChannel::McpStdio => "stdio",
         }
     }
 
@@ -382,6 +394,24 @@ impl TribalServerHandler {
 // ---------------------------------------------------------------------------
 
 impl ServerHandler for TribalServerHandler {
+    /// Captures the client's declared identity as the session's client
+    /// claim before delegating to the protocol's default behaviour.
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        {
+            let mut guard = self.session.write().await;
+            guard.actor.client_name = Some(request.client_info.name.clone());
+            guard.actor.client_version = Some(request.client_info.version.clone());
+        }
+        if context.peer.peer_info().is_none() {
+            context.peer.set_peer_info(request);
+        }
+        Ok(self.get_info())
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()

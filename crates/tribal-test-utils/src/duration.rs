@@ -69,6 +69,11 @@ pub const STALE_HEARTBEAT_BACKDATE: Duration = Duration::from_mins(2);
 /// (reclaim, heartbeat loss) before the call completes.
 pub const LONG_PROVIDER_DELAY: Duration = Duration::from_secs(5);
 
+/// Pump interval far beyond any test's runtime, in the milliseconds
+/// `WorkerConfig` speaks: a heartbeat or reclaim pump set to this never
+/// fires, so the test's own injected events are the only clock.
+pub const QUIET_PUMP_INTERVAL_MS: u64 = 120_000;
+
 /// Upper bound for asserting that an in-flight stage was aborted
 /// early.
 ///

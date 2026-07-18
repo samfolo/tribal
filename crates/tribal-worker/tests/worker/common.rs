@@ -36,7 +36,7 @@ pub(super) use tribal_test_utils::{
     active_embedding_profile, an_embedding_response, backdate_task_heartbeat, candidates_json,
     duration::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
-        POLL_INTERVAL, POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,
+        POLL_INTERVAL, POLL_SETTLE, QUIET_PUMP_INTERVAL_MS, STALE_HEARTBEAT_BACKDATE,
     },
     find_active_embedding, item,
     polling::{poll_job_status, poll_task_status, poll_until},

@@ -89,6 +89,61 @@ async fn test_extraction_happy_path() {
     assert_eq!(triage_tasks.len(), 2, "should create 2 triage tasks");
 }
 
+/// Verifies that the extraction commit attributes the job to the binding
+/// it actually ran under: the reloaded job's `source_context.extraction`
+/// carries the test worker's seeded provider and model.
+#[tokio::test]
+async fn test_extraction_commit_records_the_binding_identity_on_the_job() {
+    let ctx = TestDb::new().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(&ctx, "extraction-identity").await;
+
+    let response_json = extraction_response_json(&[a_candidate().build()], &[]);
+
+    let (job_id, _task_id) = {
+        let mut conn = raw_conn(&ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(&response_json), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let job = poll_job_status(&pool, job_id, JobStatus::Triaging, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    // test_stage_specs() names the binding the test worker resolves.
+    assert_eq!(job.source_context()["extraction"]["provider"], "ollama");
+    assert_eq!(job.source_context()["extraction"]["model"], "mock-model");
+}
+
 /// Verifies that zero candidates causes the job to complete immediately
 /// with an Empty outcome, and no triage tasks are created.
 #[tokio::test]

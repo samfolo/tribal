@@ -9,8 +9,8 @@ use tribal_db::{
 };
 use tribal_domain::{
     Candidate, CompletionResponse, Confidence, EmbeddingProfile, EmbeddingPurpose, Job, JobId,
-    KnowledgeItemId, PrincipalId, SourceType, StageExecutorKind, TagRegistryEntry, Task, TaskType,
-    span_attrs,
+    KnowledgeItemId, PrincipalId, StageExecutorKind, TagRegistryEntry, Task, TaskType, span_attrs,
+    stored_source_type,
 };
 use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, EmbeddingTarget, PermitWait, UsageAttribution,
@@ -264,7 +264,7 @@ impl Worker {
                 ResolvedTriageOutcome::Duplicate { .. } => None,
             };
 
-            let commit = self.build_triage_commit(
+            let commit = Self::build_triage_commit(
                 &ctx,
                 &resolved_outcome,
                 &classification.similar_item_decisions,
@@ -558,7 +558,6 @@ impl Worker {
     /// The `outcome` is already resolved: a `Duplicate` bears its concrete
     /// `KnowledgeItemId`, so no index resolution happens here.
     fn build_triage_commit(
-        &self,
         ctx: &TriageContext<'_>,
         outcome: &ResolvedTriageOutcome,
         similar_item_decisions: &[SimilarItemClassification],
@@ -578,7 +577,7 @@ impl Worker {
             ResolvedTriageOutcome::Novel => {
                 let tag_data =
                     resolved_tags.expect("resolved tags required for Novel classification");
-                self.novel_decision(ctx.job, &ctx.candidate, embedding, tag_data)
+                novel_decision(ctx.job, &ctx.candidate, embedding, tag_data)
             }
             ResolvedTriageOutcome::Duplicate { matched_item_id } => {
                 duplicate_decision(ctx.job, *matched_item_id)
@@ -591,48 +590,43 @@ impl Worker {
             similar_item_decisions,
         }
     }
+}
 
-    /// Builds the novel-item commit decision: the new knowledge item
-    /// with its resolved tags and pre-embedded vector. Shared by both
-    /// executors, so the committed shape cannot drift between them.
-    pub(super) fn novel_decision(
-        &self,
-        job: &Job,
-        candidate: &Candidate,
-        embedding: CandidateEmbedding<'_>,
-        tag_data: ResolvedTags,
-    ) -> TriageCommitDecision {
-        let mut all_tags = tag_data.resolved.clone();
-        all_tags.extend(tag_data.new_tags.iter().map(|t| t.tag.clone()));
+/// Builds the novel-item commit decision: the new knowledge item
+/// with its resolved tags and pre-embedded vector. Shared by both
+/// executors, so the committed shape cannot drift between them.
+pub(super) fn novel_decision(
+    job: &Job,
+    candidate: &Candidate,
+    embedding: CandidateEmbedding<'_>,
+    tag_data: ResolvedTags,
+) -> TriageCommitDecision {
+    let mut all_tags = tag_data.resolved.clone();
+    all_tags.extend(tag_data.new_tags.iter().map(|t| t.tag.clone()));
 
-        let extraction_identity = self.gateway().completion_identity(TaskType::Extraction);
-        let source_context = serde_json::json!({
-            "provider": extraction_identity.name,
-            "model": extraction_identity.model,
-        });
+    // The item inherits the job's attributed context verbatim — never
+    // a reconstruction from whatever binding is configured now.
+    let knowledge_item = Box::new(
+        NewKnowledgeItem::builder()
+            .project_id(job.project_id())
+            .principal_id(job.principal_id())
+            .kind(candidate.kind())
+            .content(candidate.content().to_owned())
+            .tags(all_tags)
+            .confidence(Confidence::Inferred)
+            .source_context(job.source_context().clone())
+            .episode_id(job.correlation_id())
+            .build(),
+    );
 
-        let knowledge_item = Box::new(
-            NewKnowledgeItem::builder()
-                .project_id(job.project_id())
-                .principal_id(job.principal_id())
-                .kind(candidate.kind())
-                .content(candidate.content().to_owned())
-                .tags(all_tags)
-                .confidence(Confidence::Inferred)
-                .source_context(source_context)
-                .episode_id(job.correlation_id())
-                .build(),
-        );
-
-        TriageCommitDecision::Novel {
-            knowledge_item,
-            embedding_vector: embedding.vector,
-            embedding_model: embedding.profile.model().to_owned(),
-            embedding_profile_id: embedding.profile.id(),
-            suggested_references: candidate.suggested_references().to_vec(),
-            new_tags: tag_data.new_tags,
-            resolved_tags: tag_data.resolved,
-        }
+    TriageCommitDecision::Novel {
+        knowledge_item,
+        embedding_vector: embedding.vector,
+        embedding_model: embedding.profile.model().to_owned(),
+        embedding_profile_id: embedding.profile.id(),
+        suggested_references: candidate.suggested_references().to_vec(),
+        new_tags: tag_data.new_tags,
+        resolved_tags: tag_data.resolved,
     }
 }
 
@@ -645,7 +639,7 @@ pub(super) fn duplicate_decision(
     let observation = NewItemObservation::builder()
         .knowledge_item_id(matched_item_id)
         .principal_id(job.principal_id())
-        .source_type(SourceType::AgentMediated)
+        .source_type(stored_source_type(job.source_context()))
         .build();
 
     TriageCommitDecision::Duplicate { observation }

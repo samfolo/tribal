@@ -25,7 +25,7 @@ use tribal_config::{
 use tribal_db::{
     NewProject, PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
 };
-use tribal_domain::{JobOutcome, PrincipalId, Project, ProviderKind};
+use tribal_domain::{IngestChannel, JobOutcome, PrincipalId, Project, ProviderKind};
 use tribal_inference::RequestClass;
 use tribal_mcp::{
     AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
@@ -719,7 +719,7 @@ impl TestHarness {
             repositories,
             session,
             handler_config,
-            "stdio",
+            IngestChannel::McpStdio,
         );
 
         let (server_transport, client_transport) = tokio::io::duplex(DUPLEX_BUFFER_SIZE);
@@ -821,7 +821,7 @@ async fn start_and_connect(
         repositories,
         session,
         handler_config,
-        "stdio",
+        IngestChannel::McpStdio,
     );
 
     let (server_transport, client_transport) = tokio::io::duplex(DUPLEX_BUFFER_SIZE);

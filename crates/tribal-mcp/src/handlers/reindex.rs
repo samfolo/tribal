@@ -60,7 +60,7 @@ impl TribalServerHandler {
             parent: None,
             "tribal.reindex",
             { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
-            { span_attrs::TRANSPORT } = self.transport_name,
+            { span_attrs::TRANSPORT } = self.transport_name(),
         );
         self.apply_reindex(params, principal_id)
             .instrument(span)
@@ -129,7 +129,7 @@ impl TribalServerHandler {
             parent: None,
             "tribal.reindex_cancel",
             { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
-            { span_attrs::TRANSPORT } = self.transport_name,
+            { span_attrs::TRANSPORT } = self.transport_name(),
         );
         self.apply_reindex_cancel().instrument(span).await
     }
@@ -186,7 +186,7 @@ impl TribalServerHandler {
             parent: None,
             "tribal.reindex_prune",
             { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
-            { span_attrs::TRANSPORT } = self.transport_name,
+            { span_attrs::TRANSPORT } = self.transport_name(),
         );
         self.apply_reindex_prune().instrument(span).await
     }

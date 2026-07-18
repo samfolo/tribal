@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
-    EpisodeId, Job, JobId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId,
-    RelationBatchId, TaskStatus,
+    EpisodeId, ExtractionCommitOutcome, InferenceIdentity, Job, JobId, JobOutcome, JobStatus,
+    PrincipalId, ProjectId, PromptVersionId, RelationBatchId, SourceContextV1, TaskStatus,
 };
 use typed_builder::TypedBuilder;
 
@@ -194,6 +194,26 @@ pub trait JobRepository {
         batch_size: u32,
         extraction_original_count: u32,
     ) -> Result<Job, DbError>;
+
+    /// Commits the extraction identity into the job's stored source
+    /// context: sets it when absent, accepts an identical value as a
+    /// no-op, and refuses a differing one. Locks the job row for the
+    /// remainder of the caller's transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::NotFound`] if no job with the given ID exists.
+    /// Returns [`DbError::SourceContextUnreadable`] when the stored
+    /// context does not parse as the typed V1 shape.
+    /// Returns [`DbError::SourceContextRejected`] when a differing
+    /// identity is already committed.
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn set_extraction_identity(
+        &self,
+        conn: &mut PgConnection,
+        id: JobId,
+        identity: &InferenceIdentity,
+    ) -> Result<ExtractionCommitOutcome, DbError>;
 
     /// Conditionally sets the committed batch ID.
     ///
@@ -427,6 +447,59 @@ impl JobRepository for PgJobRepository {
             })?;
 
         Ok(map_job_row(&row))
+    }
+
+    async fn set_extraction_identity(
+        &self,
+        conn: &mut PgConnection,
+        id: JobId,
+        identity: &InferenceIdentity,
+    ) -> Result<ExtractionCommitOutcome, DbError> {
+        let stored: serde_json::Value =
+            sqlx::query_scalar("SELECT source_context FROM jobs WHERE id = $1 FOR UPDATE")
+                .bind(id.inner())
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: format!("locking source context for job {id}"),
+                    source: e,
+                })?
+                .ok_or_else(|| DbError::NotFound {
+                    entity: "job",
+                    id: id.to_string(),
+                })?;
+
+        let mut context: SourceContextV1 =
+            serde_json::from_value(stored).map_err(|e| DbError::SourceContextUnreadable {
+                job_id: id.to_string(),
+                detail: e.to_string(),
+            })?;
+
+        let outcome = context
+            .commit_extraction_identity(identity)
+            .map_err(|source| DbError::SourceContextRejected {
+                job_id: id.to_string(),
+                source: Box::new(source),
+            })?;
+
+        if outcome == ExtractionCommitOutcome::Recorded {
+            let written =
+                serde_json::to_value(&context).map_err(|e| DbError::SourceContextUnreadable {
+                    job_id: id.to_string(),
+                    detail: e.to_string(),
+                })?;
+            sqlx::query("UPDATE jobs SET source_context = $2, updated_at = now() WHERE id = $1")
+                .bind(id.inner())
+                .bind(written)
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: format!("committing extraction identity for job {id}"),
+                    source: e,
+                })?;
+        }
+
+        Ok(outcome)
     }
 
     async fn set_committed_batch_id(

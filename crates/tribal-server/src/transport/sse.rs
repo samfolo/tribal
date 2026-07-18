@@ -14,7 +14,7 @@ use tribal_auth::{
     require_bearer_auth,
 };
 use tribal_config::ServerConfig;
-use tribal_domain::TransportKind;
+use tribal_domain::{IngestChannel, TransportKind};
 use tribal_mcp::{AppState, HandlerConfig};
 
 use super::{common, sse_lifecycle::SseLifecycleLayer};
@@ -76,7 +76,7 @@ pub async fn run_sse_transport(
         handler_config,
         server_config,
         cancellation_token.clone(),
-        "sse",
+        IngestChannel::McpSse,
     );
 
     let lifecycle_layer = SseLifecycleLayer::new(

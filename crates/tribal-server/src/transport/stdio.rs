@@ -10,6 +10,7 @@ use rmcp::ServiceExt;
 use tokio_util::sync::CancellationToken;
 use tribal_auth::{AuthContext, Authenticator, TransportAuthStrategy};
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
+use tribal_domain::IngestChannel;
 use tribal_mcp::{
     AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
     TribalServerHandler,
@@ -75,7 +76,7 @@ pub(crate) async fn run_stdio_transport(
         repositories,
         session,
         handler_config,
-        "stdio",
+        IngestChannel::McpStdio,
     );
 
     // -- Serve ---------------------------------------------------------------

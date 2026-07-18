@@ -11,7 +11,9 @@ use tokio::sync::watch;
 use tracing::Instrument;
 use tribal_common::JobWatchEntry;
 use tribal_db::{DbError, NewJob, NewTask};
-use tribal_domain::{JobId, JobState, McpErrorCode, PrincipalId, ProjectId, TaskType, span_attrs};
+use tribal_domain::{
+    JobId, JobState, McpErrorCode, PrincipalId, ProjectId, SourceContextV1, TaskType, span_attrs,
+};
 
 use super::common::begin_transaction;
 use crate::{
@@ -84,7 +86,7 @@ impl TribalServerHandler {
             parent: None,
             "tribal.ingest",
             { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
-            { span_attrs::TRANSPORT } = self.transport_name,
+            { span_attrs::TRANSPORT } = self.transport_name(),
             { span_attrs::PROJECT_ID } = tracing::field::Empty,
         );
         self.apply_ingest(params, principal.principal_id())
@@ -114,13 +116,9 @@ impl TribalServerHandler {
         let request: McpIngestRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
-        let (session_project_id, actor_provider, actor_model) = {
+        let (session_project_id, claimed_actor) = {
             let guard = self.session.read().await;
-            (
-                guard.project.as_ref().map(|p| p.id),
-                guard.actor.provider.clone(),
-                guard.actor.model.clone(),
-            )
+            (guard.project.as_ref().map(|p| p.id), guard.actor.claimed())
         };
 
         let project_id = match request.project_id {
@@ -144,8 +142,18 @@ impl TribalServerHandler {
         tracing::Span::current()
             .record(span_attrs::PROJECT_ID, tracing::field::display(&project_id));
 
-        let source_context =
-            build_source_context(actor_provider.as_deref(), actor_model.as_deref());
+        let context = SourceContextV1::from_claims(self.channel, claimed_actor);
+        let source_context = match serde_json::to_value(&context) {
+            Ok(value) => value,
+            Err(e) => {
+                return Ok(McpToolError {
+                    code: McpErrorCode::Internal,
+                    message: format!("serialising source context: {e}"),
+                    details: serde_json::json!({}),
+                }
+                .into_call_tool_result());
+            }
+        };
 
         let active_prompts = self.state.active_prompt_versions.read().await.clone();
 
@@ -197,30 +205,6 @@ impl TribalServerHandler {
             .insert(result.job_id, JobWatchEntry::new(watch_tx, keepalive_rx));
 
         Ok(McpIngestResponse::from(result.job_id).into_call_tool_result())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Builds the source context JSONB value from session actor fields.
-///
-/// When `provider` is set, constructs an `AgentMediated` source context.
-/// When absent, constructs a `ManualCapture` source context with
-/// `capture_method: "mcp"`.
-fn build_source_context(provider: Option<&str>, model: Option<&str>) -> serde_json::Value {
-    if let Some(provider) = provider {
-        serde_json::json!({
-            "type": "AgentMediated",
-            "provider": provider,
-            "model": model.unwrap_or_default()
-        })
-    } else {
-        serde_json::json!({
-            "type": "ManualCapture",
-            "capture_method": "mcp"
-        })
     }
 }
 
@@ -303,17 +287,20 @@ mod tests {
     use rmcp::model::ErrorCode;
     use tracing::Instrument;
     use tracing_subscriber::layer::SubscriberExt;
-    use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId};
+    use tribal_domain::{IngestChannel, KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
         MockJobRepository, MockProjectRepository, MockPromptVersionRepository, MockTaskRepository,
         TestDb, a_job, a_project, a_prompt_version, a_task,
     };
 
     use super::*;
-    use crate::test_utils::{
-        NO_STRUCTURED_CONTENT, TestHandler, configure_fingerprint_mocks, first_text_content,
-        session_with_project, test_active_prompt_versions, test_fingerprint_inputs,
-        test_repositories,
+    use crate::{
+        session::SessionActor,
+        test_utils::{
+            NO_STRUCTURED_CONTENT, TestHandler, configure_fingerprint_mocks, first_text_content,
+            session_with_project, test_active_prompt_versions, test_fingerprint_inputs,
+            test_repositories,
+        },
     };
 
     // -- Constants ---------------------------------------------------------
@@ -677,29 +664,41 @@ mod tests {
     // -- Helper: source context --------------------------------------------
 
     #[test]
-    fn test_build_source_context_agent_mediated() {
-        let ctx = build_source_context(Some("anthropic"), Some("claude-opus-4-6"));
+    fn test_a_provider_claim_writes_an_agent_mediated_v1_context() {
+        let actor = SessionActor {
+            client_name: Some("tribal-mac".into()),
+            client_version: Some("1.2.0".into()),
+            provider: Some("anthropic".into()),
+            model: Some("claude-opus-4-6".into()),
+        };
 
-        assert_eq!(ctx["type"], "AgentMediated");
-        assert_eq!(ctx["provider"], "anthropic");
-        assert_eq!(ctx["model"], "claude-opus-4-6");
+        let context = SourceContextV1::from_claims(IngestChannel::McpHttp, actor.claimed());
+        let value = serde_json::to_value(&context).expect("context serialises");
+
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["type"], "agent_mediated");
+        assert_eq!(value["channel"], "mcp_http");
+        assert_eq!(value["claimed_actor"]["client"]["name"], "tribal-mac");
+        assert_eq!(value["claimed_actor"]["inference"]["provider"], "anthropic");
+        assert_eq!(value.get("extraction"), None);
     }
 
     #[test]
-    fn test_build_source_context_agent_mediated_no_model() {
-        let ctx = build_source_context(Some("anthropic"), None);
+    fn test_a_bare_session_writes_a_manual_capture_v1_context() {
+        let actor = SessionActor {
+            client_name: None,
+            client_version: None,
+            provider: None,
+            model: None,
+        };
 
-        assert_eq!(ctx["type"], "AgentMediated");
-        assert_eq!(ctx["provider"], "anthropic");
-        assert_eq!(ctx["model"], "");
-    }
+        let context = SourceContextV1::from_claims(IngestChannel::McpStdio, actor.claimed());
+        let value = serde_json::to_value(&context).expect("context serialises");
 
-    #[test]
-    fn test_build_source_context_manual_capture() {
-        let ctx = build_source_context(None, None);
-
-        assert_eq!(ctx["type"], "ManualCapture");
-        assert_eq!(ctx["capture_method"], "mcp");
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["type"], "manual_capture");
+        assert_eq!(value["channel"], "mcp_stdio");
+        assert_eq!(value.get("claimed_actor"), None);
     }
 
     // -- Trace context --------------------------------------------------------

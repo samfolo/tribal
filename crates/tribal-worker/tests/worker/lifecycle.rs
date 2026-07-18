@@ -3,7 +3,7 @@ use tribal_db::{
     PgAgentThreadRepository,
 };
 
-use super::common::*;
+use super::{common::*, fixtures::extraction_response_json};
 
 /// Verifies that when a stage stub fails, the task is re-queued with
 /// an incremented retry count, the correct error kind, and a future
@@ -458,9 +458,9 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
         // interval can refresh the heartbeat between the backdate
         // and reclaim_stale calls, silently undoing the backdate.
         heartbeat_interval_ms: 1_000,
-        // Disable reclaim sweep so it does not interfere with the
-        // manual reclaim injection below.
-        reclaim_interval_ms: 120_000,
+        // The sweep must not interfere with the manual reclaim
+        // injection below.
+        reclaim_interval_ms: QUIET_PUMP_INTERVAL_MS,
         ..test_config()
     };
 
@@ -575,5 +575,150 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
         task.error_kind(),
         Some(TaskErrorKind::HeartbeatExpired),
         "error kind should reflect the reclaim",
+    );
+}
+
+/// A sibling to [`test_heartbeat_detects_ownership_loss_mid_stage`]: there,
+/// a short heartbeat interval races the stage away before it ever produces
+/// a result. Here the heartbeat interval is long enough that the delayed
+/// extraction call resolves and the stage reaches its commit, so ownership
+/// loss is instead caught by the commit's own claim-token check — after
+/// `set_extraction_identity` has already written the binding onto the job's
+/// context inside the same transaction. Verifies that write does not
+/// survive: the transaction's rollback undoes it along with everything
+/// else the commit attempted.
+#[tokio::test]
+async fn test_ownership_loss_rolls_back_extraction_attribution() {
+    let ctx = TestDb::new().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(&ctx, "ownership-loss-rollback").await;
+
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(&ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    let response_json = extraction_response_json(&[a_candidate().build()], &[]);
+    let inference = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(
+                a_completion_response(&response_json),
+                Some(MockProviderOptions {
+                    delay: Some(LONG_PROVIDER_DELAY),
+                }),
+            )
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+    let inference_ref = Arc::clone(&inference);
+
+    let config = WorkerConfig {
+        max_concurrent_tasks: 1,
+        // Neither pump may tick during this test: ownership loss must
+        // be caught by the commit's own claim-token check, not raced
+        // away before the stage produces its result (that race is the
+        // sibling test's scenario).
+        heartbeat_interval_ms: QUIET_PUMP_INTERVAL_MS,
+        reclaim_interval_ms: QUIET_PUMP_INTERVAL_MS,
+        ..test_config()
+    };
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        config,
+        Some(inference as Arc<dyn InferenceProvider>),
+        None,
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    poll_until(
+        "provider called at least once",
+        POLL_INTERVAL,
+        CLAIM_SETTLE,
+        || {
+            let count = inference_ref.call_count();
+            async move { if count >= 1 { Some(()) } else { None } }
+        },
+    )
+    .await;
+
+    // Reclaim externally while the call is in flight: this clears the
+    // row's claim_token, so the commit's completion check finds no
+    // matching row once the delayed call resolves and the stage reaches
+    // its commit.
+    {
+        let mut conn = raw_conn(&ctx).await;
+        backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
+    }
+    worker
+        .run_thread_aware_reclaim(
+            10,
+            TaskErrorKind::HeartbeatExpired,
+            "heartbeat_expired",
+            Some(3600),
+        )
+        .await
+        .expect("thread-aware reclaim");
+
+    // A rolled-back commit leaves no row changed, so there is nothing to
+    // poll for beyond the mock's own delay elapsing — the heartbeat pump
+    // is disabled above precisely so that delay is the only clock racing
+    // the stage.
+    let start = std::time::Instant::now();
+    poll_until(
+        "the delayed extraction call to resolve",
+        POLL_INTERVAL,
+        LONG_PROVIDER_DELAY + Duration::from_secs(2),
+        move || async move {
+            if start.elapsed() >= LONG_PROVIDER_DELAY + Duration::from_millis(500) {
+                Some(())
+            } else {
+                None
+            }
+        },
+    )
+    .await;
+
+    token.cancel();
+    let _ = handle.await;
+
+    let mut conn = raw_conn(&ctx).await;
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("find job");
+    assert_ne!(
+        job.status(),
+        JobStatus::Triaging,
+        "a rolled-back commit never transitions the job",
+    );
+    assert!(
+        job.source_context().get("extraction").is_none(),
+        "the extraction identity write rolled back with the transaction: {:?}",
+        job.source_context(),
+    );
+
+    let task = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("find task");
+    assert!(
+        task.retry_count() >= 1,
+        "the external reclaim's requeue is the only write that landed",
     );
 }

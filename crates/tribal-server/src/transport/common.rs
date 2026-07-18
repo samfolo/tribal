@@ -21,7 +21,7 @@ use tribal_auth::{
 };
 use tribal_config::{DEFAULT_BIND_ADDRESS, ServerConfig};
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
-use tribal_domain::TransportKind;
+use tribal_domain::{IngestChannel, TransportKind};
 use tribal_mcp::{
     AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
     TribalServerHandler,
@@ -147,7 +147,7 @@ pub(super) fn mcp_service(
     handler_config: HandlerConfig,
     server_config: &ServerConfig,
     cancellation_token: CancellationToken,
-    transport_name: &'static str,
+    channel: IngestChannel,
 ) -> McpService {
     let streamable_config = StreamableHttpServerConfig {
         cancellation_token,
@@ -172,7 +172,7 @@ pub(super) fn mcp_service(
                 repositories,
                 session,
                 handler_config.clone(),
-                transport_name,
+                channel,
             ))
         },
         session_manager,

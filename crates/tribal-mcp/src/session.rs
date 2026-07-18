@@ -3,7 +3,9 @@ use rmcp::{
     service::{Peer, RoleServer},
 };
 use tokio::sync::RwLock;
-use tribal_domain::{GitRemote, ProjectId};
+use tribal_domain::{
+    ClaimedActor, ClaimedClientIdentity, ClaimedInferenceIdentity, GitRemote, ProjectId,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -36,6 +38,33 @@ pub struct SessionActor {
     pub client_version: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
+}
+
+impl SessionActor {
+    /// Assembles the declared identity into the stored claim shape:
+    /// the client claim only when name and version are both declared
+    /// with content, the inference claim only when it would be
+    /// non-empty, and `None` when the session declared nothing at all.
+    #[must_use]
+    pub fn claimed(&self) -> Option<ClaimedActor> {
+        let client = match (&self.client_name, &self.client_version) {
+            (Some(name), Some(version))
+                if !name.trim().is_empty() && !version.trim().is_empty() =>
+            {
+                Some(ClaimedClientIdentity {
+                    name: name.clone(),
+                    version: version.clone(),
+                })
+            }
+            _ => None,
+        };
+        let inference =
+            ClaimedInferenceIdentity::new(self.provider.clone(), self.model.clone()).ok();
+        if client.is_none() && inference.is_none() {
+            return None;
+        }
+        Some(ClaimedActor { client, inference })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +176,59 @@ mod tests {
         };
         let ctx = SessionContext::new(Some(project));
         assert_eq!(ctx.resolved_project_id(), Some(id));
+    }
+
+    #[test]
+    fn test_a_declared_client_alone_yields_a_client_only_claim() {
+        let actor = SessionActor {
+            client_name: Some("tribal-mac".into()),
+            client_version: Some("1.2.0".into()),
+            model: None,
+            provider: None,
+        };
+
+        let claimed = actor.claimed().expect("a declared client is a claim");
+
+        let client = claimed.client.expect("client claim present");
+        assert_eq!(client.name, "tribal-mac");
+        assert_eq!(client.version, "1.2.0");
+        assert!(claimed.inference.is_none());
+    }
+
+    #[test]
+    fn test_a_blank_client_identity_makes_no_client_claim() {
+        let actor = SessionActor {
+            client_name: Some("  ".into()),
+            client_version: Some("1.2.0".into()),
+            model: None,
+            provider: None,
+        };
+
+        assert!(actor.claimed().is_none());
+    }
+
+    #[test]
+    fn test_a_name_without_a_version_makes_no_client_claim() {
+        let actor = SessionActor {
+            client_name: Some("tribal-mac".into()),
+            client_version: None,
+            model: None,
+            provider: None,
+        };
+
+        assert!(actor.claimed().is_none());
+    }
+
+    #[test]
+    fn test_an_undeclared_actor_makes_no_claim() {
+        let actor = SessionActor {
+            client_name: None,
+            client_version: None,
+            model: None,
+            provider: None,
+        };
+
+        assert!(actor.claimed().is_none());
     }
 
     #[test]

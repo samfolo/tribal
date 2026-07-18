@@ -40,6 +40,14 @@ impl IntoMcpError for DbError {
             DbError::QueryFailed { context, .. } => {
                 (McpErrorCode::Internal, format!("query failed: {context}"))
             }
+            DbError::SourceContextRejected { job_id, .. } => (
+                McpErrorCode::Internal,
+                format!("source context rejected an extraction commit for job {job_id}"),
+            ),
+            DbError::SourceContextUnreadable { job_id, .. } => (
+                McpErrorCode::Internal,
+                format!("source context unreadable for job {job_id}"),
+            ),
             DbError::Migration { .. } => (McpErrorCode::Internal, "migration failed".to_owned()),
         };
 

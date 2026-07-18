@@ -1,7 +1,9 @@
 //! Mock implementation of [`JobRepository`].
 
 use tribal_db::{JobRepository, JobStatusTransition, NewJob};
-use tribal_domain::{Job, JobId, ProjectId, RelationBatchId};
+use tribal_domain::{
+    ExtractionCommitOutcome, InferenceIdentity, Job, JobId, ProjectId, RelationBatchId,
+};
 
 use super::mock_repository;
 
@@ -17,6 +19,8 @@ mock_repository! {
             (id: JobId, transition: &JobStatusTransition) { (id, transition.clone()) };
         update_batch_size((JobId, u32, u32) => Job)
             (id: JobId, batch_size: u32, extraction_original_count: u32) { (id, batch_size, extraction_original_count) };
+        set_extraction_identity((JobId, InferenceIdentity) => ExtractionCommitOutcome)
+            (id: JobId, identity: &InferenceIdentity) { (id, identity.clone()) };
         set_committed_batch_id((JobId, RelationBatchId) => Option<Job>)
             (id: JobId, batch_id: RelationBatchId) { (id, batch_id) };
         fail_stale_dead_lettered_jobs(() => Vec<JobId>)

@@ -5,6 +5,7 @@
 //! chain propagation.
 
 use thiserror::Error;
+use tribal_domain::SourceContextError;
 
 /// Errors produced by the database layer.
 ///
@@ -65,6 +66,27 @@ pub enum DbError {
     PoolExhausted {
         /// Which pool ran out of connections (`"mcp"` or `"worker"`).
         pool_name: &'static str,
+    },
+
+    /// A job's stored source context refused an extraction-identity
+    /// commit — the job is already attributed to a different binding.
+    /// Boxed so the identity pair does not widen every `DbError` carrier.
+    #[error("job {job_id} source context: {source}")]
+    SourceContextRejected {
+        /// The job whose context refused the write.
+        job_id: String,
+        /// The refusing invariant.
+        #[source]
+        source: Box<SourceContextError>,
+    },
+
+    /// A job's stored source context does not parse as its typed shape.
+    #[error("job {job_id} source context unreadable: {detail}")]
+    SourceContextUnreadable {
+        /// The job whose context failed to parse.
+        job_id: String,
+        /// Why the stored value was refused.
+        detail: String,
     },
 
     /// A database migration failed.

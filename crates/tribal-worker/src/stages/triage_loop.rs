@@ -30,7 +30,7 @@ use tribal_inference::{EmbeddingTarget, UsageAttribution};
 use super::{
     StageCommit, StageTerminal, TriageCommitDecision,
     common::attribution_with_prompts,
-    triage::{CandidateEmbedding, TriageContext, duplicate_decision},
+    triage::{CandidateEmbedding, TriageContext, duplicate_decision, novel_decision},
 };
 use crate::{
     common::{EXPECT_BATCH_INDEX, PARSE_PREVIEW_LENGTH},
@@ -347,7 +347,7 @@ impl Worker {
                     )
                     .await?
                     .vector;
-                self.novel_decision(
+                novel_decision(
                     ctx.job,
                     &ctx.candidate,
                     CandidateEmbedding { vector, profile },
