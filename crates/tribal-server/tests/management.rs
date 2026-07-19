@@ -24,13 +24,13 @@ use tribal_wire::management::{
     ConfigDigest, ConfigDocument, ConfigFieldPath, ConfigLiteral, ConfigRevision, ConfigSetRequest,
     ConfigWriteOutcome, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
     DatabaseInitialiseResult, LifecycleSnapshot, MANAGEMENT_CONTRACT_VERSION,
-    ManagementBootstrapRequest, ManagementBootstrapResponse, ManagementClientHello,
-    ManagementError, ManagementResponseError, ManagementServerHello, ManagerAnnouncement,
-    ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord, ManagerShutdownCall,
-    ManagerSnapshot, PageCursor, PageRequest, PageSize, ProjectList, ProjectListRequest,
-    ProjectRegisterInput, ProjectRegisterOutcome, ProjectRegisterRequest,
-    ManagedRuntimeStatusResult, NetworkTransport, ProjectRegistrationSource, RuntimeIdentity,
-    RuntimeStartResult, TokenCreateRequest, TokenCreateResult,
+    ManagedRuntimeStatusResult, ManagementBootstrapRequest, ManagementBootstrapResponse,
+    ManagementClientHello, ManagementError, ManagementResponseError, ManagementServerHello,
+    ManagerAnnouncement, ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord,
+    ManagerShutdownCall, ManagerSnapshot, NetworkTransport, PageCursor, PageRequest, PageSize,
+    ProjectList, ProjectListRequest, ProjectRegisterInput, ProjectRegisterOutcome,
+    ProjectRegisterRequest, ProjectRegistrationSource, RuntimeIdentity, RuntimeStartResult,
+    TokenCreateRequest, TokenCreateResult,
 };
 
 /// Upper bound for manager replacement and child-process observations.
@@ -930,7 +930,10 @@ async fn test_a_targeted_token_binds_the_audience_the_attached_runtime_projects(
             .unwrap(),
         ),
     );
-    assert_eq!(created.value.summary.audience, data_plane.canonical_resource);
+    assert_eq!(
+        created.value.summary.audience,
+        data_plane.canonical_resource
+    );
 
     let mut different = status.runtime.clone();
     different.instance_id = "some-other-runtime".to_owned();

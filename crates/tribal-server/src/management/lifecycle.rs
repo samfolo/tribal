@@ -1219,7 +1219,9 @@ impl LifecycleOwner {
         response: oneshot::Sender<Option<RuntimeCredentialTarget>>,
     ) {
         let client = match &self.state {
-            LifecycleState::Running { snapshot, child, .. } => match &snapshot.phase {
+            LifecycleState::Running {
+                snapshot, child, ..
+            } => match &snapshot.phase {
                 RunningPhase::Healthy {
                     restart_pending, ..
                 }
