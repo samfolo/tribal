@@ -36,6 +36,11 @@ use tribal_wire::management::{
 /// Upper bound for manager replacement and child-process observations.
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Wider bound for a shutdown that follows a deliberate event grind:
+/// the lag test's own workload can consume most of a loaded runner's
+/// budget before the exit begins.
+const GRIND_SHUTDOWN_TIMEOUT: Duration = Duration::from_mins(1);
+
 #[test]
 fn test_manager_ipc_telemetry_excludes_request_payloads() {
     let temp = tempfile::Builder::new()
@@ -162,7 +167,7 @@ fn config_watcher_lag_rereads_snapshot() {
     let _: tribal_wire::management::ManagerShutdownResult =
         call(&mut reconnected, 10_001, "manager.shutdown", None);
     drop(reconnected);
-    wait_for_success(&mut manager, "config lag shutdown");
+    wait_for_success_within(&mut manager, "config lag shutdown", GRIND_SHUTDOWN_TIMEOUT);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1544,12 +1549,25 @@ fn run_to_completion(mut command: Command) -> Output {
 }
 
 fn wait_for_success(child: &mut Child, context: &str) {
-    let status = wait_for_exit(child, context);
+    wait_for_success_within(child, context, PROCESS_TIMEOUT);
+}
+
+fn wait_for_success_within(child: &mut Child, context: &str, budget: Duration) {
+    let status = wait_for_exit_within(child, context, budget);
     assert!(status.success(), "{context} status was {status}");
 }
 
 fn wait_for_exit(child: &mut Child, context: &str) -> std::process::ExitStatus {
-    let Some(status) = poll_until(|| child.try_wait().expect("manager status reads")) else {
+    wait_for_exit_within(child, context, PROCESS_TIMEOUT)
+}
+
+fn wait_for_exit_within(
+    child: &mut Child,
+    context: &str,
+    budget: Duration,
+) -> std::process::ExitStatus {
+    let observed = poll_until_within(budget, || child.try_wait().expect("manager status reads"));
+    let Some(status) = observed else {
         let _ = child.kill();
         let _ = child.wait();
         panic!("{context} timed out");
@@ -1557,8 +1575,12 @@ fn wait_for_exit(child: &mut Child, context: &str) -> std::process::ExitStatus {
     status
 }
 
-fn poll_until<T>(mut observe: impl FnMut() -> Option<T>) -> Option<T> {
-    let deadline = Instant::now() + PROCESS_TIMEOUT;
+fn poll_until<T>(observe: impl FnMut() -> Option<T>) -> Option<T> {
+    poll_until_within(PROCESS_TIMEOUT, observe)
+}
+
+fn poll_until_within<T>(budget: Duration, mut observe: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + budget;
     loop {
         if let Some(value) = observe() {
             return Some(value);
