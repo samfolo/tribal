@@ -279,8 +279,9 @@ fn managed_runtime_control(
 fn reject_managed_ephemeral_port(config: &TribalConfig) -> Result<(), AppError> {
     if config.server.transport != TransportKind::Stdio && bound_socket_address(config).port() == 0 {
         return Err(AppError::ConfigInvariant {
-            reason: "a managed runtime requires a fixed server.bind_address port; port 0 is ephemeral"
-                .to_owned(),
+            reason:
+                "a managed runtime requires a fixed server.bind_address port; port 0 is ephemeral"
+                    .to_owned(),
         });
     }
     Ok(())

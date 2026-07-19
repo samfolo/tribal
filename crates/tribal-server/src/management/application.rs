@@ -37,10 +37,9 @@ use tribal_wire::management::{
     PatchConfigViolation, ProcessingProfileCall, ProcessingProfileSetCall, ProjectListCall,
     ProjectRegisterCall, ProviderConnectionRemoveCall, ProviderConnectionUpsertCall,
     ProviderConnectionsCall, ProviderProbeCall, ReindexCancelCall, ReindexPruneCall,
-    ReindexRunCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall,
-    RuntimeIdentity, SettingsResetPreviewCall, ThreadsPruneCall, TokenCreateCall,
-    TokenCreateRequest, TokenCreateResult, TokenListCall, TokenRevokeAllCall,
-    TokenRevokeCall,
+    ReindexRunCall, RuntimeIdentity, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall,
+    ServerStatusCall, SettingsResetPreviewCall, ThreadsPruneCall, TokenCreateCall,
+    TokenCreateRequest, TokenCreateResult, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
 };
 
 use super::{
