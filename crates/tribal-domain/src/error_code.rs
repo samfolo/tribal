@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 /// implemented in `tribal-mcp`, not here, to avoid pulling `tonic` into the
 /// leaf domain crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum McpErrorCode {
     /// Requested entity does not exist.

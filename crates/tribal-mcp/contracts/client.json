@@ -42,6 +42,11 @@
     "tribal.knowledge:read",
     "tribal.knowledge:write"
   ],
+  "x-tribal-error": {
+    "definition": "McpToolError",
+    "metaKey": "com.tribal/error",
+    "retryAfterMember": "retry_after_ms"
+  },
   "definitions": {
     "McpIngestRequest": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -440,6 +445,96 @@
               "format": "date-time"
             }
           }
+        }
+      }
+    },
+    "McpToolError": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "McpToolError",
+      "description": "Application-level error returned by tool handlers.\n\nMaps domain failures to a structured error shape. The `code` field uses `McpErrorCode` from `tribal-domain`; `details` is always present (defaults to `{}`).",
+      "type": "object",
+      "required": [
+        "code",
+        "details",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/McpErrorCode"
+        },
+        "details": true,
+        "message": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "McpErrorCode": {
+          "description": "Application-level error codes aligned with Google's `google.rpc.Code` taxonomy. Serialises to lowercase `snake_case` strings in MCP JSON responses.\n\nThe mapping from `McpErrorCode` to `tonic::Code` is a boundary concern implemented in `tribal-mcp`, not here, to avoid pulling `tonic` into the leaf domain crate.",
+          "oneOf": [
+            {
+              "description": "Requested entity does not exist.",
+              "type": "string",
+              "enum": [
+                "not_found"
+              ]
+            },
+            {
+              "description": "No valid credentials provided.",
+              "type": "string",
+              "enum": [
+                "unauthenticated"
+              ]
+            },
+            {
+              "description": "Valid credentials but insufficient scope.",
+              "type": "string",
+              "enum": [
+                "permission_denied"
+              ]
+            },
+            {
+              "description": "Caller provided an invalid parameter value.",
+              "type": "string",
+              "enum": [
+                "invalid_argument"
+              ]
+            },
+            {
+              "description": "The request contradicts committed state, such as an idempotency key reused with different content.",
+              "type": "string",
+              "enum": [
+                "conflict"
+              ]
+            },
+            {
+              "description": "System state prevents the operation.",
+              "type": "string",
+              "enum": [
+                "failed_precondition"
+              ]
+            },
+            {
+              "description": "Rate limit or quota exceeded.",
+              "type": "string",
+              "enum": [
+                "resource_exhausted"
+              ]
+            },
+            {
+              "description": "The service cannot serve the request right now; retrying later may succeed.",
+              "type": "string",
+              "enum": [
+                "unavailable"
+              ]
+            },
+            {
+              "description": "Unexpected server error.",
+              "type": "string",
+              "enum": [
+                "internal"
+              ]
+            }
+          ]
         }
       }
     }

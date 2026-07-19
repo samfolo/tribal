@@ -48,3 +48,18 @@ fn test_the_schema_projection_carries_the_whole_selection() {
         FirstPartyMcpContract::resource_templates(),
     );
 }
+
+#[test]
+fn test_the_client_contract_carries_the_error_surface() {
+    let contract: serde_json::Value =
+        serde_json::from_str(&client_contract()).expect("client contract renders JSON");
+    let error = &contract["x-tribal-error"];
+
+    assert_eq!(error["definition"], "McpToolError");
+    assert_eq!(error["metaKey"], "com.tribal/error");
+    assert_eq!(error["retryAfterMember"], "retry_after_ms");
+    assert!(
+        contract["definitions"]["McpToolError"].is_object(),
+        "the error definition is filed with the shared definitions",
+    );
+}

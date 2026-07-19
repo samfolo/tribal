@@ -12,6 +12,7 @@ use tribal_domain::McpErrorCode;
 /// `McpErrorCode` from `tribal-domain`; `details` is always present
 /// (defaults to `{}`).
 #[derive(Debug, Serialize, thiserror::Error)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[error("{message}")]
 pub struct McpToolError {
     pub code: McpErrorCode,
@@ -76,6 +77,10 @@ pub trait IntoCallToolResult {
 
 /// The `_meta` member carrying the typed tool error on error results.
 pub const ERROR_META_KEY: &str = "com.tribal/error";
+
+/// The reserved [`McpToolError::details`] member carrying a retry hint in
+/// milliseconds, honoured only on the retryable codes.
+pub const RETRY_AFTER_MEMBER: &str = "retry_after_ms";
 
 impl IntoCallToolResult for McpToolError {
     fn into_call_tool_result(self) -> CallToolResult {
