@@ -629,6 +629,7 @@ mod tests {
                     ttl_hours: Some(2),
                     scopes: Vec::new(),
                     persist_as_default: false,
+                    expected_runtime: None,
                 },
             )
             .await
@@ -689,6 +690,7 @@ mod tests {
                     ttl_hours: Some(2),
                     scopes: Vec::new(),
                     persist_as_default: false,
+                    expected_runtime: None,
                 },
             )
             .await
@@ -758,6 +760,7 @@ mod tests {
                     ttl_hours: None,
                     scopes: Vec::new(),
                     persist_as_default: true,
+                    expected_runtime: None,
                 },
             )
             .await
@@ -793,6 +796,7 @@ mod tests {
                     ttl_hours: Some(1),
                     scopes: Vec::new(),
                     persist_as_default: true,
+                    expected_runtime: None,
                 },
             )
             .await

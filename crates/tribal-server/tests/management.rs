@@ -848,6 +848,7 @@ async fn test_direct_runtime_credentials_follow_the_canonical_config_namespace()
                 ttl_hours: Some(1),
                 scopes: Vec::new(),
                 persist_as_default: true,
+                expected_runtime: None,
             })
             .unwrap(),
         ),

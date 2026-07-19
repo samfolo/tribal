@@ -110,7 +110,7 @@ pub fn runtime_data_plane(
 }
 
 /// The socket address the transport runner binds.
-fn bound_socket_address(config: &TribalConfig) -> SocketAddr {
+pub(crate) fn bound_socket_address(config: &TribalConfig) -> SocketAddr {
     config
         .server
         .bind_address

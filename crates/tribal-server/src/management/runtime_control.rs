@@ -1004,6 +1004,7 @@ mod tests {
             proof_registry,
             RuntimeControlService {
                 runtime: runtime.clone(),
+                data_plane: None,
                 config_path: config_path.clone(),
                 config: config_sender.clone(),
                 log_filter,
