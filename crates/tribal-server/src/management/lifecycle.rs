@@ -6191,6 +6191,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_runtime_status_keeps_the_attached_data_plane_while_a_restart_is_pending() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, runtime_peer) = a_managed_child();
+        let attached = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: RunningPhase::Healthy {
+                    runtime: attached.clone(),
+                    restart_pending: true,
+                },
+            },
+            child,
+        };
+        let loaded_plane = tribal_wire::management::RuntimeDataPlane {
+            transport: tribal_wire::management::NetworkTransport::Http,
+            mcp_url: "http://127.0.0.1:4317/mcp".to_owned(),
+            canonical_resource: "https://runtime.test/mcp".to_owned(),
+        };
+        let answer = tokio::spawn(answer_status_request(
+            runtime_peer,
+            tribal_wire::runtime_control::ManagedRuntimeStatus {
+                runtime: attached.clone(),
+                data_plane: Some(loaded_plane.clone()),
+            },
+        ));
+
+        let (response, receiver) = oneshot::channel();
+        owner.runtime_status_read(response);
+
+        let result = receiver.await.expect("runtime status resolves");
+        let ManagedRuntimeStatusResult::Available { status } = result else {
+            panic!("attached runtime status must be available: {result:?}");
+        };
+        assert!(status.restart_pending);
+        assert_eq!(status.runtime, attached);
+        assert_eq!(status.data_plane, Some(loaded_plane));
+        answer.await.expect("status responder joins");
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
     async fn test_credential_target_read_resolves_to_none_when_restart_is_pending() {
         let (_temp, mut owner, worker_runtime) = test_owner();
         let (child, _runtime_custody, _runtime_peer) = a_managed_child();
