@@ -6139,6 +6139,20 @@
               "code": {
                 "type": "string",
                 "enum": [
+                  "credential_target_conflict"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
                   "persisted_credential_unavailable"
                 ]
               }

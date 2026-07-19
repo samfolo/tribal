@@ -82,6 +82,10 @@ enum LifecycleCommand {
         response: oneshot::Sender<RuntimeConfigApplyOutcome>,
     },
     RuntimeStatus(oneshot::Sender<ManagedRuntimeStatusResult>),
+    CredentialTarget {
+        expected: RuntimeIdentity,
+        response: oneshot::Sender<Option<RuntimeCredentialTarget>>,
+    },
     RuntimeLogsTail {
         lines: u32,
         response: oneshot::Sender<RuntimeLogsTailResult>,
@@ -90,6 +94,15 @@ enum LifecycleCommand {
     ConfigChanged,
     Readiness(ReadinessReport),
     ReadinessUnavailable,
+}
+
+/// The issuance target the lifecycle owner resolves: the attached
+/// runtime and the audience its loaded data plane enforces. Exists only
+/// for the expected attached runtime with no restart pending.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::management) struct RuntimeCredentialTarget {
+    pub(in crate::management) runtime: RuntimeIdentity,
+    pub(in crate::management) canonical_resource: String,
 }
 
 enum ManagedProcess {
@@ -591,6 +604,17 @@ impl LifecycleController {
         request_cancel_safe(operation, &self.sender, LifecycleCommand::RuntimeStatus).await
     }
 
+    pub(in crate::management) async fn credential_target_for(
+        &self,
+        operation: &OperationContext,
+        expected: RuntimeIdentity,
+    ) -> Result<Option<Option<RuntimeCredentialTarget>>, OperationError> {
+        request_cancel_safe(operation, &self.sender, |response| {
+            LifecycleCommand::CredentialTarget { expected, response }
+        })
+        .await
+    }
+
     pub(in crate::management) async fn runtime_logs_tail_for(
         &self,
         operation: &OperationContext,
@@ -955,6 +979,9 @@ impl LifecycleOwner {
                 response,
             } => self.apply_runtime_config(revision, changes, response),
             LifecycleCommand::RuntimeStatus(response) => self.runtime_status_read(response),
+            LifecycleCommand::CredentialTarget { expected, response } => {
+                self.credential_target_read(expected, response);
+            }
             LifecycleCommand::RuntimeLogsTail { lines, response } => {
                 self.runtime_logs_read(lines, response);
             }
@@ -1180,6 +1207,53 @@ impl LifecycleOwner {
                 Err(reason) => ManagedRuntimeStatusResult::Unavailable { reason },
             };
             let _ = response.send(result);
+        });
+    }
+
+    /// Resolves the issuance target for `expected`: the attached, not
+    /// restart-pending runtime's identity and enforced audience, read
+    /// live from the process itself. Anything else resolves to none.
+    fn credential_target_read(
+        &mut self,
+        expected: RuntimeIdentity,
+        response: oneshot::Sender<Option<RuntimeCredentialTarget>>,
+    ) {
+        let client = match &self.state {
+            LifecycleState::Running { snapshot, child, .. } => match &snapshot.phase {
+                RunningPhase::Healthy {
+                    restart_pending, ..
+                }
+                | RunningPhase::Degraded {
+                    restart_pending, ..
+                } if !restart_pending && child.identity == expected => {
+                    self.runtime_read_client().ok()
+                }
+                RunningPhase::Healthy { .. }
+                | RunningPhase::Degraded { .. }
+                | RunningPhase::VersionMismatch { .. } => None,
+            },
+            LifecycleState::NoRuntime(_)
+            | LifecycleState::Operating(_)
+            | LifecycleState::Unresponsive { .. }
+            | LifecycleState::TerminatingOperation { .. }
+            | LifecycleState::TerminatingManaged { .. }
+            | LifecycleState::Terminating(_) => None,
+        };
+        let Some(client) = client else {
+            let _ = response.send(None);
+            return;
+        };
+        self.observations.spawn(async move {
+            let target = match client.status().await {
+                Ok(status) if status.runtime == expected => {
+                    status.data_plane.map(|plane| RuntimeCredentialTarget {
+                        runtime: expected,
+                        canonical_resource: plane.canonical_resource,
+                    })
+                }
+                Ok(_) | Err(_) => None,
+            };
+            let _ = response.send(target);
         });
     }
 

@@ -92,6 +92,27 @@ impl TokenAdministration {
         operation: &OperationContext,
         request: TokenCreateRequest,
     ) -> Result<TokenCreateResult, TokenAdministrationError> {
+        self.create_with(operation, request, None).await
+    }
+
+    /// Issues against the lifecycle-resolved runtime audience: the same
+    /// revision gate as [`Self::create`], with the explicit resource
+    /// replacing the session-config derivation.
+    pub(super) async fn create_for_runtime(
+        &self,
+        operation: &OperationContext,
+        request: TokenCreateRequest,
+        audience: String,
+    ) -> Result<TokenCreateResult, TokenAdministrationError> {
+        self.create_with(operation, request, Some(audience)).await
+    }
+
+    async fn create_with(
+        &self,
+        operation: &OperationContext,
+        request: TokenCreateRequest,
+        explicit_audience: Option<String>,
+    ) -> Result<TokenCreateResult, TokenAdministrationError> {
         let session = self
             .database
             .mutation_session(operation, &request.expected_revision)
@@ -102,9 +123,14 @@ impl TokenAdministration {
         let scopes = normalise_scopes(request.scopes)?;
         let expires_at =
             compute_expires_at(request.ttl_hours, session.config.auth.token_ttl_hours)?;
-        let audience = crate::startup::resolve_oauth_runtime(&session.config)
-            .map_err(|_| TokenAdministrationError::Issuance)?
-            .canonical_resource;
+        let audience = match explicit_audience {
+            Some(audience) => audience,
+            None => {
+                crate::startup::resolve_oauth_runtime(&session.config)
+                    .map_err(|_| TokenAdministrationError::Issuance)?
+                    .canonical_resource
+            }
+        };
         let revision = session.revision.clone();
         session.checkpoint()?;
         let (issued, credential) = if request.persist_as_default {
@@ -238,6 +264,30 @@ impl TokenAdministration {
                 origin: issued.origin,
             },
         })
+    }
+
+    /// Unconditionally revokes a token this application just issued —
+    /// the post-commit revalidation's damage-control path. No revision
+    /// gate: the revocation must land even though the world moved.
+    pub(super) async fn revoke_issued(
+        &self,
+        operation: &OperationContext,
+        id: AuthTokenId,
+    ) -> Result<(), TokenAdministrationError> {
+        let session = self.database.read_session(operation).await?;
+        let transaction = operation
+            .cancel_safe(async {
+                let mut transaction = session.pool.begin().await.map_err(connection_error)?;
+                PgAuthTokenRepository
+                    .revoke(&mut transaction, id, Utc::now())
+                    .await
+                    .map_err(repository)?;
+                Ok::<_, TokenAdministrationError>(transaction)
+            })
+            .await
+            .map_err(DatabaseAccessError::from)??;
+        transaction.commit().await.map_err(connection_error)?;
+        Ok(())
     }
 
     pub(super) async fn revoke(
@@ -574,6 +624,16 @@ fn connection_error(source: sqlx::Error) -> TokenAdministrationError {
 
 fn repository(source: DbError) -> TokenAdministrationError {
     TokenAdministrationError::Repository { source }
+}
+
+/// The targeted-issuance refusal: the expected runtime is not the
+/// attached, settled data plane — or stopped being it inside the
+/// issuance window.
+pub(super) fn credential_target_conflict() -> ManagementResponseError {
+    administration_error(
+        "credential target changed or is unavailable",
+        AdministrationFailure::CredentialTargetConflict,
+    )
 }
 
 fn administration_error(message: &str, failure: AdministrationFailure) -> ManagementResponseError {
