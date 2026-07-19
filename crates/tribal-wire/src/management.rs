@@ -120,8 +120,8 @@ pub use readiness::{
     StartBlockedVerdict, StartClearReadinessReport, StartClearVerdict, StartVerdict,
 };
 pub use runtime::{
-    ManagedRuntimeStatus, ManagedRuntimeStatusResult, RuntimeLogsTailRequest,
-    RuntimeLogsTailResult, RuntimeReadUnavailable,
+    ManagedRuntimeStatus, ManagedRuntimeStatusResult, NetworkTransport, RuntimeDataPlane,
+    RuntimeLogsTailRequest, RuntimeLogsTailResult, RuntimeReadUnavailable,
 };
 pub use settings::{
     AuthenticationSettingsSnapshot, CandidateProviderProbeObservation,

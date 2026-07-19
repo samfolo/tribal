@@ -3047,18 +3047,58 @@
         }
       },
       "ManagedRuntimeStatus": {
-        "description": "Public status of the attached managed runtime.",
+        "description": "Public status of the attached managed runtime. While a restart is pending the data plane remains the old process's reported endpoint.",
         "type": "object",
         "required": [
           "restart_pending",
           "runtime"
         ],
         "properties": {
+          "data_plane": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RuntimeDataPlane"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "restart_pending": {
             "type": "boolean"
           },
           "runtime": {
             "$ref": "#/definitions/RuntimeIdentity"
+          }
+        }
+      },
+      "NetworkTransport": {
+        "description": "Network family of the Streamable HTTP data plane, owned by the control contract apart from configuration `TransportKind`.",
+        "type": "string",
+        "enum": [
+          "http",
+          "sse"
+        ]
+      },
+      "RuntimeDataPlane": {
+        "description": "The endpoint and audience the running process actually loaded; absent for a runtime without a network data plane.",
+        "type": "object",
+        "required": [
+          "canonical_resource",
+          "mcp_url",
+          "transport"
+        ],
+        "properties": {
+          "canonical_resource": {
+            "description": "The audience the runtime's authenticator enforces.",
+            "type": "string"
+          },
+          "mcp_url": {
+            "description": "The exact address the transport runner binds.",
+            "type": "string"
+          },
+          "transport": {
+            "$ref": "#/definitions/NetworkTransport"
           }
         }
       },
@@ -28114,6 +28154,17 @@
       "expected_revision": {
         "$ref": "#/definitions/ConfigRevision"
       },
+      "expected_runtime": {
+        "description": "When set, issuance targets this exact attached runtime and its audience; omitted, the call retains audience-from-configuration.",
+        "anyOf": [
+          {
+            "$ref": "#/definitions/RuntimeIdentity"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "persist_as_default": {
         "type": "boolean"
       },
@@ -28139,11 +28190,50 @@
       }
     },
     "definitions": {
+      "ConfigFilePath": {
+        "description": "The active configuration file's location.",
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "description": "Filesystem path read by the authority.",
+            "type": "string"
+          }
+        }
+      },
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-tribal-base64url-prefix": "cfg_",
         "x-tribal-swift-type": "canonical-base64url-32"
+      },
+      "RuntimeIdentity": {
+        "description": "Stable identity for one managed runtime process.",
+        "type": "object",
+        "required": [
+          "binary_version",
+          "config_path",
+          "instance_id",
+          "pid"
+        ],
+        "properties": {
+          "binary_version": {
+            "type": "string"
+          },
+          "config_path": {
+            "$ref": "#/definitions/ConfigFilePath"
+          },
+          "instance_id": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          }
+        }
       },
       "Scope": {
         "type": "string",

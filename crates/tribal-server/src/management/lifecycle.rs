@@ -1170,6 +1170,7 @@ impl LifecycleOwner {
                         status: tribal_wire::management::ManagedRuntimeStatus {
                             runtime: status.runtime,
                             restart_pending,
+                            data_plane: status.data_plane,
                         },
                     },
                     Err(_) => ManagedRuntimeStatusResult::Unavailable {

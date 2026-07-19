@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tribal_domain::{AuthTokenId, GitRemote, ProjectId, Scope};
 
-use super::ConfigRevision;
+use super::{ConfigRevision, RuntimeIdentity};
 
 /// A database result tied to the configuration revision it observed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -319,6 +319,10 @@ pub struct TokenCreateRequest {
     pub ttl_hours: Option<u64>,
     pub scopes: Vec<Scope>,
     pub persist_as_default: bool,
+    /// When set, issuance targets this exact attached runtime and its
+    /// audience; omitted, the call retains audience-from-configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_runtime: Option<RuntimeIdentity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

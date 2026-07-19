@@ -34,7 +34,7 @@ use crate::{
         runtime_control::{self, RuntimeControlService},
     },
     orchestration,
-    startup::{POOL_NAME_MCP, init_config_watcher},
+    startup::{POOL_NAME_MCP, init_config_watcher, resolve_oauth_runtime, runtime_data_plane},
     transport,
 };
 
@@ -108,7 +108,7 @@ pub(crate) async fn run(config_path: &str, args: ServeArgs) -> Result<(), AppErr
 
     let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
 
-    let oauth_runtime = Arc::new(crate::startup::resolve_oauth_runtime(&config)?);
+    let oauth_runtime = Arc::new(resolve_oauth_runtime(&config)?);
 
     tracing::info!(%transport, "startup sequence complete");
 
@@ -127,6 +127,7 @@ pub(crate) async fn run(config_path: &str, args: ServeArgs) -> Result<(), AppErr
                 proof,
                 RuntimeControlService {
                     runtime,
+                    data_plane: runtime_data_plane(&config, &oauth_runtime),
                     config_path: expanded_config_path.clone(),
                     config: runtime_config,
                     log_filter,
