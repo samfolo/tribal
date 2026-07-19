@@ -29,8 +29,8 @@ use tribal_wire::management::{
     ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord, ManagerShutdownCall,
     ManagerSnapshot, PageCursor, PageRequest, PageSize, ProjectList, ProjectListRequest,
     ProjectRegisterInput, ProjectRegisterOutcome, ProjectRegisterRequest,
-    ProjectRegistrationSource, RuntimeIdentity, RuntimeStartResult, TokenCreateRequest,
-    TokenCreateResult,
+    ManagedRuntimeStatusResult, NetworkTransport, ProjectRegistrationSource, RuntimeIdentity,
+    RuntimeStartResult, TokenCreateRequest, TokenCreateResult,
 };
 
 /// Upper bound for manager replacement and child-process observations.
@@ -625,7 +625,7 @@ async fn test_managed_runtime_survives_competing_and_successive_manager_recovery
     let config_path = temp.path().join("tribal.yaml");
     let mut config = TribalConfig::minimum_valid(database.database_url());
     config.server.transport = TransportKind::Http;
-    config.server.bind_address = Some("127.0.0.1:0".to_owned());
+    config.server.bind_address = Some(format!("127.0.0.1:{}", free_local_port()));
     std::fs::write(
         &config_path,
         serde_yaml::to_string(&config).expect("config serialises"),
@@ -817,6 +817,124 @@ async fn test_database_initialise_negotiates_v3_and_migrates_once_after_revision
     let _: tribal_wire::management::ManagerShutdownResult =
         call(&mut client, 5, "manager.shutdown", None);
     wait_for_success(&mut manager, "manager shutdown");
+}
+
+#[tokio::test]
+async fn test_a_targeted_token_request_without_an_attached_runtime_reports_the_conflict() {
+    let database = tribal_test_utils::TestDb::new().await;
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    let config = TribalConfig::minimum_valid(database.database_url());
+    std::fs::write(&config_path, serde_yaml::to_string(&config).unwrap()).unwrap();
+    let mut manager = spawn_manager(&config_path, temp.path());
+    let announcement = continuing_announcement(read_manager_record(&mut manager));
+    let mut client = handshake(&announcement);
+    let document: ConfigDocument = call(&mut client, 1, "config.getAll", None);
+    let ConfigDocument::DurableValid { revision, .. } = document else {
+        panic!("valid configuration must expose its durable revision");
+    };
+
+    let error = call_error(
+        &mut client,
+        2,
+        "token.create",
+        Some(
+            &serde_json::to_value(TokenCreateRequest {
+                expected_revision: revision,
+                principal: None,
+                ttl_hours: Some(1),
+                scopes: Vec::new(),
+                persist_as_default: false,
+                expected_runtime: Some(tribal_wire::management::RuntimeIdentity {
+                    instance_id: "expected-runtime".to_owned(),
+                    pid: 4242,
+                    binary_version: "0.0.0".to_owned(),
+                    config_path: tribal_wire::management::ConfigFilePath {
+                        path: config_path.to_string_lossy().into_owned(),
+                    },
+                }),
+            })
+            .unwrap(),
+        ),
+    );
+    assert!(matches!(
+        error.error,
+        ManagementError::Administration {
+            failure: tribal_wire::management::AdministrationFailure::CredentialTargetConflict,
+        }
+    ));
+
+    let _: tribal_wire::management::ManagerShutdownResult =
+        call(&mut client, 3, "manager.shutdown", None);
+    wait_for_success(
+        &mut manager,
+        "manager shutdown after refused targeted issuance",
+    );
+}
+
+#[tokio::test]
+async fn test_a_targeted_token_binds_the_audience_the_attached_runtime_projects() {
+    let database = tribal_test_utils::TestDb::new().await;
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    write_server_config(&config_path, database.database_url(), TransportKind::Http);
+    let mut manager = spawn_manager(&config_path, temp.path());
+    let announcement = continuing_announcement(read_manager_record(&mut manager));
+    let mut client = handshake(&announcement);
+    wait_for_start_clear(&mut client);
+    let started: RuntimeStartResult = call(&mut client, 1, "runtime.start", None);
+    assert!(
+        matches!(started, RuntimeStartResult::Started { .. }),
+        "managed runtime starts: {started:?}"
+    );
+
+    let status: ManagedRuntimeStatusResult = call(&mut client, 2, "server.status", None);
+    let ManagedRuntimeStatusResult::Available { status } = status else {
+        panic!("attached runtime status must be available: {status:?}");
+    };
+    let data_plane = status
+        .data_plane
+        .clone()
+        .expect("a network runtime projects its data plane");
+    assert_eq!(data_plane.transport, NetworkTransport::Http);
+    assert!(
+        data_plane.mcp_url.ends_with("/mcp"),
+        "unexpected mcp url: {}",
+        data_plane.mcp_url
+    );
+    assert!(!status.restart_pending);
+
+    let document: ConfigDocument = call(&mut client, 3, "config.getAll", None);
+    let ConfigDocument::DurableValid { revision, .. } = document else {
+        panic!("valid configuration must expose its durable revision");
+    };
+    let created: TokenCreateResult = call(
+        &mut client,
+        4,
+        "token.create",
+        Some(
+            &serde_json::to_value(TokenCreateRequest {
+                expected_revision: revision,
+                principal: None,
+                ttl_hours: Some(1),
+                scopes: Vec::new(),
+                persist_as_default: false,
+                expected_runtime: Some(status.runtime.clone()),
+            })
+            .unwrap(),
+        ),
+    );
+    assert_eq!(created.value.summary.audience, data_plane.canonical_resource);
+
+    let _: tribal_wire::management::ManagerShutdownResult =
+        call(&mut client, 5, "manager.shutdown", None);
+    wait_for_success(&mut manager, "manager shutdown after targeted issuance");
 }
 
 #[tokio::test]
@@ -1232,10 +1350,20 @@ fn initialise_git_repository(path: &Path) {
     );
 }
 
+/// Reserves a concrete free port and releases it for a managed runtime
+/// to take: managed custody refuses an ephemeral bind.
+fn free_local_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("ephemeral probe binds")
+        .local_addr()
+        .expect("probe address reads")
+        .port()
+}
+
 fn write_server_config(path: &Path, database_url: &str, transport: TransportKind) {
     let mut config = TribalConfig::minimum_valid(database_url);
     config.server.transport = transport;
-    config.server.bind_address = Some("127.0.0.1:0".to_owned());
+    config.server.bind_address = Some(format!("127.0.0.1:{}", free_local_port()));
     std::fs::write(
         path,
         serde_yaml::to_string(&config).expect("config serialises"),
