@@ -118,6 +118,7 @@
       "description": "Deserialisation target for `tribal_ingest` input.",
       "properties": {
         "content": {
+          "description": "Raw text submitted for extraction.",
           "type": "string"
         },
         "idempotency_key": {
@@ -129,6 +130,7 @@
           ]
         },
         "project_id": {
+          "description": "Target project; absent means the session's resolved project.",
           "type": [
             "string",
             "null"
