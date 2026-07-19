@@ -97,13 +97,11 @@ impl TokenAdministration {
         self.create_with(operation, request, None).await
     }
 
-    /// Issues a bearer bound to the expected runtime: the lifecycle
-    /// owner resolves the audience-bearing target, issuance uses that
-    /// exact resource, and the post-commit revalidation decides release.
-    /// Every other outcome — a changed target, a lost runtime, an
-    /// indeterminate read — fails closed: the bearer zeroizes on drop
-    /// and the committed token is revoked under a fresh operation, so
-    /// the caller's own deadline cannot defeat the compensation.
+    /// Issues a bearer bound to the expected runtime. Every outcome
+    /// other than an equal revalidated target fails closed: the bearer
+    /// zeroizes on drop and the committed token is revoked under a
+    /// fresh operation, so the caller's own deadline cannot defeat the
+    /// compensation.
     pub(super) async fn create_bound_to_runtime(
         &self,
         lifecycle: &LifecycleController,
