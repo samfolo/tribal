@@ -679,10 +679,7 @@ async fn credential_target(
         .credential_target_for(operation, expected)
         .await
         .map_err(super::operation::public_error)?
-        .ok_or_else(|| ManagementResponseError {
-            message: "lifecycle owner is unavailable".to_owned(),
-            error: ManagementError::InternalInvariant,
-        })
+        .ok_or_else(|| super::internal_error("lifecycle owner is unavailable"))
 }
 
 /// The targeted-issuance refusal: the expected runtime is not the
