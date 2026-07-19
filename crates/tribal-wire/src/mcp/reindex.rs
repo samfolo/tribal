@@ -2,8 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Deserialisation target for a tool that takes no arguments, e.g.
+/// `tribal_reindex_cancel` and `tribal_reindex_prune`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct McpEmptyRequest {}
+
 /// The MCP request for `tribal_reindex`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpReindexRequest {
     /// The target embedding provider (for example `"ollama"` or `"openai"`).
     pub provider: String,
@@ -22,6 +29,7 @@ pub struct McpReindexRequest {
 
 /// The MCP response for `tribal_reindex`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpReindexResponse {
     /// The outcome: `plan` for a dry run, otherwise `created`, `unchanged`,
     /// `already_live`, or `lock_contended`.
@@ -44,6 +52,7 @@ pub struct McpReindexResponse {
 
 /// The MCP response for `tribal_reindex_cancel`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpReindexCancelResponse {
     /// Whether a live run was transitioned to aborted.
     pub cancelled: bool,
@@ -53,6 +62,7 @@ pub struct McpReindexCancelResponse {
 
 /// The MCP response for `tribal_reindex_prune`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpReindexPruneResponse {
     /// The number of profiles transitioned to superseded.
     pub profiles_superseded: u64,

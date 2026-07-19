@@ -10,6 +10,7 @@ use super::common::{McpKnowledgeItem, McpReference, McpStanding};
 
 /// Deserialisation target for `tribal_get_item` input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpGetItemRequest {
     pub item_ids: Vec<String>,
     pub include_standing: Option<bool>,
@@ -26,6 +27,7 @@ pub struct McpGetItemRequest {
 /// are either a serialised `McpGetItemEntry` or JSON `null` for IDs that
 /// were not found.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpGetItemResponse {
     pub items: serde_json::Map<String, serde_json::Value>,
     #[serde(skip)]
@@ -34,6 +36,7 @@ pub struct McpGetItemResponse {
 
 /// A single found item with optional computed fields.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpGetItemEntry {
     pub item: McpKnowledgeItem,
     #[serde(skip_serializing_if = "Option::is_none")]

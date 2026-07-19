@@ -12,6 +12,7 @@ use super::common::{McpKnowledgeItem, McpReference, McpStanding};
 
 /// Direction of a relationship edge relative to the exploration anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum McpRelationDirection {
     /// This item asserts something about the anchor.
@@ -26,6 +27,7 @@ pub enum McpRelationDirection {
 
 /// Deserialisation target for `tribal_explore` input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpExploreRequest {
     pub item_id: String,
     pub session_trace_id: Option<String>,
@@ -43,6 +45,7 @@ pub struct McpExploreRequest {
 
 /// Response for `tribal_explore`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpExploreResponse {
     /// The full knowledge item for the exploration anchor.
     pub anchor: McpKnowledgeItem,
@@ -55,6 +58,7 @@ pub struct McpExploreResponse {
 
 /// A single exploration result with relationship metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpExplorationResult {
     pub item: McpKnowledgeItem,
     pub relation_type: RelationKind,

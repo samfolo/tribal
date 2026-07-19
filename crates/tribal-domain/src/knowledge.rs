@@ -39,6 +39,7 @@ enum_text_conversions!(KnowledgeKind {
 
 /// The confidence level of a knowledge item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Confidence {
     /// Manually confirmed or from an authoritative source.

@@ -11,6 +11,7 @@ use tribal_domain::{Job, JobId, JobOutcome, JobStatus};
 
 /// Deserialisation target for `tribal_ingest` input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpIngestRequest {
     pub content: String,
     pub project_id: Option<String>,
@@ -22,6 +23,7 @@ pub struct McpIngestRequest {
 
 /// Response for `tribal_ingest`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpIngestResponse {
     pub job_id: String,
 }
@@ -40,6 +42,7 @@ impl From<JobId> for McpIngestResponse {
 
 /// Deserialisation target for `tribal_job_status` input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpJobStatusRequest {
     pub job_id: String,
     pub wait_seconds: Option<u32>,
@@ -50,6 +53,7 @@ pub struct McpJobStatusRequest {
 /// Constructed via `from_domain` because the `Job` domain type does not
 /// carry aggregate task counts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpJobStatusResponse {
     pub job_id: String,
     pub status: JobStatus,
@@ -181,6 +185,7 @@ mod tests {
 
 /// One row of `tribal://ingestions/recent`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpRecentIngestion {
     /// The job's identifier, `job_`-prefixed.
     pub job_id: String,
@@ -200,6 +205,7 @@ pub struct McpRecentIngestion {
 
 /// Response body of `tribal://ingestions/recent`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpRecentIngestionsResponse {
     /// The page's rows, newest first.
     pub ingestions: Vec<McpRecentIngestion>,
@@ -210,6 +216,7 @@ pub struct McpRecentIngestionsResponse {
 
 /// Response body of `tribal://ingestions/{job_id}/input`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpIngestionInputResponse {
     /// The job's identifier, `job_`-prefixed.
     pub job_id: String,

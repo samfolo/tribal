@@ -12,6 +12,7 @@ use super::common::{McpKnowledgeItem, McpReference, McpStanding};
 
 /// Deserialisation target for `tribal_discover` input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpDiscoverRequest {
     pub query: String,
     /// Three-way semantics: absent → use session project; explicit null →
@@ -45,6 +46,7 @@ pub struct McpDiscoverRequest {
 
 /// Time range filter for discovery queries.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpTimeRange {
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
@@ -74,6 +76,7 @@ where
 
 /// Response for `tribal_discover`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpDiscoverResponse {
     pub items: Vec<McpDiscoveryResult>,
     /// Required + nullable — always present (null when no more results).
@@ -98,6 +101,7 @@ pub struct McpDiscoverResponse {
 
 /// A single discovery result with its similarity score.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpDiscoveryResult {
     pub item: McpKnowledgeItem,
     pub similarity: f64,

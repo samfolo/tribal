@@ -4,12 +4,18 @@ use rmcp::model::Tool;
 use serde_json::{Map, Value};
 use tribal_domain::Scope;
 
+use crate::contract::{
+    McpToolCall,
+    declarations::{
+        McpDiscoverCall, McpExploreCall, McpFeedbackCall, McpGetItemCall, McpIngestCall,
+        McpJobStatusCall, McpReindexCall, McpReindexCancelCall, McpReindexPruneCall,
+        McpSetContextCall,
+    },
+};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-#[cfg(test)]
-pub(crate) const TOOL_PREFIX: &str = "tribal_";
 
 const INPUT_SCHEMA_PARSE_FAILED: &str = "invariant: embedded input schema must be valid JSON";
 const OUTPUT_SCHEMA_PARSE_FAILED: &str = "invariant: embedded output schema must be valid JSON";
@@ -48,220 +54,84 @@ pub(crate) struct ParsedToolEntry {
 
 pub(crate) static TOOLS: &[ToolEntry] = &[
     ToolEntry {
-        name: "tribal_set_context",
-        title: "Tribal: Set Session Context",
-        description: "\
-Set or override session-level context for Tribal. Use this at the \
-start of a session to declare your model identity, or when switching \
-to a different project.
-
-Session context is used as the default for all subsequent tool calls. \
-For example, setting a project here means tribal_ingest and \
-tribal_discover will use it automatically without needing project_id \
-on every call.
-
-The server resolves what it can at connection start (project from git \
-remote, principal from auth). Use this tool to fill in what the server \
-cannot infer (model name, provider) or to override what it resolved \
-(e.g., switching projects).",
+        name: McpSetContextCall::NAME,
+        title: McpSetContextCall::PRESENTATION.title,
+        description: McpSetContextCall::PRESENTATION.description,
         input_schema: include_str!("schemas/set_context/input.json"),
         output_schema: include_str!("schemas/set_context/output.json"),
-        required_scope: "tribal:write",
+        required_scope: McpSetContextCall::REQUIRED_SCOPE,
     },
     ToolEntry {
-        name: "tribal_ingest",
-        title: "Tribal: Ingest Knowledge",
-        description: "\
-Submit raw text for knowledge extraction into Tribal. The system \
-extracts structured knowledge items (facts, heuristics, procedures, \
-decision records), detects duplicates, identifies relationships with \
-existing knowledge, and stores the results.
-
-This is an asynchronous operation. Returns a job_id immediately. Use \
-tribal_job_status to poll for completion.
-
-Use this tool when you've learned something worth preserving: a \
-debugging insight, an architectural decision, a reusable pattern, a \
-gotcha about a library, or any experience that would help you or \
-another agent working on this codebase in the future.
-
-Do NOT use this for storing code snippets, file contents, or \
-documentation. Tribal stores knowledge *about* work, not the \
-artefacts themselves.
-
-Project, model, and principal are sourced from session context (see \
-tribal_set_context). You only need to provide the content itself.",
+        name: McpIngestCall::NAME,
+        title: McpIngestCall::PRESENTATION.title,
+        description: McpIngestCall::PRESENTATION.description,
         input_schema: include_str!("schemas/ingest/input.json"),
         output_schema: include_str!("schemas/ingest/output.json"),
-        required_scope: "tribal.knowledge:write",
+        required_scope: McpIngestCall::REQUIRED_SCOPE,
     },
     ToolEntry {
-        name: "tribal_discover",
-        title: "Tribal: Discover Knowledge",
-        description: "\
-Search Tribal's knowledge base using natural language. Returns \
-knowledge items ranked by semantic similarity to your query, with \
-optional structured filters to narrow results.
-
-Use this as your first step when you need context: before starting \
-work on a feature, debugging an issue, or making a design decision. \
-Ask questions the way you'd ask a colleague: \"What do I know about \
-connection pooling in this project?\" or \"Have I seen this async \
-deadlock pattern before?\"
-
-Semantic search is the primary mechanism. Filters (project, kind, \
-tags, time) narrow the candidate set but are not required. If you \
-need to understand an item's evidence, contradictions, or derivation \
-chain, follow up with tribal_explore using the item's ID.
-
-Superseded items (replaced by newer understanding) are excluded by \
-default. Set include_superseded to true for the historical picture.
-
-Results include standing (evidential profile) when requested, which \
-summarises each item's support count, contradiction count, observation \
-frequency, and diversity of supporting evidence.",
+        name: McpDiscoverCall::NAME,
+        title: McpDiscoverCall::PRESENTATION.title,
+        description: McpDiscoverCall::PRESENTATION.description,
         input_schema: include_str!("schemas/discover/input.json"),
         output_schema: include_str!("schemas/discover/output.json"),
-        required_scope: "tribal.knowledge:read",
+        required_scope: McpDiscoverCall::REQUIRED_SCOPE,
     },
     ToolEntry {
-        name: "tribal_explore",
-        title: "Tribal: Explore Relationships",
-        description: "\
-Traverse the relationship graph from a specific knowledge item. Use \
-this after tribal_discover to understand an item's context: what \
-supports it, what contradicts it, what it was derived from, or what \
-it supersedes.
-
-Typical workflow:
-1. tribal_discover finds relevant items
-2. Pick an item with interesting standing (high support, or contradictions)
-3. tribal_explore to see the evidence, contradictions, or derivation chain
-
-Direction controls traversal:
-- \"inbound\": What do others assert about this item? (supports, contradictions, what supersedes it)
-- \"outbound\": What does this item assert about others? (what it's derived from, what it supports)
-- \"both\": Full neighbourhood in all directions
-
-Relation types:
-- \"supports\": Evidence that reinforces the item
-- \"contradicts\": Evidence that challenges the item
-- \"supersedes\": A newer item that replaces this one
-- \"derived_from\": Provenance. The input used to produce this item
-
-Depth controls hops: depth 1 = direct relations, depth 2 = relations \
-of relations. Higher depth gives more context but more results. Depth \
-is capped at 3 to avoid mixing unrelated evidence across distant \
-graph regions; use multiple targeted calls for deeper investigation.",
+        name: McpExploreCall::NAME,
+        title: McpExploreCall::PRESENTATION.title,
+        description: McpExploreCall::PRESENTATION.description,
         input_schema: include_str!("schemas/explore/input.json"),
         output_schema: include_str!("schemas/explore/output.json"),
-        required_scope: "tribal.knowledge:read",
+        required_scope: McpExploreCall::REQUIRED_SCOPE,
     },
     ToolEntry {
-        name: "tribal_get_item",
-        title: "Tribal: Get Knowledge Item by ID",
-        description: "\
-Retrieve one or more knowledge items by their IDs. Use this when you \
-have a specific item ID (from a standing field, a previous session, \
-or a cross-reference) and need the full item.
-
-For semantic search, use tribal_discover. For relationship traversal, \
-use tribal_explore. This tool is for direct lookup when you already \
-know what you want.
-
-The response is keyed by item ID. Missing or unknown IDs map to null.",
+        name: McpGetItemCall::NAME,
+        title: McpGetItemCall::PRESENTATION.title,
+        description: McpGetItemCall::PRESENTATION.description,
         input_schema: include_str!("schemas/get_item/input.json"),
         output_schema: include_str!("schemas/get_item/output.json"),
-        required_scope: "tribal.knowledge:read",
+        required_scope: McpGetItemCall::REQUIRED_SCOPE,
     },
     ToolEntry {
-        name: "tribal_feedback",
-        title: "Tribal: Rate Retrieval Quality",
-        description: "\
-Record a quality signal about a retrieval session. Use this when \
-Tribal's knowledge meaningfully helped (or failed to help) your \
-current task.
-
-This is NOT about rating individual items. Item-level signals are \
-captured through the Supports/Contradicts relationship system during \
-ingest. This is about rating the *combination of items returned for a \
-query, assembled in a particular way*.
-
-Rate \"positive\" when: Tribal surfaced knowledge that directly \
-informed your approach, saved you from a known pitfall, or provided \
-context that improved your decision-making.
-
-Rate \"negative\" when: The query should have found relevant knowledge \
-but didn't, or the returned items were irrelevant or misleading for \
-the task at hand.
-
-Feedback builds an organic eval dataset. Be selective: only rate \
-when the signal is clear. If no trace_id is available from the \
-retrieval response, do not submit feedback rather than fabricating a \
-trace_id. Incomplete feedback is noise.",
+        name: McpFeedbackCall::NAME,
+        title: McpFeedbackCall::PRESENTATION.title,
+        description: McpFeedbackCall::PRESENTATION.description,
         input_schema: include_str!("schemas/feedback/input.json"),
         output_schema: include_str!("schemas/feedback/output.json"),
-        required_scope: "tribal.knowledge:write",
+        required_scope: McpFeedbackCall::REQUIRED_SCOPE,
     },
     ToolEntry {
-        name: "tribal_job_status",
-        title: "Tribal: Check Ingest Job Status",
-        description: "\
-Check the progress of an ingest job submitted via tribal_ingest.
-
-Job lifecycle: queued → extracting → triaging → relating → completed/failed
-
-Terminal states:
-- \"completed\": Pipeline ran to conclusion. Check outcome for details:
-  - \"success\": All candidates triaged successfully and relations committed.
-  - \"partial\": Some triage tasks failed permanently; the relation task ran on a subset.
-  - \"empty\": Relation task ran with zero items to relate (all duplicates \
-or all triage failures). If tasks_failed > 0, the pipeline likely failed \
-at triage; treat as degraded rather than \"nothing new\".
-- \"failed\": Pipeline could not complete. outcome = \"failure\". Check error context.
-
-Set wait_seconds to block until the job completes or the timeout \
-expires. This collapses ingest + poll into a single round-trip for \
-fast operations. With wait_seconds=0 (default), returns immediately \
-with current status.",
+        name: McpJobStatusCall::NAME,
+        title: McpJobStatusCall::PRESENTATION.title,
+        description: McpJobStatusCall::PRESENTATION.description,
         input_schema: include_str!("schemas/job_status/input.json"),
         output_schema: include_str!("schemas/job_status/output.json"),
-        required_scope: "tribal.jobs:read",
+        required_scope: McpJobStatusCall::REQUIRED_SCOPE,
     },
     ToolEntry {
-        name: "tribal_reindex",
-        title: "Tribal: Reindex Embeddings",
-        description: "\
-Start a reindex to a new embedding geometry, naming the target provider, \
-model, and dimension on the command. Reads and writes continue against the \
-active profile while the new space fills; the swap is atomic. An unchanged \
-target is a no-op. Operator-only; the worker drives the run to completion.",
+        name: McpReindexCall::NAME,
+        title: McpReindexCall::PRESENTATION.title,
+        description: McpReindexCall::PRESENTATION.description,
         input_schema: include_str!("schemas/reindex/input.json"),
         output_schema: include_str!("schemas/reindex/output.json"),
-        required_scope: "tribal.embedding:execute",
+        required_scope: McpReindexCall::REQUIRED_SCOPE,
     },
     ToolEntry {
-        name: "tribal_reindex_cancel",
-        title: "Tribal: Cancel Reindex",
-        description: "\
-Cancel the live reindex run, if any. The run is aborted and its building \
-profile is failed at the next task boundary; the active profile, and every \
-read and write against it, is untouched. Reindex is single-flight, so there \
-is at most one live run. Operator-only.",
+        name: McpReindexCancelCall::NAME,
+        title: McpReindexCancelCall::PRESENTATION.title,
+        description: McpReindexCancelCall::PRESENTATION.description,
         input_schema: include_str!("schemas/reindex_cancel/input.json"),
         output_schema: include_str!("schemas/reindex_cancel/output.json"),
-        required_scope: "tribal.embedding:execute",
+        required_scope: McpReindexCancelCall::REQUIRED_SCOPE,
     },
     ToolEntry {
-        name: "tribal_reindex_prune",
-        title: "Tribal: Prune Reindexes",
-        description: "\
-Reclaim storage from past reindexes. Every non-active complete profile and \
-every failed profile is superseded, and their embeddings are deleted; the \
-active profile and run history are untouched. Operator-only.",
+        name: McpReindexPruneCall::NAME,
+        title: McpReindexPruneCall::PRESENTATION.title,
+        description: McpReindexPruneCall::PRESENTATION.description,
         input_schema: include_str!("schemas/reindex_prune/input.json"),
         output_schema: include_str!("schemas/reindex_prune/output.json"),
-        required_scope: "tribal.embedding:execute",
+        required_scope: McpReindexPruneCall::REQUIRED_SCOPE,
     },
 ];
 
@@ -340,6 +210,7 @@ mod tests {
     use std::{collections::BTreeSet, fs, path::Path};
 
     use super::*;
+    use crate::contract::TOOL_NAME_PREFIX;
 
     #[test]
     fn test_schema_validity() {
@@ -373,8 +244,8 @@ mod tests {
             .iter()
             .map(|t| {
                 t.name
-                    .strip_prefix(TOOL_PREFIX)
-                    .unwrap_or_else(|| panic!("tool name must start with {TOOL_PREFIX}"))
+                    .strip_prefix(TOOL_NAME_PREFIX)
+                    .unwrap_or_else(|| panic!("tool name must start with {TOOL_NAME_PREFIX}"))
                     .to_owned()
             })
             .collect();
@@ -394,8 +265,8 @@ mod tests {
         for entry in TOOLS {
             let dir_name = entry
                 .name
-                .strip_prefix(TOOL_PREFIX)
-                .unwrap_or_else(|| panic!("tool name must start with {TOOL_PREFIX}"));
+                .strip_prefix(TOOL_NAME_PREFIX)
+                .unwrap_or_else(|| panic!("tool name must start with {TOOL_NAME_PREFIX}"));
 
             let tool_dir = schema_dir.join(dir_name);
             assert!(

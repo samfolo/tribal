@@ -6,6 +6,10 @@
 //! generated for native clients; it never redefines them and it is not a
 //! runtime visibility flag.
 
+pub mod declarations;
+#[cfg(feature = "schema")]
+pub mod schema;
+
 use serde::{Serialize, de::DeserializeOwned};
 
 // ---------------------------------------------------------------------------
@@ -21,6 +25,14 @@ pub struct ToolPresentation {
     /// The tool's full description.
     pub description: &'static str,
 }
+
+// ---------------------------------------------------------------------------
+// Naming convention
+// ---------------------------------------------------------------------------
+
+/// The wire-name prefix every registered MCP tool carries; stripping it
+/// yields the tool's schema-directory basename.
+pub const TOOL_NAME_PREFIX: &str = "tribal_";
 
 // ---------------------------------------------------------------------------
 // Declarations
@@ -89,6 +101,19 @@ macro_rules! declare_first_party_mcp_contract {
             }
         }
     };
+}
+
+// ---------------------------------------------------------------------------
+// The registered first-party contract
+// ---------------------------------------------------------------------------
+
+use declarations::{
+    McpIngestCall, McpIngestionInputResource, McpJobStatusCall, McpRecentIngestionsResource,
+};
+
+declare_first_party_mcp_contract! {
+    tools: [McpIngestCall, McpJobStatusCall];
+    resources: [McpRecentIngestionsResource, McpIngestionInputResource];
 }
 
 #[cfg(test)]

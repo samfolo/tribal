@@ -13,6 +13,7 @@ use crate::{EpisodeId, JobId, PrincipalId, ProjectId, PromptVersionId, RelationB
 
 /// The lifecycle status of a job in the ingest pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
     /// Waiting for extraction.
@@ -31,6 +32,7 @@ pub enum JobStatus {
 
 /// The outcome of a completed or failed job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum JobOutcome {
     /// All candidates triaged successfully and relations committed.

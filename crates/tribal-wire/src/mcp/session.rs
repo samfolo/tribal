@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Deserialisation target for `tribal_set_context` input.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpSetContextRequest {
     pub project_id: Option<String>,
     pub model: Option<String>,
@@ -21,6 +22,7 @@ pub struct McpSetContextRequest {
 
 /// Project on the MCP `set_context` response surface.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpSessionProject {
     pub id: String,
     pub name: String,
@@ -32,6 +34,7 @@ pub struct McpSessionProject {
 /// All fields are always present in serialised JSON (null when absent),
 /// matching the existing session resource representation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpSessionActor {
     pub client_name: Option<String>,
     pub client_version: Option<String>,
@@ -45,6 +48,7 @@ pub struct McpSessionActor {
 /// included (null when absent) for consistency with the session
 /// resource representation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpSetContextResponse {
     pub project: Option<McpSessionProject>,
     pub principal_key: String,

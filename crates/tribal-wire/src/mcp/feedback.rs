@@ -13,6 +13,7 @@ use tribal_domain::RetrievalFeedback;
 /// `"neutral"`) are caught during explicit validation rather than at
 /// the `serde_json::from_value` boundary.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpFeedbackRequest {
     pub trace_id: String,
     pub query_text: String,
@@ -33,6 +34,7 @@ pub struct McpFeedbackRequest {
 
 /// Response for `tribal_feedback`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpFeedbackResponse {
     pub feedback_id: String,
 }
