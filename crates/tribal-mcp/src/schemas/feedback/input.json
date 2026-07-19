@@ -1,38 +1,52 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "McpFeedbackRequest",
+  "description": "Deserialisation target for `tribal_feedback` input.\n\nThe `rating` field is a raw `String` so that invalid values (e.g. `\"neutral\"`) are caught during explicit validation rather than at the `serde_json::from_value` boundary.",
   "type": "object",
+  "required": [
+    "query_text",
+    "rating",
+    "returned_item_ids",
+    "trace_id"
+  ],
   "properties": {
-    "trace_id": {
-      "type": "string",
-      "description": "Trace ID from the tribal_discover or tribal_explore response being rated."
+    "embedding_profile_id": {
+      "description": "The `embedding_profile_id` from the discover response this feedback rates, carried back so the lineage records the profile that produced the results. Absent when the client does not echo it.",
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "explored_anchor_ids": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "query_text": {
-      "type": "string",
-      "description": "The original discovery query that initiated the retrieval session."
+      "type": "string"
+    },
+    "rating": {
+      "type": "string"
     },
     "returned_item_ids": {
       "type": "array",
-      "items": { "type": "string", "pattern": "^ki_[0-9a-f-]{36}$" },
-      "description": "IDs of items returned by tribal_discover in the rated session."
+      "items": {
+        "type": "string"
+      }
     },
-    "explored_anchor_ids": {
-      "type": "array",
-      "items": { "type": "string", "pattern": "^ki_[0-9a-f-]{36}$" },
-      "description": "IDs of items used as anchors in tribal_explore calls during the session."
-    },
-    "rating": {
-      "type": "string",
-      "enum": ["positive", "negative"],
-      "description": "Was this retrieval session helpful?"
-    },
-    "notes": {
-      "type": "string",
-      "description": "Optional reasoning. What was good or what was missing?"
-    },
-    "embedding_profile_id": {
-      "type": "string",
-      "description": "The embedding_profile_id from the tribal_discover response being rated, so the lineage records the profile that produced the results."
+    "trace_id": {
+      "type": "string"
     }
-  },
-  "required": ["trace_id", "query_text", "returned_item_ids", "rating"],
-  "additionalProperties": false
+  }
 }

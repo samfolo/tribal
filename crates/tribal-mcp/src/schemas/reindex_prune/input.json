@@ -1,6 +1,6 @@
 {
-  "type": "object",
-  "description": "Reclaim storage from superseded reindexes: supersede every non-active complete profile and every failed profile, then delete their embeddings. Takes no arguments.",
-  "properties": {},
-  "additionalProperties": false
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "McpEmptyRequest",
+  "description": "Deserialisation target for a tool that takes no arguments, e.g. `tribal_reindex_cancel` and `tribal_reindex_prune`.",
+  "type": "object"
 }

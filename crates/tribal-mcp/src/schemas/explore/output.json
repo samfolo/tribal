@@ -1,105 +1,450 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "McpExploreResponse",
+  "description": "Response for `tribal_explore`.",
   "type": "object",
+  "required": [
+    "anchor",
+    "anchor_standing",
+    "exact",
+    "related_items",
+    "trace_id"
+  ],
   "properties": {
-    "anchor": { "$ref": "#/$defs/knowledge_item" },
-    "anchor_standing": { "$ref": "#/$defs/standing" },
-    "related_items": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/exploration_result" }
+    "anchor": {
+      "description": "The full knowledge item for the exploration anchor.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/McpKnowledgeItem"
+        }
+      ]
     },
-    "trace_id": {
-      "type": "string",
-      "description": "Trace ID. Pass to tribal_feedback if rating this session."
+    "anchor_standing": {
+      "description": "Evidential profile of the anchor — always present.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/McpStanding"
+        }
+      ]
     },
     "exact": {
-      "type": "boolean",
-      "description": "True if all reachable items within depth were returned. False if truncated by limit."
+      "type": "boolean"
+    },
+    "related_items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/McpExplorationResult"
+      }
+    },
+    "trace_id": {
+      "type": "string"
     }
   },
-  "required": ["anchor", "anchor_standing", "related_items", "trace_id", "exact"],
-  "$defs": {
-    "knowledge_item": {
-      "type": "object",
-      "properties": {
-        "id": { "type": "string", "pattern": "^ki_[0-9a-f-]{36}$" },
-        "project_id": { "type": "string", "pattern": "^proj_[0-9a-f-]{36}$" },
-        "principal_key": { "type": "string", "description": "Human-readable principal identifier (e.g., 'user:sam')." },
-        "kind": { "type": "string", "enum": ["fact", "heuristic", "procedure", "decision_record"] },
-        "content": { "type": "string" },
-        "tags": { "type": "array", "items": { "type": "string" } },
-        "confidence": { "type": "string", "enum": ["verified", "inferred", "uncertain"] },
-        "source_context": {
-          "type": "object",
-          "description": "Provenance of this item. Types: 'agent_mediated' = model-mediated capture via a provider/model pipeline (e.g., an agent ingesting via MCP); 'manual' = human-initiated capture without model mediation; 'derived' = produced by synthesis or compaction from existing items.",
-          "properties": {
-            "type": { "type": "string", "enum": ["agent_mediated", "manual", "derived"] },
-            "provider": { "type": ["string", "null"] },
-            "model": { "type": ["string", "null"] }
-          },
-          "required": ["type"]
-        },
-        "episode_id": { "type": ["string", "null"], "pattern": "^ep_[0-9a-f-]{36}$" },
-        "capture_commit": { "type": ["string", "null"] },
-        "capture_branch": { "type": ["string", "null"], "description": "Branch name when this item was captured (informational)." },
-        "created_at": { "type": "string", "format": "date-time" }
-      },
-      "required": ["id", "project_id", "principal_key", "kind", "content", "tags", "confidence", "source_context", "created_at"]
-    },
-    "standing": {
-      "type": "object",
-      "description": "Evidential profile computed from the relationship graph. Use tribal_get_item to retrieve items referenced by newest_supporting_id, newest_contradicting_id, or superseded_by.",
-      "properties": {
-        "supporting_count": { "type": "integer", "description": "Distinct items asserting Supports." },
-        "contradicting_count": { "type": "integer", "description": "Distinct items asserting Contradicts." },
-        "superseded_by": { "type": ["string", "null"], "pattern": "^ki_[0-9a-f-]{36}$", "description": "ID of the superseding item, if any." },
-        "observation_count": { "type": "integer", "description": "Times this knowledge was independently re-encountered." },
-        "newest_supporting_id": { "type": ["string", "null"], "pattern": "^ki_[0-9a-f-]{36}$", "description": "Most recent supporting item. Retrieve with tribal_get_item." },
-        "newest_contradicting_id": { "type": ["string", "null"], "pattern": "^ki_[0-9a-f-]{36}$", "description": "Most recent contradicting item. Retrieve with tribal_get_item." },
-        "supporting_episode_count": { "type": "integer", "description": "Distinct episodes providing support. Higher = broader validation." },
-        "supporting_project_count": { "type": "integer", "description": "Distinct projects providing support. Higher = cross-project validation." }
-      },
-      "required": ["supporting_count", "contradicting_count", "observation_count", "supporting_episode_count", "supporting_project_count"]
-    },
-    "reference": {
-      "type": "object",
-      "properties": {
-        "id": { "type": "string", "pattern": "^ref_[0-9a-f-]{36}$" },
-        "kind": { "type": "string", "enum": ["file_path", "url", "concept", "symbol"] },
-        "value": { "type": "string", "description": "The pointer (e.g., '//src/auth/middleware.rs', a URL, a concept name)." },
-        "description": { "type": ["string", "null"], "description": "What was at this location and why it mattered." },
-        "commit": { "type": ["string", "null"], "description": "Git SHA when this reference was known valid." }
-      },
-      "required": ["id", "kind", "value"]
-    },
-    "exploration_result": {
-      "type": "object",
-      "properties": {
-        "item": { "$ref": "#/$defs/knowledge_item" },
-        "relation_type": {
+  "definitions": {
+    "Confidence": {
+      "description": "The confidence level of a knowledge item.",
+      "oneOf": [
+        {
+          "description": "Manually confirmed or from an authoritative source.",
           "type": "string",
-          "enum": ["supports", "contradicts", "supersedes", "derived_from"]
+          "enum": [
+            "verified"
+          ]
         },
-        "relation_direction": {
+        {
+          "description": "Extracted by a model from a conversation or document.",
           "type": "string",
-          "enum": ["inbound", "outbound"],
-          "description": "Direction relative to the anchor. 'inbound' = this item asserts something about the anchor."
+          "enum": [
+            "inferred"
+          ]
         },
+        {
+          "description": "Flagged as potentially inaccurate or context-dependent.",
+          "type": "string",
+          "enum": [
+            "uncertain"
+          ]
+        }
+      ]
+    },
+    "KnowledgeKind": {
+      "description": "The kind of knowledge captured.",
+      "oneOf": [
+        {
+          "description": "A discrete, verifiable piece of information.",
+          "type": "string",
+          "enum": [
+            "fact"
+          ]
+        },
+        {
+          "description": "A rule of thumb or pattern derived from experience.",
+          "type": "string",
+          "enum": [
+            "heuristic"
+          ]
+        },
+        {
+          "description": "A sequence of steps to accomplish something.",
+          "type": "string",
+          "enum": [
+            "procedure"
+          ]
+        },
+        {
+          "description": "A record of a choice made and its rationale.",
+          "type": "string",
+          "enum": [
+            "decision_record"
+          ]
+        }
+      ]
+    },
+    "McpExplorationResult": {
+      "description": "A single exploration result with relationship metadata.",
+      "type": "object",
+      "required": [
+        "depth",
+        "item",
+        "relation_created_at",
+        "relation_direction",
+        "relation_type"
+      ],
+      "properties": {
         "depth": {
           "type": "integer",
-          "description": "Hops from anchor. 1 = directly related."
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "item": {
+          "$ref": "#/definitions/McpKnowledgeItem"
+        },
+        "references": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/McpReference"
+          }
         },
         "relation_created_at": {
           "type": "string",
-          "format": "date-time",
-          "description": "When this relationship was asserted."
+          "format": "date-time"
         },
-        "standing": { "$ref": "#/$defs/standing" },
-        "references": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/reference" }
+        "relation_direction": {
+          "$ref": "#/definitions/McpRelationDirection"
+        },
+        "relation_type": {
+          "$ref": "#/definitions/RelationKind"
+        },
+        "standing": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpStanding"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
-      },
-      "required": ["item", "relation_type", "relation_direction", "depth", "relation_created_at"]
+      }
+    },
+    "McpKnowledgeItem": {
+      "description": "MCP-surface representation of a knowledge item.\n\nAll ID fields carry their type prefix (e.g. `ki_`, `proj_`, `ep_`). The `principal_key` field is the human-readable string, not the UUID.",
+      "type": "object",
+      "required": [
+        "confidence",
+        "content",
+        "created_at",
+        "id",
+        "kind",
+        "principal_key",
+        "project_id",
+        "source_context",
+        "tags"
+      ],
+      "properties": {
+        "capture_branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capture_commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/definitions/Confidence"
+        },
+        "content": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "episode_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/KnowledgeKind"
+        },
+        "principal_key": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "source_context": {
+          "$ref": "#/definitions/McpSourceContext"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "McpReference": {
+      "description": "MCP-surface representation of a reference.\n\nProjects a subset of the domain `Reference` fields — excludes `knowledge_item_id`, `project_id`, and `branch`.",
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "value"
+      ],
+      "properties": {
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ReferenceKind"
+        },
+        "value": {
+          "type": "string"
+        }
+      }
+    },
+    "McpRelationDirection": {
+      "description": "Direction of a relationship edge relative to the exploration anchor.",
+      "oneOf": [
+        {
+          "description": "This item asserts something about the anchor.",
+          "type": "string",
+          "enum": [
+            "inbound"
+          ]
+        },
+        {
+          "description": "The anchor asserts something about this item.",
+          "type": "string",
+          "enum": [
+            "outbound"
+          ]
+        }
+      ]
+    },
+    "McpSourceContext": {
+      "description": "Flattened provenance summary extracted from the opaque JSONB `source_context` column.",
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "model": {
+          "description": "Model identifier (e.g. `\"claude-opus-4-6\"`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "description": "Inference provider name (e.g. `\"anthropic\"`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "Discriminator — always present.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpSourceType"
+            }
+          ]
+        }
+      }
+    },
+    "McpSourceType": {
+      "description": "Source type on the MCP surface.\n\nMaps from the internal `source_context` JSONB discriminator to the three values exposed to clients.",
+      "oneOf": [
+        {
+          "description": "Captured via a model-mediated pipeline (e.g. agent ingesting via MCP).",
+          "type": "string",
+          "enum": [
+            "agent_mediated"
+          ]
+        },
+        {
+          "description": "Human-initiated capture without model mediation.",
+          "type": "string",
+          "enum": [
+            "manual"
+          ]
+        },
+        {
+          "description": "Produced by synthesis or compaction from existing items.",
+          "type": "string",
+          "enum": [
+            "derived"
+          ]
+        }
+      ]
+    },
+    "McpStanding": {
+      "description": "Computed evidential profile on the MCP surface.\n\nID fields are rendered as prefixed strings. Optional IDs are omitted from serialised JSON when absent.",
+      "type": "object",
+      "required": [
+        "contradicting_count",
+        "observation_count",
+        "supporting_count",
+        "supporting_episode_count",
+        "supporting_project_count"
+      ],
+      "properties": {
+        "contradicting_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "newest_contradicting_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "newest_supporting_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observation_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "superseded_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "supporting_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "supporting_episode_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "supporting_project_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      }
+    },
+    "ReferenceKind": {
+      "description": "The classification of a reference attached to a knowledge item.",
+      "oneOf": [
+        {
+          "description": "Project-relative file path (sigil `//`).",
+          "type": "string",
+          "enum": [
+            "file_path"
+          ]
+        },
+        {
+          "description": "External URL.",
+          "type": "string",
+          "enum": [
+            "url"
+          ]
+        },
+        {
+          "description": "Abstract reference too general for a path or URL.",
+          "type": "string",
+          "enum": [
+            "concept"
+          ]
+        },
+        {
+          "description": "Code symbol (function, type, module).",
+          "type": "string",
+          "enum": [
+            "symbol"
+          ]
+        }
+      ]
+    },
+    "RelationKind": {
+      "description": "The type of a committed relationship between two knowledge items.",
+      "oneOf": [
+        {
+          "description": "Source provides evidence for, validates, or reinforces target.",
+          "type": "string",
+          "enum": [
+            "supports"
+          ]
+        },
+        {
+          "description": "Source challenges, undermines, or conflicts with target; both items may remain valid in different contexts.",
+          "type": "string",
+          "enum": [
+            "contradicts"
+          ]
+        },
+        {
+          "description": "Source replaces target with updated understanding; stronger than `Contradicts` — the old item is retired.",
+          "type": "string",
+          "enum": [
+            "supersedes"
+          ]
+        },
+        {
+          "description": "Source was produced using target as an input to its formulation; exists to support traceability, not reliability.",
+          "type": "string",
+          "enum": [
+            "derived_from"
+          ]
+        }
+      ]
     }
   }
 }

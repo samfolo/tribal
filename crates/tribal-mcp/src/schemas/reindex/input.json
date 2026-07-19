@@ -1,30 +1,43 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "McpReindexRequest",
+  "description": "The MCP request for `tribal_reindex`.",
   "type": "object",
-  "description": "Start a reindex to a new embedding geometry. The target is named on the command, never read from config. Reads and writes continue against the active profile while the new space fills; the swap is atomic. Operator-only.",
+  "required": [
+    "model",
+    "provider"
+  ],
   "properties": {
-    "provider": {
-      "type": "string",
-      "description": "The target embedding provider, for example 'ollama' or 'openai'."
-    },
-    "model": {
-      "type": "string",
-      "description": "The target embedding model."
+    "base_url": {
+      "description": "The target endpoint; the provider's default when omitted.",
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "dimensions": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 4000,
-      "description": "The target vector dimension, between 1 and the halfvec storage ceiling of 4000. Resolved from the model when omitted."
-    },
-    "base_url": {
-      "type": "string",
-      "description": "The target endpoint. The provider's default when omitted."
+      "description": "The target vector dimension; resolved from the model when omitted.",
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0.0
     },
     "dry_run": {
-      "type": "boolean",
-      "description": "When true, resolve the target, validate its credential, and return the item and tag counts without creating a run."
+      "description": "When true, resolve and estimate the target without creating a run.",
+      "default": false,
+      "type": "boolean"
+    },
+    "model": {
+      "description": "The target embedding model.",
+      "type": "string"
+    },
+    "provider": {
+      "description": "The target embedding provider (for example `\"ollama\"` or `\"openai\"`).",
+      "type": "string"
     }
-  },
-  "required": ["provider", "model"],
-  "additionalProperties": false
+  }
 }

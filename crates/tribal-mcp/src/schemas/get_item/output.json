@@ -1,82 +1,15 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "McpGetItemResponse",
+  "description": "Response for `tribal_get_item`.\n\nThe `items` field is a JSON object keyed by prefixed item ID. Values are either a serialised `McpGetItemEntry` or JSON `null` for IDs that were not found.",
   "type": "object",
+  "required": [
+    "items"
+  ],
   "properties": {
     "items": {
       "type": "object",
-      "description": "Map from requested item ID to result. Keys are the ki_-prefixed IDs from the request. Value is the item with optional standing/references, or null if the ID was not found.",
-      "additionalProperties": {
-        "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "item": { "$ref": "#/$defs/knowledge_item" },
-              "standing": { "$ref": "#/$defs/standing" },
-              "references": {
-                "type": "array",
-                "items": { "$ref": "#/$defs/reference" }
-              }
-            },
-            "required": ["item"]
-          },
-          { "type": "null" }
-        ]
-      }
-    }
-  },
-  "required": ["items"],
-  "$defs": {
-    "knowledge_item": {
-      "type": "object",
-      "properties": {
-        "id": { "type": "string", "pattern": "^ki_[0-9a-f-]{36}$" },
-        "project_id": { "type": "string", "pattern": "^proj_[0-9a-f-]{36}$" },
-        "principal_key": { "type": "string", "description": "Human-readable principal identifier (e.g., 'user:sam')." },
-        "kind": { "type": "string", "enum": ["fact", "heuristic", "procedure", "decision_record"] },
-        "content": { "type": "string" },
-        "tags": { "type": "array", "items": { "type": "string" } },
-        "confidence": { "type": "string", "enum": ["verified", "inferred", "uncertain"] },
-        "source_context": {
-          "type": "object",
-          "description": "Provenance of this item. Types: 'agent_mediated' = model-mediated capture via a provider/model pipeline (e.g., an agent ingesting via MCP); 'manual' = human-initiated capture without model mediation; 'derived' = produced by synthesis or compaction from existing items.",
-          "properties": {
-            "type": { "type": "string", "enum": ["agent_mediated", "manual", "derived"] },
-            "provider": { "type": ["string", "null"] },
-            "model": { "type": ["string", "null"] }
-          },
-          "required": ["type"]
-        },
-        "episode_id": { "type": ["string", "null"], "pattern": "^ep_[0-9a-f-]{36}$" },
-        "capture_commit": { "type": ["string", "null"] },
-        "capture_branch": { "type": ["string", "null"], "description": "Branch name when this item was captured (informational)." },
-        "created_at": { "type": "string", "format": "date-time" }
-      },
-      "required": ["id", "project_id", "principal_key", "kind", "content", "tags", "confidence", "source_context", "created_at"]
-    },
-    "standing": {
-      "type": "object",
-      "description": "Evidential profile computed from the relationship graph. Use tribal_get_item to retrieve items referenced by newest_supporting_id, newest_contradicting_id, or superseded_by.",
-      "properties": {
-        "supporting_count": { "type": "integer", "description": "Distinct items asserting Supports." },
-        "contradicting_count": { "type": "integer", "description": "Distinct items asserting Contradicts." },
-        "superseded_by": { "type": ["string", "null"], "pattern": "^ki_[0-9a-f-]{36}$", "description": "ID of the superseding item, if any." },
-        "observation_count": { "type": "integer", "description": "Times this knowledge was independently re-encountered." },
-        "newest_supporting_id": { "type": ["string", "null"], "pattern": "^ki_[0-9a-f-]{36}$", "description": "Most recent supporting item. Retrieve with tribal_get_item." },
-        "newest_contradicting_id": { "type": ["string", "null"], "pattern": "^ki_[0-9a-f-]{36}$", "description": "Most recent contradicting item. Retrieve with tribal_get_item." },
-        "supporting_episode_count": { "type": "integer", "description": "Distinct episodes providing support. Higher = broader validation." },
-        "supporting_project_count": { "type": "integer", "description": "Distinct projects providing support. Higher = cross-project validation." }
-      },
-      "required": ["supporting_count", "contradicting_count", "observation_count", "supporting_episode_count", "supporting_project_count"]
-    },
-    "reference": {
-      "type": "object",
-      "properties": {
-        "id": { "type": "string", "pattern": "^ref_[0-9a-f-]{36}$" },
-        "kind": { "type": "string", "enum": ["file_path", "url", "concept", "symbol"] },
-        "value": { "type": "string", "description": "The pointer (e.g., '//src/auth/middleware.rs', a URL, a concept name)." },
-        "description": { "type": ["string", "null"], "description": "What was at this location and why it mattered." },
-        "commit": { "type": ["string", "null"], "description": "Git SHA when this reference was known valid." }
-      },
-      "required": ["id", "kind", "value"]
+      "additionalProperties": true
     }
   }
 }

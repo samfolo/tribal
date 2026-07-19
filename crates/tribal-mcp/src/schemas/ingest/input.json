@@ -1,16 +1,28 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "McpIngestRequest",
+  "description": "Deserialisation target for `tribal_ingest` input.",
   "type": "object",
+  "required": [
+    "content"
+  ],
   "properties": {
     "content": {
-      "type": "string",
-      "description": "The raw text to extract knowledge from. Write naturally: describe what you learned, what went wrong, what the fix was, why a decision was made. The system handles structuring. Richer input produces better results: include context, reasoning, and specifics rather than terse summaries."
+      "type": "string"
+    },
+    "idempotency_key": {
+      "description": "Producer-generated key reused only for retries of one logical ingest operation; absent for ordinary create-on-every-call use.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
     },
     "project_id": {
-      "type": "string",
-      "pattern": "^proj_[0-9a-f-]{36}$",
-      "description": "Override the session's active project for this ingest. Optional; defaults to the project set in session context."
+      "type": [
+        "string",
+        "null"
+      ]
     }
-  },
-  "required": ["content"],
-  "additionalProperties": false
+  }
 }

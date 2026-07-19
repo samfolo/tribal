@@ -1,19 +1,22 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "McpJobStatusRequest",
+  "description": "Deserialisation target for `tribal_job_status` input.",
   "type": "object",
+  "required": [
+    "job_id"
+  ],
   "properties": {
     "job_id": {
-      "type": "string",
-      "pattern": "^job_[0-9a-f-]{36}$",
-      "description": "Job ID returned by tribal_ingest."
+      "type": "string"
     },
     "wait_seconds": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 30,
-      "default": 0,
-      "description": "If > 0, the server blocks until the job reaches a final status (completed or failed) or the timeout expires, whichever comes first. Returns current status either way. Use this to collapse ingest + poll into fewer round-trips for fast operations."
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0.0
     }
-  },
-  "required": ["job_id"],
-  "additionalProperties": false
+  }
 }

@@ -1,26 +1,80 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "McpSetContextResponse",
+  "description": "Typed response for `tribal_set_context`.\n\nThe `project` field is non-required in the output schema but always included (null when absent) for consistency with the session resource representation.",
   "type": "object",
-  "description": "Returns the full session context after applying changes.",
+  "required": [
+    "actor",
+    "principal_key"
+  ],
   "properties": {
-    "project": {
-      "type": ["object", "null"],
-      "properties": {
-        "id": { "type": "string", "pattern": "^proj_[0-9a-f-]{36}$" },
-        "name": { "type": "string" },
-        "git_remote": { "type": "string" }
-      },
-      "required": ["id", "name", "git_remote"]
-    },
-    "principal_key": { "type": "string" },
     "actor": {
-      "type": "object",
-      "properties": {
-        "client_name": { "type": ["string", "null"] },
-        "client_version": { "type": ["string", "null"] },
-        "model": { "type": ["string", "null"] },
-        "provider": { "type": ["string", "null"] }
-      }
+      "$ref": "#/definitions/McpSessionActor"
+    },
+    "principal_key": {
+      "type": "string"
+    },
+    "project": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/McpSessionProject"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
-  "required": ["principal_key", "actor"]
+  "definitions": {
+    "McpSessionActor": {
+      "description": "Actor metadata on the MCP `set_context` response surface.\n\nAll fields are always present in serialised JSON (null when absent), matching the existing session resource representation.",
+      "type": "object",
+      "properties": {
+        "client_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "McpSessionProject": {
+      "description": "Project on the MCP `set_context` response surface.",
+      "type": "object",
+      "required": [
+        "git_remote",
+        "id",
+        "name"
+      ],
+      "properties": {
+        "git_remote": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    }
+  }
 }

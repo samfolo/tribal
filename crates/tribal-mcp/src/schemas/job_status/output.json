@@ -1,39 +1,152 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "McpJobStatusResponse",
+  "description": "Response for `tribal_job_status`.\n\nConstructed via `from_domain` because the `Job` domain type does not carry aggregate task counts.",
   "type": "object",
+  "required": [
+    "created_at",
+    "items_created",
+    "job_id",
+    "observations_created",
+    "status",
+    "tasks_completed",
+    "tasks_failed",
+    "updated_at"
+  ],
   "properties": {
-    "job_id": { "type": "string", "pattern": "^job_[0-9a-f-]{36}$" },
-    "status": {
-      "type": "string",
-      "enum": ["queued", "extracting", "triaging", "relating", "completed", "failed"],
-      "description": "Current lifecycle state."
-    },
-    "outcome": {
-      "type": ["string", "null"],
-      "enum": ["success", "partial", "empty", "failure", null],
-      "description": "Final result. Only set when status is 'completed' or 'failed'."
-    },
     "batch_size": {
-      "type": ["integer", "null"],
-      "description": "Number of knowledge candidates extracted. Set after extraction completes."
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0.0
     },
-    "tasks_completed": {
-      "type": "integer",
-      "description": "Triage tasks completed successfully."
-    },
-    "tasks_failed": {
-      "type": "integer",
-      "description": "Triage tasks that failed permanently."
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
     },
     "items_created": {
       "type": "integer",
-      "description": "New knowledge items stored (novel content)."
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "job_id": {
+      "type": "string"
     },
     "observations_created": {
       "type": "integer",
-      "description": "Duplicate observations recorded (strengthens existing items)."
+      "format": "uint32",
+      "minimum": 0.0
     },
-    "created_at": { "type": "string", "format": "date-time" },
-    "updated_at": { "type": "string", "format": "date-time" }
+    "outcome": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/JobOutcome"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "$ref": "#/definitions/JobStatus"
+    },
+    "tasks_completed": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "tasks_failed": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
   },
-  "required": ["job_id", "status", "tasks_completed", "tasks_failed", "items_created", "observations_created", "created_at", "updated_at"]
+  "definitions": {
+    "JobOutcome": {
+      "description": "The outcome of a completed or failed job.",
+      "oneOf": [
+        {
+          "description": "All candidates triaged successfully and relations committed.",
+          "type": "string",
+          "enum": [
+            "success"
+          ]
+        },
+        {
+          "description": "Job completed but some triage tasks dead-lettered; relation task ran on a subset.",
+          "type": "string",
+          "enum": [
+            "partial"
+          ]
+        },
+        {
+          "description": "Pipeline completed but produced no new knowledge items — zero candidates from extraction, or all candidates classified as duplicates.",
+          "type": "string",
+          "enum": [
+            "empty"
+          ]
+        },
+        {
+          "description": "Pipeline could not complete; extraction or relation task dead-lettered.",
+          "type": "string",
+          "enum": [
+            "failure"
+          ]
+        }
+      ]
+    },
+    "JobStatus": {
+      "description": "The lifecycle status of a job in the ingest pipeline.",
+      "oneOf": [
+        {
+          "description": "Waiting for extraction.",
+          "type": "string",
+          "enum": [
+            "queued"
+          ]
+        },
+        {
+          "description": "Extraction task running.",
+          "type": "string",
+          "enum": [
+            "extracting"
+          ]
+        },
+        {
+          "description": "Triage tasks running (set when extraction completes).",
+          "type": "string",
+          "enum": [
+            "triaging"
+          ]
+        },
+        {
+          "description": "Relation task running (set when all triage tasks are terminal).",
+          "type": "string",
+          "enum": [
+            "relating"
+          ]
+        },
+        {
+          "description": "Terminal; pipeline reached conclusion (check [`JobOutcome`] for details).",
+          "type": "string",
+          "enum": [
+            "completed"
+          ]
+        },
+        {
+          "description": "Terminal; pipeline could not complete.",
+          "type": "string",
+          "enum": [
+            "failed"
+          ]
+        }
+      ]
+    }
+  }
 }
