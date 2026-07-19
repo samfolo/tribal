@@ -779,7 +779,9 @@ mod tests {
         let expected_ctx = source_ctx.clone();
 
         let job_mock = MockIngestJobRepository::builder()
-            .when_insert_or_resolve_idempotency(move |new_job| new_job.source_context == expected_ctx)
+            .when_insert_or_resolve_idempotency(move |new_job| {
+                new_job.source_context == expected_ctx
+            })
             .respond_with(IngestInsertOutcome::Inserted(job.clone()), None)
             .build();
 

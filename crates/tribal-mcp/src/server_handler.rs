@@ -5,9 +5,9 @@ use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, ErrorCode, ErrorData as McpError, Implementation,
         InitializeRequestParams, InitializeResult, ListResourceTemplatesResult,
-        ListResourcesResult, ListToolsResult,
-        PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
-        ServerCapabilities, ServerInfo, SubscribeRequestParams, Tool, UnsubscribeRequestParams,
+        ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
+        ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+        SubscribeRequestParams, Tool, UnsubscribeRequestParams,
     },
     service::{RequestContext, RoleServer},
 };
@@ -489,7 +489,8 @@ impl ServerHandler for TribalServerHandler {
         // authority is never shown the content-bearing templates.
         let advertised = match self.resolve_principal(&context) {
             Ok(principal)
-                if is_authorised(principal.scopes(), &crate::handlers::INGESTIONS_SCOPE) => {
+                if is_authorised(principal.scopes(), &crate::handlers::INGESTIONS_SCOPE) =>
+            {
                 crate::handlers::ingestion_resource_templates()
             }
             _ => Vec::new(),

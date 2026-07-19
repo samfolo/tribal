@@ -54,6 +54,24 @@ impl IntoCallToolResult for McpJobStatusResponse {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+// Recent-ingestion projection
+// ---------------------------------------------------------------------------
+
+/// Projects one listing row onto the wire; a free function because both
+/// types live in other crates.
+pub(crate) fn recent_ingestion_to_wire(summary: RecentIngestionSummary) -> McpRecentIngestion {
+    McpRecentIngestion {
+        job_id: summary.job_id.to_string(),
+        project_id: summary.project_id.to_string(),
+        status: summary.status,
+        outcome: summary.outcome,
+        preview: summary.preview,
+        created_at: summary.created_at,
+        updated_at: summary.updated_at,
+    }
+}
+
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -116,23 +134,5 @@ mod tests {
         };
         assert!(text.text.contains("completed"));
         assert!(text.text.contains("success"));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Recent-ingestion projection
-// ---------------------------------------------------------------------------
-
-/// Projects one listing row onto the wire; a free function because both
-/// types live in other crates.
-pub(crate) fn recent_ingestion_to_wire(summary: RecentIngestionSummary) -> McpRecentIngestion {
-    McpRecentIngestion {
-        job_id: summary.job_id.to_string(),
-        project_id: summary.project_id.to_string(),
-        status: summary.status,
-        outcome: summary.outcome,
-        preview: summary.preview,
-        created_at: summary.created_at,
-        updated_at: summary.updated_at,
     }
 }

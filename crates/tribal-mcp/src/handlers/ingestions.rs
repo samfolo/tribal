@@ -17,9 +17,7 @@ use tribal_db::{DbError, RecentIngestionCursor, RecentIngestionsQuery};
 use tribal_domain::{JobId, JobStatus, PrincipalId, Scope};
 
 use crate::{
-    mapping::{
-        McpIngestionInputResponse, McpRecentIngestionsResponse, recent_ingestion_to_wire,
-    },
+    mapping::{McpIngestionInputResponse, McpRecentIngestionsResponse, recent_ingestion_to_wire},
     server_handler::TribalServerHandler,
 };
 
@@ -214,10 +212,9 @@ fn parse_recent_query(uri: &str) -> Result<RecentIngestionsQuery, McpError> {
         let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
         match name {
             "project_id" => {
-                query.project_id =
-                    Some(value.parse().map_err(|_| {
-                        McpError::invalid_params("project_id is not a project id", None)
-                    })?);
+                query.project_id = Some(value.parse().map_err(|_| {
+                    McpError::invalid_params("project_id is not a project id", None)
+                })?);
             }
             "statuses" => {
                 query.statuses = value
@@ -744,12 +741,14 @@ mod tests {
 
     #[test]
     fn test_the_recent_query_parses_the_settled_encoding() {
-        let query = parse_recent_query(
-            "tribal://ingestions/recent?statuses=queued,completed&limit=5",
-        )
-        .expect("query parses");
+        let query =
+            parse_recent_query("tribal://ingestions/recent?statuses=queued,completed&limit=5")
+                .expect("query parses");
 
-        assert_eq!(query.statuses, vec![JobStatus::Queued, JobStatus::Completed]);
+        assert_eq!(
+            query.statuses,
+            vec![JobStatus::Queued, JobStatus::Completed]
+        );
         assert_eq!(query.limit, 5);
         assert!(query.project_id.is_none());
         assert!(query.before.is_none());

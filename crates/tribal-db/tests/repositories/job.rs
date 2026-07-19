@@ -1303,7 +1303,14 @@ async fn test_a_reused_key_with_different_content_conflicts() {
     let changed = repo
         .insert_or_resolve_idempotency(
             &mut txn,
-            &an_ingest(project_id, principal_id, pv_id, &fp_hash, Some(key), "other"),
+            &an_ingest(
+                project_id,
+                principal_id,
+                pv_id,
+                &fp_hash,
+                Some(key),
+                "other",
+            ),
         )
         .await
         .expect("changed-content admit");
@@ -1399,11 +1406,11 @@ async fn test_a_foreign_job_reads_as_not_found() {
         .await
         .expect("insert job");
 
-    let owned = repo
+    let read_back = repo
         .find_by_id_for_principal(&mut txn, job.id(), owner)
         .await
         .expect("owner reads the job");
-    assert_eq!(owned.id(), job.id());
+    assert_eq!(read_back.id(), job.id());
 
     let foreign = repo
         .find_by_id_for_principal(&mut txn, job.id(), stranger)
@@ -1480,7 +1487,11 @@ async fn test_the_recent_listing_pages_by_cursor_with_bounded_previews() {
         )
         .await
         .expect("second page");
-    assert_eq!(second_page.ingestions.len(), 1, "only the principal's rows list");
+    assert_eq!(
+        second_page.ingestions.len(),
+        1,
+        "only the principal's rows list"
+    );
     assert!(second_page.next_cursor.is_none());
 
     // Same-instant rows order by id, so position is not insertion order:

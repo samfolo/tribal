@@ -18,12 +18,12 @@ use tribal_inference::{
 };
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
-    MockEmbeddingProvider, MockInferenceProvider, MockIngestJobRepository, MockKnowledgeItemRepository,
-    MockPrincipalRepository, MockProjectRepository, MockPromptVersionRepository,
-    MockReferenceRepository, MockRelationRepository, MockRetrievalFeedbackRepository,
-    MockStandingRepository, MockSystemFingerprintRepository, MockTaskRepository,
-    MockTriageResultRepository, TEST_PRINCIPAL_KEY, a_prompt_version, a_system_fingerprint,
-    lazy_pool,
+    MockEmbeddingProvider, MockInferenceProvider, MockIngestJobRepository,
+    MockKnowledgeItemRepository, MockPrincipalRepository, MockProjectRepository,
+    MockPromptVersionRepository, MockReferenceRepository, MockRelationRepository,
+    MockRetrievalFeedbackRepository, MockStandingRepository, MockSystemFingerprintRepository,
+    MockTaskRepository, MockTriageResultRepository, TEST_PRINCIPAL_KEY, a_prompt_version,
+    a_system_fingerprint, lazy_pool,
 };
 use typed_builder::TypedBuilder;
 

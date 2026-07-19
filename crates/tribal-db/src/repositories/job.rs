@@ -9,6 +9,8 @@
 //! parse domain enums as TEXT, and the compile-time macro cannot
 //! type-check these casts.
 
+use std::fmt::Write as _;
+
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
@@ -645,7 +647,6 @@ impl JobRepository for PgJobRepository {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // IngestJobRepository
 // ---------------------------------------------------------------------------
@@ -679,6 +680,11 @@ pub struct RecentIngestionCursor {
 
 impl RecentIngestionCursor {
     /// Encodes the cursor for the wire.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if JSON serialisation of this two-field shape fails,
+    /// which no input can cause.
     #[must_use]
     pub fn encode(&self) -> String {
         let json = serde_json::to_vec(self).expect("cursor serialises to JSON");
@@ -910,24 +916,23 @@ impl IngestJobRepository for PgJobRepository {
         let mut sql = format!("SELECT {COLUMNS} FROM jobs WHERE principal_id = $1");
         let mut next_bind = 2;
         if query.project_id.is_some() {
-            sql.push_str(&format!(" AND project_id = ${next_bind}"));
+            let _ = write!(sql, " AND project_id = ${next_bind}");
             next_bind += 1;
         }
         if !query.statuses.is_empty() {
-            sql.push_str(&format!(" AND status = ANY(${next_bind}::text[])"));
+            let _ = write!(sql, " AND status = ANY(${next_bind}::text[])");
             next_bind += 1;
         }
         if query.before.is_some() {
-            sql.push_str(&format!(
+            let _ = write!(
+                sql,
                 " AND (created_at, id) < (${}, ${})",
                 next_bind,
                 next_bind + 1
-            ));
+            );
             next_bind += 2;
         }
-        sql.push_str(&format!(
-            " ORDER BY created_at DESC, id DESC LIMIT ${next_bind}"
-        ));
+        let _ = write!(sql, " ORDER BY created_at DESC, id DESC LIMIT ${next_bind}");
 
         let mut q = sqlx::query(&sql).bind(principal_id.inner());
         if let Some(project_id) = query.project_id {

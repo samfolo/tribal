@@ -9,7 +9,10 @@ use rmcp::{
 use tokio::sync::watch;
 use tracing::Instrument;
 use tribal_db::DbError;
-use tribal_domain::{Job, JobId, JobState, McpErrorCode, PrincipalId, TaskStatus, TaskType, TriageOutcome, span_attrs};
+use tribal_domain::{
+    Job, JobId, JobState, McpErrorCode, PrincipalId, TaskStatus, TaskType, TriageOutcome,
+    span_attrs,
+};
 
 use super::common::acquire_connection;
 use crate::{
@@ -354,8 +357,7 @@ mod tests {
     use tribal_domain::{JobId, JobOutcome, JobState, JobStatus, KnowledgeItemId, TaskType};
     use tribal_test_utils::{
         MockIngestJobRepository, MockTaskRepository, MockTriageResultRepository, TestDb, a_job,
-        a_task,
-        a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed,
+        a_task, a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed,
     };
 
     use super::*;
@@ -426,7 +428,11 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let err = handler
-            .apply_job_status(serde_json::json!({"job_id": 123}), PrincipalId::new(), &ImmediatePollScheduler)
+            .apply_job_status(
+                serde_json::json!({"job_id": 123}),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
+            )
             .await
             .expect_err("should return Err(McpError) for malformed params");
 
@@ -439,7 +445,10 @@ mod tests {
 
         let wrong_prefix_id = KnowledgeItemId::new().to_string();
         let result = handler
-            .apply_job_status(serde_json::json!({"job_id": wrong_prefix_id}), PrincipalId::new(), &ImmediatePollScheduler,
+            .apply_job_status(
+                serde_json::json!({"job_id": wrong_prefix_id}),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -457,7 +466,10 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let result = handler
-            .apply_job_status(serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 31}), PrincipalId::new(), &ImmediatePollScheduler,
+            .apply_job_status(
+                serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 31}),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -480,7 +492,10 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let result = handler
-            .apply_job_status(serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 30}), PrincipalId::new(), &ImmediatePollScheduler,
+            .apply_job_status(
+                serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 30}),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -500,7 +515,10 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let result = handler
-            .apply_job_status(serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 0}), PrincipalId::new(), &ImmediatePollScheduler,
+            .apply_job_status(
+                serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 0}),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -520,7 +538,10 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let result = handler
-            .apply_job_status(serde_json::json!({"job_id": JobId::new().to_string()}), PrincipalId::new(), &ImmediatePollScheduler,
+            .apply_job_status(
+                serde_json::json!({"job_id": JobId::new().to_string()}),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -758,7 +779,10 @@ mod tests {
             .repositories(repos)
             .build();
         let result = handler
-            .apply_job_status(serde_json::json!({"job_id": job_id.to_string()}), PrincipalId::new(), &ImmediatePollScheduler,
+            .apply_job_status(
+                serde_json::json!({"job_id": job_id.to_string()}),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -813,10 +837,13 @@ mod tests {
             .repositories(repos)
             .build();
         let result = handler
-            .apply_job_status(serde_json::json!({
+            .apply_job_status(
+                serde_json::json!({
                     "job_id": job_id.to_string(),
                     "wait_seconds": 5,
-                }), PrincipalId::new(), &ImmediatePollScheduler,
+                }),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -881,10 +908,13 @@ mod tests {
             .repositories(repos)
             .build();
         let result = handler
-            .apply_job_status(serde_json::json!({
+            .apply_job_status(
+                serde_json::json!({
                     "job_id": job_id.to_string(),
                     "wait_seconds": 5,
-                }), PrincipalId::new(), &ImmediatePollScheduler,
+                }),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -1001,10 +1031,13 @@ mod tests {
             wait_path_handler(first, second, txs, CancellationToken::new()).await;
 
         let result = handler
-            .apply_job_status(serde_json::json!({
+            .apply_job_status(
+                serde_json::json!({
                     "job_id": job_id.to_string(),
                     "wait_seconds": 10,
-                }), PrincipalId::new(), &ImmediatePollScheduler,
+                }),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -1036,10 +1069,13 @@ mod tests {
             wait_path_handler(first, second, txs, CancellationToken::new()).await;
 
         let result = handler
-            .apply_job_status(serde_json::json!({
+            .apply_job_status(
+                serde_json::json!({
                     "job_id": job_id.to_string(),
                     "wait_seconds": 10,
-                }), PrincipalId::new(), &ImmediatePollScheduler,
+                }),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -1065,10 +1101,13 @@ mod tests {
             wait_path_handler(first, second, txs, CancellationToken::new()).await;
 
         let result = handler
-            .apply_job_status(serde_json::json!({
+            .apply_job_status(
+                serde_json::json!({
                     "job_id": job_id.to_string(),
                     "wait_seconds": 1,
-                }), PrincipalId::new(), &ImmediatePollScheduler,
+                }),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -1103,10 +1142,13 @@ mod tests {
         let (handler, job_mock, _db) = wait_path_handler(first, second, txs, cancel_token).await;
 
         let result = handler
-            .apply_job_status(serde_json::json!({
+            .apply_job_status(
+                serde_json::json!({
                     "job_id": job_id.to_string(),
                     "wait_seconds": 30,
-                }), PrincipalId::new(), &ImmediatePollScheduler,
+                }),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -1141,10 +1183,13 @@ mod tests {
             wait_path_handler(first, second, empty_txs, CancellationToken::new()).await;
 
         let result = handler
-            .apply_job_status(serde_json::json!({
+            .apply_job_status(
+                serde_json::json!({
                     "job_id": job_id.to_string(),
                     "wait_seconds": 5,
-                }), PrincipalId::new(), &ImmediatePollScheduler,
+                }),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -1183,10 +1228,13 @@ mod tests {
             wait_path_handler(first, second, empty_txs, cancel_token).await;
 
         let result = handler
-            .apply_job_status(serde_json::json!({
+            .apply_job_status(
+                serde_json::json!({
                     "job_id": job_id.to_string(),
                     "wait_seconds": 30,
-                }), PrincipalId::new(), &YieldingPollScheduler,
+                }),
+                PrincipalId::new(),
+                &YieldingPollScheduler,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);

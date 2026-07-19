@@ -5,8 +5,7 @@ use tribal_db::{
     RecentIngestionPage, RecentIngestionsQuery,
 };
 use tribal_domain::{
-    ExtractionCommitOutcome, InferenceIdentity, Job, JobId, PrincipalId, ProjectId,
-    RelationBatchId,
+    ExtractionCommitOutcome, InferenceIdentity, Job, JobId, PrincipalId, ProjectId, RelationBatchId,
 };
 
 use super::mock_repository;
