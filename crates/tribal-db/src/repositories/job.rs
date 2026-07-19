@@ -761,7 +761,9 @@ pub trait IngestJobRepository: Send + Sync {
     /// keyless job inserts as today, an unclaimed key inserts and claims,
     /// a claimed key resolves to the existing job when project and raw
     /// input match exactly, and conflicts otherwise — without echoing
-    /// content.
+    /// content. The resolve read observes a racing committer under read
+    /// committed, Postgres's default; a caller under snapshot isolation
+    /// would see its own transaction start instead.
     ///
     /// # Errors
     ///

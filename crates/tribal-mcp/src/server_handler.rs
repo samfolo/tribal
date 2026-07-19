@@ -30,6 +30,7 @@ use crate::{
     app_state::AppState,
     config::HandlerConfig,
     error::method_not_found,
+    handlers::{INGESTIONS_SCOPE, ingestion_resource_templates, is_ingestion_uri},
     mapping::session_to_json,
     session::{self, SESSION_RESOURCE_URI, SessionContext},
     tools::{PARSED_TOOLS, to_tool},
@@ -354,7 +355,7 @@ impl TribalServerHandler {
         uri: &str,
         principal: &AuthenticatedPrincipal,
     ) -> Result<ReadResourceResult, McpError> {
-        if crate::handlers::is_ingestion_uri(uri) {
+        if is_ingestion_uri(uri) {
             return self.read_ingestion_resource(uri, principal).await;
         }
         if uri != SESSION_RESOURCE_URI {
@@ -488,10 +489,8 @@ impl ServerHandler for TribalServerHandler {
         // The same scope filter as dispatch: a token without knowledge
         // authority is never shown the content-bearing templates.
         let advertised = match self.resolve_principal(&context) {
-            Ok(principal)
-                if is_authorised(principal.scopes(), &crate::handlers::INGESTIONS_SCOPE) =>
-            {
-                crate::handlers::ingestion_resource_templates()
+            Ok(principal) if is_authorised(principal.scopes(), &INGESTIONS_SCOPE) => {
+                ingestion_resource_templates()
             }
             _ => Vec::new(),
         };

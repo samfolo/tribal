@@ -3,7 +3,10 @@
 //! fails the suite until `just mcp-schema` recommits the projection.
 #![cfg(feature = "schema")]
 
-use tribal_mcp::contract::schema::{advertised_tool_schemas, client_contract};
+use tribal_mcp::contract::{
+    FirstPartyMcpContract,
+    schema::{advertised_tool_schemas, client_contract},
+};
 
 #[test]
 fn test_the_committed_tool_schemas_match_the_registry() {
@@ -32,5 +35,16 @@ fn test_the_committed_client_contract_matches_the_registry() {
         committed,
         client_contract(),
         "contracts/client.json drifted from the registry; run `just mcp-schema`",
+    );
+}
+
+#[test]
+fn test_the_schema_projection_carries_the_whole_selection() {
+    let parts = FirstPartyMcpContract::schema_parts();
+
+    assert_eq!(parts.tool_names(), FirstPartyMcpContract::tool_names());
+    assert_eq!(
+        parts.resource_templates(),
+        FirstPartyMcpContract::resource_templates(),
     );
 }

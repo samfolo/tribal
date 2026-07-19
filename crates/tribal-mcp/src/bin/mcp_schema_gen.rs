@@ -1,6 +1,7 @@
 //! Regenerates the advertised MCP tool schemas and the first-party client
 //! contract from the typed registry. Invoked by `just mcp-schema`; the
-//! in-suite drift test proves the committed files equal this output.
+//! in-suite drift test (`tests/contract_schema.rs`) proves the committed
+//! files equal this output.
 
 use std::{fs, path::Path};
 

@@ -100,6 +100,20 @@ macro_rules! declare_first_party_mcp_contract {
                 scopes
             }
         }
+
+        /// The schema projection of this exact selection — built from the
+        /// same list, so the generated contract has no second copy of the
+        /// selection to drift from.
+        #[cfg(feature = "schema")]
+        impl FirstPartyMcpContract {
+            #[must_use]
+            pub fn schema_parts() -> $crate::contract::schema::FirstPartySchemaParts {
+                let mut parts = $crate::contract::schema::FirstPartySchemaParts::default();
+                $(parts.add_tool::<$tool>();)+
+                $(parts.add_resource::<$resource>();)+
+                parts
+            }
+        }
     };
 }
 
@@ -157,6 +171,18 @@ mod tests {
         assert_eq!(
             FirstPartyMcpContract::resource_templates(),
             vec!["tribal://beta/{id}", "tribal://gamma"],
+        );
+    }
+
+    #[cfg(feature = "schema")]
+    #[test]
+    fn test_the_schema_projection_is_built_from_the_selection_itself() {
+        let parts = FirstPartyMcpContract::schema_parts();
+
+        assert_eq!(parts.tool_names(), FirstPartyMcpContract::tool_names());
+        assert_eq!(
+            parts.resource_templates(),
+            FirstPartyMcpContract::resource_templates(),
         );
     }
 

@@ -7,17 +7,13 @@ use std::collections::BTreeMap;
 
 use schemars::{schema::RootSchema, schema_for};
 use serde::Serialize;
-use tribal_wire::mcp::{
-    McpIngestRequest, McpIngestResponse, McpIngestionInputResponse, McpJobStatusRequest,
-    McpJobStatusResponse, McpRecentIngestionsResponse,
-};
 
 use super::{
     FirstPartyMcpContract, McpResourceRead, McpToolCall, TOOL_NAME_PREFIX,
     declarations::{
         McpDiscoverCall, McpExploreCall, McpFeedbackCall, McpGetItemCall, McpIngestCall,
-        McpIngestionInputResource, McpJobStatusCall, McpRecentIngestionsResource, McpReindexCall,
-        McpReindexCancelCall, McpReindexPruneCall, McpSetContextCall,
+        McpJobStatusCall, McpReindexCall, McpReindexCancelCall, McpReindexPruneCall,
+        McpSetContextCall,
     },
 };
 
@@ -77,13 +73,68 @@ where
 /// The first-party MCP contract native clients speak: the selected tools
 /// and resources, the union of scopes they require, and the shared schema
 /// definitions their input/output/response fields name.
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ClientContract {
+pub struct FirstPartySchemaParts {
     tools: Vec<ClientTool>,
     resources: Vec<ClientResource>,
     required_scopes: Vec<&'static str>,
     definitions: BTreeMap<String, RootSchema>,
+}
+
+impl FirstPartySchemaParts {
+    /// Adds one selected tool: its identity, presentation, and the
+    /// definitions its request and response schemas file under.
+    pub fn add_tool<C>(&mut self)
+    where
+        C: McpToolCall,
+        C::Request: schemars::JsonSchema,
+        C::Response: schemars::JsonSchema,
+    {
+        let input = <C::Request as schemars::JsonSchema>::schema_name();
+        let output = <C::Response as schemars::JsonSchema>::schema_name();
+        self.definitions
+            .insert(input.clone(), schema_for!(C::Request));
+        self.definitions
+            .insert(output.clone(), schema_for!(C::Response));
+        self.tools.push(ClientTool {
+            name: C::NAME,
+            required_scope: C::REQUIRED_SCOPE,
+            title: C::PRESENTATION.title,
+            description: C::PRESENTATION.description,
+            input,
+            output,
+        });
+    }
+
+    /// Adds one selected resource and the definition its response files
+    /// under.
+    pub fn add_resource<R>(&mut self)
+    where
+        R: McpResourceRead,
+        R::Response: schemars::JsonSchema,
+    {
+        let response = <R::Response as schemars::JsonSchema>::schema_name();
+        self.definitions
+            .insert(response.clone(), schema_for!(R::Response));
+        self.resources.push(ClientResource {
+            uri_template: R::URI_TEMPLATE,
+            required_scope: R::REQUIRED_SCOPE,
+            response,
+        });
+    }
+
+    /// Names of the projected tools, for the selection-divergence gate.
+    #[must_use]
+    pub fn tool_names(&self) -> Vec<&'static str> {
+        self.tools.iter().map(|tool| tool.name).collect()
+    }
+
+    /// Templates of the projected resources, for the same gate.
+    #[must_use]
+    pub fn resource_templates(&self) -> Vec<&'static str> {
+        self.resources.iter().map(|r| r.uri_template).collect()
+    }
 }
 
 /// One first-party tool: its identity, presentation, and the definition
@@ -95,8 +146,8 @@ struct ClientTool {
     required_scope: &'static str,
     title: &'static str,
     description: &'static str,
-    input: &'static str,
-    output: &'static str,
+    input: String,
+    output: String,
 }
 
 /// One first-party resource: its identity and the definition name its
@@ -106,69 +157,44 @@ struct ClientTool {
 struct ClientResource {
     uri_template: &'static str,
     required_scope: &'static str,
-    response: &'static str,
+    response: String,
 }
 
-/// Renders the first-party client contract document.
+/// Renders the first-party client contract document from the macro's
+/// own projection — the selection has no second copy to drift from.
 #[must_use]
 pub fn client_contract() -> String {
-    let mut definitions = BTreeMap::new();
-    for (name, schema) in [
-        ("McpIngestRequest", schema_for!(McpIngestRequest)),
-        ("McpIngestResponse", schema_for!(McpIngestResponse)),
-        ("McpJobStatusRequest", schema_for!(McpJobStatusRequest)),
-        ("McpJobStatusResponse", schema_for!(McpJobStatusResponse)),
-        (
-            "McpRecentIngestionsResponse",
-            schema_for!(McpRecentIngestionsResponse),
-        ),
-        (
-            "McpIngestionInputResponse",
-            schema_for!(McpIngestionInputResponse),
-        ),
-    ] {
-        definitions.insert(name.to_owned(), schema);
-    }
-
-    let contract = ClientContract {
-        tools: vec![
-            ClientTool {
-                name: McpIngestCall::NAME,
-                required_scope: McpIngestCall::REQUIRED_SCOPE,
-                title: McpIngestCall::PRESENTATION.title,
-                description: McpIngestCall::PRESENTATION.description,
-                input: "McpIngestRequest",
-                output: "McpIngestResponse",
-            },
-            ClientTool {
-                name: McpJobStatusCall::NAME,
-                required_scope: McpJobStatusCall::REQUIRED_SCOPE,
-                title: McpJobStatusCall::PRESENTATION.title,
-                description: McpJobStatusCall::PRESENTATION.description,
-                input: "McpJobStatusRequest",
-                output: "McpJobStatusResponse",
-            },
-        ],
-        resources: vec![
-            ClientResource {
-                uri_template: McpRecentIngestionsResource::URI_TEMPLATE,
-                required_scope: McpRecentIngestionsResource::REQUIRED_SCOPE,
-                response: "McpRecentIngestionsResponse",
-            },
-            ClientResource {
-                uri_template: McpIngestionInputResource::URI_TEMPLATE,
-                required_scope: McpIngestionInputResource::REQUIRED_SCOPE,
-                response: "McpIngestionInputResponse",
-            },
-        ],
-        required_scopes: FirstPartyMcpContract::required_scopes(),
-        definitions,
-    };
-    render(&contract)
+    let mut parts = FirstPartyMcpContract::schema_parts();
+    parts.required_scopes = FirstPartyMcpContract::required_scopes();
+    render(&parts)
 }
 
 /// The one rendering every committed schema document uses.
 fn render(value: &impl Serialize) -> String {
     let json = serde_json::to_string_pretty(value).expect("schema value serialises");
     format!("{json}\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{contract::TOOL_NAME_PREFIX, tools::TOOLS};
+
+    #[test]
+    fn test_the_schema_list_covers_the_advertised_table_exactly() {
+        let schema_directories: Vec<&str> = advertised_tool_schemas()
+            .iter()
+            .map(|tool| tool.directory)
+            .collect();
+        let advertised: Vec<&str> = TOOLS
+            .iter()
+            .map(|tool| {
+                tool.name
+                    .strip_prefix(TOOL_NAME_PREFIX)
+                    .expect("registered tool names carry the wire prefix")
+            })
+            .collect();
+
+        assert_eq!(schema_directories, advertised);
+    }
 }
