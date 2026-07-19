@@ -799,6 +799,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_targeted_create_uses_the_explicit_audience_and_revoke_issued_skips_the_revision_gate()
+     {
+        let database = tribal_test_utils::TestDb::new().await;
+        let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let (credentials, credential_runtime) = CredentialCoordinator::spawn(
+            ConfigAuthorityNamespace::from_test("token-runtime-target"),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
+        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let audience = "http://127.0.0.1:9999/mcp";
+
+        let created = administration
+            .create_for_runtime(
+                &operation,
+                TokenCreateRequest {
+                    expected_revision: revision.clone(),
+                    principal: None,
+                    ttl_hours: Some(2),
+                    scopes: Vec::new(),
+                    persist_as_default: false,
+                    expected_runtime: None,
+                },
+                audience.to_owned(),
+            )
+            .await
+            .expect("targeted token creates");
+        assert_eq!(created.value.summary.audience, audience);
+
+        administration
+            .revoke_issued(&operation, created.value.summary.id)
+            .await
+            .expect("issued token revokes without a revision gate");
+        let inventory = administration
+            .list(
+                &operation,
+                TokenListRequest {
+                    page: PageRequest {
+                        size: PageSize::try_from(10).unwrap(),
+                        after: None,
+                    },
+                },
+            )
+            .await
+            .expect("tokens list");
+        assert_eq!(inventory.value.items.len(), 1);
+        assert!(matches!(
+            inventory.value.items[0].state,
+            TokenState::Revoked { .. }
+        ));
+
+        drop(administration);
+        credential_runtime.join().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_stale_mutation_is_refused_before_database_or_coordinator_use() {
         let (_temp, worker, _worker_runtime) =
             config_worker("postgres://user:pass@localhost:1/unreachable");
