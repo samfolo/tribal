@@ -37,15 +37,15 @@ use tribal_wire::management::{
     PatchConfigViolation, ProcessingProfileCall, ProcessingProfileSetCall, ProjectListCall,
     ProjectRegisterCall, ProviderConnectionRemoveCall, ProviderConnectionUpsertCall,
     ProviderConnectionsCall, ProviderProbeCall, ReindexCancelCall, ReindexPruneCall,
-    ReindexRunCall, RuntimeIdentity, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall,
-    ServerStatusCall, SettingsResetPreviewCall, ThreadsPruneCall, TokenCreateCall,
-    TokenCreateRequest, TokenCreateResult, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
+    ReindexRunCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall,
+    SettingsResetPreviewCall, ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall,
+    TokenRevokeCall,
 };
 
 use super::{
     config_schema,
     configuration::management_error,
-    lifecycle::{LifecycleController, RuntimeCredentialTarget},
+    lifecycle::LifecycleController,
     probe::{ProbeError, ProbeService},
     product::ProductSession,
     readiness,
@@ -157,7 +157,8 @@ impl<'a> ManagementApplication<'a> {
                 let request = parse_call::<TokenCreateCall>(params)?;
                 let result = match request.expected_runtime.clone() {
                     Some(expected) => {
-                        self.token_create_for_runtime(&operation, request, expected)
+                        self.tokens
+                            .create_bound_to_runtime(self.lifecycle, &operation, request, expected)
                             .await
                     }
                     None => self
@@ -506,52 +507,6 @@ impl<'a> ManagementApplication<'a> {
                 )
             }
         }
-    }
-
-    /// Issues a bearer bound to the expected runtime: the lifecycle
-    /// owner resolves the audience-bearing target, issuance uses that
-    /// exact resource, and the post-commit revalidation is the
-    /// linearization point — a target changed inside the window revokes
-    /// the token before the bearer is released and reports the
-    /// conflict. The unreleased bearer zeroizes on drop.
-    async fn token_create_for_runtime(
-        &self,
-        operation: &OperationContext,
-        request: TokenCreateRequest,
-        expected: RuntimeIdentity,
-    ) -> Result<TokenCreateResult, ManagementResponseError> {
-        let target = self
-            .credential_target(operation, expected.clone())
-            .await?
-            .ok_or_else(token::credential_target_conflict)?;
-        let result = self
-            .tokens
-            .create_for_runtime(operation, request, target.canonical_resource.clone())
-            .await
-            .map_err(token::public_error)?;
-        let revalidated = self.credential_target(operation, expected).await?;
-        if revalidated.as_ref() == Some(&target) {
-            return Ok(result);
-        }
-        let issued = result.value.summary.id;
-        drop(result);
-        self.tokens
-            .revoke_issued(operation, issued)
-            .await
-            .map_err(token::public_error)?;
-        Err(token::credential_target_conflict())
-    }
-
-    async fn credential_target(
-        &self,
-        operation: &OperationContext,
-        expected: RuntimeIdentity,
-    ) -> Result<Option<RuntimeCredentialTarget>, ManagementResponseError> {
-        self.lifecycle
-            .credential_target_for(operation, expected)
-            .await
-            .map_err(operation::public_error)?
-            .ok_or_else(|| internal_error("lifecycle owner is unavailable"))
     }
 
     async fn refresh_readiness(

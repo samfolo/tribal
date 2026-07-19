@@ -15,12 +15,14 @@ use tribal_domain::{
 use tribal_wire::management::{
     AdministrationFailure, BootstrapTokenPolicy, ConfigRevision, CredentialPersistenceResult,
     InventoryItemRef, IssuedBearerToken, ManagementError, ManagementResponseError, Revisioned,
-    TokenCreateOutcome, TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest,
-    TokenPage, TokenRevokeAllOutcome, TokenRevokeAllRequest, TokenRevokeAllResult,
-    TokenRevokeOutcome, TokenRevokeRequest, TokenRevokeResult, TokenState, TokenSummary,
+    RuntimeIdentity, TokenCreateOutcome, TokenCreateRequest, TokenCreateResult, TokenInventory,
+    TokenListRequest, TokenPage, TokenRevokeAllOutcome, TokenRevokeAllRequest,
+    TokenRevokeAllResult, TokenRevokeOutcome, TokenRevokeRequest, TokenRevokeResult, TokenState,
+    TokenSummary,
 };
 
 use super::{
+    super::lifecycle::{LifecycleController, RuntimeCredentialTarget},
     credential::{
         CredentialCoordinator, CredentialCoordinatorError, PersistedIssuance,
         PersistedIssuanceOrigin,
@@ -93,6 +95,46 @@ impl TokenAdministration {
         request: TokenCreateRequest,
     ) -> Result<TokenCreateResult, TokenAdministrationError> {
         self.create_with(operation, request, None).await
+    }
+
+    /// Issues a bearer bound to the expected runtime: the lifecycle
+    /// owner resolves the audience-bearing target, issuance uses that
+    /// exact resource, and the post-commit revalidation decides release.
+    /// Every other outcome — a changed target, a lost runtime, an
+    /// indeterminate read — fails closed: the bearer zeroizes on drop
+    /// and the committed token is revoked under a fresh operation, so
+    /// the caller's own deadline cannot defeat the compensation.
+    pub(super) async fn create_bound_to_runtime(
+        &self,
+        lifecycle: &LifecycleController,
+        operation: &OperationContext,
+        request: TokenCreateRequest,
+        expected: RuntimeIdentity,
+    ) -> Result<TokenCreateResult, ManagementResponseError> {
+        if request.persist_as_default {
+            return Err(administration_error(
+                "a runtime-targeted token cannot persist as the default credential",
+                AdministrationFailure::TokenIssuanceRefused,
+            ));
+        }
+        let target = credential_target(lifecycle, operation, expected.clone())
+            .await?
+            .ok_or_else(credential_target_conflict)?;
+        let result = self
+            .create_for_runtime(operation, request, target.canonical_resource.clone())
+            .await
+            .map_err(public_error)?;
+        let revalidated = credential_target(lifecycle, operation, expected).await;
+        if matches!(&revalidated, Ok(Some(current)) if *current == target) {
+            return Ok(result);
+        }
+        let issued = result.value.summary.id;
+        drop(result);
+        let compensation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        self.revoke_issued(&compensation, issued)
+            .await
+            .map_err(public_error)?;
+        Err(credential_target_conflict())
     }
 
     /// Issues against the lifecycle-resolved runtime audience: the same
@@ -626,6 +668,23 @@ fn repository(source: DbError) -> TokenAdministrationError {
     TokenAdministrationError::Repository { source }
 }
 
+/// The lifecycle owner's answer for one targeted read; an absent owner
+/// is the same internal fault every lifecycle read reports.
+async fn credential_target(
+    lifecycle: &LifecycleController,
+    operation: &OperationContext,
+    expected: RuntimeIdentity,
+) -> Result<Option<RuntimeCredentialTarget>, ManagementResponseError> {
+    lifecycle
+        .credential_target_for(operation, expected)
+        .await
+        .map_err(super::operation::public_error)?
+        .ok_or_else(|| ManagementResponseError {
+            message: "lifecycle owner is unavailable".to_owned(),
+            error: ManagementError::InternalInvariant,
+        })
+}
+
 /// The targeted-issuance refusal: the expected runtime is not the
 /// attached, settled data plane — or stopped being it inside the
 /// issuance window.
@@ -645,13 +704,56 @@ fn administration_error(message: &str, failure: AdministrationFailure) -> Manage
 
 #[cfg(test)]
 mod tests {
-    use tribal_wire::management::{ConfigDigest, ConfigRevision, PageRequest, PageSize};
+    use tribal_wire::management::{
+        ConfigDigest, ConfigFilePath, ConfigRevision, PageRequest, PageSize,
+    };
 
     use super::*;
     use crate::management::{
-        application::credential::CredentialCoordinator, authority::ConfigAuthorityNamespace,
-        configuration::ConfigAuthority, worker,
+        application::credential::CredentialCoordinator,
+        authority::ConfigAuthorityNamespace,
+        configuration::ConfigAuthority,
+        lifecycle::{ScriptedCredentialAnswer, controller_answering_credential_targets},
+        worker,
     };
+
+    fn a_runtime_identity() -> RuntimeIdentity {
+        RuntimeIdentity {
+            instance_id: "expected-runtime".to_owned(),
+            pid: 4242,
+            binary_version: "0.0.0".to_owned(),
+            config_path: ConfigFilePath {
+                path: "/tmp/tribal.yaml".to_owned(),
+            },
+        }
+    }
+
+    fn a_credential_target(resource: &str) -> RuntimeCredentialTarget {
+        RuntimeCredentialTarget {
+            runtime: a_runtime_identity(),
+            canonical_resource: resource.to_owned(),
+        }
+    }
+
+    fn a_bound_request(revision: ConfigRevision, persist_as_default: bool) -> TokenCreateRequest {
+        TokenCreateRequest {
+            expected_revision: revision,
+            principal: None,
+            ttl_hours: Some(2),
+            scopes: Vec::new(),
+            persist_as_default,
+            expected_runtime: Some(a_runtime_identity()),
+        }
+    }
+
+    fn is_credential_target_conflict(error: &ManagementResponseError) -> bool {
+        matches!(
+            error.error,
+            ManagementError::Administration {
+                failure: AdministrationFailure::CredentialTargetConflict,
+            }
+        )
+    }
 
     fn config_worker(
         database_url: &str,
@@ -851,6 +953,181 @@ mod tests {
             TokenState::Revoked { .. }
         ));
 
+        drop(administration);
+        credential_runtime.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_bound_create_releases_only_when_revalidation_matches_the_target() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let (credentials, credential_runtime) = CredentialCoordinator::spawn(
+            ConfigAuthorityNamespace::from_test("token-bound-release"),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
+        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let lifecycle = controller_answering_credential_targets(vec![
+            ScriptedCredentialAnswer::Answer(Some(a_credential_target("https://runtime.test/mcp"))),
+            ScriptedCredentialAnswer::Answer(Some(a_credential_target("https://runtime.test/mcp"))),
+        ]);
+
+        let created = administration
+            .create_bound_to_runtime(
+                &lifecycle,
+                &operation,
+                a_bound_request(revision, false),
+                a_runtime_identity(),
+            )
+            .await
+            .expect("bound token creates");
+
+        assert_eq!(created.value.summary.audience, "https://runtime.test/mcp");
+        drop(administration);
+        credential_runtime.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_bound_create_revokes_the_committed_token_when_the_target_changes_mid_window() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let (credentials, credential_runtime) = CredentialCoordinator::spawn(
+            ConfigAuthorityNamespace::from_test("token-bound-changed"),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
+        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let lifecycle = controller_answering_credential_targets(vec![
+            ScriptedCredentialAnswer::Answer(Some(a_credential_target("https://runtime.test/mcp"))),
+            ScriptedCredentialAnswer::Answer(Some(a_credential_target(
+                "https://replacement.test/mcp",
+            ))),
+        ]);
+
+        let refused = administration
+            .create_bound_to_runtime(
+                &lifecycle,
+                &operation,
+                a_bound_request(revision, false),
+                a_runtime_identity(),
+            )
+            .await
+            .expect_err("a changed target refuses release");
+
+        assert!(is_credential_target_conflict(&refused));
+        let inventory = administration
+            .list(
+                &operation,
+                TokenListRequest {
+                    page: PageRequest {
+                        size: PageSize::try_from(10).unwrap(),
+                        after: None,
+                    },
+                },
+            )
+            .await
+            .expect("tokens list");
+        assert_eq!(inventory.value.items.len(), 1);
+        assert!(matches!(
+            inventory.value.items[0].state,
+            TokenState::Revoked { .. }
+        ));
+        drop(administration);
+        credential_runtime.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_bound_create_revokes_the_committed_token_when_revalidation_is_indeterminate() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let (credentials, credential_runtime) = CredentialCoordinator::spawn(
+            ConfigAuthorityNamespace::from_test("token-bound-indeterminate"),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
+        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let lifecycle = controller_answering_credential_targets(vec![
+            ScriptedCredentialAnswer::Answer(Some(a_credential_target("https://runtime.test/mcp"))),
+            ScriptedCredentialAnswer::Dropped,
+        ]);
+
+        let refused = administration
+            .create_bound_to_runtime(
+                &lifecycle,
+                &operation,
+                a_bound_request(revision, false),
+                a_runtime_identity(),
+            )
+            .await
+            .expect_err("an indeterminate revalidation refuses release");
+
+        assert!(is_credential_target_conflict(&refused));
+        let inventory = administration
+            .list(
+                &operation,
+                TokenListRequest {
+                    page: PageRequest {
+                        size: PageSize::try_from(10).unwrap(),
+                        after: None,
+                    },
+                },
+            )
+            .await
+            .expect("tokens list");
+        assert_eq!(inventory.value.items.len(), 1);
+        assert!(matches!(
+            inventory.value.items[0].state,
+            TokenState::Revoked { .. }
+        ));
+        drop(administration);
+        credential_runtime.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_bound_create_refuses_a_persisting_request_before_any_issuance() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let (credentials, credential_runtime) = CredentialCoordinator::spawn(
+            ConfigAuthorityNamespace::from_test("token-bound-persist"),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
+        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let lifecycle = controller_answering_credential_targets(Vec::new());
+
+        let refused = administration
+            .create_bound_to_runtime(
+                &lifecycle,
+                &operation,
+                a_bound_request(revision, true),
+                a_runtime_identity(),
+            )
+            .await
+            .expect_err("a persisting targeted request is refused");
+
+        assert!(matches!(
+            refused.error,
+            ManagementError::Administration {
+                failure: AdministrationFailure::TokenIssuanceRefused,
+            }
+        ));
+        let inventory = administration
+            .list(
+                &operation,
+                TokenListRequest {
+                    page: PageRequest {
+                        size: PageSize::try_from(10).unwrap(),
+                        after: None,
+                    },
+                },
+            )
+            .await
+            .expect("tokens list");
+        assert!(inventory.value.items.is_empty());
         drop(administration);
         credential_runtime.join().await.unwrap();
     }
