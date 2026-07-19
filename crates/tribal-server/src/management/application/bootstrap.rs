@@ -218,10 +218,16 @@ impl<'a> BootstrapAdministration<'a> {
         token: tribal_wire::management::BootstrapTokenPolicy,
         integration: &tribal_wire::management::McpTargetSelection,
     ) -> Result<BootstrapPreflight, ManagementResponseError> {
+        // The base a bootstrap overlays its inputs on may be unconfigured — an
+        // empty or partially-valid document on a fresh system — so it is read
+        // leniently. `validate_candidate` below then holds the overlaid result
+        // to the full contract, and `patch_config` applies it through the same
+        // repair path the incremental `config.set`/`config.patch` writes use,
+        // so CLI bootstrap and the client's step-by-step setup onboard one way.
         let snapshot = self
             .config
             .for_operation(&self.operation)
-            .resolved_snapshot()
+            .base_snapshot()
             .await
             .map_err(ConfigWorkerRequestError::into_public_error)?;
         if snapshot.revision != expected_revision {
@@ -260,18 +266,16 @@ impl<'a> BootstrapAdministration<'a> {
         }
         validate_candidate(&candidate)?;
 
-        let token = self
-            .tokens
-            .preflight_bootstrap(&self.operation, &snapshot.revision, token)
-            .await
-            .map_err(token_error)?;
+        // Both preflights read the candidate — the configuration this bootstrap
+        // is applying — so onboarding a fresh system computes the token
+        // audience and integration target from the config it is about to
+        // commit, never from the unconfigured durable base.
+        let token =
+            TokenAdministration::preflight_bootstrap(token, &candidate).map_err(token_error)?;
         if let Some(project) = project {
             ProjectAdministration::preflight(project).map_err(super::project::public_error)?;
         }
-        let target = self
-            .integration
-            .preflight_target(&self.operation, &snapshot.revision, integration)
-            .await
+        let target = IntegrationAdministration::preflight_target(integration, &candidate)
             .map_err(super::integration_error)?;
         if project.is_some()
             && matches!(

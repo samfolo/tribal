@@ -210,6 +210,24 @@ impl ConfigAuthority {
         })
     }
 
+    /// The current durable configuration as a write base, and its revision,
+    /// tolerating an unconfigured or semantically-invalid document.
+    ///
+    /// Mirrors [`Self::resolved_snapshot`] but does not require validity: the
+    /// parsed values are preserved and missing fields default, so an
+    /// onboarding write ([`super::application::bootstrap`]) has a base to
+    /// overlay on a fresh system. Read paths that need a usable configuration
+    /// keep using `resolved_snapshot`; this one is only for building a
+    /// candidate that a subsequent [`Self::patch`] validates and repairs.
+    pub(crate) fn base_snapshot(&self) -> Result<ResolvedConfigSnapshot, ConfigAuthorityError> {
+        self.reconcile_if_needed()?;
+        let proven = self.stable_winner()?;
+        Ok(ResolvedConfigSnapshot {
+            config: Arc::new(Self::load_base(&proven)),
+            revision: proven.revision,
+        })
+    }
+
     /// Returns exact stable bytes for local readiness without reopening the path.
     pub(crate) fn check_snapshot(&self) -> Result<ConfigCheckSnapshot, ConfigAuthorityError> {
         self.reconcile_if_needed()?;
@@ -430,6 +448,18 @@ impl ConfigAuthority {
                 }
             }
         }
+    }
+
+    /// Parses the durable document as a write base, tolerating an
+    /// unconfigured or semantically-invalid config: the parsed values survive
+    /// and missing fields default. Only bytes that are not valid UTF-8 or not
+    /// structurally parseable fall back to compiled defaults — never a silent
+    /// discard of readable values.
+    fn load_base(proven: &ProvenConfigBytes) -> TribalConfig {
+        std::str::from_utf8(&proven.bytes)
+            .ok()
+            .and_then(|yaml| tribal_config::load_config_from_yaml(yaml, None, None).ok())
+            .unwrap_or_default()
     }
 
     fn load_valid(proven: &ProvenConfigBytes) -> Result<TribalConfig, ConfigAuthorityError> {
@@ -704,6 +734,28 @@ mod tests {
         assert!(matches!(
             authority.document().expect("document observes"),
             ConfigDocument::DurableInvalid { .. }
+        ));
+    }
+
+    #[test]
+    fn test_base_snapshot_yields_a_write_base_where_resolved_snapshot_refuses() {
+        let temp = tempfile::tempdir().expect("temporary config root");
+        let config = temp.path().join("tribal.yaml");
+        std::fs::write(&config, "database: [").expect("invalid config writes");
+        let authority = ConfigAuthority::new(config);
+
+        // The onboarding read never fails on an unconfigured base — bootstrap
+        // overlays its inputs on this and the candidate is validated after.
+        let base = authority
+            .base_snapshot()
+            .expect("base tolerates an invalid document");
+        assert!(base.config.database.url.is_empty());
+
+        // The read paths that require a usable configuration still refuse it,
+        // so the tolerance is scoped to the write base alone.
+        assert!(matches!(
+            authority.resolved_snapshot(),
+            Err(ConfigAuthorityError::Invalid { .. })
         ));
     }
 

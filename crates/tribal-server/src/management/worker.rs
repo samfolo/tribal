@@ -137,6 +137,7 @@ enum ConfigCommand {
     ProbeSnapshot(ConfigResponse<Result<ConfigProbeSnapshot, ConfigAuthorityError>>),
     CheckSnapshot(ConfigResponse<Result<ConfigCheckSnapshot, ConfigAuthorityError>>),
     ResolvedSnapshot(ConfigResponse<Result<ResolvedConfigSnapshot, ConfigAuthorityError>>),
+    BaseSnapshot(ConfigResponse<Result<ResolvedConfigSnapshot, ConfigAuthorityError>>),
     #[cfg(test)]
     Block {
         entered: oneshot::Sender<()>,
@@ -324,6 +325,9 @@ fn dispatch(
         }
         ConfigCommand::ResolvedSnapshot(response) => {
             let _ = response.send(admitted.map(|()| authority.resolved_snapshot()));
+        }
+        ConfigCommand::BaseSnapshot(response) => {
+            let _ = response.send(admitted.map(|()| authority.base_snapshot()));
         }
         #[cfg(test)]
         ConfigCommand::Block { entered, release } => {
@@ -551,6 +555,16 @@ impl ConfigWorkerOperation<'_> {
         )
         .await?
         .map_err(ConfigWorkerRequestError::from)
+    }
+
+    /// The current configuration as a write base, tolerating an unconfigured
+    /// document — the read an onboarding write overlays its inputs on.
+    pub(in crate::management) async fn base_snapshot(
+        &self,
+    ) -> Result<ResolvedConfigSnapshot, ConfigWorkerRequestError> {
+        self.request(ConfigCompletion::CancelSafe, ConfigCommand::BaseSnapshot)
+            .await?
+            .map_err(ConfigWorkerRequestError::from)
     }
 }
 
