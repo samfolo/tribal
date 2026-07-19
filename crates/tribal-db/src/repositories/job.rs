@@ -56,6 +56,18 @@ const COLUMNS: Columns = Columns(&[
     "updated_at",
 ]);
 
+/// The caller-supplied job columns and their placeholders, shared by the
+/// plain insert and the idempotency-arbitrated insert so the two
+/// statements cannot drift; [`bind_new_job`] is the matching bind order.
+const INSERT_JOB: &str = "INSERT INTO jobs \
+     (correlation_id, project_id, principal_id, actor_id, \
+      source_context, raw_input, ingest_idempotency_key, \
+      extraction_system_prompt_version_id, extraction_user_prompt_version_id, \
+      triage_system_prompt_version_id, triage_user_prompt_version_id, \
+      relation_system_prompt_version_id, relation_user_prompt_version_id, \
+      system_fingerprint_hash, trace_context) \
+ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)";
+
 const UNKNOWN_JOB_STATUS_IN_DB: &str = "unrecognised job status in database — schema mismatch";
 const UNKNOWN_JOB_OUTCOME_IN_DB: &str = "unrecognised job outcome in database — schema mismatch";
 const BATCH_SIZE_EXCEEDS_I32: &str = "batch_size exceeds i32::MAX";
@@ -284,34 +296,9 @@ pub struct PgJobRepository;
 #[async_trait]
 impl JobRepository for PgJobRepository {
     async fn insert(&self, conn: &mut PgConnection, new_job: &NewJob) -> Result<Job, DbError> {
-        let sql = format!(
-            "INSERT INTO jobs \
-                 (correlation_id, project_id, principal_id, actor_id, \
-                  source_context, raw_input, ingest_idempotency_key, \
-                  extraction_system_prompt_version_id, extraction_user_prompt_version_id, \
-                  triage_system_prompt_version_id, triage_user_prompt_version_id, \
-                  relation_system_prompt_version_id, relation_user_prompt_version_id, \
-                  system_fingerprint_hash, trace_context) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
-             RETURNING {COLUMNS}",
-        );
+        let sql = format!("{INSERT_JOB} RETURNING {COLUMNS}");
 
-        let row = sqlx::query(&sql)
-            .bind(new_job.correlation_id.map(|id| *id.inner()))
-            .bind(new_job.project_id.inner())
-            .bind(new_job.principal_id.inner())
-            .bind(new_job.actor_id.map(|id| *id.inner()))
-            .bind(&new_job.source_context)
-            .bind(&new_job.raw_input)
-            .bind(new_job.ingest_idempotency_key)
-            .bind(new_job.extraction_system_prompt_version_id.inner())
-            .bind(new_job.extraction_user_prompt_version_id.inner())
-            .bind(new_job.triage_system_prompt_version_id.inner())
-            .bind(new_job.triage_user_prompt_version_id.inner())
-            .bind(new_job.relation_system_prompt_version_id.inner())
-            .bind(new_job.relation_user_prompt_version_id.inner())
-            .bind(&new_job.system_fingerprint_hash)
-            .bind(&new_job.trace_context)
+        let row = bind_new_job(sqlx::query(&sql), new_job)
             .fetch_one(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {
@@ -815,36 +802,14 @@ impl IngestJobRepository for PgJobRepository {
         };
 
         let sql = format!(
-            "INSERT INTO jobs \
-                 (correlation_id, project_id, principal_id, actor_id, \
-                  source_context, raw_input, ingest_idempotency_key, \
-                  extraction_system_prompt_version_id, extraction_user_prompt_version_id, \
-                  triage_system_prompt_version_id, triage_user_prompt_version_id, \
-                  relation_system_prompt_version_id, relation_user_prompt_version_id, \
-                  system_fingerprint_hash, trace_context) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
+            "{INSERT_JOB} \
              ON CONFLICT (principal_id, ingest_idempotency_key) \
                  WHERE ingest_idempotency_key IS NOT NULL \
                  DO NOTHING \
              RETURNING {COLUMNS}",
         );
 
-        let inserted = sqlx::query(&sql)
-            .bind(job.correlation_id.map(|id| *id.inner()))
-            .bind(job.project_id.inner())
-            .bind(job.principal_id.inner())
-            .bind(job.actor_id.map(|id| *id.inner()))
-            .bind(&job.source_context)
-            .bind(&job.raw_input)
-            .bind(key)
-            .bind(job.extraction_system_prompt_version_id.inner())
-            .bind(job.extraction_user_prompt_version_id.inner())
-            .bind(job.triage_system_prompt_version_id.inner())
-            .bind(job.triage_user_prompt_version_id.inner())
-            .bind(job.relation_system_prompt_version_id.inner())
-            .bind(job.relation_user_prompt_version_id.inner())
-            .bind(&job.system_fingerprint_hash)
-            .bind(&job.trace_context)
+        let inserted = bind_new_job(sqlx::query(&sql), job)
             .fetch_optional(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {
@@ -1005,6 +970,30 @@ fn preview_of(raw_input: &str) -> String {
 // ---------------------------------------------------------------------------
 // Row mapping
 // ---------------------------------------------------------------------------
+
+/// Binds a [`NewJob`]'s caller-supplied fields in [`INSERT_JOB`]'s
+/// placeholder order.
+fn bind_new_job<'q>(
+    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    new_job: &'q NewJob,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    query
+        .bind(new_job.correlation_id.map(|id| *id.inner()))
+        .bind(new_job.project_id.inner())
+        .bind(new_job.principal_id.inner())
+        .bind(new_job.actor_id.map(|id| *id.inner()))
+        .bind(&new_job.source_context)
+        .bind(&new_job.raw_input)
+        .bind(new_job.ingest_idempotency_key)
+        .bind(new_job.extraction_system_prompt_version_id.inner())
+        .bind(new_job.extraction_user_prompt_version_id.inner())
+        .bind(new_job.triage_system_prompt_version_id.inner())
+        .bind(new_job.triage_user_prompt_version_id.inner())
+        .bind(new_job.relation_system_prompt_version_id.inner())
+        .bind(new_job.relation_user_prompt_version_id.inner())
+        .bind(&new_job.system_fingerprint_hash)
+        .bind(&new_job.trace_context)
+}
 
 /// Maps a raw `sqlx::Row` from a job query into a [`Job`].
 fn map_job_row(r: &sqlx::postgres::PgRow) -> Job {
