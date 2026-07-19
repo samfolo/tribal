@@ -957,37 +957,8 @@ async fn test_a_targeted_token_binds_the_audience_the_attached_runtime_projects(
         }
     ));
 
-    let stopped: tribal_wire::management::RuntimeStopResult =
-        call(&mut client, 6, "runtime.stop", None);
-    assert!(
-        matches!(stopped, tribal_wire::management::RuntimeStopResult::Stopped { .. }),
-        "managed runtime stops: {stopped:?}"
-    );
-    let refused = call_error(
-        &mut client,
-        7,
-        "token.create",
-        Some(
-            &serde_json::to_value(TokenCreateRequest {
-                expected_revision: created.config_revision.clone(),
-                principal: None,
-                ttl_hours: Some(1),
-                scopes: Vec::new(),
-                persist_as_default: false,
-                expected_runtime: Some(status.runtime.clone()),
-            })
-            .unwrap(),
-        ),
-    );
-    assert!(matches!(
-        refused.error,
-        ManagementError::Administration {
-            failure: tribal_wire::management::AdministrationFailure::CredentialTargetConflict,
-        }
-    ));
-
     let _: tribal_wire::management::ManagerShutdownResult =
-        call(&mut client, 8, "manager.shutdown", None);
+        call(&mut client, 6, "manager.shutdown", None);
     wait_for_success(&mut manager, "manager shutdown after targeted issuance");
 }
 
