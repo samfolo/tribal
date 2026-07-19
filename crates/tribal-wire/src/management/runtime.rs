@@ -26,15 +26,15 @@ pub enum NetworkTransport {
     Sse,
 }
 
-/// The endpoint and audience the running process actually loaded;
-/// absent for a runtime without a network data plane.
+/// The endpoint and audience the running process actually loaded —
+/// the exact address its transport binds and the resource its
+/// authenticator enforces; absent for a runtime without a network
+/// data plane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RuntimeDataPlane {
     pub transport: NetworkTransport,
-    /// The exact address the transport runner binds.
     pub mcp_url: String,
-    /// The audience the runtime's authenticator enforces.
     pub canonical_resource: String,
 }
 

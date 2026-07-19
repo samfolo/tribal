@@ -311,6 +311,9 @@ pub struct TokenPage {
 
 pub type TokenInventory = Revisioned<TokenPage>;
 
+/// A token issuance request. With `expected_runtime` set, issuance
+/// targets that exact attached runtime and its audience; omitted, the
+/// call retains audience-from-configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TokenCreateRequest {
@@ -319,8 +322,6 @@ pub struct TokenCreateRequest {
     pub ttl_hours: Option<u64>,
     pub scopes: Vec<Scope>,
     pub persist_as_default: bool,
-    /// When set, issuance targets this exact attached runtime and its
-    /// audience; omitted, the call retains audience-from-configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_runtime: Option<RuntimeIdentity>,
 }

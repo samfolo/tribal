@@ -41,11 +41,12 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 
 type FramedStream = BufReader<UnixStream>;
 
-/// Runtime-side dependencies used by the private protocol.
+/// Runtime-side dependencies used by the private protocol. The data
+/// plane is loaded once at startup from the bound transport and never
+/// re-derived.
 #[derive(Clone)]
 pub(crate) struct RuntimeControlService {
     pub(crate) runtime: RuntimeIdentity,
-    /// Loaded at startup from the bound transport; never re-derived.
     pub(crate) data_plane: Option<RuntimeDataPlane>,
     pub(crate) config_path: PathBuf,
     pub(crate) config: watch::Sender<Arc<TribalConfig>>,

@@ -3081,7 +3081,7 @@
         ]
       },
       "RuntimeDataPlane": {
-        "description": "The endpoint and audience the running process actually loaded; absent for a runtime without a network data plane.",
+        "description": "The endpoint and audience the running process actually loaded — the exact address its transport binds and the resource its authenticator enforces; absent for a runtime without a network data plane.",
         "type": "object",
         "required": [
           "canonical_resource",
@@ -3090,11 +3090,9 @@
         ],
         "properties": {
           "canonical_resource": {
-            "description": "The audience the runtime's authenticator enforces.",
             "type": "string"
           },
           "mcp_url": {
-            "description": "The exact address the transport runner binds.",
             "type": "string"
           },
           "transport": {
@@ -28158,6 +28156,7 @@
   "TokenCreateRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "TokenCreateRequest",
+    "description": "A token issuance request. With `expected_runtime` set, issuance targets that exact attached runtime and its audience; omitted, the call retains audience-from-configuration.",
     "type": "object",
     "required": [
       "expected_revision",
@@ -28169,7 +28168,6 @@
         "$ref": "#/definitions/ConfigRevision"
       },
       "expected_runtime": {
-        "description": "When set, issuance targets this exact attached runtime and its audience; omitted, the call retains audience-from-configuration.",
         "anyOf": [
           {
             "$ref": "#/definitions/RuntimeIdentity"
