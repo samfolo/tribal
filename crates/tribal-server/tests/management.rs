@@ -19,7 +19,7 @@ use tribal_db::{
     ProjectRepository,
 };
 use tribal_domain::{GitRemote, LOCAL_PRINCIPAL_KEY, TransportKind};
-use tribal_test_utils::duration::POLL_INTERVAL;
+use tribal_test_utils::{TestDb, duration::POLL_INTERVAL};
 use tribal_wire::management::{
     ConfigDigest, ConfigDocument, ConfigFieldPath, ConfigLiteral, ConfigRevision, ConfigSetRequest,
     ConfigWriteOutcome, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
@@ -167,7 +167,7 @@ fn config_watcher_lag_rereads_snapshot() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn startup_serve_project_mode_process_matrix() {
-    let database = tribal_test_utils::TestDb::new().await;
+    let database = TestDb::new().await;
     let mut connection = database.raw_connection().await.expect("database connects");
     let ambient = PgProjectRepository
         .insert(&mut connection, &new_project("ambient", "cortex/ambient"))
@@ -325,7 +325,7 @@ async fn connector_concurrent_first_launch() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn connector_standalone_runtime_conflict() {
-    let database = tribal_test_utils::TestDb::new().await;
+    let database = TestDb::new().await;
     let temp = tempfile::Builder::new()
         .prefix("tm")
         .tempdir_in("/tmp")
@@ -617,7 +617,7 @@ fn test_process_authority_fences_same_path_and_keeps_distinct_paths_independent(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_managed_runtime_survives_competing_and_successive_manager_recovery() {
-    let database = tribal_test_utils::TestDb::new().await;
+    let database = TestDb::new().await;
     let temp = tempfile::Builder::new()
         .prefix("tm")
         .tempdir_in("/tmp")
@@ -701,7 +701,7 @@ async fn test_managed_runtime_survives_competing_and_successive_manager_recovery
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_database_initialise_negotiates_v3_and_migrates_once_after_revision_check() {
-    let database = tribal_test_utils::TestDb::new_unmigrated().await;
+    let database = TestDb::new_unmigrated().await;
     let temp = tempfile::Builder::new()
         .prefix("tm")
         .tempdir_in("/tmp")
@@ -821,7 +821,7 @@ async fn test_database_initialise_negotiates_v3_and_migrates_once_after_revision
 
 #[tokio::test]
 async fn test_a_targeted_token_request_without_an_attached_runtime_reports_the_conflict() {
-    let database = tribal_test_utils::TestDb::new().await;
+    let database = TestDb::new().await;
     let temp = tempfile::Builder::new()
         .prefix("tm")
         .tempdir_in("/tmp")
@@ -877,7 +877,7 @@ async fn test_a_targeted_token_request_without_an_attached_runtime_reports_the_c
 
 #[tokio::test]
 async fn test_a_targeted_token_binds_the_audience_the_attached_runtime_projects() {
-    let database = tribal_test_utils::TestDb::new().await;
+    let database = TestDb::new().await;
     let temp = tempfile::Builder::new()
         .prefix("tm")
         .tempdir_in("/tmp")
@@ -967,7 +967,7 @@ async fn test_a_targeted_token_binds_the_audience_the_attached_runtime_projects(
 
 #[tokio::test]
 async fn test_direct_runtime_credentials_follow_the_canonical_config_namespace() {
-    let database = tribal_test_utils::TestDb::new().await;
+    let database = TestDb::new().await;
     let temp = tempfile::Builder::new()
         .prefix("tm")
         .tempdir_in("/tmp")
@@ -1071,7 +1071,7 @@ async fn test_direct_runtime_credentials_follow_the_canonical_config_namespace()
     reason = "one process journey keeps pagination evidence in causal order"
 )]
 async fn test_project_pagination_is_revision_bound_bounded_and_high_water_stable() {
-    let database = tribal_test_utils::TestDb::new().await;
+    let database = TestDb::new().await;
     let temp = tempfile::Builder::new()
         .prefix("tm")
         .tempdir_in("/tmp")

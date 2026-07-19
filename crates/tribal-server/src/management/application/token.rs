@@ -3,6 +3,7 @@
 use std::str::FromStr as _;
 
 use chrono::{TimeDelta, Utc};
+use tokio_util::sync::CancellationToken;
 use tribal_auth::issue_token_with_record;
 use tribal_config::MAX_TTL_HOURS;
 use tribal_db::{
@@ -128,7 +129,7 @@ impl TokenAdministration {
         }
         let issued = result.value.summary.id;
         drop(result);
-        let compensation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let compensation = OperationContext::new(CancellationToken::new());
         self.revoke_issued(&compensation, issued)
             .await
             .map_err(public_error)?;
@@ -699,6 +700,7 @@ fn administration_error(message: &str, failure: AdministrationFailure) -> Manage
 
 #[cfg(test)]
 mod tests {
+    use tribal_test_utils::TestDb;
     use tribal_wire::management::{
         ConfigDigest, ConfigFilePath, ConfigRevision, PageRequest, PageSize,
     };
@@ -767,15 +769,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_list_and_stable_id_revocation_share_one_revision() {
-        let database = tribal_test_utils::TestDb::new().await;
+        let database = TestDb::new().await;
         let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
         let revision = worker.resolved_snapshot().await.unwrap().revision;
         let (credentials, credential_runtime) = CredentialCoordinator::spawn(
             ConfigAuthorityNamespace::from_test("token-application"),
-            tokio_util::sync::CancellationToken::new(),
+            CancellationToken::new(),
         );
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
-        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let operation = OperationContext::new(CancellationToken::new());
 
         let created = administration
             .create(
@@ -898,15 +900,15 @@ mod tests {
     #[tokio::test]
     async fn test_targeted_create_uses_the_explicit_audience_and_revoke_issued_skips_the_revision_gate()
      {
-        let database = tribal_test_utils::TestDb::new().await;
+        let database = TestDb::new().await;
         let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
         let revision = worker.resolved_snapshot().await.unwrap().revision;
         let (credentials, credential_runtime) = CredentialCoordinator::spawn(
             ConfigAuthorityNamespace::from_test("token-runtime-target"),
-            tokio_util::sync::CancellationToken::new(),
+            CancellationToken::new(),
         );
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
-        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let operation = OperationContext::new(CancellationToken::new());
         let audience = "http://127.0.0.1:9999/mcp";
 
         let created = administration
@@ -954,15 +956,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_bound_create_releases_only_when_revalidation_matches_the_target() {
-        let database = tribal_test_utils::TestDb::new().await;
+        let database = TestDb::new().await;
         let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
         let revision = worker.resolved_snapshot().await.unwrap().revision;
         let (credentials, credential_runtime) = CredentialCoordinator::spawn(
             ConfigAuthorityNamespace::from_test("token-bound-release"),
-            tokio_util::sync::CancellationToken::new(),
+            CancellationToken::new(),
         );
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
-        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let operation = OperationContext::new(CancellationToken::new());
         let lifecycle = controller_answering_credential_targets(vec![
             ScriptedCredentialAnswer::Answer(Some(a_credential_target("https://runtime.test/mcp"))),
             ScriptedCredentialAnswer::Answer(Some(a_credential_target("https://runtime.test/mcp"))),
@@ -985,15 +987,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_bound_create_revokes_the_committed_token_when_the_target_changes_mid_window() {
-        let database = tribal_test_utils::TestDb::new().await;
+        let database = TestDb::new().await;
         let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
         let revision = worker.resolved_snapshot().await.unwrap().revision;
         let (credentials, credential_runtime) = CredentialCoordinator::spawn(
             ConfigAuthorityNamespace::from_test("token-bound-changed"),
-            tokio_util::sync::CancellationToken::new(),
+            CancellationToken::new(),
         );
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
-        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let operation = OperationContext::new(CancellationToken::new());
         let lifecycle = controller_answering_credential_targets(vec![
             ScriptedCredentialAnswer::Answer(Some(a_credential_target("https://runtime.test/mcp"))),
             ScriptedCredentialAnswer::Answer(Some(a_credential_target(
@@ -1035,15 +1037,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_bound_create_revokes_the_committed_token_when_revalidation_is_indeterminate() {
-        let database = tribal_test_utils::TestDb::new().await;
+        let database = TestDb::new().await;
         let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
         let revision = worker.resolved_snapshot().await.unwrap().revision;
         let (credentials, credential_runtime) = CredentialCoordinator::spawn(
             ConfigAuthorityNamespace::from_test("token-bound-indeterminate"),
-            tokio_util::sync::CancellationToken::new(),
+            CancellationToken::new(),
         );
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
-        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let operation = OperationContext::new(CancellationToken::new());
         let lifecycle = controller_answering_credential_targets(vec![
             ScriptedCredentialAnswer::Answer(Some(a_credential_target("https://runtime.test/mcp"))),
             ScriptedCredentialAnswer::Dropped,
@@ -1083,15 +1085,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_bound_create_refuses_a_persisting_request_before_any_issuance() {
-        let database = tribal_test_utils::TestDb::new().await;
+        let database = TestDb::new().await;
         let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
         let revision = worker.resolved_snapshot().await.unwrap().revision;
         let (credentials, credential_runtime) = CredentialCoordinator::spawn(
             ConfigAuthorityNamespace::from_test("token-bound-persist"),
-            tokio_util::sync::CancellationToken::new(),
+            CancellationToken::new(),
         );
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
-        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let operation = OperationContext::new(CancellationToken::new());
         let lifecycle = controller_answering_credential_targets(Vec::new());
 
         let refused = administration
@@ -1133,10 +1135,10 @@ mod tests {
             config_worker("postgres://user:pass@localhost:1/unreachable");
         let (credentials, credential_runtime) = CredentialCoordinator::spawn(
             ConfigAuthorityNamespace::from_test("stale-token-application"),
-            tokio_util::sync::CancellationToken::new(),
+            CancellationToken::new(),
         );
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
-        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let operation = OperationContext::new(CancellationToken::new());
 
         let error = administration
             .create(
@@ -1165,16 +1167,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_unexpected_coordinator_exit_becomes_a_typed_persisted_credential_refusal() {
-        let database = tribal_test_utils::TestDb::new().await;
+        let database = TestDb::new().await;
         let (_temp, worker, _worker_runtime) = config_worker(database.database_url());
         let revision = worker.resolved_snapshot().await.unwrap().revision;
         let (credentials, runtime) = CredentialCoordinator::spawn(
             ConfigAuthorityNamespace::from_test("failed-token-application"),
-            tokio_util::sync::CancellationToken::new(),
+            CancellationToken::new(),
         );
         runtime.abort().await;
         let administration = TokenAdministration::new(DatabaseAccess::new(worker), credentials);
-        let operation = OperationContext::new(tokio_util::sync::CancellationToken::new());
+        let operation = OperationContext::new(CancellationToken::new());
 
         let error = administration
             .create(
