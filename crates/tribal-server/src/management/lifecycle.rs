@@ -4248,7 +4248,7 @@ mod tests {
         },
     };
 
-    use tokio::io::AsyncWriteExt as _;
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
     use super::*;
     use crate::management::{authority, configuration, worker};
@@ -6118,6 +6118,183 @@ mod tests {
         ));
         drop(config);
         drop(lifecycle);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    async fn answer_status_request(
+        peer: tokio::net::UnixStream,
+        status: tribal_wire::runtime_control::ManagedRuntimeStatus,
+    ) {
+        let mut peer = BufReader::new(peer);
+        let mut request = Vec::new();
+        peer.read_until(b'\n', &mut request)
+            .await
+            .expect("status request reads");
+        assert_eq!(
+            serde_json::from_slice::<tribal_wire::runtime_control::RuntimeControlRequest>(&request)
+                .expect("status request decodes"),
+            tribal_wire::runtime_control::RuntimeControlRequest::Status,
+        );
+        let mut response = serde_json::to_vec(
+            &tribal_wire::runtime_control::RuntimeControlResponse::Status { status },
+        )
+        .expect("status response serialises");
+        response.push(b'\n');
+        peer.get_mut()
+            .write_all(&response)
+            .await
+            .expect("status response writes");
+    }
+
+    #[tokio::test]
+    async fn test_credential_target_read_resolves_the_target_for_a_healthy_non_restarting_runtime()
+    {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, runtime_peer) = a_managed_child();
+        let expected = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: RunningPhase::Healthy {
+                    runtime: expected.clone(),
+                    restart_pending: false,
+                },
+            },
+            child,
+        };
+        let canonical_resource = "https://runtime.test/mcp".to_owned();
+        let answer = tokio::spawn(answer_status_request(
+            runtime_peer,
+            tribal_wire::runtime_control::ManagedRuntimeStatus {
+                runtime: expected.clone(),
+                data_plane: Some(tribal_wire::management::RuntimeDataPlane {
+                    transport: tribal_wire::management::NetworkTransport::Http,
+                    mcp_url: "http://127.0.0.1:4317/mcp".to_owned(),
+                    canonical_resource: canonical_resource.clone(),
+                }),
+            },
+        ));
+
+        let (response, receiver) = oneshot::channel();
+        owner.credential_target_read(expected.clone(), response);
+
+        assert_eq!(
+            receiver.await.expect("credential target resolves"),
+            Some(RuntimeCredentialTarget {
+                runtime: expected,
+                canonical_resource,
+            })
+        );
+        answer.await.expect("status responder joins");
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_credential_target_read_resolves_to_none_when_restart_is_pending() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, _runtime_peer) = a_managed_child();
+        let expected = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: RunningPhase::Healthy {
+                    runtime: expected.clone(),
+                    restart_pending: true,
+                },
+            },
+            child,
+        };
+
+        let (response, receiver) = oneshot::channel();
+        owner.credential_target_read(expected, response);
+
+        assert_eq!(receiver.await.expect("credential target resolves"), None);
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_credential_target_read_resolves_to_none_on_an_identity_mismatch() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, _runtime_peer) = a_managed_child();
+        let attached = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: RunningPhase::Healthy {
+                    runtime: attached,
+                    restart_pending: false,
+                },
+            },
+            child,
+        };
+        let expected = RuntimeIdentity {
+            instance_id: "other-runtime".to_owned(),
+            pid: 999,
+            binary_version: "test".to_owned(),
+            config_path: ConfigFilePath {
+                path: "/tmp/other.yaml".to_owned(),
+            },
+        };
+
+        let (response, receiver) = oneshot::channel();
+        owner.credential_target_read(expected, response);
+
+        assert_eq!(receiver.await.expect("credential target resolves"), None);
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_credential_target_read_resolves_to_none_for_a_stdio_runtime_with_no_data_plane() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, runtime_peer) = a_managed_child();
+        let expected = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: RunningPhase::Healthy {
+                    runtime: expected.clone(),
+                    restart_pending: false,
+                },
+            },
+            child,
+        };
+        let answer = tokio::spawn(answer_status_request(
+            runtime_peer,
+            tribal_wire::runtime_control::ManagedRuntimeStatus {
+                runtime: expected.clone(),
+                data_plane: None,
+            },
+        ));
+
+        let (response, receiver) = oneshot::channel();
+        owner.credential_target_read(expected, response);
+
+        assert_eq!(receiver.await.expect("credential target resolves"), None);
+        answer.await.expect("status responder joins");
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_credential_target_read_resolves_to_none_for_a_non_running_state() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let expected = RuntimeIdentity {
+            instance_id: "absent-runtime".to_owned(),
+            pid: 1,
+            binary_version: "test".to_owned(),
+            config_path: ConfigFilePath {
+                path: "/tmp/tribal.yaml".to_owned(),
+            },
+        };
+
+        let (response, receiver) = oneshot::channel();
+        owner.credential_target_read(expected, response);
+
+        assert_eq!(receiver.await.expect("credential target resolves"), None);
+        drop(owner);
         worker_runtime.join().expect("worker thread joins");
     }
 }
