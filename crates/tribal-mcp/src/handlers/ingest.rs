@@ -10,7 +10,7 @@ use sqlx::PgConnection;
 use tokio::sync::watch;
 use tracing::Instrument;
 use tribal_common::JobWatchEntry;
-use tribal_db::{DbError, NewJob, NewTask};
+use tribal_db::{DbError, IngestInsertOutcome, NewJob, NewTask};
 use tribal_domain::{
     JobId, JobState, McpErrorCode, PrincipalId, ProjectId, SourceContextV1, TaskType, span_attrs,
 };
@@ -40,6 +40,7 @@ struct IngestParams {
     principal_id: PrincipalId,
     source_context: serde_json::Value,
     content: String,
+    idempotency_key: Option<uuid::Uuid>,
     active_prompts: ActivePromptVersions,
     build_version: Arc<str>,
     fingerprint_inputs: FingerprintInputs,
@@ -59,6 +60,10 @@ enum IngestError {
 
     #[error(transparent)]
     Fingerprint(#[from] FingerprintError),
+
+    /// The idempotency key names a job whose project or content differ.
+    #[error("idempotency key reused with a different project or content")]
+    IdempotencyConflict,
 }
 
 impl IntoMcpError for IngestError {
@@ -66,6 +71,11 @@ impl IntoMcpError for IngestError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
             Self::Fingerprint(e) => e.into_mcp_error(),
+            Self::IdempotencyConflict => McpToolError {
+                code: McpErrorCode::Conflict,
+                message: "idempotency key reused with a different project or content".to_owned(),
+                details: serde_json::json!({}),
+            },
         }
     }
 }
@@ -88,6 +98,9 @@ impl TribalServerHandler {
             { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
             { span_attrs::TRANSPORT } = self.transport_name(),
             { span_attrs::PROJECT_ID } = tracing::field::Empty,
+            { span_attrs::INGEST_IDEMPOTENCY_KEY } = tracing::field::Empty,
+            { span_attrs::INGEST_ARBITRATION } = tracing::field::Empty,
+            { span_attrs::INGEST_SOURCE_TYPE } = tracing::field::Empty,
         );
         self.apply_ingest(params, principal.principal_id())
             .instrument(span)
@@ -143,6 +156,16 @@ impl TribalServerHandler {
             .record(span_attrs::PROJECT_ID, tracing::field::display(&project_id));
 
         let context = SourceContextV1::from_claims(self.channel, claimed_actor);
+        tracing::Span::current().record(
+            span_attrs::INGEST_SOURCE_TYPE,
+            context.source_type().as_str(),
+        );
+        if let Some(key) = request.idempotency_key {
+            tracing::Span::current().record(
+                span_attrs::INGEST_IDEMPOTENCY_KEY,
+                tracing::field::display(key),
+            );
+        }
         let source_context = match serde_json::to_value(&context) {
             Ok(value) => value,
             Err(e) => {
@@ -170,6 +193,7 @@ impl TribalServerHandler {
             principal_id,
             source_context,
             content: request.content,
+            idempotency_key: request.idempotency_key,
             active_prompts,
             build_version: Arc::clone(&self.state.build_version),
             fingerprint_inputs,
@@ -257,16 +281,34 @@ async fn execute_ingest(
         .relation_user_prompt_version_id(params.active_prompts.relation_user_prompt_version_id)
         .system_fingerprint_hash(fingerprint_hash)
         .trace_context(trace_context)
+        .ingest_idempotency_key(params.idempotency_key)
         .build();
 
-    let job = repositories.job.insert(conn, &new_job).await?;
-
-    let new_task = NewTask::builder()
-        .job_id(job.id())
-        .task_type(TaskType::Extraction)
-        .build();
-
-    repositories.task.insert(conn, &new_task).await?;
+    // The extraction task exists only for a job this call created: a
+    // recovered job already has its task, and a conflict creates nothing.
+    let job = match repositories
+        .job
+        .insert_or_resolve_idempotency(conn, &new_job)
+        .await?
+    {
+        IngestInsertOutcome::Inserted(job) => {
+            tracing::Span::current().record(span_attrs::INGEST_ARBITRATION, "created");
+            let new_task = NewTask::builder()
+                .job_id(job.id())
+                .task_type(TaskType::Extraction)
+                .build();
+            repositories.task.insert(conn, &new_task).await?;
+            job
+        }
+        IngestInsertOutcome::Existing(job) => {
+            tracing::Span::current().record(span_attrs::INGEST_ARBITRATION, "recovered");
+            job
+        }
+        IngestInsertOutcome::Conflict => {
+            tracing::Span::current().record(span_attrs::INGEST_ARBITRATION, "conflict");
+            return Err(IngestError::IdempotencyConflict);
+        }
+    };
 
     Ok(IngestResult { job_id: job.id() })
 }
@@ -285,16 +327,23 @@ mod tests {
     use opentelemetry::trace::TracerProvider;
     use opentelemetry_sdk::trace::SdkTracerProvider;
     use rmcp::model::ErrorCode;
+    use tokio::sync::RwLock;
     use tracing::Instrument;
     use tracing_subscriber::layer::SubscriberExt;
-    use tribal_domain::{IngestChannel, KnowledgeItemId, PrincipalId, ProjectId};
+    use tribal_db::{
+        PgPrincipalRepository, PgProjectRepository, PgTaskRepository, PrincipalRepository,
+        ProjectRepository, TaskRepository,
+    };
+    use tribal_domain::{GitRemote, IngestChannel, KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
-        MockJobRepository, MockProjectRepository, MockPromptVersionRepository, MockTaskRepository,
-        TestDb, a_job, a_project, a_prompt_version, a_task,
+        MockIngestJobRepository, MockProjectRepository, MockPromptVersionRepository,
+        MockTaskRepository, TestDb, a_job, a_new_principal, a_new_project, a_new_prompt_version,
+        a_project, a_prompt_version, a_task, insert_prompt_version,
     };
 
     use super::*;
     use crate::{
+        error::ERROR_META_KEY,
         session::SessionActor,
         test_utils::{
             NO_STRUCTURED_CONTENT, TestHandler, configure_fingerprint_mocks, first_text_content,
@@ -306,6 +355,7 @@ mod tests {
     // -- Constants ---------------------------------------------------------
 
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
+    const STRUCTURED_CONTENT: &str = "structured_content must be present";
 
     // -- Helpers -----------------------------------------------------------
 
@@ -324,6 +374,7 @@ mod tests {
             principal_id: PrincipalId::new(),
             source_context: serde_json::json!({"type": "ManualCapture", "capture_method": "mcp"}),
             content: "some knowledge".into(),
+            idempotency_key: None,
             active_prompts: test_active_prompt_versions(),
             build_version: Arc::from("test-build"),
             fingerprint_inputs: test_fingerprint_inputs(),
@@ -423,6 +474,194 @@ mod tests {
         );
     }
 
+    // -- Adapter: idempotency arbitration through a real database ----------
+
+    /// Inserts a principal, project, and prompt version via the real
+    /// repositories, returning IDs a real ingest call can bind against.
+    /// The same prompt version id is reused for all six active-prompt
+    /// slots, as the arbitration suite in `tribal-db` does.
+    async fn setup_real_ingest_prerequisites(
+        conn: &mut PgConnection,
+        suffix: &str,
+    ) -> (PrincipalId, ProjectId, ActivePromptVersions) {
+        let principal = PgPrincipalRepository
+            .insert(
+                conn,
+                &a_new_principal()
+                    .principal_key(format!("user:ingest-real-{suffix}"))
+                    .build(),
+            )
+            .await
+            .expect("insert principal");
+        let project = PgProjectRepository
+            .insert(
+                conn,
+                &a_new_project()
+                    .git_remote(GitRemote::from_parts(
+                        "github.com",
+                        &format!("test/ingest-real-{suffix}"),
+                        None,
+                    ))
+                    .build(),
+            )
+            .await
+            .expect("insert project");
+        let pv_id = insert_prompt_version(conn, &a_new_prompt_version().build()).await;
+        (
+            principal.id(),
+            project.id(),
+            ActivePromptVersions::new(pv_id, pv_id, pv_id, pv_id, pv_id, pv_id),
+        )
+    }
+
+    /// Builds a handler wired to a real, migrated database through the
+    /// production repositories, with the active prompt versions the caller
+    /// resolved against that same database.
+    fn real_ingest_handler(
+        pool: sqlx::PgPool,
+        active_prompts: ActivePromptVersions,
+    ) -> TribalServerHandler {
+        TestHandler::builder()
+            .pool(pool)
+            .repositories(ConnectionRepositories::new())
+            .active_prompt_versions(Arc::new(RwLock::new(active_prompts)))
+            .build()
+    }
+
+    #[tokio::test]
+    async fn test_a_retried_ingest_call_converges_on_one_job_and_one_extraction_task() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, project_id, active_prompts) =
+            setup_real_ingest_prerequisites(&mut conn, "retry").await;
+        drop(conn);
+
+        let handler = real_ingest_handler(ctx.pool().clone(), active_prompts);
+        let key = uuid::Uuid::new_v4();
+        let params = serde_json::json!({
+            "project_id": project_id.to_string(),
+            "content": "shared knowledge",
+            "idempotency_key": key,
+        });
+
+        let first = handler
+            .apply_ingest(params.clone(), principal_id)
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+        let retry = handler
+            .apply_ingest(params, principal_id)
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(first.is_error, Some(false));
+        assert_eq!(retry.is_error, Some(false));
+        let first_structured = first.structured_content.expect(STRUCTURED_CONTENT);
+        let retry_structured = retry.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(
+            first_structured["job_id"], retry_structured["job_id"],
+            "a retried key must resolve to the same job",
+        );
+
+        let job_id: JobId = first_structured["job_id"]
+            .as_str()
+            .expect("job_id is a string")
+            .parse()
+            .expect("job id parses");
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let tasks = PgTaskRepository
+            .find_by_job_id(&mut conn, job_id)
+            .await
+            .expect("find tasks");
+        assert_eq!(
+            tasks.len(),
+            1,
+            "a retry must not create a second extraction task",
+        );
+        assert_eq!(tasks[0].task_type(), TaskType::Extraction);
+    }
+
+    #[tokio::test]
+    async fn test_a_reused_key_with_different_content_is_refused_as_conflict_without_echoing_it() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, project_id, active_prompts) =
+            setup_real_ingest_prerequisites(&mut conn, "conflict").await;
+        drop(conn);
+
+        let handler = real_ingest_handler(ctx.pool().clone(), active_prompts);
+        let key = uuid::Uuid::new_v4();
+        let original_content = "the original secret note";
+
+        let first = handler
+            .apply_ingest(
+                serde_json::json!({
+                    "project_id": project_id.to_string(),
+                    "content": original_content,
+                    "idempotency_key": key,
+                }),
+                principal_id,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+        assert_eq!(first.is_error, Some(false));
+
+        let conflicting = handler
+            .apply_ingest(
+                serde_json::json!({
+                    "project_id": project_id.to_string(),
+                    "content": "a completely different note",
+                    "idempotency_key": key,
+                }),
+                principal_id,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(conflicting.is_error, Some(true));
+        let message = first_text_content(&conflicting).to_owned();
+        assert!(
+            !message.contains(original_content),
+            "a conflict must not echo the original content: {message}",
+        );
+
+        let meta = conflicting.meta.expect("error results carry meta");
+        let typed = meta.get(ERROR_META_KEY).expect("the typed error member");
+        assert_eq!(typed["code"], "conflict");
+    }
+
+    #[tokio::test]
+    async fn test_a_keyless_ingest_call_twice_creates_two_jobs() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, project_id, active_prompts) =
+            setup_real_ingest_prerequisites(&mut conn, "keyless").await;
+        drop(conn);
+
+        let handler = real_ingest_handler(ctx.pool().clone(), active_prompts);
+        let params = serde_json::json!({
+            "project_id": project_id.to_string(),
+            "content": "a keyless note",
+        });
+
+        let first = handler
+            .apply_ingest(params.clone(), principal_id)
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+        let second = handler
+            .apply_ingest(params, principal_id)
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(first.is_error, Some(false));
+        assert_eq!(second.is_error, Some(false));
+        let first_structured = first.structured_content.expect(STRUCTURED_CONTENT);
+        let second_structured = second.structured_content.expect(STRUCTURED_CONTENT);
+        assert_ne!(
+            first_structured["job_id"], second_structured["job_id"],
+            "a keyless call inserts a job on every call",
+        );
+    }
+
     // -- Service: happy path -----------------------------------------------
 
     #[tokio::test]
@@ -442,9 +681,9 @@ mod tests {
                 .build(),
         );
         repos.job = Arc::new(
-            MockJobRepository::builder()
-                .when_insert(move |new_job| new_job.principal_id == prin_id)
-                .respond_with(job.clone(), None)
+            MockIngestJobRepository::builder()
+                .when_insert_or_resolve_idempotency(move |new_job| new_job.principal_id == prin_id)
+                .respond_with(IngestInsertOutcome::Inserted(job.clone()), None)
                 .build(),
         );
         repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
@@ -455,6 +694,7 @@ mod tests {
             principal_id: prin_id,
             source_context: serde_json::json!({"type": "ManualCapture", "capture_method": "mcp"}),
             content: "learned something".into(),
+            idempotency_key: None,
             active_prompts,
             build_version: Arc::from("test-build"),
             fingerprint_inputs: test_fingerprint_inputs(),
@@ -482,8 +722,8 @@ mod tests {
             prompts.relation_user_prompt_version_id,
         ];
 
-        let job_mock = MockJobRepository::builder()
-            .when_insert(move |new_job| {
+        let job_mock = MockIngestJobRepository::builder()
+            .when_insert_or_resolve_idempotency(move |new_job| {
                 let actual_ids = [
                     new_job.extraction_system_prompt_version_id,
                     new_job.extraction_user_prompt_version_id,
@@ -494,7 +734,7 @@ mod tests {
                 ];
                 actual_ids.iter().zip(&expected_ids).all(|(a, e)| a == e)
             })
-            .respond_with(job.clone(), None)
+            .respond_with(IngestInsertOutcome::Inserted(job.clone()), None)
             .build();
 
         let mut repos = test_repositories();
@@ -512,6 +752,7 @@ mod tests {
             principal_id: prin_id,
             source_context: serde_json::json!({}),
             content: "test content".into(),
+            idempotency_key: None,
             active_prompts: prompts,
             build_version: Arc::from("test-build"),
             fingerprint_inputs: test_fingerprint_inputs(),
@@ -537,9 +778,11 @@ mod tests {
         });
         let expected_ctx = source_ctx.clone();
 
-        let job_mock = MockJobRepository::builder()
-            .when_insert(move |new_job| new_job.source_context == expected_ctx)
-            .respond_with(job.clone(), None)
+        let job_mock = MockIngestJobRepository::builder()
+            .when_insert_or_resolve_idempotency(move |new_job| {
+                new_job.source_context == expected_ctx
+            })
+            .respond_with(IngestInsertOutcome::Inserted(job.clone()), None)
             .build();
 
         let mut repos = test_repositories();
@@ -557,6 +800,7 @@ mod tests {
             principal_id: prin_id,
             source_context: source_ctx,
             content: "test content".into(),
+            idempotency_key: None,
             active_prompts,
             build_version: Arc::from("test-build"),
             fingerprint_inputs: test_fingerprint_inputs(),
@@ -721,15 +965,15 @@ mod tests {
         let task = a_task().job_id(job.id()).build();
         let active_prompts = test_active_prompt_versions();
 
-        let job_mock = MockJobRepository::builder()
-            .when_insert(move |new_job| {
+        let job_mock = MockIngestJobRepository::builder()
+            .when_insert_or_resolve_idempotency(move |new_job| {
                 if let Some(tc) = &new_job.trace_context {
                     let valid = tribal_telemetry::trace_id_from_traceparent(tc).is_some();
                     saw_clone.store(valid, Ordering::SeqCst);
                 }
                 true
             })
-            .respond_with(job.clone(), None)
+            .respond_with(IngestInsertOutcome::Inserted(job.clone()), None)
             .build();
 
         let mut repos = test_repositories();
@@ -747,6 +991,7 @@ mod tests {
             principal_id: prin_id,
             source_context: serde_json::json!({}),
             content: "trace test".into(),
+            idempotency_key: None,
             active_prompts,
             build_version: Arc::from("test-build"),
             fingerprint_inputs: test_fingerprint_inputs(),

@@ -18,10 +18,16 @@ pub enum McpErrorCode {
     PermissionDenied,
     /// Caller provided an invalid parameter value.
     InvalidArgument,
+    /// The request contradicts committed state, such as an idempotency
+    /// key reused with different content.
+    Conflict,
     /// System state prevents the operation.
     FailedPrecondition,
     /// Rate limit or quota exceeded.
     ResourceExhausted,
+    /// The service cannot serve the request right now; retrying later
+    /// may succeed.
+    Unavailable,
     /// Unexpected server error.
     Internal,
 }
@@ -36,8 +42,10 @@ mod tests {
         McpErrorCode::Unauthenticated => "unauthenticated",
         McpErrorCode::PermissionDenied => "permission_denied",
         McpErrorCode::InvalidArgument => "invalid_argument",
+        McpErrorCode::Conflict => "conflict",
         McpErrorCode::FailedPrecondition => "failed_precondition",
         McpErrorCode::ResourceExhausted => "resource_exhausted",
+        McpErrorCode::Unavailable => "unavailable",
         McpErrorCode::Internal => "internal",
     });
 }

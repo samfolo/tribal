@@ -1,11 +1,14 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "McpIngestResponse",
+  "description": "Response for `tribal_ingest`.",
   "type": "object",
+  "required": [
+    "job_id"
+  ],
   "properties": {
     "job_id": {
-      "type": "string",
-      "pattern": "^job_[0-9a-f-]{36}$",
-      "description": "Unique identifier for the ingest job. Use with tribal_job_status to track progress."
+      "type": "string"
     }
-  },
-  "required": ["job_id"]
+  }
 }

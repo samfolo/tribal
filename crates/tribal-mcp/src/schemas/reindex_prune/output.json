@@ -1,19 +1,31 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "McpReindexPruneResponse",
+  "description": "The MCP response for `tribal_reindex_prune`.",
   "type": "object",
-  "description": "The outcome of a reindex prune request.",
+  "required": [
+    "embeddings_deleted",
+    "profiles_superseded",
+    "tag_embeddings_deleted"
+  ],
   "properties": {
-    "profiles_superseded": {
-      "type": "integer",
-      "description": "The number of profiles transitioned to superseded."
-    },
     "embeddings_deleted": {
+      "description": "The number of item embeddings deleted.",
       "type": "integer",
-      "description": "The number of item embeddings deleted."
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "profiles_superseded": {
+      "description": "The number of profiles transitioned to superseded.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
     },
     "tag_embeddings_deleted": {
+      "description": "The number of tag embeddings deleted.",
       "type": "integer",
-      "description": "The number of tag embeddings deleted."
+      "format": "uint64",
+      "minimum": 0.0
     }
-  },
-  "required": ["profiles_superseded", "embeddings_deleted", "tag_embeddings_deleted"]
+  }
 }

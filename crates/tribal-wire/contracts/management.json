@@ -94,8 +94,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       }
     }
   },
@@ -174,7 +174,7 @@
       "AbsoluteDirectoryPath": {
         "type": "string",
         "pattern": "^/.*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "BootstrapGenesisInput": {
         "type": "object",
@@ -362,8 +362,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ConfiguredMcpTarget": {
         "oneOf": [
@@ -673,7 +673,7 @@
       "OtlpEndpoint": {
         "type": "string",
         "pattern": "^https?://[^@\\s/?#]+(?::[0-9]+)?(?:[/?#][^\\s]*)?$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "PresetModelSettings": {
         "type": "object",
@@ -751,7 +751,7 @@
       "ProjectId": {
         "type": "string",
         "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProjectRegisterInput": {
         "type": "object",
@@ -971,17 +971,17 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "Scope": {
         "type": "string",
         "pattern": "^tribal(?:\\.[a-z]+)*:(?:read|write|execute)$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "SecretLiteral": {
         "type": "string",
         "pattern": "^\\S+$",
-        "x-cortex-swift-type": "redacted-validated-string"
+        "x-tribal-swift-type": "redacted-validated-string"
       },
       "StageExecutionSettings": {
         "oneOf": [
@@ -1364,11 +1364,11 @@
       "ConfigDigest": {
         "type": "string",
         "pattern": "^cdig_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cdig_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cdig_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ConfigLiteral": {
-        "x-cortex-swift-type": "redacted-json"
+        "x-tribal-swift-type": "redacted-json"
       },
       "ConfigPersistencePhase": {
         "description": "Point at which durable configuration persistence became uncertain.",
@@ -1381,8 +1381,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       }
     }
   },
@@ -1418,7 +1418,7 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       }
     }
   },
@@ -1462,13 +1462,13 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ConfigWriteEffect": {
         "description": "Observable effect of a successful configuration write.",
@@ -1597,10 +1597,10 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigLiteral": {
-        "x-cortex-swift-type": "redacted-json"
+        "x-tribal-swift-type": "redacted-json"
       },
       "ConfigPatchChange": {
         "description": "One field in an atomic configuration patch.",
@@ -1621,8 +1621,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       }
     }
   },
@@ -1649,13 +1649,13 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "PatchConfigViolation": {
         "type": "object",
@@ -1844,16 +1844,16 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigLiteral": {
-        "x-cortex-swift-type": "redacted-json"
+        "x-tribal-swift-type": "redacted-json"
       },
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       }
     }
   },
@@ -1880,10 +1880,10 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigLiteral": {
-        "x-cortex-swift-type": "redacted-json"
+        "x-tribal-swift-type": "redacted-json"
       },
       "ConfigPatchChange": {
         "description": "One field in an atomic configuration patch.",
@@ -1904,8 +1904,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       }
     }
   },
@@ -2081,16 +2081,16 @@
       "ConfigDigest": {
         "type": "string",
         "pattern": "^cdig_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cdig_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cdig_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigLiteral": {
-        "x-cortex-swift-type": "redacted-json"
+        "x-tribal-swift-type": "redacted-json"
       },
       "ConfigPersistencePhase": {
         "description": "Point at which durable configuration persistence became uncertain.",
@@ -2103,8 +2103,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       }
     }
   },
@@ -2129,8 +2129,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ConfigWriteEffect": {
         "description": "Observable effect of a successful configuration write.",
@@ -2256,8 +2256,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "DatabaseEndpointSummary": {
         "oneOf": [
@@ -2381,8 +2381,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       }
     }
   },
@@ -2407,8 +2407,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "DatabaseInitialiseOutcome": {
         "oneOf": [
@@ -2464,8 +2464,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "DatabaseProbeTarget": {
         "oneOf": [
@@ -2514,7 +2514,7 @@
       "SecretLiteral": {
         "type": "string",
         "pattern": "^\\S+$",
-        "x-cortex-swift-type": "redacted-validated-string"
+        "x-tribal-swift-type": "redacted-validated-string"
       }
     }
   },
@@ -2551,13 +2551,13 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       }
     }
   },
@@ -2582,14 +2582,14 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "EmbeddingProfileRevision": {
         "type": "string",
         "pattern": "^epr_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "epr_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "epr_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       }
     }
   },
@@ -2621,8 +2621,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "EmbeddingDimensions": {
         "description": "Dimension choices served for one embedding model.",
@@ -2937,7 +2937,7 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProviderKind": {
         "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
@@ -3288,7 +3288,7 @@
     }
   },
   "ManagementCallCatalogue": {
-    "x-cortex-management-calls": [
+    "x-tribal-management-calls": [
       {
         "call": "ManagerSnapshotCall",
         "method": "manager.snapshot",
@@ -3548,7 +3548,7 @@
         "response": "ConfigPatchOutcome"
       }
     ],
-    "x-cortex-swift-type": "management-call-catalogue"
+    "x-tribal-swift-type": "management-call-catalogue"
   },
   "ManagementEvent": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -4075,7 +4075,7 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigFilePath": {
         "description": "The active configuration file's location.",
@@ -4093,8 +4093,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CustodyLossTerminationRuntime": {
         "description": "Runtime evidence legal after lifetime custody is lost.",
@@ -5029,8 +5029,8 @@
       "PanicCorrelationId": {
         "type": "string",
         "pattern": "^pcorr_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "pcorr_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "pcorr_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ProbeOutcome": {
         "description": "Result of a probe whose subject already owns its check identity.",
@@ -6205,18 +6205,18 @@
       "AuthTokenId": {
         "type": "string",
         "pattern": "^at_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigDigest": {
         "type": "string",
         "pattern": "^cdig_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cdig_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cdig_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigPatchRefusal": {
         "description": "Structural reason an atomic patch is refused.",
@@ -6377,8 +6377,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CredentialMutationRefusal": {
         "type": "string",
@@ -6390,8 +6390,8 @@
       "EmbeddingProfileRevision": {
         "type": "string",
         "pattern": "^epr_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "epr_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "epr_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "GenesisPolicyRefusal": {
         "description": "Reason a graph-genesis action violates active-profile policy.",
@@ -6799,12 +6799,12 @@
       "ProjectId": {
         "type": "string",
         "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProviderConnectionRemovalRefusal": {
         "oneOf": [
@@ -7675,7 +7675,7 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigFilePath": {
         "description": "The active configuration file's location.",
@@ -7693,8 +7693,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CustodyLossTerminationRuntime": {
         "description": "Runtime evidence legal after lifetime custody is lost.",
@@ -8275,8 +8275,8 @@
       "PanicCorrelationId": {
         "type": "string",
         "pattern": "^pcorr_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "pcorr_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "pcorr_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ProbeOutcome": {
         "description": "Result of a probe whose subject already owns its check identity.",
@@ -9709,7 +9709,7 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigFilePath": {
         "description": "The active configuration file's location.",
@@ -9727,8 +9727,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CustodyLossTerminationRuntime": {
         "description": "Runtime evidence legal after lifetime custody is lost.",
@@ -10614,8 +10614,8 @@
       "PanicCorrelationId": {
         "type": "string",
         "pattern": "^pcorr_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "pcorr_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "pcorr_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ProbeOutcome": {
         "description": "Result of a probe whose subject already owns its check identity.",
@@ -10879,7 +10879,7 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProviderKind": {
         "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
@@ -11969,13 +11969,13 @@
       "AbsoluteDirectoryPath": {
         "type": "string",
         "pattern": "^/.*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ConfiguredMcpTarget": {
         "oneOf": [
@@ -12181,7 +12181,7 @@
       "ProjectId": {
         "type": "string",
         "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProjectSelector": {
         "oneOf": [
@@ -12309,8 +12309,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CredentialRequirement": {
         "description": "Credential input required by a product action.",
@@ -12438,7 +12438,7 @@
       "KnownModelId": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ModelAccess": {
         "description": "How a model is authenticated.",
@@ -12519,7 +12519,7 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProviderKind": {
         "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
@@ -12612,8 +12612,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ProbeOutcome": {
         "description": "Result of a probe whose subject already owns its check identity.",
@@ -12911,8 +12911,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CustomProcessingSettings": {
         "type": "object",
@@ -13024,7 +13024,7 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "StageExecutionSettings": {
         "oneOf": [
@@ -13231,8 +13231,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CustomProcessingSettings": {
         "type": "object",
@@ -13344,7 +13344,7 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "StageExecutionSettings": {
         "oneOf": [
@@ -13543,7 +13543,7 @@
       "PageCursor": {
         "type": "string",
         "pattern": "^.+$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "PageRequest": {
         "type": "object",
@@ -13594,13 +13594,13 @@
       "AbsoluteDirectoryPath": {
         "type": "string",
         "pattern": "^/.*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "GitRemote": {
         "description": "Protocol-agnostic git remote identity.\n\nStores the canonical `host/path` form (e.g. `github.com/user/repo`), stripping the transport scheme and `.git` suffix. Two remotes that point to the same repository — regardless of whether they use SSH, HTTPS, or SCP syntax — produce the same `GitRemote` value.\n\nNon-standard ports are preserved in the canonical form as `host:port/path` since different ports may serve different content.\n\nAll major git hosts (GitHub, GitLab, Bitbucket, Gitea) treat organisation and repository names as case-insensitive, so the canonical form is fully lowercased.\n\n# Construction\n\nParse any common git remote URL format via [`FromStr`]:\n\n```text git@github.com:user/repo.git   → github.com/user/repo https://github.com/user/repo   → github.com/user/repo ssh://git@github.com/user/repo → github.com/user/repo ```\n\nOr build from already-parsed components via [`GitRemote::from_parts`].",
@@ -13735,7 +13735,7 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigPatchOutcome": {
         "description": "Field-by-field effects from one atomic patch.",
@@ -13759,8 +13759,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ConfigWriteEffect": {
         "description": "Observable effect of a successful configuration write.",
@@ -13866,7 +13866,7 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProviderKind": {
         "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
@@ -13923,13 +13923,13 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       }
     }
   },
@@ -13957,8 +13957,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CredentialMutation": {
         "oneOf": [
@@ -14101,12 +14101,12 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "SecretLiteral": {
         "type": "string",
         "pattern": "^\\S+$",
-        "x-cortex-swift-type": "redacted-validated-string"
+        "x-tribal-swift-type": "redacted-validated-string"
       }
     }
   },
@@ -14141,8 +14141,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CredentialRequirement": {
         "description": "Credential input required by a product action.",
@@ -14449,7 +14449,7 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProviderConnectionProbeReceipt": {
         "type": "object",
@@ -14773,8 +14773,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CredentialMutation": {
         "oneOf": [
@@ -14917,7 +14917,7 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProviderProbeTarget": {
         "oneOf": [
@@ -14988,7 +14988,7 @@
       "SecretLiteral": {
         "type": "string",
         "pattern": "^\\S+$",
-        "x-cortex-swift-type": "redacted-validated-string"
+        "x-tribal-swift-type": "redacted-validated-string"
       }
     }
   },
@@ -15074,8 +15074,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ProbeOutcome": {
         "description": "Result of a probe whose subject already owns its check identity.",
@@ -15227,7 +15227,7 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProviderConnectionProbeReceipt": {
         "type": "object",
@@ -15724,13 +15724,13 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "HealthVerdict": {
         "description": "Whether a running runtime is healthy.",
@@ -16243,8 +16243,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       }
     }
   },
@@ -16268,8 +16268,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "MutationMode": {
         "type": "string",
@@ -16304,8 +16304,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "GenesisEmbeddingInput": {
         "description": "Connection-backed embedding identity for graph genesis.",
@@ -16345,7 +16345,7 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProviderKind": {
         "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
@@ -16403,7 +16403,7 @@
       "AuthTokenId": {
         "type": "string",
         "pattern": "^at_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "BootstrapHandoff": {
         "oneOf": [
@@ -16561,8 +16561,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CredentialOrigin": {
         "type": "string",
@@ -16617,12 +16617,12 @@
       },
       "IssuedBearerToken": {
         "type": "string",
-        "x-cortex-swift-type": "scoped-redacted-string"
+        "x-tribal-swift-type": "scoped-redacted-string"
       },
       "ProjectId": {
         "type": "string",
         "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProjectRegisterOutcome": {
         "oneOf": [
@@ -16820,10 +16820,10 @@
       "Scope": {
         "type": "string",
         "pattern": "^tribal(?:\\.[a-z]+)*:(?:read|write|execute)$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "SensitiveMcpConfigDocument": {
-        "x-cortex-swift-type": "scoped-redacted-json"
+        "x-tribal-swift-type": "scoped-redacted-json"
       },
       "TokenState": {
         "oneOf": [
@@ -16947,14 +16947,14 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "EmbeddingProfileRevision": {
         "type": "string",
         "pattern": "^epr_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "epr_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "epr_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "EmbeddingProfileSummary": {
         "description": "Stable summary of a graph's active embedding profile.",
@@ -17108,7 +17108,7 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProviderKind": {
         "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
@@ -17166,8 +17166,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "McpConfigEntry": {
         "oneOf": [
@@ -17330,7 +17330,7 @@
         ]
       },
       "SensitiveMcpConfigDocument": {
-        "x-cortex-swift-type": "scoped-redacted-json"
+        "x-tribal-swift-type": "scoped-redacted-json"
       }
     }
   },
@@ -17355,8 +17355,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "GitRemote": {
         "description": "Protocol-agnostic git remote identity.\n\nStores the canonical `host/path` form (e.g. `github.com/user/repo`), stripping the transport scheme and `.git` suffix. Two remotes that point to the same repository — regardless of whether they use SSH, HTTPS, or SCP syntax — produce the same `GitRemote` value.\n\nNon-standard ports are preserved in the canonical form as `host:port/path` since different ports may serve different content.\n\nAll major git hosts (GitHub, GitLab, Bitbucket, Gitea) treat organisation and repository names as case-insensitive, so the canonical form is fully lowercased.\n\n# Construction\n\nParse any common git remote URL format via [`FromStr`]:\n\n```text git@github.com:user/repo.git   → github.com/user/repo https://github.com/user/repo   → github.com/user/repo ssh://git@github.com/user/repo → github.com/user/repo ```\n\nOr build from already-parsed components via [`GitRemote::from_parts`].",
@@ -17373,12 +17373,12 @@
       "PageCursor": {
         "type": "string",
         "pattern": "^.+$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProjectId": {
         "type": "string",
         "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProjectPage": {
         "type": "object",
@@ -17460,8 +17460,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "GitRemote": {
         "description": "Protocol-agnostic git remote identity.\n\nStores the canonical `host/path` form (e.g. `github.com/user/repo`), stripping the transport scheme and `.git` suffix. Two remotes that point to the same repository — regardless of whether they use SSH, HTTPS, or SCP syntax — produce the same `GitRemote` value.\n\nNon-standard ports are preserved in the canonical form as `host:port/path` since different ports may serve different content.\n\nAll major git hosts (GitHub, GitLab, Bitbucket, Gitea) treat organisation and repository names as case-insensitive, so the canonical form is fully lowercased.\n\n# Construction\n\nParse any common git remote URL format via [`FromStr`]:\n\n```text git@github.com:user/repo.git   → github.com/user/repo https://github.com/user/repo   → github.com/user/repo ssh://git@github.com/user/repo → github.com/user/repo ```\n\nOr build from already-parsed components via [`GitRemote::from_parts`].",
@@ -17478,7 +17478,7 @@
       "ProjectId": {
         "type": "string",
         "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProjectRegisterOutcome": {
         "oneOf": [
@@ -17592,8 +17592,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ReindexCancelOutcome": {
         "oneOf": [
@@ -17642,7 +17642,7 @@
       "ReindexRunId": {
         "type": "string",
         "pattern": "^rrun_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       }
     }
   },
@@ -17667,8 +17667,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ReindexPruneCounts": {
         "type": "object",
@@ -17774,8 +17774,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ProviderKind": {
         "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",
@@ -17934,7 +17934,7 @@
       "ReindexRunId": {
         "type": "string",
         "pattern": "^rrun_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ReindexRunOutcome": {
         "oneOf": [
@@ -18019,8 +18019,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ThreadPruneApplied": {
         "type": "object",
@@ -18139,13 +18139,13 @@
       "AuthTokenId": {
         "type": "string",
         "pattern": "^at_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CredentialPersistenceResult": {
         "oneOf": [
@@ -18181,12 +18181,12 @@
       },
       "IssuedBearerToken": {
         "type": "string",
-        "x-cortex-swift-type": "scoped-redacted-string"
+        "x-tribal-swift-type": "scoped-redacted-string"
       },
       "Scope": {
         "type": "string",
         "pattern": "^tribal(?:\\.[a-z]+)*:(?:read|write|execute)$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "TokenCreateOutcome": {
         "type": "object",
@@ -18329,23 +18329,23 @@
       "AuthTokenId": {
         "type": "string",
         "pattern": "^at_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "PageCursor": {
         "type": "string",
         "pattern": "^.+$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "Scope": {
         "type": "string",
         "pattern": "^tribal(?:\\.[a-z]+)*:(?:read|write|execute)$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "TokenPage": {
         "type": "object",
@@ -18493,8 +18493,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "TokenRevokeAllOutcome": {
         "type": "object",
@@ -18532,18 +18532,18 @@
       "AuthTokenId": {
         "type": "string",
         "pattern": "^at_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "Scope": {
         "type": "string",
         "pattern": "^tribal(?:\\.[a-z]+)*:(?:read|write|execute)$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "TokenRevokeOutcome": {
         "oneOf": [
@@ -19678,7 +19678,7 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigFilePath": {
         "description": "The active configuration file's location.",
@@ -19696,8 +19696,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CustodyLossTerminationRuntime": {
         "description": "Runtime evidence legal after lifetime custody is lost.",
@@ -20594,8 +20594,8 @@
       "PanicCorrelationId": {
         "type": "string",
         "pattern": "^pcorr_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "pcorr_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "pcorr_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ProbeOutcome": {
         "description": "Result of a probe whose subject already owns its check identity.",
@@ -22834,7 +22834,7 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigFilePath": {
         "description": "The active configuration file's location.",
@@ -22852,8 +22852,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CustodyLossTerminationRuntime": {
         "description": "Runtime evidence legal after lifetime custody is lost.",
@@ -23643,8 +23643,8 @@
       "PanicCorrelationId": {
         "type": "string",
         "pattern": "^pcorr_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "pcorr_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "pcorr_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ProbeOutcome": {
         "description": "Result of a probe whose subject already owns its check identity.",
@@ -25859,7 +25859,7 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigFilePath": {
         "description": "The active configuration file's location.",
@@ -25877,8 +25877,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CustodyLossTerminationRuntime": {
         "description": "Runtime evidence legal after lifetime custody is lost.",
@@ -26464,8 +26464,8 @@
       "PanicCorrelationId": {
         "type": "string",
         "pattern": "^pcorr_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "pcorr_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "pcorr_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "ProbeOutcome": {
         "description": "Result of a probe whose subject already owns its check identity.",
@@ -27621,10 +27621,10 @@
       "ConfigFieldPath": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigLiteral": {
-        "x-cortex-swift-type": "redacted-json"
+        "x-tribal-swift-type": "redacted-json"
       },
       "ConfigPatchChange": {
         "description": "One field in an atomic configuration patch.",
@@ -27645,8 +27645,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "CustomProcessingSettings": {
         "type": "object",
@@ -27758,7 +27758,7 @@
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "StageExecutionSettings": {
         "oneOf": [
@@ -27961,8 +27961,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "InferenceStage": {
         "description": "Inference configuration stage.",
@@ -28057,8 +28057,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "MutationMode": {
         "type": "string",
@@ -28142,13 +28142,13 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       },
       "Scope": {
         "type": "string",
         "pattern": "^tribal(?:\\.[a-z]+)*:(?:read|write|execute)$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       }
     }
   },
@@ -28168,7 +28168,7 @@
       "PageCursor": {
         "type": "string",
         "pattern": "^.+$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "PageRequest": {
         "type": "object",
@@ -28221,8 +28221,8 @@
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       }
     }
   },
@@ -28246,13 +28246,13 @@
       "AuthTokenId": {
         "type": "string",
         "pattern": "^at_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
-        "x-cortex-base64url-prefix": "cfg_",
-        "x-cortex-swift-type": "canonical-base64url-32"
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
       }
     }
   }

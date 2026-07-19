@@ -109,7 +109,7 @@ impl schemars::JsonSchema for SensitiveMcpConfigDocument {
     fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
         let mut schema = generator.subschema_for::<serde_json::Value>().into_object();
         schema.extensions.insert(
-            "x-cortex-swift-type".to_owned(),
+            "x-tribal-swift-type".to_owned(),
             serde_json::Value::String("scoped-redacted-json".to_owned()),
         );
         schema.into()

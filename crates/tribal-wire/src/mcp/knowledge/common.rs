@@ -20,6 +20,7 @@ use tribal_domain::{
 /// Maps from the internal `source_context` JSONB discriminator to the
 /// three values exposed to clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum McpSourceType {
     /// Captured via a model-mediated pipeline (e.g. agent ingesting via MCP).
@@ -37,6 +38,7 @@ pub enum McpSourceType {
 /// Flattened provenance summary extracted from the opaque JSONB
 /// `source_context` column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpSourceContext {
     /// Discriminator — always present.
     #[serde(rename = "type")]
@@ -105,6 +107,7 @@ impl From<&serde_json::Value> for McpSourceContext {
 /// All ID fields carry their type prefix (e.g. `ki_`, `proj_`, `ep_`).
 /// The `principal_key` field is the human-readable string, not the UUID.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpKnowledgeItem {
     pub id: String,
     pub project_id: String,
@@ -158,6 +161,7 @@ impl McpKnowledgeItem {
 /// ID fields are rendered as prefixed strings. Optional IDs are omitted
 /// from serialised JSON when absent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpStanding {
     pub supporting_count: u32,
     pub contradicting_count: u32,
@@ -196,6 +200,7 @@ impl From<&Standing> for McpStanding {
 /// Projects a subset of the domain `Reference` fields — excludes
 /// `knowledge_item_id`, `project_id`, and `branch`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpReference {
     pub id: String,
     pub kind: ReferenceKind,

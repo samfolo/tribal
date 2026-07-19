@@ -18,12 +18,12 @@ use tribal_inference::{
 };
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
-    MockEmbeddingProvider, MockInferenceProvider, MockJobRepository, MockKnowledgeItemRepository,
-    MockPrincipalRepository, MockProjectRepository, MockPromptVersionRepository,
-    MockReferenceRepository, MockRelationRepository, MockRetrievalFeedbackRepository,
-    MockStandingRepository, MockSystemFingerprintRepository, MockTaskRepository,
-    MockTriageResultRepository, TEST_PRINCIPAL_KEY, a_prompt_version, a_system_fingerprint,
-    lazy_pool,
+    MockEmbeddingProvider, MockInferenceProvider, MockIngestJobRepository,
+    MockKnowledgeItemRepository, MockPrincipalRepository, MockProjectRepository,
+    MockPromptVersionRepository, MockReferenceRepository, MockRelationRepository,
+    MockRetrievalFeedbackRepository, MockStandingRepository, MockSystemFingerprintRepository,
+    MockTaskRepository, MockTriageResultRepository, TEST_PRINCIPAL_KEY, a_prompt_version,
+    a_system_fingerprint, lazy_pool,
 };
 use typed_builder::TypedBuilder;
 
@@ -55,7 +55,7 @@ pub(crate) fn test_repositories() -> ConnectionRepositories {
     ConnectionRepositories {
         knowledge_item: Arc::new(MockKnowledgeItemRepository::builder().build()),
         project: Arc::new(MockProjectRepository::builder().build()),
-        job: Arc::new(MockJobRepository::builder().build()),
+        job: Arc::new(MockIngestJobRepository::builder().build()),
         task: Arc::new(MockTaskRepository::builder().build()),
         retrieval_feedback: Arc::new(MockRetrievalFeedbackRepository::builder().build()),
         standing: Arc::new(MockStandingRepository::builder().build()),

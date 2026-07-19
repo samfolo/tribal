@@ -47,14 +47,14 @@ test:
     # HTTP mocks (wiremock) and must NOT enable the inference test-helper.
     # The wire and config schema features ride the main pass: one feature set
     # means one compiled graph — a feature-flipped pass rebuilds it twice.
-    cargo nextest run --workspace --exclude tribal-e2e --features tribal/test-helpers,tribal-wire/schema,tribal-config/schema
+    cargo nextest run --workspace --exclude tribal-e2e --features tribal/test-helpers,tribal-wire/schema,tribal-config/schema,tribal-mcp/schema
     cargo nextest run -p tribal-e2e
     # nextest does not run doctests; run them separately (none require a database).
-    cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers,tribal-wire/schema,tribal-config/schema --doc
+    cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers,tribal-wire/schema,tribal-config/schema,tribal-mcp/schema --doc
 
 # Run the suite via plain `cargo test` (in-process testcontainers fallback).
 test-cargo:
-    SQLX_OFFLINE=true cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers,tribal-wire/schema,tribal-config/schema
+    SQLX_OFFLINE=true cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers,tribal-wire/schema,tribal-config/schema,tribal-mcp/schema
     SQLX_OFFLINE=true cargo test -p tribal-e2e
 
 # Run only unit tests
@@ -74,7 +74,7 @@ check:
     cargo +nightly fmt --all -- --check
     # The wire and config schema features ride the one workspace pass; a second
     # feature-flipped clippy would recompile the graph.
-    SQLX_OFFLINE=true cargo clippy --workspace --all-targets --features tribal-wire/schema,tribal-config/schema -- -D warnings
+    SQLX_OFFLINE=true cargo clippy --workspace --all-targets --features tribal-wire/schema,tribal-config/schema,tribal-mcp/schema -- -D warnings
 
 # Build the current image and prove its manager-owned bootstrap, runtime, and signal lifecycle.
 container-smoke:

@@ -10,7 +10,8 @@ use tokio::sync::watch;
 use tracing::Instrument;
 use tribal_db::DbError;
 use tribal_domain::{
-    Job, JobId, JobState, McpErrorCode, TaskStatus, TaskType, TriageOutcome, span_attrs,
+    Job, JobId, JobState, McpErrorCode, PrincipalId, TaskStatus, TaskType, TriageOutcome,
+    span_attrs,
 };
 
 use super::common::acquire_connection;
@@ -35,6 +36,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Domain-level parameters for the job status service function.
 struct JobStatusParams {
     job_id: JobId,
+    principal_id: PrincipalId,
 }
 
 /// Domain-level result from the job status service function.
@@ -84,7 +86,7 @@ impl TribalServerHandler {
         let scheduler = TimedPollScheduler {
             interval: POLL_INTERVAL,
         };
-        self.apply_job_status(params, &scheduler)
+        self.apply_job_status(params, principal.principal_id(), &scheduler)
             .instrument(span)
             .await
     }
@@ -105,6 +107,7 @@ impl TribalServerHandler {
     async fn apply_job_status<S: PollScheduler>(
         &self,
         params: serde_json::Value,
+        principal_id: PrincipalId,
         scheduler: &S,
     ) -> Result<CallToolResult, McpError> {
         // -- 1. Parse + validate ---------------------------------------------
@@ -128,7 +131,10 @@ impl TribalServerHandler {
             .into_call_tool_result());
         }
 
-        let status_params = JobStatusParams { job_id };
+        let status_params = JobStatusParams {
+            job_id,
+            principal_id,
+        };
 
         // -- 2. Initial DB read ----------------------------------------------
 
@@ -284,7 +290,13 @@ async fn execute_job_status(
     repositories: &ConnectionRepositories,
     params: &JobStatusParams,
 ) -> Result<JobStatusResult, JobStatusError> {
-    let job = repositories.job.find_by_id(conn, params.job_id).await?;
+    // The principal-qualified load precedes every auxiliary read, so a
+    // missing and a foreign job are one NotFound and nothing about a
+    // foreign job's tasks is ever fetched.
+    let job = repositories
+        .job
+        .find_by_id_for_principal(conn, params.job_id, params.principal_id)
+        .await?;
 
     let tasks = repositories
         .task
@@ -344,8 +356,8 @@ mod tests {
     use tribal_common::{JobStateTxs, JobWatchEntry};
     use tribal_domain::{JobId, JobOutcome, JobState, JobStatus, KnowledgeItemId, TaskType};
     use tribal_test_utils::{
-        MockJobRepository, MockTaskRepository, MockTriageResultRepository, TestDb, a_job, a_task,
-        a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed,
+        MockIngestJobRepository, MockTaskRepository, MockTriageResultRepository, TestDb, a_job,
+        a_task, a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed,
     };
 
     use super::*;
@@ -392,8 +404,8 @@ mod tests {
     ) -> ConnectionRepositories {
         let mut repos = test_repositories();
         repos.job = Arc::new(
-            MockJobRepository::builder()
-                .on_find_by_id(job, None)
+            MockIngestJobRepository::builder()
+                .on_find_by_id_for_principal(job, None)
                 .build(),
         );
         repos.task = Arc::new(
@@ -416,7 +428,11 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let err = handler
-            .apply_job_status(serde_json::json!({"job_id": 123}), &ImmediatePollScheduler)
+            .apply_job_status(
+                serde_json::json!({"job_id": 123}),
+                PrincipalId::new(),
+                &ImmediatePollScheduler,
+            )
             .await
             .expect_err("should return Err(McpError) for malformed params");
 
@@ -431,6 +447,7 @@ mod tests {
         let result = handler
             .apply_job_status(
                 serde_json::json!({"job_id": wrong_prefix_id}),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -451,6 +468,7 @@ mod tests {
         let result = handler
             .apply_job_status(
                 serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 31}),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -476,6 +494,7 @@ mod tests {
         let result = handler
             .apply_job_status(
                 serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 30}),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -498,6 +517,7 @@ mod tests {
         let result = handler
             .apply_job_status(
                 serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 0}),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -520,6 +540,7 @@ mod tests {
         let result = handler
             .apply_job_status(
                 serde_json::json!({"job_id": JobId::new().to_string()}),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -578,7 +599,10 @@ mod tests {
         ];
 
         let repos = repos_for_job_status(job, tasks, triage_results);
-        let params = JobStatusParams { job_id };
+        let params = JobStatusParams {
+            job_id,
+            principal_id: PrincipalId::new(),
+        };
         let result = call_execute(&repos, &params).await.expect("should succeed");
 
         assert_eq!(result.job.id(), job_id);
@@ -596,7 +620,10 @@ mod tests {
         let job = a_job().id(job_id).build();
 
         let repos = repos_for_job_status(job, vec![], vec![]);
-        let params = JobStatusParams { job_id };
+        let params = JobStatusParams {
+            job_id,
+            principal_id: PrincipalId::new(),
+        };
         let result = call_execute(&repos, &params).await.expect("should succeed");
 
         assert_eq!(result.job.id(), job_id);
@@ -619,7 +646,10 @@ mod tests {
             .build();
 
         let repos = repos_for_job_status(job, vec![], vec![]);
-        let params = JobStatusParams { job_id };
+        let params = JobStatusParams {
+            job_id,
+            principal_id: PrincipalId::new(),
+        };
         let result = call_execute(&repos, &params).await.expect("should succeed");
 
         assert_eq!(result.job.id(), job_id);
@@ -637,7 +667,10 @@ mod tests {
             .build();
 
         let repos = repos_for_job_status(job, vec![], vec![]);
-        let params = JobStatusParams { job_id };
+        let params = JobStatusParams {
+            job_id,
+            principal_id: PrincipalId::new(),
+        };
         let result = call_execute(&repos, &params).await.expect("should succeed");
 
         assert_eq!(result.job.id(), job_id);
@@ -676,7 +709,10 @@ mod tests {
         ];
 
         let repos = repos_for_job_status(job, tasks, vec![]);
-        let params = JobStatusParams { job_id };
+        let params = JobStatusParams {
+            job_id,
+            principal_id: PrincipalId::new(),
+        };
         let result = call_execute(&repos, &params).await.expect("should succeed");
 
         assert_eq!(
@@ -692,8 +728,8 @@ mod tests {
     async fn test_execute_job_status_job_not_found() {
         let mut repos = test_repositories();
         repos.job = Arc::new(
-            MockJobRepository::builder()
-                .on_find_by_id_error(
+            MockIngestJobRepository::builder()
+                .on_find_by_id_for_principal_error(
                     || DbError::NotFound {
                         entity: "job",
                         id: "missing".into(),
@@ -704,7 +740,10 @@ mod tests {
         );
 
         let job_id = JobId::new();
-        let params = JobStatusParams { job_id };
+        let params = JobStatusParams {
+            job_id,
+            principal_id: PrincipalId::new(),
+        };
         let err = call_execute(&repos, &params)
             .await
             .expect_err("should fail");
@@ -724,8 +763,8 @@ mod tests {
         let job_id = JobId::new();
         let mut repos = test_repositories();
         repos.job = Arc::new(
-            MockJobRepository::builder()
-                .on_find_by_id_error(
+            MockIngestJobRepository::builder()
+                .on_find_by_id_for_principal_error(
                     || DbError::NotFound {
                         entity: "job",
                         id: "missing".into(),
@@ -742,6 +781,7 @@ mod tests {
         let result = handler
             .apply_job_status(
                 serde_json::json!({"job_id": job_id.to_string()}),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -773,8 +813,8 @@ mod tests {
             .build();
 
         let job_mock = Arc::new(
-            MockJobRepository::builder()
-                .on_find_by_id(job, None)
+            MockIngestJobRepository::builder()
+                .on_find_by_id_for_principal(job, None)
                 .build(),
         );
         let job_mock_ref = Arc::clone(&job_mock);
@@ -802,6 +842,7 @@ mod tests {
                     "job_id": job_id.to_string(),
                     "wait_seconds": 5,
                 }),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -809,7 +850,7 @@ mod tests {
 
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
-            job_mock_ref.find_by_id_call_count(),
+            job_mock_ref.find_by_id_for_principal_call_count(),
             1,
             "should not poll when already terminal",
         );
@@ -840,9 +881,9 @@ mod tests {
         let created_result = a_triage_result_created().job_id(job_id).build();
 
         let job_mock = Arc::new(
-            MockJobRepository::builder()
-                .on_find_by_id(triaging_job, None)
-                .on_find_by_id(completed_job, None)
+            MockIngestJobRepository::builder()
+                .on_find_by_id_for_principal(triaging_job, None)
+                .on_find_by_id_for_principal(completed_job, None)
                 .build(),
         );
         let job_mock_ref = Arc::clone(&job_mock);
@@ -872,6 +913,7 @@ mod tests {
                     "job_id": job_id.to_string(),
                     "wait_seconds": 5,
                 }),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -879,7 +921,7 @@ mod tests {
 
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
-            job_mock_ref.find_by_id_call_count(),
+            job_mock_ref.find_by_id_for_principal_call_count(),
             2,
             "should poll once after initial query",
         );
@@ -918,14 +960,14 @@ mod tests {
         second_job: Job,
         job_state_txs: JobStateTxs,
         cancellation_token: CancellationToken,
-    ) -> (TribalServerHandler, Arc<MockJobRepository>, TestDb) {
+    ) -> (TribalServerHandler, Arc<MockIngestJobRepository>, TestDb) {
         let ctx = TestDb::new().await;
         let pool = ctx.create_pool().await.expect("pool");
 
         let job_mock = Arc::new(
-            MockJobRepository::builder()
-                .on_find_by_id(first_job, None)
-                .on_find_by_id(second_job, None)
+            MockIngestJobRepository::builder()
+                .on_find_by_id_for_principal(first_job, None)
+                .on_find_by_id_for_principal(second_job, None)
                 .build(),
         );
         let job_mock_ref = Arc::clone(&job_mock);
@@ -994,6 +1036,7 @@ mod tests {
                     "job_id": job_id.to_string(),
                     "wait_seconds": 10,
                 }),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -1001,7 +1044,7 @@ mod tests {
 
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
-            job_mock.find_by_id_call_count(),
+            job_mock.find_by_id_for_principal_call_count(),
             2,
             "watch path should make exactly 2 DB reads",
         );
@@ -1031,6 +1074,7 @@ mod tests {
                     "job_id": job_id.to_string(),
                     "wait_seconds": 10,
                 }),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -1038,7 +1082,7 @@ mod tests {
 
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
-            job_mock.find_by_id_call_count(),
+            job_mock.find_by_id_for_principal_call_count(),
             2,
             "race-elimination should skip wait, still 2 DB reads",
         );
@@ -1062,6 +1106,7 @@ mod tests {
                     "job_id": job_id.to_string(),
                     "wait_seconds": 1,
                 }),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -1069,7 +1114,7 @@ mod tests {
 
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
-            job_mock.find_by_id_call_count(),
+            job_mock.find_by_id_for_principal_call_count(),
             2,
             "watch timeout should still make exactly 2 DB reads",
         );
@@ -1102,6 +1147,7 @@ mod tests {
                     "job_id": job_id.to_string(),
                     "wait_seconds": 30,
                 }),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -1109,7 +1155,7 @@ mod tests {
 
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
-            job_mock.find_by_id_call_count(),
+            job_mock.find_by_id_for_principal_call_count(),
             2,
             "cancellation should wake, then do 1 final DB read",
         );
@@ -1142,6 +1188,7 @@ mod tests {
                     "job_id": job_id.to_string(),
                     "wait_seconds": 5,
                 }),
+                PrincipalId::new(),
                 &ImmediatePollScheduler,
             )
             .await
@@ -1149,7 +1196,7 @@ mod tests {
 
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
-            job_mock.find_by_id_call_count(),
+            job_mock.find_by_id_for_principal_call_count(),
             2,
             "poll fallback should query until terminal",
         );
@@ -1186,6 +1233,7 @@ mod tests {
                     "job_id": job_id.to_string(),
                     "wait_seconds": 30,
                 }),
+                PrincipalId::new(),
                 &YieldingPollScheduler,
             )
             .await
@@ -1193,7 +1241,7 @@ mod tests {
 
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
-            job_mock.find_by_id_call_count(),
+            job_mock.find_by_id_for_principal_call_count(),
             1,
             "cancellation should exit before any poll iteration",
         );

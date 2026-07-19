@@ -1,0 +1,447 @@
+{
+  "tools": [
+    {
+      "name": "tribal_ingest",
+      "requiredScope": "tribal.knowledge:write",
+      "title": "Tribal: Ingest Knowledge",
+      "description": "Submit raw text for knowledge extraction into Tribal. The system extracts structured knowledge items (facts, heuristics, procedures, decision records), detects duplicates, identifies relationships with existing knowledge, and stores the results.\n\nThis is an asynchronous operation. Returns a job_id immediately. Use tribal_job_status to poll for completion.\n\nUse this tool when you've learned something worth preserving: a debugging insight, an architectural decision, a reusable pattern, a gotcha about a library, or any experience that would help you or another agent working on this codebase in the future.\n\nDo NOT use this for storing code snippets, file contents, or documentation. Tribal stores knowledge *about* work, not the artefacts themselves.\n\nProject, model, and principal are sourced from session context (see tribal_set_context). You only need to provide the content itself.",
+      "input": "McpIngestRequest",
+      "output": "McpIngestResponse"
+    },
+    {
+      "name": "tribal_job_status",
+      "requiredScope": "tribal.jobs:read",
+      "title": "Tribal: Check Ingest Job Status",
+      "description": "Check the progress of an ingest job submitted via tribal_ingest.\n\nJob lifecycle: queued → extracting → triaging → relating → completed/failed\n\nTerminal states:\n- \"completed\": Pipeline ran to conclusion. Check outcome for details:\n  - \"success\": All candidates triaged successfully and relations committed.\n  - \"partial\": Some triage tasks failed permanently; the relation task ran on a subset.\n  - \"empty\": Relation task ran with zero items to relate (all duplicates or all triage failures). If tasks_failed > 0, the pipeline likely failed at triage; treat as degraded rather than \"nothing new\".\n- \"failed\": Pipeline could not complete. outcome = \"failure\". Check error context.\n\nSet wait_seconds to block until the job completes or the timeout expires. This collapses ingest + poll into a single round-trip for fast operations. With wait_seconds=0 (default), returns immediately with current status.",
+      "input": "McpJobStatusRequest",
+      "output": "McpJobStatusResponse"
+    }
+  ],
+  "resources": [
+    {
+      "uriTemplate": "tribal://ingestions/recent{?project_id,statuses,cursor,limit}",
+      "requiredScope": "tribal.knowledge:read",
+      "name": "recent_ingestions",
+      "title": "Recent ingestions",
+      "description": "The caller's recent ingestion jobs, newest first, with bounded previews",
+      "mimeType": "application/json",
+      "response": "McpRecentIngestionsResponse"
+    },
+    {
+      "uriTemplate": "tribal://ingestions/{job_id}/input",
+      "requiredScope": "tribal.knowledge:read",
+      "name": "ingestion_input",
+      "title": "Ingestion input",
+      "description": "The verbatim content of one of the caller's ingestions",
+      "mimeType": "application/json",
+      "response": "McpIngestionInputResponse"
+    }
+  ],
+  "requiredScopes": [
+    "tribal.jobs:read",
+    "tribal.knowledge:read",
+    "tribal.knowledge:write"
+  ],
+  "definitions": {
+    "McpIngestRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "McpIngestRequest",
+      "description": "Deserialisation target for `tribal_ingest` input.",
+      "type": "object",
+      "required": [
+        "content"
+      ],
+      "properties": {
+        "content": {
+          "description": "Raw text submitted for extraction.",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Producer-generated key reused only for retries of one logical ingest operation; absent for ordinary create-on-every-call use.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "project_id": {
+          "description": "Target project; absent means the session's resolved project.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "McpIngestResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "McpIngestResponse",
+      "description": "Response for `tribal_ingest`.",
+      "type": "object",
+      "required": [
+        "job_id"
+      ],
+      "properties": {
+        "job_id": {
+          "type": "string"
+        }
+      }
+    },
+    "McpIngestionInputResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "McpIngestionInputResponse",
+      "description": "Response body of `tribal://ingestions/{job_id}/input`.",
+      "type": "object",
+      "required": [
+        "content",
+        "job_id"
+      ],
+      "properties": {
+        "content": {
+          "description": "The verbatim ingested content.",
+          "type": "string"
+        },
+        "job_id": {
+          "description": "The job's identifier, `job_`-prefixed.",
+          "type": "string"
+        }
+      }
+    },
+    "McpJobStatusRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "McpJobStatusRequest",
+      "description": "Deserialisation target for `tribal_job_status` input.",
+      "type": "object",
+      "required": [
+        "job_id"
+      ],
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "wait_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      }
+    },
+    "McpJobStatusResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "McpJobStatusResponse",
+      "description": "Response for `tribal_job_status`.\n\nConstructed via `from_domain` because the `Job` domain type does not carry aggregate task counts.",
+      "type": "object",
+      "required": [
+        "created_at",
+        "items_created",
+        "job_id",
+        "observations_created",
+        "status",
+        "tasks_completed",
+        "tasks_failed",
+        "updated_at"
+      ],
+      "properties": {
+        "batch_size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "items_created": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "observations_created": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JobOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/JobStatus"
+        },
+        "tasks_completed": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "tasks_failed": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "definitions": {
+        "JobOutcome": {
+          "description": "The outcome of a completed or failed job.",
+          "oneOf": [
+            {
+              "description": "All candidates triaged successfully and relations committed.",
+              "type": "string",
+              "enum": [
+                "success"
+              ]
+            },
+            {
+              "description": "Job completed but some triage tasks dead-lettered; relation task ran on a subset.",
+              "type": "string",
+              "enum": [
+                "partial"
+              ]
+            },
+            {
+              "description": "Pipeline completed but produced no new knowledge items — zero candidates from extraction, or all candidates classified as duplicates.",
+              "type": "string",
+              "enum": [
+                "empty"
+              ]
+            },
+            {
+              "description": "Pipeline could not complete; extraction or relation task dead-lettered.",
+              "type": "string",
+              "enum": [
+                "failure"
+              ]
+            }
+          ]
+        },
+        "JobStatus": {
+          "description": "The lifecycle status of a job in the ingest pipeline.",
+          "oneOf": [
+            {
+              "description": "Waiting for extraction.",
+              "type": "string",
+              "enum": [
+                "queued"
+              ]
+            },
+            {
+              "description": "Extraction task running.",
+              "type": "string",
+              "enum": [
+                "extracting"
+              ]
+            },
+            {
+              "description": "Triage tasks running (set when extraction completes).",
+              "type": "string",
+              "enum": [
+                "triaging"
+              ]
+            },
+            {
+              "description": "Relation task running (set when all triage tasks are terminal).",
+              "type": "string",
+              "enum": [
+                "relating"
+              ]
+            },
+            {
+              "description": "Terminal; pipeline reached conclusion (check [`JobOutcome`] for details).",
+              "type": "string",
+              "enum": [
+                "completed"
+              ]
+            },
+            {
+              "description": "Terminal; pipeline could not complete.",
+              "type": "string",
+              "enum": [
+                "failed"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "McpRecentIngestionsResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "McpRecentIngestionsResponse",
+      "description": "Response body of `tribal://ingestions/recent`.",
+      "type": "object",
+      "required": [
+        "ingestions"
+      ],
+      "properties": {
+        "ingestions": {
+          "description": "The page's rows, newest first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/McpRecentIngestion"
+          }
+        },
+        "next_cursor": {
+          "description": "Opaque cursor resuming the listing, absent on the last page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "definitions": {
+        "JobOutcome": {
+          "description": "The outcome of a completed or failed job.",
+          "oneOf": [
+            {
+              "description": "All candidates triaged successfully and relations committed.",
+              "type": "string",
+              "enum": [
+                "success"
+              ]
+            },
+            {
+              "description": "Job completed but some triage tasks dead-lettered; relation task ran on a subset.",
+              "type": "string",
+              "enum": [
+                "partial"
+              ]
+            },
+            {
+              "description": "Pipeline completed but produced no new knowledge items — zero candidates from extraction, or all candidates classified as duplicates.",
+              "type": "string",
+              "enum": [
+                "empty"
+              ]
+            },
+            {
+              "description": "Pipeline could not complete; extraction or relation task dead-lettered.",
+              "type": "string",
+              "enum": [
+                "failure"
+              ]
+            }
+          ]
+        },
+        "JobStatus": {
+          "description": "The lifecycle status of a job in the ingest pipeline.",
+          "oneOf": [
+            {
+              "description": "Waiting for extraction.",
+              "type": "string",
+              "enum": [
+                "queued"
+              ]
+            },
+            {
+              "description": "Extraction task running.",
+              "type": "string",
+              "enum": [
+                "extracting"
+              ]
+            },
+            {
+              "description": "Triage tasks running (set when extraction completes).",
+              "type": "string",
+              "enum": [
+                "triaging"
+              ]
+            },
+            {
+              "description": "Relation task running (set when all triage tasks are terminal).",
+              "type": "string",
+              "enum": [
+                "relating"
+              ]
+            },
+            {
+              "description": "Terminal; pipeline reached conclusion (check [`JobOutcome`] for details).",
+              "type": "string",
+              "enum": [
+                "completed"
+              ]
+            },
+            {
+              "description": "Terminal; pipeline could not complete.",
+              "type": "string",
+              "enum": [
+                "failed"
+              ]
+            }
+          ]
+        },
+        "McpRecentIngestion": {
+          "description": "One row of `tribal://ingestions/recent`.",
+          "type": "object",
+          "required": [
+            "created_at",
+            "job_id",
+            "preview",
+            "project_id",
+            "status",
+            "updated_at"
+          ],
+          "properties": {
+            "created_at": {
+              "description": "When the job was created.",
+              "type": "string",
+              "format": "date-time"
+            },
+            "job_id": {
+              "description": "The job's identifier, `job_`-prefixed.",
+              "type": "string"
+            },
+            "outcome": {
+              "description": "Terminal outcome, when the job has one.",
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/JobOutcome"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preview": {
+              "description": "Whitespace-collapsed, bounded raw-input preview.",
+              "type": "string"
+            },
+            "project_id": {
+              "description": "The project the ingest resolved to, `proj_`-prefixed.",
+              "type": "string"
+            },
+            "status": {
+              "description": "Current lifecycle status.",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/JobStatus"
+                }
+              ]
+            },
+            "updated_at": {
+              "description": "When the job last changed.",
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -49,6 +49,15 @@ pub const EPISODE_ID: &str = "tribal.episode_id";
 /// Span field name for the transport type (e.g. `"stdio"`, `"http"`, `"sse"`).
 pub const TRANSPORT: &str = "tribal.transport";
 
+/// The producer-supplied ingest idempotency key, when one was sent.
+pub const INGEST_IDEMPOTENCY_KEY: &str = "tribal.ingest.idempotency_key";
+
+/// How admission arbitrated the ingest: created, recovered, or conflict.
+pub const INGEST_ARBITRATION: &str = "tribal.ingest.arbitration";
+
+/// The stored source classification an ingest wrote.
+pub const INGEST_SOURCE_TYPE: &str = "tribal.ingest.source_type";
+
 // ---------------------------------------------------------------------------
 // Embedding spans
 // ---------------------------------------------------------------------------

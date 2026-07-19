@@ -1,4 +1,4 @@
-use rmcp::model::{CallToolResult, Content, ErrorCode, ErrorData as McpError};
+use rmcp::model::{CallToolResult, Content, ErrorCode, ErrorData as McpError, Meta};
 use serde::Serialize;
 use tribal_domain::McpErrorCode;
 
@@ -31,7 +31,11 @@ impl McpToolError {
                 ErrorCode::INVALID_REQUEST
             }
             McpErrorCode::InvalidArgument | McpErrorCode::NotFound => ErrorCode::INVALID_PARAMS,
-            _ => ErrorCode::INTERNAL_ERROR,
+            McpErrorCode::Conflict
+            | McpErrorCode::FailedPrecondition
+            | McpErrorCode::ResourceExhausted
+            | McpErrorCode::Unavailable
+            | McpErrorCode::Internal => ErrorCode::INTERNAL_ERROR,
         };
         let data = serde_json::json!({
             "code": self.code,
@@ -70,15 +74,27 @@ pub trait IntoCallToolResult {
     fn into_call_tool_result(self) -> CallToolResult;
 }
 
+/// The `_meta` member carrying the typed tool error on error results.
+pub const ERROR_META_KEY: &str = "com.tribal/error";
+
 impl IntoCallToolResult for McpToolError {
     fn into_call_tool_result(self) -> CallToolResult {
         // Error results carry the message in the text content and `is_error`
         // only; they deliberately omit `structured_content`. A tool declares a
         // success output schema, and a strict harness validates ANY returned
         // structured content against it, so an error-shaped payload would fail
-        // that validation and mask the real message. MCP has no error output
-        // schema, so the text content is the portable channel.
-        CallToolResult::error(vec![Content::text(&self.message)])
+        // that validation and mask the real message. The typed error rides
+        // result `_meta` instead, where a first-party client reads it without
+        // parsing prose and every other client is free to ignore it.
+        let mut meta = Meta::default();
+        meta.insert(
+            ERROR_META_KEY.to_owned(),
+            // An enum code, a string, and an already-parsed value cannot
+            // fail to serialise; the empty object keeps the text channel
+            // authoritative rather than masking the error with a panic.
+            serde_json::to_value(&self).unwrap_or_else(|_| serde_json::json!({})),
+        );
+        CallToolResult::error(vec![Content::text(&self.message)]).with_meta(Some(meta))
     }
 }
 
@@ -114,6 +130,26 @@ mod tests {
             message: "No job found with ID job_abc".into(),
             details: serde_json::json!({}),
         }
+    }
+
+    #[test]
+    fn test_an_error_result_carries_the_typed_error_in_meta() {
+        let result = McpToolError {
+            code: McpErrorCode::Conflict,
+            message: "idempotency key reused with a different project or content".into(),
+            details: serde_json::json!({}),
+        }
+        .into_call_tool_result();
+
+        assert_eq!(result.is_error, Some(true));
+        assert!(result.structured_content.is_none());
+        let meta = result.meta.expect("error results carry meta");
+        let typed = meta.get(ERROR_META_KEY).expect("the typed error member");
+        assert_eq!(typed["code"], "conflict");
+        assert_eq!(
+            typed["message"],
+            "idempotency key reused with a different project or content",
+        );
     }
 
     #[test]

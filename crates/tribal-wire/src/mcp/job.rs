@@ -1,4 +1,5 @@
-//! MCP request and response types for `tribal_ingest` and `tribal_job_status`.
+//! MCP request and response types for `tribal_ingest`, `tribal_job_status`,
+//! and the ingestion-history resources.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -10,13 +11,21 @@ use tribal_domain::{Job, JobId, JobOutcome, JobStatus};
 
 /// Deserialisation target for `tribal_ingest` input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpIngestRequest {
+    /// Raw text submitted for extraction.
     pub content: String,
+    /// Target project; absent means the session's resolved project.
     pub project_id: Option<String>,
+    /// Producer-generated key reused only for retries of one logical
+    /// ingest operation; absent for ordinary create-on-every-call use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<uuid::Uuid>,
 }
 
 /// Response for `tribal_ingest`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpIngestResponse {
     pub job_id: String,
 }
@@ -35,6 +44,7 @@ impl From<JobId> for McpIngestResponse {
 
 /// Deserialisation target for `tribal_job_status` input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpJobStatusRequest {
     pub job_id: String,
     pub wait_seconds: Option<u32>,
@@ -45,6 +55,7 @@ pub struct McpJobStatusRequest {
 /// Constructed via `from_domain` because the `Job` domain type does not
 /// carry aggregate task counts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpJobStatusResponse {
     pub job_id: String,
     pub status: JobStatus,
@@ -168,4 +179,49 @@ mod tests {
         assert_eq!(resp.items_created, 3);
         assert_eq!(resp.observations_created, 2);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Ingestion resources
+// ---------------------------------------------------------------------------
+
+/// One row of `tribal://ingestions/recent`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct McpRecentIngestion {
+    /// The job's identifier, `job_`-prefixed.
+    pub job_id: String,
+    /// The project the ingest resolved to, `proj_`-prefixed.
+    pub project_id: String,
+    /// Current lifecycle status.
+    pub status: JobStatus,
+    /// Terminal outcome, when the job has one.
+    pub outcome: Option<JobOutcome>,
+    /// Whitespace-collapsed, bounded raw-input preview.
+    pub preview: String,
+    /// When the job was created.
+    pub created_at: DateTime<Utc>,
+    /// When the job last changed.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Response body of `tribal://ingestions/recent`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct McpRecentIngestionsResponse {
+    /// The page's rows, newest first.
+    pub ingestions: Vec<McpRecentIngestion>,
+    /// Opaque cursor resuming the listing, absent on the last page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// Response body of `tribal://ingestions/{job_id}/input`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct McpIngestionInputResponse {
+    /// The job's identifier, `job_`-prefixed.
+    pub job_id: String,
+    /// The verbatim ingested content.
+    pub content: String,
 }

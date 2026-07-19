@@ -3,7 +3,8 @@
 use std::fmt::Write;
 
 use rmcp::model::{CallToolResult, Content};
-use tribal_wire::mcp::{McpIngestResponse, McpJobStatusResponse};
+use tribal_db::RecentIngestionSummary;
+use tribal_wire::mcp::{McpIngestResponse, McpJobStatusResponse, McpRecentIngestion};
 
 use crate::error::IntoCallToolResult;
 
@@ -47,6 +48,24 @@ impl IntoCallToolResult for McpJobStatusResponse {
         let mut result = CallToolResult::success(vec![Content::text(text)]);
         result.structured_content = Some(structured);
         result
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Recent-ingestion projection
+// ---------------------------------------------------------------------------
+
+/// Projects one listing row onto the wire; a free function because both
+/// types live in other crates.
+pub(crate) fn recent_ingestion_to_wire(summary: RecentIngestionSummary) -> McpRecentIngestion {
+    McpRecentIngestion {
+        job_id: summary.job_id.to_string(),
+        project_id: summary.project_id.to_string(),
+        status: summary.status,
+        outcome: summary.outcome,
+        preview: summary.preview,
+        created_at: summary.created_at,
+        updated_at: summary.updated_at,
     }
 }
 

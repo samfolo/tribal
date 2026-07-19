@@ -96,7 +96,7 @@ impl schemars::JsonSchema for ConfigFieldPath {
             ..Default::default()
         };
         schema.extensions.insert(
-            "x-cortex-swift-type".to_owned(),
+            "x-tribal-swift-type".to_owned(),
             serde_json::Value::String("validated-string".to_owned()),
         );
         schema.into()

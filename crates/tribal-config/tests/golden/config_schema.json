@@ -675,7 +675,7 @@
       "ProviderConnectionName": {
         "pattern": "^[a-z][a-z0-9_]*$",
         "type": "string",
-        "x-cortex-swift-type": "validated-string"
+        "x-tribal-swift-type": "validated-string"
       },
       "ProviderLimitsConfig": {
         "additionalProperties": false,

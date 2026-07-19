@@ -4,16 +4,17 @@ use rmcp::{
     handler::server::ServerHandler,
     model::{
         CallToolRequestParams, CallToolResult, ErrorCode, ErrorData as McpError, Implementation,
-        InitializeRequestParams, InitializeResult, ListResourcesResult, ListToolsResult,
-        PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
-        ServerCapabilities, ServerInfo, SubscribeRequestParams, Tool, UnsubscribeRequestParams,
+        InitializeRequestParams, InitializeResult, ListResourceTemplatesResult,
+        ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
+        ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+        SubscribeRequestParams, Tool, UnsubscribeRequestParams,
     },
     service::{RequestContext, RoleServer},
 };
 use tokio::sync::RwLock;
 use tribal_auth::{AuthenticatedPrincipal, TransportAuthStrategy};
 use tribal_db::{
-    JobRepository, KnowledgeItemRepository, PgJobRepository, PgKnowledgeItemRepository,
+    IngestJobRepository, KnowledgeItemRepository, PgJobRepository, PgKnowledgeItemRepository,
     PgPrincipalRepository, PgProjectRepository, PgPromptVersionRepository, PgReferenceRepository,
     PgRelationRepository, PgRetrievalFeedbackRepository, PgStandingRepository,
     PgSystemFingerprintRepository, PgTaskRepository, PgTriageResultRepository, PrincipalRepository,
@@ -29,6 +30,7 @@ use crate::{
     app_state::AppState,
     config::HandlerConfig,
     error::method_not_found,
+    handlers::{INGESTIONS_SCOPE, ingestion_resource_templates, is_ingestion_uri},
     mapping::session_to_json,
     session::{self, SESSION_RESOURCE_URI, SessionContext},
     tools::{PARSED_TOOLS, to_tool},
@@ -67,7 +69,7 @@ pub(crate) const DISPATCHED_TOOLS: &[&str] = &[
 pub struct ConnectionRepositories {
     pub(crate) knowledge_item: Arc<dyn KnowledgeItemRepository + Send + Sync>,
     pub(crate) project: Arc<dyn ProjectRepository + Send + Sync>,
-    pub(crate) job: Arc<dyn JobRepository + Send + Sync>,
+    pub(crate) job: Arc<dyn IngestJobRepository>,
     pub(crate) task: Arc<dyn TaskRepository + Send + Sync>,
     pub(crate) retrieval_feedback: Arc<dyn RetrievalFeedbackRepository + Send + Sync>,
     pub(crate) standing: Arc<dyn StandingRepository + Send + Sync>,
@@ -353,6 +355,9 @@ impl TribalServerHandler {
         uri: &str,
         principal: &AuthenticatedPrincipal,
     ) -> Result<ReadResourceResult, McpError> {
+        if is_ingestion_uri(uri) {
+            return self.read_ingestion_resource(uri, principal).await;
+        }
         if uri != SESSION_RESOURCE_URI {
             return Err(McpError::invalid_params("unknown resource URI", None));
         }
@@ -473,6 +478,29 @@ impl ServerHandler for TribalServerHandler {
         _context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourcesResult, McpError>> + Send + '_ {
         std::future::ready(Ok(Self::list_resources_inner()))
+    }
+
+    fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListResourceTemplatesResult, McpError>> + Send + '_
+    {
+        // The same scope filter as dispatch: a token without knowledge
+        // authority is never shown the content-bearing templates. An
+        // unresolvable principal is an internal fault and stays loud,
+        // exactly as list_tools treats it.
+        let advertised = match self.resolve_principal(&context) {
+            Ok(principal) if is_authorised(principal.scopes(), &INGESTIONS_SCOPE) => {
+                ingestion_resource_templates()
+            }
+            Ok(_) => Vec::new(),
+            Err(e) => return std::future::ready(Err(e)),
+        };
+        std::future::ready(Ok(ListResourceTemplatesResult {
+            resource_templates: advertised,
+            ..Default::default()
+        }))
     }
 
     async fn read_resource(

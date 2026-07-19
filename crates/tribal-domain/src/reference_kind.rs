@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// The classification of a reference attached to a knowledge item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ReferenceKind {
     /// Project-relative file path (sigil `//`).

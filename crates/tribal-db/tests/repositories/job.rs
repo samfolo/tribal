@@ -1,7 +1,8 @@
 use chrono::{SubsecRound, Utc};
 use tribal_db::{
-    DbError, JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
-    PgTaskRepository, PrincipalRepository, ProjectRepository,
+    DbError, IngestInsertOutcome, IngestJobRepository, JobRepository, PgJobRepository,
+    PgPrincipalRepository, PgProjectRepository, PgTaskRepository, PrincipalRepository,
+    ProjectRepository, RecentIngestionCursor, RecentIngestionsQuery,
 };
 use tribal_domain::{
     EpisodeId, ExtractionCommitOutcome, GitRemote, InferenceIdentity, JobId, JobOutcome, JobStatus,
@@ -1200,4 +1201,369 @@ async fn test_the_normalisation_migrates_flat_shapes_and_leaves_the_rest() {
         .await
         .expect("reload");
     assert_eq!(v1.source_context(), &a_v1_source_context());
+}
+
+// ---------------------------------------------------------------------------
+// ingest idempotency arbitration
+// ---------------------------------------------------------------------------
+
+/// Builds the ingest-shaped `NewJob` the arbitration tests admit.
+fn an_ingest(
+    project_id: ProjectId,
+    principal_id: PrincipalId,
+    pv_id: PromptVersionId,
+    fingerprint_hash: &str,
+    key: Option<uuid::Uuid>,
+    content: &str,
+) -> tribal_db::NewJob {
+    a_new_job()
+        .project_id(project_id)
+        .principal_id(principal_id)
+        .raw_input(content.to_owned())
+        .ingest_idempotency_key(key)
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash.to_owned())
+        .build()
+}
+
+#[tokio::test]
+async fn test_a_keyless_ingest_creates_a_job_on_every_call() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgJobRepository;
+    let (principal_id, project_id, pv_id, fp_hash) =
+        setup_job_prerequisites(&mut txn, "idem-keyless").await;
+    let new = an_ingest(project_id, principal_id, pv_id, &fp_hash, None, "note");
+
+    let first = repo
+        .insert_or_resolve_idempotency(&mut txn, &new)
+        .await
+        .expect("first keyless admit");
+    let second = repo
+        .insert_or_resolve_idempotency(&mut txn, &new)
+        .await
+        .expect("second keyless admit");
+
+    let (IngestInsertOutcome::Inserted(a), IngestInsertOutcome::Inserted(b)) = (first, second)
+    else {
+        panic!("keyless admits must both insert");
+    };
+    assert_ne!(a.id(), b.id());
+}
+
+#[tokio::test]
+async fn test_a_retried_key_converges_on_the_original_job() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgJobRepository;
+    let (principal_id, project_id, pv_id, fp_hash) =
+        setup_job_prerequisites(&mut txn, "idem-converge").await;
+    let key = uuid::Uuid::new_v4();
+    let new = an_ingest(project_id, principal_id, pv_id, &fp_hash, Some(key), "note");
+
+    let first = repo
+        .insert_or_resolve_idempotency(&mut txn, &new)
+        .await
+        .expect("first admit");
+    let retry = repo
+        .insert_or_resolve_idempotency(&mut txn, &new)
+        .await
+        .expect("retried admit");
+
+    let IngestInsertOutcome::Inserted(original) = first else {
+        panic!("an unclaimed key inserts");
+    };
+    let IngestInsertOutcome::Existing(resolved) = retry else {
+        panic!("a retried key resolves to the committed job");
+    };
+    assert_eq!(resolved.id(), original.id());
+    assert_eq!(original.ingest_idempotency_key(), Some(key));
+}
+
+#[tokio::test]
+async fn test_a_reused_key_with_different_content_conflicts() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgJobRepository;
+    let (principal_id, project_id, pv_id, fp_hash) =
+        setup_job_prerequisites(&mut txn, "idem-conflict").await;
+    let key = uuid::Uuid::new_v4();
+
+    repo.insert_or_resolve_idempotency(
+        &mut txn,
+        &an_ingest(project_id, principal_id, pv_id, &fp_hash, Some(key), "note"),
+    )
+    .await
+    .expect("first admit");
+    let changed = repo
+        .insert_or_resolve_idempotency(
+            &mut txn,
+            &an_ingest(
+                project_id,
+                principal_id,
+                pv_id,
+                &fp_hash,
+                Some(key),
+                "other",
+            ),
+        )
+        .await
+        .expect("changed-content admit");
+
+    assert!(matches!(changed, IngestInsertOutcome::Conflict));
+}
+
+#[tokio::test]
+async fn test_the_same_key_under_another_principal_is_independent() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgJobRepository;
+    let (principal_a, project_a, pv_id, fp_hash) =
+        setup_job_prerequisites(&mut txn, "idem-principal-a").await;
+    let (principal_b, project_b, pv_b, fp_b) =
+        setup_job_prerequisites(&mut txn, "idem-principal-b").await;
+    let key = uuid::Uuid::new_v4();
+
+    let a = repo
+        .insert_or_resolve_idempotency(
+            &mut txn,
+            &an_ingest(project_a, principal_a, pv_id, &fp_hash, Some(key), "note"),
+        )
+        .await
+        .expect("principal a admit");
+    let b = repo
+        .insert_or_resolve_idempotency(
+            &mut txn,
+            &an_ingest(project_b, principal_b, pv_b, &fp_b, Some(key), "note"),
+        )
+        .await
+        .expect("principal b admit");
+
+    let (IngestInsertOutcome::Inserted(job_a), IngestInsertOutcome::Inserted(job_b)) = (a, b)
+    else {
+        panic!("the same key under two principals inserts twice");
+    };
+    assert_ne!(job_a.id(), job_b.id());
+}
+
+#[tokio::test]
+async fn test_concurrent_admits_under_one_key_converge() {
+    let ctx = TestDb::new().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+    let repo = PgJobRepository;
+    let (principal_id, project_id, pv_id, fp_hash) = {
+        let mut conn = pool.acquire().await.expect("acquire");
+        setup_job_prerequisites(&mut conn, "idem-race").await
+    };
+    let key = uuid::Uuid::new_v4();
+    let new = an_ingest(project_id, principal_id, pv_id, &fp_hash, Some(key), "note");
+
+    let (left, right) = tokio::join!(
+        async {
+            let mut conn = pool.acquire().await.expect("acquire left");
+            repo.insert_or_resolve_idempotency(&mut conn, &new).await
+        },
+        async {
+            let mut conn = pool.acquire().await.expect("acquire right");
+            repo.insert_or_resolve_idempotency(&mut conn, &new).await
+        },
+    );
+    let left = left.expect("left admit");
+    let right = right.expect("right admit");
+
+    let ids: Vec<_> = [&left, &right]
+        .iter()
+        .map(|outcome| match outcome {
+            IngestInsertOutcome::Inserted(job) | IngestInsertOutcome::Existing(job) => job.id(),
+            IngestInsertOutcome::Conflict => panic!("identical racers never conflict"),
+        })
+        .collect();
+    assert_eq!(ids[0], ids[1], "both racers converge on one job");
+}
+
+// ---------------------------------------------------------------------------
+// principal-qualified find and recent listing
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_a_foreign_job_reads_as_not_found() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgJobRepository;
+    let (owner, project_id, pv_id, fp_hash) =
+        setup_job_prerequisites(&mut txn, "principal-find").await;
+    let (stranger, _, _, _) = setup_job_prerequisites(&mut txn, "principal-find-stranger").await;
+    let job = repo
+        .insert(
+            &mut txn,
+            &an_ingest(project_id, owner, pv_id, &fp_hash, None, "note"),
+        )
+        .await
+        .expect("insert job");
+
+    let read_back = repo
+        .find_by_id_for_principal(&mut txn, job.id(), owner)
+        .await
+        .expect("owner reads the job");
+    assert_eq!(read_back.id(), job.id());
+
+    let foreign = repo
+        .find_by_id_for_principal(&mut txn, job.id(), stranger)
+        .await
+        .unwrap_err();
+    let missing = repo
+        .find_by_id_for_principal(&mut txn, JobId::new(), owner)
+        .await
+        .unwrap_err();
+    assert!(matches!(foreign, DbError::NotFound { entity: "job", .. }));
+    assert!(matches!(missing, DbError::NotFound { entity: "job", .. }));
+}
+
+#[tokio::test]
+async fn test_the_recent_listing_pages_by_cursor_with_bounded_previews() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgJobRepository;
+    let (principal_id, project_id, pv_id, fp_hash) =
+        setup_job_prerequisites(&mut txn, "recent-listing").await;
+    let (other_principal, other_project, other_pv, other_fp) =
+        setup_job_prerequisites(&mut txn, "recent-listing-other").await;
+
+    let long_note = format!("padded   {}", "x".repeat(400));
+    for content in ["first note", "second   note", &long_note] {
+        repo.insert(
+            &mut txn,
+            &an_ingest(project_id, principal_id, pv_id, &fp_hash, None, content),
+        )
+        .await
+        .expect("insert listed job");
+    }
+    repo.insert(
+        &mut txn,
+        &an_ingest(
+            other_project,
+            other_principal,
+            other_pv,
+            &other_fp,
+            None,
+            "foreign note",
+        ),
+    )
+    .await
+    .expect("insert foreign job");
+
+    let first_page = repo
+        .list_recent_for_principal(
+            &mut txn,
+            principal_id,
+            &RecentIngestionsQuery {
+                limit: 2,
+                ..RecentIngestionsQuery::default()
+            },
+        )
+        .await
+        .expect("first page");
+    assert_eq!(first_page.ingestions.len(), 2);
+    let cursor = first_page.next_cursor.expect("a further page exists");
+    assert!(
+        first_page.ingestions[0].created_at >= first_page.ingestions[1].created_at,
+        "newest first",
+    );
+
+    let second_page = repo
+        .list_recent_for_principal(
+            &mut txn,
+            principal_id,
+            &RecentIngestionsQuery {
+                before: Some(cursor),
+                limit: 2,
+                ..RecentIngestionsQuery::default()
+            },
+        )
+        .await
+        .expect("second page");
+    assert_eq!(
+        second_page.ingestions.len(),
+        1,
+        "only the principal's rows list"
+    );
+    assert!(second_page.next_cursor.is_none());
+
+    // Same-instant rows order by id, so position is not insertion order:
+    // assert the padded row's preview wherever the pages placed it.
+    let all_rows: Vec<_> = first_page
+        .ingestions
+        .iter()
+        .chain(second_page.ingestions.iter())
+        .collect();
+    assert_eq!(all_rows.len(), 3);
+    let padded = all_rows
+        .iter()
+        .find(|row| row.preview.starts_with("padded"))
+        .expect("the padded row lists");
+    assert!(
+        padded.preview.starts_with("padded x"),
+        "whitespace collapses: {}",
+        padded.preview,
+    );
+    assert!(padded.preview.chars().count() <= 160, "preview is bounded");
+
+    let decoded = RecentIngestionCursor::decode(&cursor.encode()).expect("cursor round-trips");
+    assert_eq!(decoded, cursor);
+}
+
+#[tokio::test]
+async fn test_the_recent_listing_filters_by_status() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgJobRepository;
+    let (principal_id, project_id, pv_id, fp_hash) =
+        setup_job_prerequisites(&mut txn, "recent-status-filter").await;
+    let queued = repo
+        .insert(
+            &mut txn,
+            &an_ingest(project_id, principal_id, pv_id, &fp_hash, None, "note"),
+        )
+        .await
+        .expect("insert queued job");
+    let completed = repo
+        .insert(
+            &mut txn,
+            &an_ingest(project_id, principal_id, pv_id, &fp_hash, None, "done"),
+        )
+        .await
+        .expect("insert completing job");
+    repo.update_status_if_live(
+        &mut txn,
+        completed.id(),
+        &a_job_status_transition()
+            .status(JobStatus::Completed)
+            .outcome(Some(JobOutcome::Success))
+            .completed_at(Some(Utc::now()))
+            .build(),
+    )
+    .await
+    .expect("complete job");
+
+    let page = repo
+        .list_recent_for_principal(
+            &mut txn,
+            principal_id,
+            &RecentIngestionsQuery {
+                statuses: vec![JobStatus::Completed],
+                limit: 10,
+                ..RecentIngestionsQuery::default()
+            },
+        )
+        .await
+        .expect("filtered page");
+
+    assert_eq!(page.ingestions.len(), 1);
+    assert_eq!(page.ingestions[0].job_id, completed.id());
+    assert_ne!(page.ingestions[0].job_id, queued.id());
 }

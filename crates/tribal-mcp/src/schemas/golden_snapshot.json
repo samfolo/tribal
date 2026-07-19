@@ -2,29 +2,37 @@
   {
     "description": "Set or override session-level context for Tribal. Use this at the start of a session to declare your model identity, or when switching to a different project.\n\nSession context is used as the default for all subsequent tool calls. For example, setting a project here means tribal_ingest and tribal_discover will use it automatically without needing project_id on every call.\n\nThe server resolves what it can at connection start (project from git remote, principal from auth). Use this tool to fill in what the server cannot infer (model name, provider) or to override what it resolved (e.g., switching projects).",
     "input_schema": {
-      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Deserialisation target for `tribal_set_context` input.",
       "properties": {
         "model": {
-          "description": "The model you are running as. e.g., 'claude-sonnet-4-5-20250514'. Set once at session start.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "project_id": {
-          "description": "Override the active project. Use when working in a different project than the one resolved from the git remote.",
-          "pattern": "^proj_[0-9a-f-]{36}$",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "provider": {
-          "description": "The inference provider. e.g., 'anthropic', 'openai'. Set once at session start.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
+      "title": "McpSetContextRequest",
       "type": "object"
     },
     "name": "tribal_set_context",
     "output_schema": {
-      "description": "Returns the full session context after applying changes.",
-      "properties": {
-        "actor": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "McpSessionActor": {
+          "description": "Actor metadata on the MCP `set_context` response surface.\n\nAll fields are always present in serialised JSON (null when absent), matching the existing session resource representation.",
           "properties": {
             "client_name": {
               "type": [
@@ -53,16 +61,13 @@
           },
           "type": "object"
         },
-        "principal_key": {
-          "type": "string"
-        },
-        "project": {
+        "McpSessionProject": {
+          "description": "Project on the MCP `set_context` response surface.",
           "properties": {
             "git_remote": {
               "type": "string"
             },
             "id": {
-              "pattern": "^proj_[0-9a-f-]{36}$",
               "type": "string"
             },
             "name": {
@@ -70,20 +75,37 @@
             }
           },
           "required": [
+            "git_remote",
             "id",
-            "name",
-            "git_remote"
+            "name"
           ],
-          "type": [
-            "object",
-            "null"
+          "type": "object"
+        }
+      },
+      "description": "Typed response for `tribal_set_context`.\n\nThe `project` field is non-required in the output schema but always included (null when absent) for consistency with the session resource representation.",
+      "properties": {
+        "actor": {
+          "$ref": "#/definitions/McpSessionActor"
+        },
+        "principal_key": {
+          "type": "string"
+        },
+        "project": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpSessionProject"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
       "required": [
-        "principal_key",
-        "actor"
+        "actor",
+        "principal_key"
       ],
+      "title": "McpSetContextResponse",
       "type": "object"
     },
     "required_scope": "tribal:write",
@@ -92,35 +114,48 @@
   {
     "description": "Submit raw text for knowledge extraction into Tribal. The system extracts structured knowledge items (facts, heuristics, procedures, decision records), detects duplicates, identifies relationships with existing knowledge, and stores the results.\n\nThis is an asynchronous operation. Returns a job_id immediately. Use tribal_job_status to poll for completion.\n\nUse this tool when you've learned something worth preserving: a debugging insight, an architectural decision, a reusable pattern, a gotcha about a library, or any experience that would help you or another agent working on this codebase in the future.\n\nDo NOT use this for storing code snippets, file contents, or documentation. Tribal stores knowledge *about* work, not the artefacts themselves.\n\nProject, model, and principal are sourced from session context (see tribal_set_context). You only need to provide the content itself.",
     "input_schema": {
-      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Deserialisation target for `tribal_ingest` input.",
       "properties": {
         "content": {
-          "description": "The raw text to extract knowledge from. Write naturally: describe what you learned, what went wrong, what the fix was, why a decision was made. The system handles structuring. Richer input produces better results: include context, reasoning, and specifics rather than terse summaries.",
+          "description": "Raw text submitted for extraction.",
           "type": "string"
         },
+        "idempotency_key": {
+          "description": "Producer-generated key reused only for retries of one logical ingest operation; absent for ordinary create-on-every-call use.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "project_id": {
-          "description": "Override the session's active project for this ingest. Optional; defaults to the project set in session context.",
-          "pattern": "^proj_[0-9a-f-]{36}$",
-          "type": "string"
+          "description": "Target project; absent means the session's resolved project.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "content"
       ],
+      "title": "McpIngestRequest",
       "type": "object"
     },
     "name": "tribal_ingest",
     "output_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Response for `tribal_ingest`.",
       "properties": {
         "job_id": {
-          "description": "Unique identifier for the ingest job. Use with tribal_job_status to track progress.",
-          "pattern": "^job_[0-9a-f-]{36}$",
           "type": "string"
         }
       },
       "required": [
         "job_id"
       ],
+      "title": "McpIngestResponse",
       "type": "object"
     },
     "required_scope": "tribal.knowledge:write",
@@ -129,108 +164,232 @@
   {
     "description": "Search Tribal's knowledge base using natural language. Returns knowledge items ranked by semantic similarity to your query, with optional structured filters to narrow results.\n\nUse this as your first step when you need context: before starting work on a feature, debugging an issue, or making a design decision. Ask questions the way you'd ask a colleague: \"What do I know about connection pooling in this project?\" or \"Have I seen this async deadlock pattern before?\"\n\nSemantic search is the primary mechanism. Filters (project, kind, tags, time) narrow the candidate set but are not required. If you need to understand an item's evidence, contradictions, or derivation chain, follow up with tribal_explore using the item's ID.\n\nSuperseded items (replaced by newer understanding) are excluded by default. Set include_superseded to true for the historical picture.\n\nResults include standing (evidential profile) when requested, which summarises each item's support count, contradiction count, observation frequency, and diversity of supporting evidence.",
     "input_schema": {
-      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "KnowledgeKind": {
+          "description": "The kind of knowledge captured.",
+          "oneOf": [
+            {
+              "description": "A discrete, verifiable piece of information.",
+              "enum": [
+                "fact"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "A rule of thumb or pattern derived from experience.",
+              "enum": [
+                "heuristic"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "A sequence of steps to accomplish something.",
+              "enum": [
+                "procedure"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "A record of a choice made and its rationale.",
+              "enum": [
+                "decision_record"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "McpTimeRange": {
+          "description": "Time range filter for discovery queries.",
+          "properties": {
+            "from": {
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "to": {
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "description": "Deserialisation target for `tribal_discover` input.",
       "properties": {
         "cursor": {
-          "description": "Opaque pagination cursor from a previous response's next_cursor.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "include_references": {
-          "default": false,
-          "description": "Return references (file paths, URLs, concepts) attached to each item.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "include_standing": {
-          "default": false,
-          "description": "Compute and return standing (evidential profile) for each result. Adds minor latency. Recommended when assessing reliability.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "include_superseded": {
-          "default": false,
-          "description": "Include items that have been superseded by newer understanding. Default false.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "kinds": {
-          "description": "Filter to specific knowledge kinds. Use sparingly; semantic search naturally ranks relevant kinds higher. Most useful for explicit structural queries like 'show me all decision records for this project'.",
           "items": {
-            "enum": [
-              "fact",
-              "heuristic",
-              "procedure",
-              "decision_record"
-            ],
-            "type": "string"
+            "$ref": "#/definitions/KnowledgeKind"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "limit": {
-          "default": 10,
-          "description": "Maximum number of results to return.",
-          "maximum": 50,
-          "minimum": 1,
-          "type": "integer"
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "project_id": {
-          "description": "Filter to a specific project. Three-way semantics: omit to use session context project (if set); pass a project ID to filter to that project; pass null to search globally, ignoring session context.",
-          "pattern": "^proj_[0-9a-f-]{36}$",
+          "description": "Three-way semantics: absent → use session project; explicit null → search globally; present → filter to this project. `skip_serializing_if` keeps an absent value absent (not `null`) on the way out, so a client sending only a query stays session-scoped rather than going global.",
           "type": [
             "string",
             "null"
           ]
         },
         "query": {
-          "description": "Natural language query. Describe what you're looking for conversationally. The system embeds this and finds semantically similar knowledge items.",
           "type": "string"
         },
         "tags": {
-          "description": "Filter by tags (AND semantics: items must have ALL specified tags). Tags are lowercase. For OR semantics, make separate queries.",
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "time_range": {
-          "description": "Filter by creation time. Either or both bounds may be specified.",
-          "properties": {
-            "from": {
-              "description": "Items created after this time (inclusive).",
-              "format": "date-time",
-              "type": "string"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpTimeRange"
             },
-            "to": {
-              "description": "Items created before this time (inclusive).",
-              "format": "date-time",
-              "type": "string"
+            {
+              "type": "null"
             }
-          },
-          "type": "object"
+          ]
         }
       },
       "required": [
         "query"
       ],
+      "title": "McpDiscoverRequest",
       "type": "object"
     },
     "name": "tribal_discover",
     "output_schema": {
-      "$defs": {
-        "discovery_result": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "Confidence": {
+          "description": "The confidence level of a knowledge item.",
+          "oneOf": [
+            {
+              "description": "Manually confirmed or from an authoritative source.",
+              "enum": [
+                "verified"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Extracted by a model from a conversation or document.",
+              "enum": [
+                "inferred"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Flagged as potentially inaccurate or context-dependent.",
+              "enum": [
+                "uncertain"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "KnowledgeKind": {
+          "description": "The kind of knowledge captured.",
+          "oneOf": [
+            {
+              "description": "A discrete, verifiable piece of information.",
+              "enum": [
+                "fact"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "A rule of thumb or pattern derived from experience.",
+              "enum": [
+                "heuristic"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "A sequence of steps to accomplish something.",
+              "enum": [
+                "procedure"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "A record of a choice made and its rationale.",
+              "enum": [
+                "decision_record"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "McpDiscoveryResult": {
+          "description": "A single discovery result with its similarity score.",
           "properties": {
             "item": {
-              "$ref": "#/$defs/knowledge_item"
+              "$ref": "#/definitions/McpKnowledgeItem"
             },
             "references": {
               "items": {
-                "$ref": "#/$defs/reference"
+                "$ref": "#/definitions/McpReference"
               },
-              "type": "array"
+              "type": [
+                "array",
+                "null"
+              ]
             },
             "similarity": {
-              "description": "Cosine similarity to query (0.0 to 1.0).",
+              "format": "double",
               "type": "number"
             },
             "standing": {
-              "$ref": "#/$defs/standing"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/McpStanding"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -239,10 +398,10 @@
           ],
           "type": "object"
         },
-        "knowledge_item": {
+        "McpKnowledgeItem": {
+          "description": "MCP-surface representation of a knowledge item.\n\nAll ID fields carry their type prefix (e.g. `ki_`, `proj_`, `ep_`). The `principal_key` field is the human-readable string, not the UUID.",
           "properties": {
             "capture_branch": {
-              "description": "Branch name when this item was captured (informational).",
               "type": [
                 "string",
                 "null"
@@ -255,12 +414,7 @@
               ]
             },
             "confidence": {
-              "enum": [
-                "verified",
-                "inferred",
-                "uncertain"
-              ],
-              "type": "string"
+              "$ref": "#/definitions/Confidence"
             },
             "content": {
               "type": "string"
@@ -270,61 +424,25 @@
               "type": "string"
             },
             "episode_id": {
-              "pattern": "^ep_[0-9a-f-]{36}$",
               "type": [
                 "string",
                 "null"
               ]
             },
             "id": {
-              "pattern": "^ki_[0-9a-f-]{36}$",
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "fact",
-                "heuristic",
-                "procedure",
-                "decision_record"
-              ],
-              "type": "string"
+              "$ref": "#/definitions/KnowledgeKind"
             },
             "principal_key": {
-              "description": "Human-readable principal identifier (e.g., 'user:sam').",
               "type": "string"
             },
             "project_id": {
-              "pattern": "^proj_[0-9a-f-]{36}$",
               "type": "string"
             },
             "source_context": {
-              "description": "Provenance of this item. Types: 'agent_mediated' = model-mediated capture via a provider/model pipeline (e.g., an agent ingesting via MCP); 'manual' = human-initiated capture without model mediation; 'derived' = produced by synthesis or compaction from existing items.",
-              "properties": {
-                "model": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "provider": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "type": {
-                  "enum": [
-                    "agent_mediated",
-                    "manual",
-                    "derived"
-                  ],
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type"
-              ],
-              "type": "object"
+              "$ref": "#/definitions/McpSourceContext"
             },
             "tags": {
               "items": {
@@ -334,49 +452,40 @@
             }
           },
           "required": [
-            "id",
-            "project_id",
-            "principal_key",
-            "kind",
-            "content",
-            "tags",
             "confidence",
+            "content",
+            "created_at",
+            "id",
+            "kind",
+            "principal_key",
+            "project_id",
             "source_context",
-            "created_at"
+            "tags"
           ],
           "type": "object"
         },
-        "reference": {
+        "McpReference": {
+          "description": "MCP-surface representation of a reference.\n\nProjects a subset of the domain `Reference` fields — excludes `knowledge_item_id`, `project_id`, and `branch`.",
           "properties": {
             "commit": {
-              "description": "Git SHA when this reference was known valid.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "description": {
-              "description": "What was at this location and why it mattered.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "id": {
-              "pattern": "^ref_[0-9a-f-]{36}$",
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "file_path",
-                "url",
-                "concept",
-                "symbol"
-              ],
-              "type": "string"
+              "$ref": "#/definitions/ReferenceKind"
             },
             "value": {
-              "description": "The pointer (e.g., '//src/auth/middleware.rs', a URL, a concept name).",
               "type": "string"
             }
           },
@@ -387,75 +496,163 @@
           ],
           "type": "object"
         },
-        "standing": {
-          "description": "Evidential profile computed from the relationship graph. Use tribal_get_item to retrieve items referenced by newest_supporting_id, newest_contradicting_id, or superseded_by.",
+        "McpSourceContext": {
+          "description": "Flattened provenance summary extracted from the opaque JSONB `source_context` column.",
+          "properties": {
+            "model": {
+              "description": "Model identifier (e.g. `\"claude-opus-4-6\"`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "description": "Inference provider name (e.g. `\"anthropic\"`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/McpSourceType"
+                }
+              ],
+              "description": "Discriminator — always present."
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        "McpSourceType": {
+          "description": "Source type on the MCP surface.\n\nMaps from the internal `source_context` JSONB discriminator to the three values exposed to clients.",
+          "oneOf": [
+            {
+              "description": "Captured via a model-mediated pipeline (e.g. agent ingesting via MCP).",
+              "enum": [
+                "agent_mediated"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Human-initiated capture without model mediation.",
+              "enum": [
+                "manual"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Produced by synthesis or compaction from existing items.",
+              "enum": [
+                "derived"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "McpStanding": {
+          "description": "Computed evidential profile on the MCP surface.\n\nID fields are rendered as prefixed strings. Optional IDs are omitted from serialised JSON when absent.",
           "properties": {
             "contradicting_count": {
-              "description": "Distinct items asserting Contradicts.",
+              "format": "uint32",
+              "minimum": 0.0,
               "type": "integer"
             },
             "newest_contradicting_id": {
-              "description": "Most recent contradicting item. Retrieve with tribal_get_item.",
-              "pattern": "^ki_[0-9a-f-]{36}$",
               "type": [
                 "string",
                 "null"
               ]
             },
             "newest_supporting_id": {
-              "description": "Most recent supporting item. Retrieve with tribal_get_item.",
-              "pattern": "^ki_[0-9a-f-]{36}$",
               "type": [
                 "string",
                 "null"
               ]
             },
             "observation_count": {
-              "description": "Times this knowledge was independently re-encountered.",
+              "format": "uint32",
+              "minimum": 0.0,
               "type": "integer"
             },
             "superseded_by": {
-              "description": "ID of the superseding item, if any.",
-              "pattern": "^ki_[0-9a-f-]{36}$",
               "type": [
                 "string",
                 "null"
               ]
             },
             "supporting_count": {
-              "description": "Distinct items asserting Supports.",
+              "format": "uint32",
+              "minimum": 0.0,
               "type": "integer"
             },
             "supporting_episode_count": {
-              "description": "Distinct episodes providing support. Higher = broader validation.",
+              "format": "uint32",
+              "minimum": 0.0,
               "type": "integer"
             },
             "supporting_project_count": {
-              "description": "Distinct projects providing support. Higher = cross-project validation.",
+              "format": "uint32",
+              "minimum": 0.0,
               "type": "integer"
             }
           },
           "required": [
-            "supporting_count",
             "contradicting_count",
             "observation_count",
+            "supporting_count",
             "supporting_episode_count",
             "supporting_project_count"
           ],
           "type": "object"
+        },
+        "ReferenceKind": {
+          "description": "The classification of a reference attached to a knowledge item.",
+          "oneOf": [
+            {
+              "description": "Project-relative file path (sigil `//`).",
+              "enum": [
+                "file_path"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "External URL.",
+              "enum": [
+                "url"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Abstract reference too general for a path or URL.",
+              "enum": [
+                "concept"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Code symbol (function, type, module).",
+              "enum": [
+                "symbol"
+              ],
+              "type": "string"
+            }
+          ]
         }
       },
+      "description": "Response for `tribal_discover`.",
       "properties": {
         "applied_project_id": {
-          "description": "The project used for filtering. Set when search was project-scoped (explicit ID or from session context). Null when search was global (no project filter applied, or project_id was explicitly null).",
-          "pattern": "^proj_[0-9a-f-]{36}$",
+          "description": "Required + nullable — always present in serialised JSON.",
           "type": [
             "string",
             "null"
           ]
         },
         "embedding_model": {
-          "description": "Which embedding model was used for this query.",
           "type": "string"
         },
         "embedding_profile_id": {
@@ -463,36 +660,33 @@
           "type": "string"
         },
         "exact": {
-          "description": "True if all matching results are included. False if truncated by limit.",
           "type": "boolean"
         },
         "items": {
           "items": {
-            "$ref": "#/$defs/discovery_result"
+            "$ref": "#/definitions/McpDiscoveryResult"
           },
           "type": "array"
         },
         "next_cursor": {
-          "description": "Pagination cursor. Null if no more results.",
+          "description": "Required + nullable — always present (null when no more results).",
           "type": [
             "string",
             "null"
           ]
         },
         "trace_id": {
-          "description": "Trace ID for this retrieval. Pass to tribal_feedback to rate this session.",
           "type": "string"
         }
       },
       "required": [
-        "items",
-        "next_cursor",
-        "applied_project_id",
         "embedding_model",
         "embedding_profile_id",
         "exact",
+        "items",
         "trace_id"
       ],
+      "title": "McpDiscoverResponse",
       "type": "object"
     },
     "required_scope": "tribal.knowledge:read",
@@ -501,127 +695,185 @@
   {
     "description": "Traverse the relationship graph from a specific knowledge item. Use this after tribal_discover to understand an item's context: what supports it, what contradicts it, what it was derived from, or what it supersedes.\n\nTypical workflow:\n1. tribal_discover finds relevant items\n2. Pick an item with interesting standing (high support, or contradictions)\n3. tribal_explore to see the evidence, contradictions, or derivation chain\n\nDirection controls traversal:\n- \"inbound\": What do others assert about this item? (supports, contradictions, what supersedes it)\n- \"outbound\": What does this item assert about others? (what it's derived from, what it supports)\n- \"both\": Full neighbourhood in all directions\n\nRelation types:\n- \"supports\": Evidence that reinforces the item\n- \"contradicts\": Evidence that challenges the item\n- \"supersedes\": A newer item that replaces this one\n- \"derived_from\": Provenance. The input used to produce this item\n\nDepth controls hops: depth 1 = direct relations, depth 2 = relations of relations. Higher depth gives more context but more results. Depth is capped at 3 to avoid mixing unrelated evidence across distant graph regions; use multiple targeted calls for deeper investigation.",
     "input_schema": {
-      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Deserialisation target for `tribal_explore` input.",
       "properties": {
         "depth": {
-          "default": 1,
-          "description": "Maximum traversal hops from anchor. 1 = direct relations only.",
-          "maximum": 3,
-          "minimum": 1,
-          "type": "integer"
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "direction": {
-          "default": "inbound",
-          "description": "Traversal direction relative to the anchor item.",
-          "enum": [
-            "inbound",
-            "outbound",
-            "both"
-          ],
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "include_references": {
-          "default": false,
-          "description": "Return references attached to each item.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "include_standing": {
-          "default": false,
-          "description": "Compute standing for each returned item. Adds latency at depth > 1.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "item_id": {
-          "description": "The anchor item to explore from. Typically obtained from a tribal_discover result.",
-          "pattern": "^ki_[0-9a-f-]{36}$",
           "type": "string"
         },
         "limit": {
-          "default": 20,
-          "description": "Maximum total results across all depths. Closer relations are returned first.",
-          "maximum": 100,
-          "minimum": 1,
-          "type": "integer"
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "relation_types": {
-          "description": "Filter to specific relation types. Omit to return all types.",
           "items": {
-            "enum": [
-              "supports",
-              "contradicts",
-              "supersedes",
-              "derived_from"
-            ],
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "session_trace_id": {
-          "description": "Trace ID from a prior tribal_discover call. If provided, this explore is part of the same retrieval session. The returned trace_id will match. Use this to build coherent feedback across discover + explore workflows.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "item_id"
       ],
+      "title": "McpExploreRequest",
       "type": "object"
     },
     "name": "tribal_explore",
     "output_schema": {
-      "$defs": {
-        "exploration_result": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "Confidence": {
+          "description": "The confidence level of a knowledge item.",
+          "oneOf": [
+            {
+              "description": "Manually confirmed or from an authoritative source.",
+              "enum": [
+                "verified"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Extracted by a model from a conversation or document.",
+              "enum": [
+                "inferred"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Flagged as potentially inaccurate or context-dependent.",
+              "enum": [
+                "uncertain"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "KnowledgeKind": {
+          "description": "The kind of knowledge captured.",
+          "oneOf": [
+            {
+              "description": "A discrete, verifiable piece of information.",
+              "enum": [
+                "fact"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "A rule of thumb or pattern derived from experience.",
+              "enum": [
+                "heuristic"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "A sequence of steps to accomplish something.",
+              "enum": [
+                "procedure"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "A record of a choice made and its rationale.",
+              "enum": [
+                "decision_record"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "McpExplorationResult": {
+          "description": "A single exploration result with relationship metadata.",
           "properties": {
             "depth": {
-              "description": "Hops from anchor. 1 = directly related.",
+              "format": "uint32",
+              "minimum": 0.0,
               "type": "integer"
             },
             "item": {
-              "$ref": "#/$defs/knowledge_item"
+              "$ref": "#/definitions/McpKnowledgeItem"
             },
             "references": {
               "items": {
-                "$ref": "#/$defs/reference"
+                "$ref": "#/definitions/McpReference"
               },
-              "type": "array"
+              "type": [
+                "array",
+                "null"
+              ]
             },
             "relation_created_at": {
-              "description": "When this relationship was asserted.",
               "format": "date-time",
               "type": "string"
             },
             "relation_direction": {
-              "description": "Direction relative to the anchor. 'inbound' = this item asserts something about the anchor.",
-              "enum": [
-                "inbound",
-                "outbound"
-              ],
-              "type": "string"
+              "$ref": "#/definitions/McpRelationDirection"
             },
             "relation_type": {
-              "enum": [
-                "supports",
-                "contradicts",
-                "supersedes",
-                "derived_from"
-              ],
-              "type": "string"
+              "$ref": "#/definitions/RelationKind"
             },
             "standing": {
-              "$ref": "#/$defs/standing"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/McpStanding"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
-            "item",
-            "relation_type",
-            "relation_direction",
             "depth",
-            "relation_created_at"
+            "item",
+            "relation_created_at",
+            "relation_direction",
+            "relation_type"
           ],
           "type": "object"
         },
-        "knowledge_item": {
+        "McpKnowledgeItem": {
+          "description": "MCP-surface representation of a knowledge item.\n\nAll ID fields carry their type prefix (e.g. `ki_`, `proj_`, `ep_`). The `principal_key` field is the human-readable string, not the UUID.",
           "properties": {
             "capture_branch": {
-              "description": "Branch name when this item was captured (informational).",
               "type": [
                 "string",
                 "null"
@@ -634,12 +886,7 @@
               ]
             },
             "confidence": {
-              "enum": [
-                "verified",
-                "inferred",
-                "uncertain"
-              ],
-              "type": "string"
+              "$ref": "#/definitions/Confidence"
             },
             "content": {
               "type": "string"
@@ -649,61 +896,25 @@
               "type": "string"
             },
             "episode_id": {
-              "pattern": "^ep_[0-9a-f-]{36}$",
               "type": [
                 "string",
                 "null"
               ]
             },
             "id": {
-              "pattern": "^ki_[0-9a-f-]{36}$",
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "fact",
-                "heuristic",
-                "procedure",
-                "decision_record"
-              ],
-              "type": "string"
+              "$ref": "#/definitions/KnowledgeKind"
             },
             "principal_key": {
-              "description": "Human-readable principal identifier (e.g., 'user:sam').",
               "type": "string"
             },
             "project_id": {
-              "pattern": "^proj_[0-9a-f-]{36}$",
               "type": "string"
             },
             "source_context": {
-              "description": "Provenance of this item. Types: 'agent_mediated' = model-mediated capture via a provider/model pipeline (e.g., an agent ingesting via MCP); 'manual' = human-initiated capture without model mediation; 'derived' = produced by synthesis or compaction from existing items.",
-              "properties": {
-                "model": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "provider": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "type": {
-                  "enum": [
-                    "agent_mediated",
-                    "manual",
-                    "derived"
-                  ],
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type"
-              ],
-              "type": "object"
+              "$ref": "#/definitions/McpSourceContext"
             },
             "tags": {
               "items": {
@@ -713,49 +924,40 @@
             }
           },
           "required": [
-            "id",
-            "project_id",
-            "principal_key",
-            "kind",
-            "content",
-            "tags",
             "confidence",
+            "content",
+            "created_at",
+            "id",
+            "kind",
+            "principal_key",
+            "project_id",
             "source_context",
-            "created_at"
+            "tags"
           ],
           "type": "object"
         },
-        "reference": {
+        "McpReference": {
+          "description": "MCP-surface representation of a reference.\n\nProjects a subset of the domain `Reference` fields — excludes `knowledge_item_id`, `project_id`, and `branch`.",
           "properties": {
             "commit": {
-              "description": "Git SHA when this reference was known valid.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "description": {
-              "description": "What was at this location and why it mattered.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "id": {
-              "pattern": "^ref_[0-9a-f-]{36}$",
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "file_path",
-                "url",
-                "concept",
-                "symbol"
-              ],
-              "type": "string"
+              "$ref": "#/definitions/ReferenceKind"
             },
             "value": {
-              "description": "The pointer (e.g., '//src/auth/middleware.rs', a URL, a concept name).",
               "type": "string"
             }
           },
@@ -766,93 +968,244 @@
           ],
           "type": "object"
         },
-        "standing": {
-          "description": "Evidential profile computed from the relationship graph. Use tribal_get_item to retrieve items referenced by newest_supporting_id, newest_contradicting_id, or superseded_by.",
+        "McpRelationDirection": {
+          "description": "Direction of a relationship edge relative to the exploration anchor.",
+          "oneOf": [
+            {
+              "description": "This item asserts something about the anchor.",
+              "enum": [
+                "inbound"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "The anchor asserts something about this item.",
+              "enum": [
+                "outbound"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "McpSourceContext": {
+          "description": "Flattened provenance summary extracted from the opaque JSONB `source_context` column.",
+          "properties": {
+            "model": {
+              "description": "Model identifier (e.g. `\"claude-opus-4-6\"`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "description": "Inference provider name (e.g. `\"anthropic\"`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/McpSourceType"
+                }
+              ],
+              "description": "Discriminator — always present."
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        "McpSourceType": {
+          "description": "Source type on the MCP surface.\n\nMaps from the internal `source_context` JSONB discriminator to the three values exposed to clients.",
+          "oneOf": [
+            {
+              "description": "Captured via a model-mediated pipeline (e.g. agent ingesting via MCP).",
+              "enum": [
+                "agent_mediated"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Human-initiated capture without model mediation.",
+              "enum": [
+                "manual"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Produced by synthesis or compaction from existing items.",
+              "enum": [
+                "derived"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "McpStanding": {
+          "description": "Computed evidential profile on the MCP surface.\n\nID fields are rendered as prefixed strings. Optional IDs are omitted from serialised JSON when absent.",
           "properties": {
             "contradicting_count": {
-              "description": "Distinct items asserting Contradicts.",
+              "format": "uint32",
+              "minimum": 0.0,
               "type": "integer"
             },
             "newest_contradicting_id": {
-              "description": "Most recent contradicting item. Retrieve with tribal_get_item.",
-              "pattern": "^ki_[0-9a-f-]{36}$",
               "type": [
                 "string",
                 "null"
               ]
             },
             "newest_supporting_id": {
-              "description": "Most recent supporting item. Retrieve with tribal_get_item.",
-              "pattern": "^ki_[0-9a-f-]{36}$",
               "type": [
                 "string",
                 "null"
               ]
             },
             "observation_count": {
-              "description": "Times this knowledge was independently re-encountered.",
+              "format": "uint32",
+              "minimum": 0.0,
               "type": "integer"
             },
             "superseded_by": {
-              "description": "ID of the superseding item, if any.",
-              "pattern": "^ki_[0-9a-f-]{36}$",
               "type": [
                 "string",
                 "null"
               ]
             },
             "supporting_count": {
-              "description": "Distinct items asserting Supports.",
+              "format": "uint32",
+              "minimum": 0.0,
               "type": "integer"
             },
             "supporting_episode_count": {
-              "description": "Distinct episodes providing support. Higher = broader validation.",
+              "format": "uint32",
+              "minimum": 0.0,
               "type": "integer"
             },
             "supporting_project_count": {
-              "description": "Distinct projects providing support. Higher = cross-project validation.",
+              "format": "uint32",
+              "minimum": 0.0,
               "type": "integer"
             }
           },
           "required": [
-            "supporting_count",
             "contradicting_count",
             "observation_count",
+            "supporting_count",
             "supporting_episode_count",
             "supporting_project_count"
           ],
           "type": "object"
+        },
+        "ReferenceKind": {
+          "description": "The classification of a reference attached to a knowledge item.",
+          "oneOf": [
+            {
+              "description": "Project-relative file path (sigil `//`).",
+              "enum": [
+                "file_path"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "External URL.",
+              "enum": [
+                "url"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Abstract reference too general for a path or URL.",
+              "enum": [
+                "concept"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Code symbol (function, type, module).",
+              "enum": [
+                "symbol"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "RelationKind": {
+          "description": "The type of a committed relationship between two knowledge items.",
+          "oneOf": [
+            {
+              "description": "Source provides evidence for, validates, or reinforces target.",
+              "enum": [
+                "supports"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Source challenges, undermines, or conflicts with target; both items may remain valid in different contexts.",
+              "enum": [
+                "contradicts"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Source replaces target with updated understanding; stronger than `Contradicts` — the old item is retired.",
+              "enum": [
+                "supersedes"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Source was produced using target as an input to its formulation; exists to support traceability, not reliability.",
+              "enum": [
+                "derived_from"
+              ],
+              "type": "string"
+            }
+          ]
         }
       },
+      "description": "Response for `tribal_explore`.",
       "properties": {
         "anchor": {
-          "$ref": "#/$defs/knowledge_item"
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpKnowledgeItem"
+            }
+          ],
+          "description": "The full knowledge item for the exploration anchor."
         },
         "anchor_standing": {
-          "$ref": "#/$defs/standing"
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpStanding"
+            }
+          ],
+          "description": "Evidential profile of the anchor — always present."
         },
         "exact": {
-          "description": "True if all reachable items within depth were returned. False if truncated by limit.",
           "type": "boolean"
         },
         "related_items": {
           "items": {
-            "$ref": "#/$defs/exploration_result"
+            "$ref": "#/definitions/McpExplorationResult"
           },
           "type": "array"
         },
         "trace_id": {
-          "description": "Trace ID. Pass to tribal_feedback if rating this session.",
           "type": "string"
         }
       },
       "required": [
         "anchor",
         "anchor_standing",
+        "exact",
         "related_items",
-        "trace_id",
-        "exact"
+        "trace_id"
       ],
+      "title": "McpExploreResponse",
       "type": "object"
     },
     "required_scope": "tribal.knowledge:read",
@@ -861,279 +1214,48 @@
   {
     "description": "Retrieve one or more knowledge items by their IDs. Use this when you have a specific item ID (from a standing field, a previous session, or a cross-reference) and need the full item.\n\nFor semantic search, use tribal_discover. For relationship traversal, use tribal_explore. This tool is for direct lookup when you already know what you want.\n\nThe response is keyed by item ID. Missing or unknown IDs map to null.",
     "input_schema": {
-      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Deserialisation target for `tribal_get_item` input.",
       "properties": {
         "include_references": {
-          "default": false,
-          "description": "Return references attached to each item.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "include_standing": {
-          "default": false,
-          "description": "Compute and return standing (evidential profile) for each item.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "item_ids": {
-          "description": "One or more knowledge item IDs to retrieve.",
           "items": {
-            "pattern": "^ki_[0-9a-f-]{36}$",
             "type": "string"
           },
-          "maxItems": 20,
-          "minItems": 1,
           "type": "array"
         }
       },
       "required": [
         "item_ids"
       ],
+      "title": "McpGetItemRequest",
       "type": "object"
     },
     "name": "tribal_get_item",
     "output_schema": {
-      "$defs": {
-        "knowledge_item": {
-          "properties": {
-            "capture_branch": {
-              "description": "Branch name when this item was captured (informational).",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "capture_commit": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "confidence": {
-              "enum": [
-                "verified",
-                "inferred",
-                "uncertain"
-              ],
-              "type": "string"
-            },
-            "content": {
-              "type": "string"
-            },
-            "created_at": {
-              "format": "date-time",
-              "type": "string"
-            },
-            "episode_id": {
-              "pattern": "^ep_[0-9a-f-]{36}$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "id": {
-              "pattern": "^ki_[0-9a-f-]{36}$",
-              "type": "string"
-            },
-            "kind": {
-              "enum": [
-                "fact",
-                "heuristic",
-                "procedure",
-                "decision_record"
-              ],
-              "type": "string"
-            },
-            "principal_key": {
-              "description": "Human-readable principal identifier (e.g., 'user:sam').",
-              "type": "string"
-            },
-            "project_id": {
-              "pattern": "^proj_[0-9a-f-]{36}$",
-              "type": "string"
-            },
-            "source_context": {
-              "description": "Provenance of this item. Types: 'agent_mediated' = model-mediated capture via a provider/model pipeline (e.g., an agent ingesting via MCP); 'manual' = human-initiated capture without model mediation; 'derived' = produced by synthesis or compaction from existing items.",
-              "properties": {
-                "model": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "provider": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "type": {
-                  "enum": [
-                    "agent_mediated",
-                    "manual",
-                    "derived"
-                  ],
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type"
-              ],
-              "type": "object"
-            },
-            "tags": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "id",
-            "project_id",
-            "principal_key",
-            "kind",
-            "content",
-            "tags",
-            "confidence",
-            "source_context",
-            "created_at"
-          ],
-          "type": "object"
-        },
-        "reference": {
-          "properties": {
-            "commit": {
-              "description": "Git SHA when this reference was known valid.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "description": {
-              "description": "What was at this location and why it mattered.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "id": {
-              "pattern": "^ref_[0-9a-f-]{36}$",
-              "type": "string"
-            },
-            "kind": {
-              "enum": [
-                "file_path",
-                "url",
-                "concept",
-                "symbol"
-              ],
-              "type": "string"
-            },
-            "value": {
-              "description": "The pointer (e.g., '//src/auth/middleware.rs', a URL, a concept name).",
-              "type": "string"
-            }
-          },
-          "required": [
-            "id",
-            "kind",
-            "value"
-          ],
-          "type": "object"
-        },
-        "standing": {
-          "description": "Evidential profile computed from the relationship graph. Use tribal_get_item to retrieve items referenced by newest_supporting_id, newest_contradicting_id, or superseded_by.",
-          "properties": {
-            "contradicting_count": {
-              "description": "Distinct items asserting Contradicts.",
-              "type": "integer"
-            },
-            "newest_contradicting_id": {
-              "description": "Most recent contradicting item. Retrieve with tribal_get_item.",
-              "pattern": "^ki_[0-9a-f-]{36}$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "newest_supporting_id": {
-              "description": "Most recent supporting item. Retrieve with tribal_get_item.",
-              "pattern": "^ki_[0-9a-f-]{36}$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "observation_count": {
-              "description": "Times this knowledge was independently re-encountered.",
-              "type": "integer"
-            },
-            "superseded_by": {
-              "description": "ID of the superseding item, if any.",
-              "pattern": "^ki_[0-9a-f-]{36}$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "supporting_count": {
-              "description": "Distinct items asserting Supports.",
-              "type": "integer"
-            },
-            "supporting_episode_count": {
-              "description": "Distinct episodes providing support. Higher = broader validation.",
-              "type": "integer"
-            },
-            "supporting_project_count": {
-              "description": "Distinct projects providing support. Higher = cross-project validation.",
-              "type": "integer"
-            }
-          },
-          "required": [
-            "supporting_count",
-            "contradicting_count",
-            "observation_count",
-            "supporting_episode_count",
-            "supporting_project_count"
-          ],
-          "type": "object"
-        }
-      },
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Response for `tribal_get_item`.\n\nThe `items` field is a JSON object keyed by prefixed item ID. Values are either a serialised `McpGetItemEntry` or JSON `null` for IDs that were not found.",
       "properties": {
         "items": {
-          "additionalProperties": {
-            "oneOf": [
-              {
-                "properties": {
-                  "item": {
-                    "$ref": "#/$defs/knowledge_item"
-                  },
-                  "references": {
-                    "items": {
-                      "$ref": "#/$defs/reference"
-                    },
-                    "type": "array"
-                  },
-                  "standing": {
-                    "$ref": "#/$defs/standing"
-                  }
-                },
-                "required": [
-                  "item"
-                ],
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "description": "Map from requested item ID to result. Keys are the ki_-prefixed IDs from the request. Value is the item with optional standing/references, or null if the ID was not found.",
+          "additionalProperties": true,
           "type": "object"
         }
       },
       "required": [
         "items"
       ],
+      "title": "McpGetItemResponse",
       "type": "object"
     },
     "required_scope": "tribal.knowledge:read",
@@ -1142,69 +1264,70 @@
   {
     "description": "Record a quality signal about a retrieval session. Use this when Tribal's knowledge meaningfully helped (or failed to help) your current task.\n\nThis is NOT about rating individual items. Item-level signals are captured through the Supports/Contradicts relationship system during ingest. This is about rating the *combination of items returned for a query, assembled in a particular way*.\n\nRate \"positive\" when: Tribal surfaced knowledge that directly informed your approach, saved you from a known pitfall, or provided context that improved your decision-making.\n\nRate \"negative\" when: The query should have found relevant knowledge but didn't, or the returned items were irrelevant or misleading for the task at hand.\n\nFeedback builds an organic eval dataset. Be selective: only rate when the signal is clear. If no trace_id is available from the retrieval response, do not submit feedback rather than fabricating a trace_id. Incomplete feedback is noise.",
     "input_schema": {
-      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Deserialisation target for `tribal_feedback` input.\n\nThe `rating` field is a raw `String` so that invalid values (e.g. `\"neutral\"`) are caught during explicit validation rather than at the `serde_json::from_value` boundary.",
       "properties": {
         "embedding_profile_id": {
-          "description": "The embedding_profile_id from the tribal_discover response being rated, so the lineage records the profile that produced the results.",
-          "type": "string"
+          "default": null,
+          "description": "The `embedding_profile_id` from the discover response this feedback rates, carried back so the lineage records the profile that produced the results. Absent when the client does not echo it.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "explored_anchor_ids": {
-          "description": "IDs of items used as anchors in tribal_explore calls during the session.",
           "items": {
-            "pattern": "^ki_[0-9a-f-]{36}$",
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "notes": {
-          "description": "Optional reasoning. What was good or what was missing?",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "query_text": {
-          "description": "The original discovery query that initiated the retrieval session.",
           "type": "string"
         },
         "rating": {
-          "description": "Was this retrieval session helpful?",
-          "enum": [
-            "positive",
-            "negative"
-          ],
           "type": "string"
         },
         "returned_item_ids": {
-          "description": "IDs of items returned by tribal_discover in the rated session.",
           "items": {
-            "pattern": "^ki_[0-9a-f-]{36}$",
             "type": "string"
           },
           "type": "array"
         },
         "trace_id": {
-          "description": "Trace ID from the tribal_discover or tribal_explore response being rated.",
           "type": "string"
         }
       },
       "required": [
-        "trace_id",
         "query_text",
+        "rating",
         "returned_item_ids",
-        "rating"
+        "trace_id"
       ],
+      "title": "McpFeedbackRequest",
       "type": "object"
     },
     "name": "tribal_feedback",
     "output_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Response for `tribal_feedback`.",
       "properties": {
         "feedback_id": {
-          "description": "ID of the recorded feedback.",
-          "pattern": "^fb_[0-9a-f-]{36}$",
           "type": "string"
         }
       },
       "required": [
         "feedback_id"
       ],
+      "title": "McpFeedbackResponse",
       "type": "object"
     },
     "required_scope": "tribal.knowledge:write",
@@ -1213,31 +1336,117 @@
   {
     "description": "Check the progress of an ingest job submitted via tribal_ingest.\n\nJob lifecycle: queued → extracting → triaging → relating → completed/failed\n\nTerminal states:\n- \"completed\": Pipeline ran to conclusion. Check outcome for details:\n  - \"success\": All candidates triaged successfully and relations committed.\n  - \"partial\": Some triage tasks failed permanently; the relation task ran on a subset.\n  - \"empty\": Relation task ran with zero items to relate (all duplicates or all triage failures). If tasks_failed > 0, the pipeline likely failed at triage; treat as degraded rather than \"nothing new\".\n- \"failed\": Pipeline could not complete. outcome = \"failure\". Check error context.\n\nSet wait_seconds to block until the job completes or the timeout expires. This collapses ingest + poll into a single round-trip for fast operations. With wait_seconds=0 (default), returns immediately with current status.",
     "input_schema": {
-      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Deserialisation target for `tribal_job_status` input.",
       "properties": {
         "job_id": {
-          "description": "Job ID returned by tribal_ingest.",
-          "pattern": "^job_[0-9a-f-]{36}$",
           "type": "string"
         },
         "wait_seconds": {
-          "default": 0,
-          "description": "If > 0, the server blocks until the job reaches a final status (completed or failed) or the timeout expires, whichever comes first. Returns current status either way. Use this to collapse ingest + poll into fewer round-trips for fast operations.",
-          "maximum": 30,
-          "minimum": 0,
-          "type": "integer"
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
         "job_id"
       ],
+      "title": "McpJobStatusRequest",
       "type": "object"
     },
     "name": "tribal_job_status",
     "output_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "JobOutcome": {
+          "description": "The outcome of a completed or failed job.",
+          "oneOf": [
+            {
+              "description": "All candidates triaged successfully and relations committed.",
+              "enum": [
+                "success"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Job completed but some triage tasks dead-lettered; relation task ran on a subset.",
+              "enum": [
+                "partial"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Pipeline completed but produced no new knowledge items — zero candidates from extraction, or all candidates classified as duplicates.",
+              "enum": [
+                "empty"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Pipeline could not complete; extraction or relation task dead-lettered.",
+              "enum": [
+                "failure"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "JobStatus": {
+          "description": "The lifecycle status of a job in the ingest pipeline.",
+          "oneOf": [
+            {
+              "description": "Waiting for extraction.",
+              "enum": [
+                "queued"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Extraction task running.",
+              "enum": [
+                "extracting"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Triage tasks running (set when extraction completes).",
+              "enum": [
+                "triaging"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Relation task running (set when all triage tasks are terminal).",
+              "enum": [
+                "relating"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Terminal; pipeline reached conclusion (check [`JobOutcome`] for details).",
+              "enum": [
+                "completed"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Terminal; pipeline could not complete.",
+              "enum": [
+                "failed"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "Response for `tribal_job_status`.\n\nConstructed via `from_domain` because the `Job` domain type does not carry aggregate task counts.",
       "properties": {
         "batch_size": {
-          "description": "Number of knowledge candidates extracted. Set after extraction completes.",
+          "format": "uint32",
+          "minimum": 0.0,
           "type": [
             "integer",
             "null"
@@ -1248,49 +1457,39 @@
           "type": "string"
         },
         "items_created": {
-          "description": "New knowledge items stored (novel content).",
+          "format": "uint32",
+          "minimum": 0.0,
           "type": "integer"
         },
         "job_id": {
-          "pattern": "^job_[0-9a-f-]{36}$",
           "type": "string"
         },
         "observations_created": {
-          "description": "Duplicate observations recorded (strengthens existing items).",
+          "format": "uint32",
+          "minimum": 0.0,
           "type": "integer"
         },
         "outcome": {
-          "description": "Final result. Only set when status is 'completed' or 'failed'.",
-          "enum": [
-            "success",
-            "partial",
-            "empty",
-            "failure",
-            null
-          ],
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JobOutcome"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "status": {
-          "description": "Current lifecycle state.",
-          "enum": [
-            "queued",
-            "extracting",
-            "triaging",
-            "relating",
-            "completed",
-            "failed"
-          ],
-          "type": "string"
+          "$ref": "#/definitions/JobStatus"
         },
         "tasks_completed": {
-          "description": "Triage tasks completed successfully.",
+          "format": "uint32",
+          "minimum": 0.0,
           "type": "integer"
         },
         "tasks_failed": {
-          "description": "Triage tasks that failed permanently.",
+          "format": "uint32",
+          "minimum": 0.0,
           "type": "integer"
         },
         "updated_at": {
@@ -1299,15 +1498,16 @@
         }
       },
       "required": [
+        "created_at",
+        "items_created",
         "job_id",
+        "observations_created",
         "status",
         "tasks_completed",
         "tasks_failed",
-        "items_created",
-        "observations_created",
-        "created_at",
         "updated_at"
       ],
+      "title": "McpJobStatusResponse",
       "type": "object"
     },
     "required_scope": "tribal.jobs:read",
@@ -1316,21 +1516,30 @@
   {
     "description": "Start a reindex to a new embedding geometry, naming the target provider, model, and dimension on the command. Reads and writes continue against the active profile while the new space fills; the swap is atomic. An unchanged target is a no-op. Operator-only; the worker drives the run to completion.",
     "input_schema": {
-      "additionalProperties": false,
-      "description": "Start a reindex to a new embedding geometry. The target is named on the command, never read from config. Reads and writes continue against the active profile while the new space fills; the swap is atomic. Operator-only.",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "The MCP request for `tribal_reindex`.",
       "properties": {
         "base_url": {
-          "description": "The target endpoint. The provider's default when omitted.",
-          "type": "string"
+          "default": null,
+          "description": "The target endpoint; the provider's default when omitted.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "dimensions": {
-          "description": "The target vector dimension, between 1 and the halfvec storage ceiling of 4000. Resolved from the model when omitted.",
-          "maximum": 4000,
-          "minimum": 1,
-          "type": "integer"
+          "default": null,
+          "description": "The target vector dimension; resolved from the model when omitted.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "dry_run": {
-          "description": "When true, resolve the target, validate its credential, and return the item and tag counts without creating a run.",
+          "default": false,
+          "description": "When true, resolve and estimate the target without creating a run.",
           "type": "boolean"
         },
         "model": {
@@ -1338,19 +1547,21 @@
           "type": "string"
         },
         "provider": {
-          "description": "The target embedding provider, for example 'ollama' or 'openai'.",
+          "description": "The target embedding provider (for example `\"ollama\"` or `\"openai\"`).",
           "type": "string"
         }
       },
       "required": [
-        "provider",
-        "model"
+        "model",
+        "provider"
       ],
+      "title": "McpReindexRequest",
       "type": "object"
     },
     "name": "tribal_reindex",
     "output_schema": {
-      "description": "The outcome of a reindex request.",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "The MCP response for `tribal_reindex`.",
       "properties": {
         "base_url": {
           "description": "The resolved, normalised target endpoint.",
@@ -1358,14 +1569,20 @@
         },
         "dimensions": {
           "description": "The resolved target dimension.",
+          "format": "uint32",
+          "minimum": 0.0,
           "type": "integer"
         },
         "estimated_items": {
           "description": "The number of items the new geometry must embed.",
+          "format": "uint64",
+          "minimum": 0.0,
           "type": "integer"
         },
         "estimated_tags": {
           "description": "The number of tags the new geometry must embed.",
+          "format": "uint64",
+          "minimum": 0.0,
           "type": "integer"
         },
         "model": {
@@ -1373,14 +1590,7 @@
           "type": "string"
         },
         "outcome": {
-          "description": "plan: a dry run; no run was created. created: a new run was queued. unchanged: the target already matches the active profile. already_live: a run is already in progress. lock_contended: another create holds the single-flight lock; retry.",
-          "enum": [
-            "plan",
-            "created",
-            "unchanged",
-            "already_live",
-            "lock_contended"
-          ],
+          "description": "The outcome: `plan` for a dry run, otherwise `created`, `unchanged`, `already_live`, or `lock_contended`.",
           "type": "string"
         },
         "provider": {
@@ -1388,7 +1598,7 @@
           "type": "string"
         },
         "run_id": {
-          "description": "The run id, present for created and already_live.",
+          "description": "The run id, present for `created` and `already_live`.",
           "type": [
             "string",
             "null"
@@ -1396,15 +1606,15 @@
         }
       },
       "required": [
-        "outcome",
-        "run_id",
-        "provider",
-        "model",
-        "dimensions",
         "base_url",
+        "dimensions",
         "estimated_items",
-        "estimated_tags"
+        "estimated_tags",
+        "model",
+        "outcome",
+        "provider"
       ],
+      "title": "McpReindexResponse",
       "type": "object"
     },
     "required_scope": "tribal.embedding:execute",
@@ -1413,14 +1623,15 @@
   {
     "description": "Cancel the live reindex run, if any. The run is aborted and its building profile is failed at the next task boundary; the active profile, and every read and write against it, is untouched. Reindex is single-flight, so there is at most one live run. Operator-only.",
     "input_schema": {
-      "additionalProperties": false,
-      "description": "Cancel the live reindex run, if any. Takes no arguments; reindex is single-flight, so there is at most one live run.",
-      "properties": {},
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Deserialisation target for a tool that takes no arguments, e.g. `tribal_reindex_cancel` and `tribal_reindex_prune`.",
+      "title": "McpEmptyRequest",
       "type": "object"
     },
     "name": "tribal_reindex_cancel",
     "output_schema": {
-      "description": "The outcome of a reindex cancel request.",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "The MCP response for `tribal_reindex_cancel`.",
       "properties": {
         "cancelled": {
           "description": "Whether a live run was transitioned to aborted.",
@@ -1435,9 +1646,9 @@
         }
       },
       "required": [
-        "cancelled",
-        "run_id"
+        "cancelled"
       ],
+      "title": "McpReindexCancelResponse",
       "type": "object"
     },
     "required_scope": "tribal.embedding:execute",
@@ -1446,33 +1657,41 @@
   {
     "description": "Reclaim storage from past reindexes. Every non-active complete profile and every failed profile is superseded, and their embeddings are deleted; the active profile and run history are untouched. Operator-only.",
     "input_schema": {
-      "additionalProperties": false,
-      "description": "Reclaim storage from superseded reindexes: supersede every non-active complete profile and every failed profile, then delete their embeddings. Takes no arguments.",
-      "properties": {},
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Deserialisation target for a tool that takes no arguments, e.g. `tribal_reindex_cancel` and `tribal_reindex_prune`.",
+      "title": "McpEmptyRequest",
       "type": "object"
     },
     "name": "tribal_reindex_prune",
     "output_schema": {
-      "description": "The outcome of a reindex prune request.",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "The MCP response for `tribal_reindex_prune`.",
       "properties": {
         "embeddings_deleted": {
           "description": "The number of item embeddings deleted.",
+          "format": "uint64",
+          "minimum": 0.0,
           "type": "integer"
         },
         "profiles_superseded": {
           "description": "The number of profiles transitioned to superseded.",
+          "format": "uint64",
+          "minimum": 0.0,
           "type": "integer"
         },
         "tag_embeddings_deleted": {
           "description": "The number of tag embeddings deleted.",
+          "format": "uint64",
+          "minimum": 0.0,
           "type": "integer"
         }
       },
       "required": [
-        "profiles_superseded",
         "embeddings_deleted",
+        "profiles_superseded",
         "tag_embeddings_deleted"
       ],
+      "title": "McpReindexPruneResponse",
       "type": "object"
     },
     "required_scope": "tribal.embedding:execute",

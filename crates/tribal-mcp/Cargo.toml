@@ -6,6 +6,11 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "mcp_schema_gen"
+path = "src/bin/mcp_schema_gen.rs"
+required-features = ["schema"]
+
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
@@ -13,6 +18,7 @@ chrono = { workspace = true, features = ["serde"] }
 dashmap.workspace = true
 http.workspace = true
 rmcp.workspace = true
+schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
@@ -36,6 +42,7 @@ tribal-worker.workspace = true
 
 [features]
 test-helpers = []
+schema = ["tribal-wire/schema", "dep:schemars"]
 
 [dev-dependencies]
 opentelemetry.workspace = true

@@ -1,15 +1,22 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "McpReindexCancelResponse",
+  "description": "The MCP response for `tribal_reindex_cancel`.",
   "type": "object",
-  "description": "The outcome of a reindex cancel request.",
+  "required": [
+    "cancelled"
+  ],
   "properties": {
     "cancelled": {
-      "type": "boolean",
-      "description": "Whether a live run was transitioned to aborted."
+      "description": "Whether a live run was transitioned to aborted.",
+      "type": "boolean"
     },
     "run_id": {
-      "type": ["string", "null"],
-      "description": "The aborted run's id, present only when a run was cancelled."
+      "description": "The aborted run's id, present only when a run was cancelled.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
-  },
-  "required": ["cancelled", "run_id"]
+  }
 }
