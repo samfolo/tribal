@@ -21,11 +21,19 @@
     {
       "uriTemplate": "tribal://ingestions/recent{?project_id,statuses,cursor,limit}",
       "requiredScope": "tribal.knowledge:read",
+      "name": "recent_ingestions",
+      "title": "Recent ingestions",
+      "description": "The caller's recent ingestion jobs, newest first, with bounded previews",
+      "mimeType": "application/json",
       "response": "McpRecentIngestionsResponse"
     },
     {
       "uriTemplate": "tribal://ingestions/{job_id}/input",
       "requiredScope": "tribal.knowledge:read",
+      "name": "ingestion_input",
+      "title": "Ingestion input",
+      "description": "The verbatim content of one of the caller's ingestions",
+      "mimeType": "application/json",
       "response": "McpIngestionInputResponse"
     }
   ],
@@ -45,6 +53,7 @@
       ],
       "properties": {
         "content": {
+          "description": "Raw text submitted for extraction.",
           "type": "string"
         },
         "idempotency_key": {
@@ -56,6 +65,7 @@
           "format": "uuid"
         },
         "project_id": {
+          "description": "Target project; absent means the session's resolved project.",
           "type": [
             "string",
             "null"

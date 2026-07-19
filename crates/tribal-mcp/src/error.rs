@@ -89,6 +89,9 @@ impl IntoCallToolResult for McpToolError {
         let mut meta = Meta::default();
         meta.insert(
             ERROR_META_KEY.to_owned(),
+            // An enum code, a string, and an already-parsed value cannot
+            // fail to serialise; the empty object keeps the text channel
+            // authoritative rather than masking the error with a panic.
             serde_json::to_value(&self).unwrap_or_else(|_| serde_json::json!({})),
         );
         CallToolResult::error(vec![Content::text(&self.message)]).with_meta(Some(meta))

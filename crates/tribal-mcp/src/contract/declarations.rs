@@ -14,7 +14,7 @@ use tribal_wire::mcp::{
     McpSetContextRequest, McpSetContextResponse,
 };
 
-use super::{McpResourceRead, McpToolCall, ToolPresentation};
+use super::{McpResourceRead, McpToolCall, ResourcePresentation, ToolPresentation};
 use crate::handlers::{
     INGESTION_INPUT_URI_TEMPLATE, INGESTIONS_REQUIRED_SCOPE, RECENT_INGESTIONS_URI_TEMPLATE,
 };
@@ -309,6 +309,12 @@ pub struct McpRecentIngestionsResource;
 impl McpResourceRead for McpRecentIngestionsResource {
     const URI_TEMPLATE: &'static str = RECENT_INGESTIONS_URI_TEMPLATE;
     const REQUIRED_SCOPE: &'static str = INGESTIONS_REQUIRED_SCOPE;
+    const PRESENTATION: ResourcePresentation = ResourcePresentation {
+        name: "recent_ingestions",
+        title: "Recent ingestions",
+        description: "The caller's recent ingestion jobs, newest first, with bounded previews",
+        mime_type: "application/json",
+    };
     type Response = McpRecentIngestionsResponse;
 }
 
@@ -318,5 +324,11 @@ pub struct McpIngestionInputResource;
 impl McpResourceRead for McpIngestionInputResource {
     const URI_TEMPLATE: &'static str = INGESTION_INPUT_URI_TEMPLATE;
     const REQUIRED_SCOPE: &'static str = INGESTIONS_REQUIRED_SCOPE;
+    const PRESENTATION: ResourcePresentation = ResourcePresentation {
+        name: "ingestion_input",
+        title: "Ingestion input",
+        description: "The verbatim content of one of the caller's ingestions",
+        mime_type: "application/json",
+    };
     type Response = McpIngestionInputResponse;
 }

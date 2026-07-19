@@ -26,6 +26,20 @@ pub struct ToolPresentation {
     pub description: &'static str,
 }
 
+/// The copy and serving type a resource carries, held on its
+/// declaration so it exists exactly once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourcePresentation {
+    /// Advertised resource name.
+    pub name: &'static str,
+    /// Display title.
+    pub title: &'static str,
+    /// The resource's description.
+    pub description: &'static str,
+    /// The MIME type its reads serve.
+    pub mime_type: &'static str,
+}
+
 // ---------------------------------------------------------------------------
 // Naming convention
 // ---------------------------------------------------------------------------
@@ -50,10 +64,11 @@ pub trait McpToolCall {
 }
 
 /// One MCP resource read, typed: the URI template, the scope its read
-/// requires, and the response its schema derives from.
+/// requires, its presentation, and the response its schema derives from.
 pub trait McpResourceRead {
     const URI_TEMPLATE: &'static str;
     const REQUIRED_SCOPE: &'static str;
+    const PRESENTATION: ResourcePresentation;
     type Response: Serialize + DeserializeOwned;
 }
 
@@ -150,6 +165,12 @@ mod tests {
     impl McpResourceRead for BetaRead {
         const URI_TEMPLATE: &'static str = "tribal://beta/{id}";
         const REQUIRED_SCOPE: &'static str = "tribal.knowledge:read";
+        const PRESENTATION: ResourcePresentation = ResourcePresentation {
+            name: "beta",
+            title: "Beta",
+            description: "reads beta",
+            mime_type: "application/json",
+        };
         type Response = serde_json::Value;
     }
 
@@ -157,6 +178,12 @@ mod tests {
     impl McpResourceRead for GammaRead {
         const URI_TEMPLATE: &'static str = "tribal://gamma";
         const REQUIRED_SCOPE: &'static str = "tribal.knowledge:write";
+        const PRESENTATION: ResourcePresentation = ResourcePresentation {
+            name: "gamma",
+            title: "Gamma",
+            description: "reads gamma",
+            mime_type: "application/json",
+        };
         type Response = serde_json::Value;
     }
 

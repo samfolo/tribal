@@ -120,6 +120,10 @@ impl FirstPartySchemaParts {
         self.resources.push(ClientResource {
             uri_template: R::URI_TEMPLATE,
             required_scope: R::REQUIRED_SCOPE,
+            name: R::PRESENTATION.name,
+            title: R::PRESENTATION.title,
+            description: R::PRESENTATION.description,
+            mime_type: R::PRESENTATION.mime_type,
             response,
         });
     }
@@ -157,6 +161,10 @@ struct ClientTool {
 struct ClientResource {
     uri_template: &'static str,
     required_scope: &'static str,
+    name: &'static str,
+    title: &'static str,
+    description: &'static str,
+    mime_type: &'static str,
     response: String,
 }
 

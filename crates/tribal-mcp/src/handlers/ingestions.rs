@@ -17,6 +17,10 @@ use tribal_db::{DbError, RecentIngestionCursor, RecentIngestionsQuery};
 use tribal_domain::{JobId, JobStatus, PrincipalId, Scope};
 
 use crate::{
+    contract::{
+        McpResourceRead,
+        declarations::{McpIngestionInputResource, McpRecentIngestionsResource},
+    },
     mapping::{McpIngestionInputResponse, McpRecentIngestionsResponse, recent_ingestion_to_wire},
     server_handler::TribalServerHandler,
 };
@@ -52,36 +56,27 @@ const INGESTION_INPUT_URI_SUFFIX: &str = "/input";
 /// Rows returned when the caller names no limit.
 const RECENT_LIMIT_DEFAULT: u16 = 20;
 
-/// The two templated resources, for scope-filtered advertisement.
+/// The two templated resources, advertised as their declarations state.
 pub(crate) fn ingestion_resource_templates() -> Vec<ResourceTemplate> {
-    let recent = RawResourceTemplate {
-        uri_template: RECENT_INGESTIONS_URI_TEMPLATE.to_owned(),
-        name: "recent_ingestions".to_owned(),
-        title: Some("Recent ingestions".to_owned()),
-        description: Some(
-            "The caller's recent ingestion jobs, newest first, with bounded previews".to_owned(),
-        ),
-        mime_type: Some("application/json".to_owned()),
-        icons: None,
-    };
-    let input = RawResourceTemplate {
-        uri_template: INGESTION_INPUT_URI_TEMPLATE.to_owned(),
-        name: "ingestion_input".to_owned(),
-        title: Some("Ingestion input".to_owned()),
-        description: Some("The verbatim content of one of the caller's ingestions".to_owned()),
-        mime_type: Some("application/json".to_owned()),
-        icons: None,
-    };
     vec![
-        ResourceTemplate {
-            raw: recent,
-            annotations: None,
-        },
-        ResourceTemplate {
-            raw: input,
-            annotations: None,
-        },
+        resource_template::<McpRecentIngestionsResource>(),
+        resource_template::<McpIngestionInputResource>(),
     ]
+}
+
+/// Projects one resource declaration into its advertised template.
+fn resource_template<R: McpResourceRead>() -> ResourceTemplate {
+    ResourceTemplate {
+        raw: RawResourceTemplate {
+            uri_template: R::URI_TEMPLATE.to_owned(),
+            name: R::PRESENTATION.name.to_owned(),
+            title: Some(R::PRESENTATION.title.to_owned()),
+            description: Some(R::PRESENTATION.description.to_owned()),
+            mime_type: Some(R::PRESENTATION.mime_type.to_owned()),
+            icons: None,
+        },
+        annotations: None,
+    }
 }
 
 /// Whether a URI addresses one of the ingestion resources.

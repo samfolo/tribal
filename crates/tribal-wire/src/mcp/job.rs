@@ -13,7 +13,9 @@ use tribal_domain::{Job, JobId, JobOutcome, JobStatus};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpIngestRequest {
+    /// Raw text submitted for extraction.
     pub content: String,
+    /// Target project; absent means the session's resolved project.
     pub project_id: Option<String>,
     /// Producer-generated key reused only for retries of one logical
     /// ingest operation; absent for ordinary create-on-every-call use.

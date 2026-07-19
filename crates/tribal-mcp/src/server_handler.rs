@@ -487,12 +487,15 @@ impl ServerHandler for TribalServerHandler {
     ) -> impl std::future::Future<Output = Result<ListResourceTemplatesResult, McpError>> + Send + '_
     {
         // The same scope filter as dispatch: a token without knowledge
-        // authority is never shown the content-bearing templates.
+        // authority is never shown the content-bearing templates. An
+        // unresolvable principal is an internal fault and stays loud,
+        // exactly as list_tools treats it.
         let advertised = match self.resolve_principal(&context) {
             Ok(principal) if is_authorised(principal.scopes(), &INGESTIONS_SCOPE) => {
                 ingestion_resource_templates()
             }
-            _ => Vec::new(),
+            Ok(_) => Vec::new(),
+            Err(e) => return std::future::ready(Err(e)),
         };
         std::future::ready(Ok(ListResourceTemplatesResult {
             resource_templates: advertised,

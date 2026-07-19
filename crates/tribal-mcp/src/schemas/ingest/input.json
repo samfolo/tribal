@@ -8,6 +8,7 @@
   ],
   "properties": {
     "content": {
+      "description": "Raw text submitted for extraction.",
       "type": "string"
     },
     "idempotency_key": {
@@ -19,6 +20,7 @@
       "format": "uuid"
     },
     "project_id": {
+      "description": "Target project; absent means the session's resolved project.",
       "type": [
         "string",
         "null"
