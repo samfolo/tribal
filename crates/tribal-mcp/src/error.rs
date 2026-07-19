@@ -79,7 +79,10 @@ pub trait IntoCallToolResult {
 pub const ERROR_META_KEY: &str = "com.tribal/error";
 
 /// The reserved [`McpToolError::details`] member carrying a retry hint in
-/// milliseconds, honoured only on the retryable codes.
+/// milliseconds, honoured only on the retryable codes. Projected into the
+/// first-party contract for the client to read; the server names it inline
+/// where it writes the hint.
+#[cfg(feature = "schema")]
 pub const RETRY_AFTER_MEMBER: &str = "retry_after_ms";
 
 impl IntoCallToolResult for McpToolError {
