@@ -82,6 +82,10 @@ enum LifecycleCommand {
         response: oneshot::Sender<RuntimeConfigApplyOutcome>,
     },
     RuntimeStatus(oneshot::Sender<ManagedRuntimeStatusResult>),
+    CredentialTarget {
+        expected: RuntimeIdentity,
+        response: oneshot::Sender<Option<RuntimeCredentialTarget>>,
+    },
     RuntimeLogsTail {
         lines: u32,
         response: oneshot::Sender<RuntimeLogsTailResult>,
@@ -90,6 +94,15 @@ enum LifecycleCommand {
     ConfigChanged,
     Readiness(ReadinessReport),
     ReadinessUnavailable,
+}
+
+/// The issuance target the lifecycle owner resolves: the attached
+/// runtime and the audience its loaded data plane enforces. Exists only
+/// for the expected attached runtime with no restart pending.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::management) struct RuntimeCredentialTarget {
+    pub(in crate::management) runtime: RuntimeIdentity,
+    pub(in crate::management) canonical_resource: String,
 }
 
 enum ManagedProcess {
@@ -275,6 +288,12 @@ enum LifecycleCompletion {
     Document {
         token: u64,
         document: Option<ConfigDocument>,
+    },
+    CredentialTargetRead {
+        epoch: u64,
+        expected: RuntimeIdentity,
+        target: Option<RuntimeCredentialTarget>,
+        response: oneshot::Sender<Option<RuntimeCredentialTarget>>,
     },
 }
 
@@ -591,6 +610,17 @@ impl LifecycleController {
         request_cancel_safe(operation, &self.sender, LifecycleCommand::RuntimeStatus).await
     }
 
+    pub(in crate::management) async fn credential_target_for(
+        &self,
+        operation: &OperationContext,
+        expected: RuntimeIdentity,
+    ) -> Result<Option<Option<RuntimeCredentialTarget>>, OperationError> {
+        request_cancel_safe(operation, &self.sender, |response| {
+            LifecycleCommand::CredentialTarget { expected, response }
+        })
+        .await
+    }
+
     pub(in crate::management) async fn runtime_logs_tail_for(
         &self,
         operation: &OperationContext,
@@ -635,6 +665,44 @@ async fn request_terminal<T>(
         return Ok(None);
     }
     Ok(receiver.await.ok())
+}
+
+/// One scripted outcome for a test controller's credential-target read.
+#[cfg(test)]
+pub(in crate::management) enum ScriptedCredentialAnswer {
+    Answer(Option<RuntimeCredentialTarget>),
+    Dropped,
+}
+
+/// A controller whose credential-target reads answer from a script; an
+/// exhausted script drops the request as a dead owner would. Every
+/// other command is discarded.
+#[cfg(test)]
+pub(in crate::management) fn controller_answering_credential_targets(
+    answers: Vec<ScriptedCredentialAnswer>,
+) -> LifecycleController {
+    let (sender, mut receiver) = mpsc::channel(COMMAND_CAPACITY);
+    let state = placeholder_state();
+    let (_publisher, snapshots) = watch::channel(state.snapshot());
+    let (events, _) = broadcast::channel(MANAGEMENT_EVENT_CAPACITY);
+    tokio::spawn(async move {
+        let mut answers = answers.into_iter();
+        while let Some(command) = receiver.recv().await {
+            if let LifecycleCommand::CredentialTarget { response, .. } = command {
+                match answers.next() {
+                    Some(ScriptedCredentialAnswer::Answer(answer)) => {
+                        let _ = response.send(answer);
+                    }
+                    Some(ScriptedCredentialAnswer::Dropped) | None => drop(response),
+                }
+            }
+        }
+    });
+    LifecycleController {
+        sender,
+        snapshots,
+        events,
+    }
 }
 
 async fn request_cancel_safe<T>(
@@ -955,6 +1023,9 @@ impl LifecycleOwner {
                 response,
             } => self.apply_runtime_config(revision, changes, response),
             LifecycleCommand::RuntimeStatus(response) => self.runtime_status_read(response),
+            LifecycleCommand::CredentialTarget { expected, response } => {
+                self.credential_target_read(expected, response);
+            }
             LifecycleCommand::RuntimeLogsTail { lines, response } => {
                 self.runtime_logs_read(lines, response);
             }
@@ -1170,6 +1241,7 @@ impl LifecycleOwner {
                         status: tribal_wire::management::ManagedRuntimeStatus {
                             runtime: status.runtime,
                             restart_pending,
+                            data_plane: status.data_plane,
                         },
                     },
                     Err(_) => ManagedRuntimeStatusResult::Unavailable {
@@ -1180,6 +1252,78 @@ impl LifecycleOwner {
             };
             let _ = response.send(result);
         });
+    }
+
+    /// Resolves the issuance target for `expected`: the attached, not
+    /// restart-pending runtime's identity and enforced audience, read
+    /// live from the process itself. The answer re-enters the owner as
+    /// a completion and is released only if the gate still holds at the
+    /// same published epoch — a transition admitted while the read was
+    /// in flight refuses it.
+    fn credential_target_read(
+        &mut self,
+        expected: RuntimeIdentity,
+        response: oneshot::Sender<Option<RuntimeCredentialTarget>>,
+    ) {
+        let client = if self.credential_gate_holds(&expected) {
+            self.runtime_read_client().ok()
+        } else {
+            None
+        };
+        let Some(client) = client else {
+            let _ = response.send(None);
+            return;
+        };
+        let epoch = self.state.snapshot().header.revision;
+        let completions = self.completion_sender.clone();
+        self.observations.spawn(async move {
+            let target = match client.status().await {
+                Ok(status) if status.runtime == expected => {
+                    status.data_plane.map(|plane| RuntimeCredentialTarget {
+                        runtime: expected.clone(),
+                        canonical_resource: plane.canonical_resource,
+                    })
+                }
+                Ok(_) | Err(_) => None,
+            };
+            let completion = LifecycleCompletion::CredentialTargetRead {
+                epoch,
+                expected,
+                target,
+                response,
+            };
+            if let Err(mpsc::error::SendError(LifecycleCompletion::CredentialTargetRead {
+                response,
+                ..
+            })) = completions.send(completion).await
+            {
+                let _ = response.send(None);
+            }
+        });
+    }
+
+    /// The state conditions a credential target requires: attached,
+    /// healthy or degraded, no restart pending, identity matching.
+    fn credential_gate_holds(&self, expected: &RuntimeIdentity) -> bool {
+        match &self.state {
+            LifecycleState::Running {
+                snapshot, child, ..
+            } => match &snapshot.phase {
+                RunningPhase::Healthy {
+                    restart_pending, ..
+                }
+                | RunningPhase::Degraded {
+                    restart_pending, ..
+                } => !restart_pending && child.identity == *expected,
+                RunningPhase::VersionMismatch { .. } => false,
+            },
+            LifecycleState::NoRuntime(_)
+            | LifecycleState::Operating(_)
+            | LifecycleState::Unresponsive { .. }
+            | LifecycleState::TerminatingOperation { .. }
+            | LifecycleState::TerminatingManaged { .. }
+            | LifecycleState::Terminating(_) => false,
+        }
     }
 
     fn runtime_logs_read(&mut self, lines: u32, response: oneshot::Sender<RuntimeLogsTailResult>) {
@@ -1719,6 +1863,16 @@ impl LifecycleOwner {
             }
             LifecycleCompletion::Stopped { token, result } => {
                 self.handle_stop_completion(token, result).await;
+            }
+            LifecycleCompletion::CredentialTargetRead {
+                epoch,
+                expected,
+                target,
+                response,
+            } => {
+                let holds = self.credential_gate_holds(&expected)
+                    && self.state.snapshot().header.revision == epoch;
+                let _ = response.send(if holds { target } else { None });
             }
             LifecycleCompletion::Document { token, document } => {
                 if token == self.next_token.wrapping_sub(1)
@@ -2803,6 +2957,9 @@ impl LifecycleOwner {
     fn fold_terminal_completion(&mut self, completion: LifecycleCompletion) {
         let mut completed_task = None;
         match completion {
+            LifecycleCompletion::CredentialTargetRead { response, .. } => {
+                let _ = response.send(None);
+            }
             LifecycleCompletion::CustodyCommitted { token, result } => {
                 let operation = match &mut self.state {
                     LifecycleState::Operating(LifecycleOperation::Launching(operation))
@@ -4173,7 +4330,7 @@ mod tests {
         },
     };
 
-    use tokio::io::AsyncWriteExt as _;
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
     use super::*;
     use crate::management::{authority, configuration, worker};
@@ -6043,6 +6200,290 @@ mod tests {
         ));
         drop(config);
         drop(lifecycle);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    /// Drives one credential-target completion through the owner, the
+    /// re-entry the running loop would perform.
+    async fn pump_credential_completion(owner: &mut LifecycleOwner) {
+        let completion = tokio::time::timeout(TEST_OBSERVATION_DEADLINE, owner.completions.recv())
+            .await
+            .expect("credential completion arrives before the test deadline")
+            .expect("completion sender remains live");
+        owner.handle_completion(completion).await;
+    }
+
+    async fn answer_status_request(
+        peer: tokio::net::UnixStream,
+        status: tribal_wire::runtime_control::ManagedRuntimeStatus,
+    ) {
+        let mut peer = BufReader::new(peer);
+        let mut request = Vec::new();
+        peer.read_until(b'\n', &mut request)
+            .await
+            .expect("status request reads");
+        assert_eq!(
+            serde_json::from_slice::<tribal_wire::runtime_control::RuntimeControlRequest>(&request)
+                .expect("status request decodes"),
+            tribal_wire::runtime_control::RuntimeControlRequest::Status,
+        );
+        let mut response = serde_json::to_vec(
+            &tribal_wire::runtime_control::RuntimeControlResponse::Status { status },
+        )
+        .expect("status response serialises");
+        response.push(b'\n');
+        peer.get_mut()
+            .write_all(&response)
+            .await
+            .expect("status response writes");
+    }
+
+    #[tokio::test]
+    async fn test_credential_target_read_resolves_the_target_for_a_healthy_non_restarting_runtime()
+    {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, runtime_peer) = a_managed_child();
+        let expected = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: RunningPhase::Healthy {
+                    runtime: expected.clone(),
+                    restart_pending: false,
+                },
+            },
+            child,
+        };
+        let canonical_resource = "https://runtime.test/mcp".to_owned();
+        let answer = tokio::spawn(answer_status_request(
+            runtime_peer,
+            tribal_wire::runtime_control::ManagedRuntimeStatus {
+                runtime: expected.clone(),
+                data_plane: Some(tribal_wire::management::RuntimeDataPlane {
+                    transport: tribal_wire::management::NetworkTransport::Http,
+                    mcp_url: "http://127.0.0.1:4317/mcp".to_owned(),
+                    canonical_resource: canonical_resource.clone(),
+                }),
+            },
+        ));
+
+        let (response, receiver) = oneshot::channel();
+        owner.credential_target_read(expected.clone(), response);
+        pump_credential_completion(&mut owner).await;
+
+        assert_eq!(
+            receiver.await.expect("credential target resolves"),
+            Some(RuntimeCredentialTarget {
+                runtime: expected,
+                canonical_resource,
+            })
+        );
+        answer.await.expect("status responder joins");
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_status_keeps_the_attached_data_plane_while_a_restart_is_pending() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, runtime_peer) = a_managed_child();
+        let attached = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: RunningPhase::Healthy {
+                    runtime: attached.clone(),
+                    restart_pending: true,
+                },
+            },
+            child,
+        };
+        let loaded_plane = tribal_wire::management::RuntimeDataPlane {
+            transport: tribal_wire::management::NetworkTransport::Http,
+            mcp_url: "http://127.0.0.1:4317/mcp".to_owned(),
+            canonical_resource: "https://runtime.test/mcp".to_owned(),
+        };
+        let answer = tokio::spawn(answer_status_request(
+            runtime_peer,
+            tribal_wire::runtime_control::ManagedRuntimeStatus {
+                runtime: attached.clone(),
+                data_plane: Some(loaded_plane.clone()),
+            },
+        ));
+
+        let (response, receiver) = oneshot::channel();
+        owner.runtime_status_read(response);
+
+        let result = receiver.await.expect("runtime status resolves");
+        let ManagedRuntimeStatusResult::Available { status } = result else {
+            panic!("attached runtime status must be available: {result:?}");
+        };
+        assert!(status.restart_pending);
+        assert_eq!(status.runtime, attached);
+        assert_eq!(status.data_plane, Some(loaded_plane));
+        answer.await.expect("status responder joins");
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_credential_target_read_refuses_a_restart_pending_runtime() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, _runtime_peer) = a_managed_child();
+        let expected = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: RunningPhase::Healthy {
+                    runtime: expected.clone(),
+                    restart_pending: true,
+                },
+            },
+            child,
+        };
+
+        let (response, receiver) = oneshot::channel();
+        owner.credential_target_read(expected, response);
+
+        assert_eq!(receiver.await.expect("credential target resolves"), None);
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_credential_target_read_refuses_a_transition_admitted_mid_read() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, runtime_peer) = a_managed_child();
+        let expected = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: RunningPhase::Healthy {
+                    runtime: expected.clone(),
+                    restart_pending: false,
+                },
+            },
+            child,
+        };
+        let answer = tokio::spawn(answer_status_request(
+            runtime_peer,
+            tribal_wire::runtime_control::ManagedRuntimeStatus {
+                runtime: expected.clone(),
+                data_plane: Some(tribal_wire::management::RuntimeDataPlane {
+                    transport: tribal_wire::management::NetworkTransport::Http,
+                    mcp_url: "http://127.0.0.1:4317/mcp".to_owned(),
+                    canonical_resource: "https://runtime.test/mcp".to_owned(),
+                }),
+            },
+        ));
+
+        let (response, receiver) = oneshot::channel();
+        owner.credential_target_read(expected.clone(), response);
+        answer.await.expect("status responder joins");
+        let LifecycleState::Running { snapshot, child } =
+            std::mem::replace(&mut owner.state, placeholder_state())
+        else {
+            panic!("owner remains running");
+        };
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: next_header(&snapshot.header),
+                phase: RunningPhase::Healthy {
+                    runtime: expected.clone(),
+                    restart_pending: true,
+                },
+            },
+            child,
+        };
+        pump_credential_completion(&mut owner).await;
+
+        assert_eq!(receiver.await.expect("credential target resolves"), None);
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_credential_target_read_refuses_an_identity_mismatch() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, _runtime_peer) = a_managed_child();
+        let attached = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: RunningPhase::Healthy {
+                    runtime: attached,
+                    restart_pending: false,
+                },
+            },
+            child,
+        };
+        let expected = RuntimeIdentity {
+            instance_id: "other-runtime".to_owned(),
+            pid: 999,
+            binary_version: "test".to_owned(),
+            config_path: ConfigFilePath {
+                path: "/tmp/other.yaml".to_owned(),
+            },
+        };
+
+        let (response, receiver) = oneshot::channel();
+        owner.credential_target_read(expected, response);
+
+        assert_eq!(receiver.await.expect("credential target resolves"), None);
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_credential_target_read_refuses_a_runtime_with_no_data_plane() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, runtime_peer) = a_managed_child();
+        let expected = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: RunningLifecycleSnapshot {
+                header: header(),
+                phase: RunningPhase::Healthy {
+                    runtime: expected.clone(),
+                    restart_pending: false,
+                },
+            },
+            child,
+        };
+        let answer = tokio::spawn(answer_status_request(
+            runtime_peer,
+            tribal_wire::runtime_control::ManagedRuntimeStatus {
+                runtime: expected.clone(),
+                data_plane: None,
+            },
+        ));
+
+        let (response, receiver) = oneshot::channel();
+        owner.credential_target_read(expected, response);
+        pump_credential_completion(&mut owner).await;
+
+        assert_eq!(receiver.await.expect("credential target resolves"), None);
+        answer.await.expect("status responder joins");
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_credential_target_read_refuses_a_non_running_state() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let expected = RuntimeIdentity {
+            instance_id: "absent-runtime".to_owned(),
+            pid: 1,
+            binary_version: "test".to_owned(),
+            config_path: ConfigFilePath {
+                path: "/tmp/tribal.yaml".to_owned(),
+            },
+        };
+
+        let (response, receiver) = oneshot::channel();
+        owner.credential_target_read(expected, response);
+
+        assert_eq!(receiver.await.expect("credential target resolves"), None);
+        drop(owner);
         worker_runtime.join().expect("worker thread joins");
     }
 }

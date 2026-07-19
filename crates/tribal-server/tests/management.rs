@@ -19,22 +19,27 @@ use tribal_db::{
     ProjectRepository,
 };
 use tribal_domain::{GitRemote, LOCAL_PRINCIPAL_KEY, TransportKind};
-use tribal_test_utils::duration::POLL_INTERVAL;
+use tribal_test_utils::{TestDb, duration::POLL_INTERVAL};
 use tribal_wire::management::{
     ConfigDigest, ConfigDocument, ConfigFieldPath, ConfigLiteral, ConfigRevision, ConfigSetRequest,
     ConfigWriteOutcome, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
     DatabaseInitialiseResult, LifecycleSnapshot, MANAGEMENT_CONTRACT_VERSION,
-    ManagementBootstrapRequest, ManagementBootstrapResponse, ManagementClientHello,
-    ManagementError, ManagementResponseError, ManagementServerHello, ManagerAnnouncement,
-    ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord, ManagerShutdownCall,
-    ManagerSnapshot, PageCursor, PageRequest, PageSize, ProjectList, ProjectListRequest,
-    ProjectRegisterInput, ProjectRegisterOutcome, ProjectRegisterRequest,
-    ProjectRegistrationSource, RuntimeIdentity, RuntimeStartResult, TokenCreateRequest,
-    TokenCreateResult,
+    ManagedRuntimeStatusResult, ManagementBootstrapRequest, ManagementBootstrapResponse,
+    ManagementClientHello, ManagementError, ManagementResponseError, ManagementServerHello,
+    ManagerAnnouncement, ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord,
+    ManagerShutdownCall, ManagerSnapshot, NetworkTransport, PageCursor, PageRequest, PageSize,
+    ProjectList, ProjectListRequest, ProjectRegisterInput, ProjectRegisterOutcome,
+    ProjectRegisterRequest, ProjectRegistrationSource, RuntimeIdentity, RuntimeStartResult,
+    TokenCreateRequest, TokenCreateResult,
 };
 
 /// Upper bound for manager replacement and child-process observations.
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Wider bound for a shutdown that follows a deliberate event grind:
+/// the lag test's own workload can consume most of a loaded runner's
+/// budget before the exit begins.
+const GRIND_SHUTDOWN_TIMEOUT: Duration = Duration::from_mins(1);
 
 #[test]
 fn test_manager_ipc_telemetry_excludes_request_payloads() {
@@ -162,12 +167,12 @@ fn config_watcher_lag_rereads_snapshot() {
     let _: tribal_wire::management::ManagerShutdownResult =
         call(&mut reconnected, 10_001, "manager.shutdown", None);
     drop(reconnected);
-    wait_for_success(&mut manager, "config lag shutdown");
+    wait_for_success_within(&mut manager, "config lag shutdown", GRIND_SHUTDOWN_TIMEOUT);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn startup_serve_project_mode_process_matrix() {
-    let database = tribal_test_utils::TestDb::new().await;
+    let database = TestDb::new().await;
     let mut connection = database.raw_connection().await.expect("database connects");
     let ambient = PgProjectRepository
         .insert(&mut connection, &new_project("ambient", "cortex/ambient"))
@@ -325,7 +330,7 @@ async fn connector_concurrent_first_launch() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn connector_standalone_runtime_conflict() {
-    let database = tribal_test_utils::TestDb::new().await;
+    let database = TestDb::new().await;
     let temp = tempfile::Builder::new()
         .prefix("tm")
         .tempdir_in("/tmp")
@@ -617,7 +622,7 @@ fn test_process_authority_fences_same_path_and_keeps_distinct_paths_independent(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_managed_runtime_survives_competing_and_successive_manager_recovery() {
-    let database = tribal_test_utils::TestDb::new().await;
+    let database = TestDb::new().await;
     let temp = tempfile::Builder::new()
         .prefix("tm")
         .tempdir_in("/tmp")
@@ -625,7 +630,7 @@ async fn test_managed_runtime_survives_competing_and_successive_manager_recovery
     let config_path = temp.path().join("tribal.yaml");
     let mut config = TribalConfig::minimum_valid(database.database_url());
     config.server.transport = TransportKind::Http;
-    config.server.bind_address = Some("127.0.0.1:0".to_owned());
+    config.server.bind_address = Some(format!("127.0.0.1:{}", free_local_port()));
     std::fs::write(
         &config_path,
         serde_yaml::to_string(&config).expect("config serialises"),
@@ -701,7 +706,7 @@ async fn test_managed_runtime_survives_competing_and_successive_manager_recovery
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_database_initialise_negotiates_v3_and_migrates_once_after_revision_check() {
-    let database = tribal_test_utils::TestDb::new_unmigrated().await;
+    let database = TestDb::new_unmigrated().await;
     let temp = tempfile::Builder::new()
         .prefix("tm")
         .tempdir_in("/tmp")
@@ -820,8 +825,154 @@ async fn test_database_initialise_negotiates_v3_and_migrates_once_after_revision
 }
 
 #[tokio::test]
+async fn test_a_targeted_token_request_without_an_attached_runtime_reports_the_conflict() {
+    let database = TestDb::new().await;
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    let config = TribalConfig::minimum_valid(database.database_url());
+    std::fs::write(&config_path, serde_yaml::to_string(&config).unwrap()).unwrap();
+    let mut manager = spawn_manager(&config_path, temp.path());
+    let announcement = continuing_announcement(read_manager_record(&mut manager));
+    let mut client = handshake(&announcement);
+    let document: ConfigDocument = call(&mut client, 1, "config.getAll", None);
+    let ConfigDocument::DurableValid { revision, .. } = document else {
+        panic!("valid configuration must expose its durable revision");
+    };
+
+    let error = call_error(
+        &mut client,
+        2,
+        "token.create",
+        Some(
+            &serde_json::to_value(TokenCreateRequest {
+                expected_revision: revision,
+                principal: None,
+                ttl_hours: Some(1),
+                scopes: Vec::new(),
+                persist_as_default: false,
+                expected_runtime: Some(tribal_wire::management::RuntimeIdentity {
+                    instance_id: "expected-runtime".to_owned(),
+                    pid: 4242,
+                    binary_version: "0.0.0".to_owned(),
+                    config_path: tribal_wire::management::ConfigFilePath {
+                        path: config_path.to_string_lossy().into_owned(),
+                    },
+                }),
+            })
+            .unwrap(),
+        ),
+    );
+    assert!(matches!(
+        error.error,
+        ManagementError::Administration {
+            failure: tribal_wire::management::AdministrationFailure::CredentialTargetConflict,
+        }
+    ));
+
+    let _: tribal_wire::management::ManagerShutdownResult =
+        call(&mut client, 3, "manager.shutdown", None);
+    wait_for_success(
+        &mut manager,
+        "manager shutdown after refused targeted issuance",
+    );
+}
+
+#[tokio::test]
+async fn test_a_targeted_token_binds_the_audience_the_attached_runtime_projects() {
+    let database = TestDb::new().await;
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    write_server_config(&config_path, database.database_url(), TransportKind::Http);
+    let mut manager = spawn_manager(&config_path, temp.path());
+    let announcement = continuing_announcement(read_manager_record(&mut manager));
+    let mut client = handshake(&announcement);
+    wait_for_start_clear(&mut client);
+    let started: RuntimeStartResult = call(&mut client, 1, "runtime.start", None);
+    assert!(
+        matches!(started, RuntimeStartResult::Started { .. }),
+        "managed runtime starts: {started:?}"
+    );
+
+    let status: ManagedRuntimeStatusResult = call(&mut client, 2, "server.status", None);
+    let ManagedRuntimeStatusResult::Available { status } = status else {
+        panic!("attached runtime status must be available: {status:?}");
+    };
+    let data_plane = status
+        .data_plane
+        .clone()
+        .expect("a network runtime projects its data plane");
+    assert_eq!(data_plane.transport, NetworkTransport::Http);
+    assert!(
+        data_plane.mcp_url.ends_with("/mcp"),
+        "unexpected mcp url: {}",
+        data_plane.mcp_url
+    );
+    assert!(!status.restart_pending);
+
+    let document: ConfigDocument = call(&mut client, 3, "config.getAll", None);
+    let ConfigDocument::DurableValid { revision, .. } = document else {
+        panic!("valid configuration must expose its durable revision");
+    };
+    let created: TokenCreateResult = call(
+        &mut client,
+        4,
+        "token.create",
+        Some(
+            &serde_json::to_value(TokenCreateRequest {
+                expected_revision: revision,
+                principal: None,
+                ttl_hours: Some(1),
+                scopes: Vec::new(),
+                persist_as_default: false,
+                expected_runtime: Some(status.runtime.clone()),
+            })
+            .unwrap(),
+        ),
+    );
+    assert_eq!(
+        created.value.summary.audience,
+        data_plane.canonical_resource
+    );
+
+    let mut different = status.runtime.clone();
+    different.instance_id = "some-other-runtime".to_owned();
+    let refused = call_error(
+        &mut client,
+        5,
+        "token.create",
+        Some(
+            &serde_json::to_value(TokenCreateRequest {
+                expected_revision: created.config_revision.clone(),
+                principal: None,
+                ttl_hours: Some(1),
+                scopes: Vec::new(),
+                persist_as_default: false,
+                expected_runtime: Some(different),
+            })
+            .unwrap(),
+        ),
+    );
+    assert!(matches!(
+        refused.error,
+        ManagementError::Administration {
+            failure: tribal_wire::management::AdministrationFailure::CredentialTargetConflict,
+        }
+    ));
+
+    let _: tribal_wire::management::ManagerShutdownResult =
+        call(&mut client, 6, "manager.shutdown", None);
+    wait_for_success(&mut manager, "manager shutdown after targeted issuance");
+}
+
+#[tokio::test]
 async fn test_direct_runtime_credentials_follow_the_canonical_config_namespace() {
-    let database = tribal_test_utils::TestDb::new().await;
+    let database = TestDb::new().await;
     let temp = tempfile::Builder::new()
         .prefix("tm")
         .tempdir_in("/tmp")
@@ -848,6 +999,7 @@ async fn test_direct_runtime_credentials_follow_the_canonical_config_namespace()
                 ttl_hours: Some(1),
                 scopes: Vec::new(),
                 persist_as_default: true,
+                expected_runtime: None,
             })
             .unwrap(),
         ),
@@ -924,7 +1076,7 @@ async fn test_direct_runtime_credentials_follow_the_canonical_config_namespace()
     reason = "one process journey keeps pagination evidence in causal order"
 )]
 async fn test_project_pagination_is_revision_bound_bounded_and_high_water_stable() {
-    let database = tribal_test_utils::TestDb::new().await;
+    let database = TestDb::new().await;
     let temp = tempfile::Builder::new()
         .prefix("tm")
         .tempdir_in("/tmp")
@@ -1231,10 +1383,20 @@ fn initialise_git_repository(path: &Path) {
     );
 }
 
+/// Reserves a concrete free port and releases it for a managed runtime
+/// to take: managed custody refuses an ephemeral bind.
+fn free_local_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("ephemeral probe binds")
+        .local_addr()
+        .expect("probe address reads")
+        .port()
+}
+
 fn write_server_config(path: &Path, database_url: &str, transport: TransportKind) {
     let mut config = TribalConfig::minimum_valid(database_url);
     config.server.transport = transport;
-    config.server.bind_address = Some("127.0.0.1:0".to_owned());
+    config.server.bind_address = Some(format!("127.0.0.1:{}", free_local_port()));
     std::fs::write(
         path,
         serde_yaml::to_string(&config).expect("config serialises"),
@@ -1387,12 +1549,25 @@ fn run_to_completion(mut command: Command) -> Output {
 }
 
 fn wait_for_success(child: &mut Child, context: &str) {
-    let status = wait_for_exit(child, context);
+    wait_for_success_within(child, context, PROCESS_TIMEOUT);
+}
+
+fn wait_for_success_within(child: &mut Child, context: &str, budget: Duration) {
+    let status = wait_for_exit_within(child, context, budget);
     assert!(status.success(), "{context} status was {status}");
 }
 
 fn wait_for_exit(child: &mut Child, context: &str) -> std::process::ExitStatus {
-    let Some(status) = poll_until(|| child.try_wait().expect("manager status reads")) else {
+    wait_for_exit_within(child, context, PROCESS_TIMEOUT)
+}
+
+fn wait_for_exit_within(
+    child: &mut Child,
+    context: &str,
+    budget: Duration,
+) -> std::process::ExitStatus {
+    let observed = poll_until_within(budget, || child.try_wait().expect("manager status reads"));
+    let Some(status) = observed else {
         let _ = child.kill();
         let _ = child.wait();
         panic!("{context} timed out");
@@ -1400,8 +1575,12 @@ fn wait_for_exit(child: &mut Child, context: &str) -> std::process::ExitStatus {
     status
 }
 
-fn poll_until<T>(mut observe: impl FnMut() -> Option<T>) -> Option<T> {
-    let deadline = Instant::now() + PROCESS_TIMEOUT;
+fn poll_until<T>(observe: impl FnMut() -> Option<T>) -> Option<T> {
+    poll_until_within(PROCESS_TIMEOUT, observe)
+}
+
+fn poll_until_within<T>(budget: Duration, mut observe: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + budget;
     loop {
         if let Some(value) = observe() {
             return Some(value);

@@ -18,7 +18,7 @@ use tokio::signal;
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio_util::sync::CancellationToken;
 use tribal_auth::oauth::OAuthRuntimeConfig;
-use tribal_config::{config_warnings, load_config, validate};
+use tribal_config::{TribalConfig, config_warnings, load_config, validate};
 use tribal_domain::{ProjectId, TransportKind};
 use tribal_mcp::HandlerConfig;
 
@@ -34,7 +34,10 @@ use crate::{
         runtime_control::{self, RuntimeControlService},
     },
     orchestration,
-    startup::{POOL_NAME_MCP, init_config_watcher},
+    startup::{
+        POOL_NAME_MCP, bound_socket_address, init_config_watcher, resolve_oauth_runtime,
+        runtime_data_plane,
+    },
     transport,
 };
 
@@ -78,6 +81,9 @@ pub(crate) async fn run(config_path: &str, args: ServeArgs) -> Result<(), AppErr
     let (cli_overrides, _) = args.into_cli_overrides();
     let config = load_config(config_path, Some(cli_overrides), None)?;
     validate(&config)?;
+    if managed_control.is_some() {
+        reject_managed_ephemeral_port(&config)?;
+    }
 
     let (log_events, _) = tokio::sync::broadcast::channel(512);
 
@@ -108,7 +114,7 @@ pub(crate) async fn run(config_path: &str, args: ServeArgs) -> Result<(), AppErr
 
     let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
 
-    let oauth_runtime = Arc::new(crate::startup::resolve_oauth_runtime(&config)?);
+    let oauth_runtime = Arc::new(resolve_oauth_runtime(&config)?);
 
     tracing::info!(%transport, "startup sequence complete");
 
@@ -127,6 +133,7 @@ pub(crate) async fn run(config_path: &str, args: ServeArgs) -> Result<(), AppErr
                 proof,
                 RuntimeControlService {
                     runtime,
+                    data_plane: runtime_data_plane(&config, &oauth_runtime),
                     config_path: expanded_config_path.clone(),
                     config: runtime_config,
                     log_filter,
@@ -264,6 +271,20 @@ fn managed_runtime_control(
         },
         custody.control_proof(),
     )))
+}
+
+/// Refuses an ephemeral network port under managed custody: the manager
+/// projects the bound address as the data plane, and port `0` names an
+/// endpoint no restart can keep. Unmanaged servers keep ephemeral ports.
+fn reject_managed_ephemeral_port(config: &TribalConfig) -> Result<(), AppError> {
+    if config.server.transport != TransportKind::Stdio && bound_socket_address(config).port() == 0 {
+        return Err(AppError::ConfigInvariant {
+            reason:
+                "a managed runtime requires a fixed server.bind_address port; port 0 is ephemeral"
+                    .to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn acquire_runtime_authority(config_path: &Path) -> Result<AuthorityLease, AppError> {
@@ -484,6 +505,35 @@ async fn await_shutdown_trigger(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_managed_custody_refuses_an_ephemeral_network_port() {
+        let mut config = TribalConfig::default();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("127.0.0.1:0".to_owned());
+
+        let refusal = reject_managed_ephemeral_port(&config);
+
+        assert!(matches!(refusal, Err(AppError::ConfigInvariant { .. })));
+    }
+
+    #[test]
+    fn test_managed_custody_accepts_a_fixed_network_port() {
+        let mut config = TribalConfig::default();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("127.0.0.1:8725".to_owned());
+
+        assert!(reject_managed_ephemeral_port(&config).is_ok());
+    }
+
+    #[test]
+    fn test_managed_custody_ignores_the_port_for_stdio() {
+        let mut config = TribalConfig::default();
+        config.server.transport = TransportKind::Stdio;
+        config.server.bind_address = Some("127.0.0.1:0".to_owned());
+
+        assert!(reject_managed_ephemeral_port(&config).is_ok());
+    }
 
     #[test]
     fn test_serve_project_mode_preserves_all_three_modes() {

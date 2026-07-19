@@ -155,12 +155,19 @@ impl<'a> ManagementApplication<'a> {
             }
             ManagementMethod::TokenCreate => {
                 let request = parse_call::<TokenCreateCall>(params)?;
-                encode_call::<TokenCreateCall>(
-                    self.tokens
+                let result = match request.expected_runtime.clone() {
+                    Some(expected) => {
+                        self.tokens
+                            .create_bound_to_runtime(self.lifecycle, &operation, request, expected)
+                            .await
+                    }
+                    None => self
+                        .tokens
                         .create(&operation, request)
                         .await
                         .map_err(token::public_error),
-                )
+                };
+                encode_call::<TokenCreateCall>(result)
             }
             ManagementMethod::TokenRevoke => {
                 let request = parse_call::<TokenRevokeCall>(params)?;

@@ -3047,18 +3047,56 @@
         }
       },
       "ManagedRuntimeStatus": {
-        "description": "Public status of the attached managed runtime.",
+        "description": "Public status of the attached managed runtime. While a restart is pending the data plane remains the old process's reported endpoint.",
         "type": "object",
         "required": [
           "restart_pending",
           "runtime"
         ],
         "properties": {
+          "data_plane": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RuntimeDataPlane"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "restart_pending": {
             "type": "boolean"
           },
           "runtime": {
             "$ref": "#/definitions/RuntimeIdentity"
+          }
+        }
+      },
+      "NetworkTransport": {
+        "description": "Network family of the Streamable HTTP data plane, owned by the control contract apart from configuration `TransportKind`.",
+        "type": "string",
+        "enum": [
+          "http",
+          "sse"
+        ]
+      },
+      "RuntimeDataPlane": {
+        "description": "The endpoint and audience the running process actually loaded — the exact address its transport binds and the resource its authenticator enforces; absent for a runtime without a network data plane.",
+        "type": "object",
+        "required": [
+          "canonical_resource",
+          "mcp_url",
+          "transport"
+        ],
+        "properties": {
+          "canonical_resource": {
+            "type": "string"
+          },
+          "mcp_url": {
+            "type": "string"
+          },
+          "transport": {
+            "$ref": "#/definitions/NetworkTransport"
           }
         }
       },
@@ -6086,6 +6124,20 @@
                 "type": "string",
                 "enum": [
                   "token_issuance_refused"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "credential_target_conflict"
                 ]
               }
             }
@@ -28104,6 +28156,7 @@
   "TokenCreateRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "TokenCreateRequest",
+    "description": "A token issuance request. With `expected_runtime` set, issuance targets that exact attached runtime and its audience; omitted, the call retains audience-from-configuration.",
     "type": "object",
     "required": [
       "expected_revision",
@@ -28113,6 +28166,16 @@
     "properties": {
       "expected_revision": {
         "$ref": "#/definitions/ConfigRevision"
+      },
+      "expected_runtime": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/RuntimeIdentity"
+          },
+          {
+            "type": "null"
+          }
+        ]
       },
       "persist_as_default": {
         "type": "boolean"
@@ -28139,11 +28202,50 @@
       }
     },
     "definitions": {
+      "ConfigFilePath": {
+        "description": "The active configuration file's location.",
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "description": "Filesystem path read by the authority.",
+            "type": "string"
+          }
+        }
+      },
       "ConfigRevision": {
         "type": "string",
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-tribal-base64url-prefix": "cfg_",
         "x-tribal-swift-type": "canonical-base64url-32"
+      },
+      "RuntimeIdentity": {
+        "description": "Stable identity for one managed runtime process.",
+        "type": "object",
+        "required": [
+          "binary_version",
+          "config_path",
+          "instance_id",
+          "pid"
+        ],
+        "properties": {
+          "binary_version": {
+            "type": "string"
+          },
+          "config_path": {
+            "$ref": "#/definitions/ConfigFilePath"
+          },
+          "instance_id": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          }
+        }
       },
       "Scope": {
         "type": "string",

@@ -13,6 +13,7 @@ use std::net::{IpAddr, SocketAddr};
 use tribal_auth::oauth::{OAuthRuntimeConfig, OAuthRuntimeConfigError};
 use tribal_config::{DEFAULT_BIND_ADDRESS, TribalConfig, advertised_oauth_host};
 use tribal_domain::TransportKind;
+use tribal_wire::management::{NetworkTransport, RuntimeDataPlane};
 use url::Url;
 
 use crate::error::AppError;
@@ -40,15 +41,7 @@ const MCP_RESOURCE_PATH: &str = "/mcp";
 /// Returns [`AppError::ConfigInvariant`] when the operator-supplied
 /// issuer or resource URL fails to parse.
 pub fn resolve_oauth_runtime(config: &TribalConfig) -> Result<OAuthRuntimeConfig, AppError> {
-    let bind_addr: SocketAddr = config
-        .server
-        .bind_address
-        .as_deref()
-        .unwrap_or(DEFAULT_BIND_ADDRESS)
-        .parse()
-        .expect("bind address validated during config validation");
-
-    let (host, port) = canonical_host_and_port(bind_addr);
+    let (host, port) = canonical_host_and_port(bound_socket_address(config));
     let fallback_issuer = Url::parse(&format!("http://{host}:{port}"))
         .expect("loopback issuer URL is well-formed by construction");
     let fallback_resource = Url::parse(&format!("http://{host}:{port}{MCP_RESOURCE_PATH}"))
@@ -92,6 +85,39 @@ pub fn expected_token_audience(
         TransportKind::Http | TransportKind::Sse => Some(runtime.canonical_resource.clone()),
         TransportKind::Stdio => None,
     }
+}
+
+/// The data plane a managed runtime reports for its loaded
+/// configuration: the bind-derived MCP URL and the audience its
+/// authenticator enforces. `None` for stdio, which has no network
+/// data plane.
+#[must_use]
+pub fn runtime_data_plane(
+    config: &TribalConfig,
+    runtime: &OAuthRuntimeConfig,
+) -> Option<RuntimeDataPlane> {
+    let transport = match config.server.transport {
+        TransportKind::Http => NetworkTransport::Http,
+        TransportKind::Sse => NetworkTransport::Sse,
+        TransportKind::Stdio => return None,
+    };
+    let (host, port) = canonical_host_and_port(bound_socket_address(config));
+    Some(RuntimeDataPlane {
+        transport,
+        mcp_url: format!("http://{host}:{port}{MCP_RESOURCE_PATH}"),
+        canonical_resource: runtime.canonical_resource.clone(),
+    })
+}
+
+/// The socket address the transport runner binds.
+pub(crate) fn bound_socket_address(config: &TribalConfig) -> SocketAddr {
+    config
+        .server
+        .bind_address
+        .as_deref()
+        .unwrap_or(DEFAULT_BIND_ADDRESS)
+        .parse()
+        .expect("bind address validated during config validation")
 }
 
 /// Formats the host [`advertised_oauth_host`] derives for `addr`, with the

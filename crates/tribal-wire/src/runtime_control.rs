@@ -7,10 +7,12 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use tribal_domain::ConfigFieldPath;
 
-use crate::management::{ConfigLiteral, ConfigRevision, ReadinessReport, RuntimeIdentity};
+use crate::management::{
+    ConfigLiteral, ConfigRevision, ReadinessReport, RuntimeDataPlane, RuntimeIdentity,
+};
 
 /// Version of the private manager/runtime contract.
-pub const RUNTIME_CONTROL_CONTRACT_VERSION: u16 = 3;
+pub const RUNTIME_CONTROL_CONTRACT_VERSION: u16 = 4;
 
 /// First frame sent by a manager on a runtime-control connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,11 +193,14 @@ pub enum RuntimeControlEvent {
     LogsLost,
 }
 
-/// Runtime-side status needed by the manager reducer.
+/// Runtime-side status needed by the manager reducer: identity plus the
+/// loaded data plane, reported by the process itself and never derived
+/// from newer configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ManagedRuntimeStatus {
     pub runtime: RuntimeIdentity,
+    pub data_plane: Option<RuntimeDataPlane>,
 }
 
 /// Result of offering a durable configuration revision for live adoption.

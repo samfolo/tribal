@@ -16,12 +16,36 @@ pub enum RuntimeReadUnavailable {
     ManagerTerminating,
 }
 
-/// Public status of the attached managed runtime.
+/// Network family of the Streamable HTTP data plane, owned by the
+/// control contract apart from configuration `TransportKind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkTransport {
+    Http,
+    Sse,
+}
+
+/// The endpoint and audience the running process actually loaded —
+/// the exact address its transport binds and the resource its
+/// authenticator enforces; absent for a runtime without a network
+/// data plane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct RuntimeDataPlane {
+    pub transport: NetworkTransport,
+    pub mcp_url: String,
+    pub canonical_resource: String,
+}
+
+/// Public status of the attached managed runtime. While a restart is
+/// pending the data plane remains the old process's reported endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ManagedRuntimeStatus {
     pub runtime: RuntimeIdentity,
     pub restart_pending: bool,
+    pub data_plane: Option<RuntimeDataPlane>,
 }
 
 /// Result of `server.status` through the manager.

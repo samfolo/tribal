@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tribal_config::{ReloadClass, TribalConfig, load_config, reload_class, validate};
 use tribal_telemetry::{LogFilterHandle, LogLine, LogRing};
 use tribal_wire::{
-    management::{ConfigDigest, ConfigRevision, RuntimeIdentity},
+    management::{ConfigDigest, ConfigRevision, RuntimeDataPlane, RuntimeIdentity},
     runtime_control::{
         ManagedRuntimeStatus, RUNTIME_CONTROL_CONTRACT_VERSION, RuntimeBootstrapRefusal,
         RuntimeBootstrapRequest, RuntimeBootstrapResponse, RuntimeConfigApplyOutcome,
@@ -41,10 +41,13 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 
 type FramedStream = BufReader<UnixStream>;
 
-/// Runtime-side dependencies used by the private protocol.
+/// Runtime-side dependencies used by the private protocol. The data
+/// plane is loaded once at startup from the bound transport and never
+/// re-derived.
 #[derive(Clone)]
 pub(crate) struct RuntimeControlService {
     pub(crate) runtime: RuntimeIdentity,
+    pub(crate) data_plane: Option<RuntimeDataPlane>,
     pub(crate) config_path: PathBuf,
     pub(crate) config: watch::Sender<Arc<TribalConfig>>,
     pub(crate) log_filter: LogFilterHandle,
@@ -648,6 +651,7 @@ async fn dispatch(
         RuntimeControlRequest::Status => RuntimeControlResponse::Status {
             status: ManagedRuntimeStatus {
                 runtime: service.runtime.clone(),
+                data_plane: service.data_plane.clone(),
             },
         },
         RuntimeControlRequest::Readiness => {
@@ -1001,6 +1005,7 @@ mod tests {
             proof_registry,
             RuntimeControlService {
                 runtime: runtime.clone(),
+                data_plane: None,
                 config_path: config_path.clone(),
                 config: config_sender.clone(),
                 log_filter,

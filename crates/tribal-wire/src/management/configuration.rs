@@ -585,6 +585,7 @@ pub enum AdministrationFailure {
     ProjectSourceInvalid,
     ProjectNotFound { id: ProjectId },
     TokenIssuanceRefused,
+    CredentialTargetConflict,
     PersistedCredentialUnavailable,
     PersistedCredentialRecoveryFailed,
     InventoryItemTooLarge { item: InventoryItemRef },

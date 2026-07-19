@@ -36,6 +36,7 @@ pub(crate) async fn create(config_path: &str, args: TokenCreateArgs) -> Result<(
             principal: args.principal,
             ttl_hours: args.ttl,
             scopes: args.scope,
+            expected_runtime: None,
             persist_as_default: args.persist_as_default,
         })
         .await
