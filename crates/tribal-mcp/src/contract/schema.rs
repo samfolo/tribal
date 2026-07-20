@@ -16,6 +16,7 @@ use super::{
         McpSetContextCall,
     },
 };
+use crate::error::{ERROR_META_KEY, McpToolError, RETRY_AFTER_MEMBER};
 
 /// One tool's rendered schema pair: its schema-directory basename and
 /// the input/output documents exactly as committed.
@@ -79,6 +80,8 @@ pub struct FirstPartySchemaParts {
     tools: Vec<ClientTool>,
     resources: Vec<ClientResource>,
     required_scopes: Vec<&'static str>,
+    #[serde(rename = "x-tribal-error", skip_serializing_if = "Option::is_none")]
+    error: Option<ClientErrorSurface>,
     definitions: BTreeMap<String, RootSchema>,
 }
 
@@ -139,6 +142,32 @@ impl FirstPartySchemaParts {
     pub fn resource_templates(&self) -> Vec<&'static str> {
         self.resources.iter().map(|r| r.uri_template).collect()
     }
+
+    /// Registers the typed tool-error surface: files `E`'s schema under its
+    /// definition name and records the `_meta` key and retry-hint member.
+    pub fn set_error<E>(&mut self, meta_key: &'static str, retry_after_member: &'static str)
+    where
+        E: schemars::JsonSchema,
+    {
+        let definition = E::schema_name();
+        self.definitions.insert(definition.clone(), schema_for!(E));
+        self.error = Some(ClientErrorSurface {
+            definition,
+            meta_key,
+            retry_after_member,
+        });
+    }
+}
+
+/// The typed tool-error surface: the definition carrying the error shape,
+/// the result `_meta` member it rides on, and the reserved retry-hint
+/// member — a contract-only `x-tribal-*` extension consumed at build time.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientErrorSurface {
+    definition: String,
+    meta_key: &'static str,
+    retry_after_member: &'static str,
 }
 
 /// One first-party tool: its identity, presentation, and the definition
@@ -174,6 +203,7 @@ struct ClientResource {
 pub fn client_contract() -> String {
     let mut parts = FirstPartyMcpContract::schema_parts();
     parts.required_scopes = FirstPartyMcpContract::required_scopes();
+    parts.set_error::<McpToolError>(ERROR_META_KEY, RETRY_AFTER_MEMBER);
     render(&parts)
 }
 

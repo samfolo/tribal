@@ -5,7 +5,7 @@ use std::str::FromStr as _;
 use chrono::{TimeDelta, Utc};
 use tokio_util::sync::CancellationToken;
 use tribal_auth::issue_token_with_record;
-use tribal_config::MAX_TTL_HOURS;
+use tribal_config::{MAX_TTL_HOURS, TribalConfig};
 use tribal_db::{
     AuthTokenInventoryRow, AuthTokenPageKey, AuthTokenRepository, DbError, PgAuthTokenRepository,
     PgPrincipalRepository, PrincipalRepository,
@@ -227,16 +227,15 @@ impl TokenAdministration {
         })
     }
 
-    pub(super) async fn preflight_bootstrap(
-        &self,
-        operation: &OperationContext,
-        expected_revision: &ConfigRevision,
+    /// Computes the bootstrap token's audience and expiry from the *candidate*
+    /// configuration the bootstrap is applying — not the durable one, which
+    /// may still be unconfigured on a fresh system and, on a re-bootstrap,
+    /// carries the superseded audience. The caller has already validated the
+    /// candidate and revision-checked the durable base.
+    pub(super) fn preflight_bootstrap(
         policy: BootstrapTokenPolicy,
+        config: &TribalConfig,
     ) -> Result<PreparedBootstrapToken, TokenAdministrationError> {
-        let snapshot = self
-            .database
-            .config_snapshot(operation, Some(expected_revision))
-            .await?;
         let (ensure, principal, ttl_hours, scopes) = match policy {
             BootstrapTokenPolicy::EnsureLocalCredential {
                 principal,
@@ -252,9 +251,8 @@ impl TokenAdministration {
         let principal = principal.unwrap_or_else(|| LOCAL_PRINCIPAL_KEY.to_owned());
         let scopes = normalise_scopes(scopes)?;
         let now = Utc::now();
-        let expires_at =
-            compute_expires_at_at(ttl_hours, snapshot.config.auth.token_ttl_hours, now)?;
-        let audience = crate::startup::resolve_oauth_runtime(&snapshot.config)
+        let expires_at = compute_expires_at_at(ttl_hours, config.auth.token_ttl_hours, now)?;
+        let audience = crate::startup::resolve_oauth_runtime(config)
             .map_err(|_| TokenAdministrationError::Issuance)?
             .canonical_resource;
         Ok(PreparedBootstrapToken {

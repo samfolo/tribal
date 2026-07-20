@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use tribal_config::TribalConfig;
 use tribal_db::{DbError, PgProjectRepository, ProjectRepository as _};
 use tribal_domain::{BearerToken, Project, ProjectId, TransportKind};
 use tribal_wire::management::{
@@ -106,17 +107,15 @@ impl IntegrationAdministration {
         }
     }
 
-    pub(super) async fn preflight_target(
-        &self,
-        operation: &OperationContext,
-        expected_revision: &tribal_wire::management::ConfigRevision,
+    /// Resolves the integration target against the *candidate* configuration
+    /// the bootstrap is applying — not the durable one, which may still be
+    /// unconfigured on a fresh system. The caller has already validated the
+    /// candidate and revision-checked the durable base.
+    pub(super) fn preflight_target(
         selection: &McpTargetSelection,
+        config: &TribalConfig,
     ) -> Result<McpTarget, IntegrationAdministrationError> {
-        let snapshot = self
-            .database
-            .config_snapshot(operation, Some(expected_revision))
-            .await?;
-        let target = resolve_target(snapshot.config.server.transport, selection.clone())?;
+        let target = resolve_target(config.server.transport, selection.clone())?;
         if let McpTarget::Stdio {
             context:
                 StdioProjectContext::Project {

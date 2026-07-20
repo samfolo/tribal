@@ -42,7 +42,7 @@ tribal-worker.workspace = true
 
 [features]
 test-helpers = []
-schema = ["tribal-wire/schema", "dep:schemars"]
+schema = ["tribal-wire/schema", "tribal-domain/schema", "dep:schemars"]
 
 [dev-dependencies]
 opentelemetry.workspace = true
