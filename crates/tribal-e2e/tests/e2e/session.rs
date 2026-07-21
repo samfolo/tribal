@@ -26,7 +26,7 @@ async fn test_session_context_lifecycle() {
                     seed.conn(),
                     &a_new_project()
                         .name("canopy-api".to_owned())
-                        .git_remote(GitRemote::from_parts(
+                        .remote(GitRemote::from_parts(
                             "github.com",
                             "meridian/canopy-api",
                             None,
@@ -41,7 +41,7 @@ async fn test_session_context_lifecycle() {
                     seed.conn(),
                     &a_new_project()
                         .name("canopy-dashboard".to_owned())
-                        .git_remote(GitRemote::from_parts(
+                        .remote(GitRemote::from_parts(
                             "github.com",
                             "meridian/canopy-dashboard",
                             None,

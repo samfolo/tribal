@@ -11,7 +11,7 @@ async fn test_insert_with_none_optional_fields_returns_none() {
     let repo = PgProjectRepository;
 
     let new = a_new_project()
-        .git_remote(GitRemote::from_parts(
+        .remote(GitRemote::from_parts(
             "github.com",
             "test/null-fields",
             None,
@@ -29,7 +29,7 @@ async fn test_insert_returns_populated_project() {
     let repo = PgProjectRepository;
 
     let new = a_new_project()
-        .git_remote(GitRemote::from_parts(
+        .remote(GitRemote::from_parts(
             "github.com",
             "test/insert-test",
             None,
@@ -62,7 +62,7 @@ async fn test_insert_duplicate_git_remote_returns_unique_violation() {
     let repo = PgProjectRepository;
 
     let new = a_new_project()
-        .git_remote(GitRemote::from_parts("github.com", "test/dup-remote", None))
+        .remote(GitRemote::from_parts("github.com", "test/dup-remote", None))
         .build();
     repo.insert_git(&mut txn, &new).await.expect("first insert");
 
@@ -80,7 +80,7 @@ async fn test_find_by_id_returns_project() {
     let repo = PgProjectRepository;
 
     let new = a_new_project()
-        .git_remote(GitRemote::from_parts("github.com", "test/find-id", None))
+        .remote(GitRemote::from_parts("github.com", "test/find-id", None))
         .build();
     let inserted = repo.insert_git(&mut txn, &new).await.expect("insert");
 
@@ -113,7 +113,7 @@ async fn test_find_by_git_remote_returns_project() {
     let repo = PgProjectRepository;
 
     let remote = GitRemote::from_parts("github.com", "test/find-remote", None);
-    let new = a_new_project().git_remote(remote.clone()).build();
+    let new = a_new_project().remote(remote.clone()).build();
     let inserted = repo.insert_git(&mut txn, &new).await.expect("insert");
 
     let found = repo
@@ -152,7 +152,7 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
         .insert_git(
             &mut txn,
             &a_new_project()
-                .git_remote(GitRemote::from_parts("github.com", "test/list-first", None))
+                .remote(GitRemote::from_parts("github.com", "test/list-first", None))
                 .build(),
         )
         .await
@@ -161,7 +161,7 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
         .insert_git(
             &mut txn,
             &a_new_project()
-                .git_remote(GitRemote::from_parts(
+                .remote(GitRemote::from_parts(
                     "github.com",
                     "test/list-second",
                     None,
@@ -216,7 +216,7 @@ async fn test_keyset_page_keeps_captured_high_water_across_later_insert() {
         repo.insert_git(
             &mut connection,
             &a_new_project()
-                .git_remote(GitRemote::from_parts(
+                .remote(GitRemote::from_parts(
                     "github.com",
                     &format!("test/page-{suffix}"),
                     None,
@@ -241,7 +241,7 @@ async fn test_keyset_page_keeps_captured_high_water_across_later_insert() {
         .insert_git(
             &mut connection,
             &a_new_project()
-                .git_remote(GitRemote::from_parts("github.com", "test/page-later", None))
+                .remote(GitRemote::from_parts("github.com", "test/page-later", None))
                 .build(),
         )
         .await

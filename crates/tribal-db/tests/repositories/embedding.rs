@@ -41,7 +41,7 @@ async fn setup_prerequisites(
         .insert_git(
             txn,
             &a_new_project()
-                .git_remote(GitRemote::from_parts(
+                .remote(GitRemote::from_parts(
                     "github.com",
                     &format!("test/{suffix}"),
                     None,
@@ -226,7 +226,7 @@ async fn test_items_without_embedding_is_the_set_difference() {
         .insert_git(
             &mut txn,
             &a_new_project()
-                .git_remote(GitRemote::from_parts("github.com", "test/set-diff", None))
+                .remote(GitRemote::from_parts("github.com", "test/set-diff", None))
                 .build(),
         )
         .await
@@ -338,7 +338,7 @@ async fn test_batch_insert_skipping_existing_skips_embedded_pairs() {
         .insert_git(
             &mut txn,
             &a_new_project()
-                .git_remote(GitRemote::from_parts(
+                .remote(GitRemote::from_parts(
                     "github.com",
                     "test/batch-insert",
                     None,
@@ -421,7 +421,7 @@ async fn test_find_items_without_embedding_pages_by_cursor() {
         .insert_git(
             &mut txn,
             &a_new_project()
-                .git_remote(GitRemote::from_parts(
+                .remote(GitRemote::from_parts(
                     "github.com",
                     "test/set-diff-page",
                     None,

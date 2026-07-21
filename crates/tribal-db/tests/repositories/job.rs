@@ -40,7 +40,7 @@ async fn setup_job_prerequisites(
         .insert_git(
             txn,
             &a_new_project()
-                .git_remote(GitRemote::from_parts(
+                .remote(GitRemote::from_parts(
                     "github.com",
                     &format!("test/job-{suffix}"),
                     None,

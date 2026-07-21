@@ -18,6 +18,7 @@ use tribal_domain::{
 
 use super::common::begin_transaction;
 use crate::{
+    ProjectDefaults,
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
     fingerprint::{FingerprintError, FingerprintInputs, compute_and_upsert_fingerprint},
     mapping::{McpIngestRequest, McpIngestResponse, RequestedProject},
@@ -41,7 +42,7 @@ impl IngestProjectSelection {
     fn resolve(
         request: Option<RequestedProject>,
         connection: Option<ProjectId>,
-        defaults: &crate::ProjectDefaults,
+        defaults: &ProjectDefaults,
     ) -> Self {
         match request {
             Some(RequestedProject::Explicit { id }) => return Self::Explicit(id),
@@ -416,6 +417,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        ProjectDefaults, ResolvedProject,
         error::ERROR_META_KEY,
         session::SessionActor,
         test_utils::{
@@ -528,9 +530,9 @@ mod tests {
             .await
             .expect("find System project");
         drop(conn);
-        let defaults = crate::ProjectDefaults::builder()
+        let defaults = ProjectDefaults::builder()
             .system(
-                crate::ResolvedProject::builder()
+                ResolvedProject::builder()
                     .id(system.id())
                     .name(system.name())
                     .origin(system.origin().clone())
@@ -627,16 +629,16 @@ mod tests {
         let process = ProjectId::new();
         let connection = ProjectId::new();
         let explicit = ProjectId::new();
-        let defaults = crate::ProjectDefaults::builder()
+        let defaults = ProjectDefaults::builder()
             .system(
-                crate::ResolvedProject::builder()
+                ResolvedProject::builder()
                     .id(system)
                     .name("General")
                     .origin(ProjectOrigin::System)
                     .build(),
             )
             .process(
-                crate::ResolvedProject::builder()
+                ResolvedProject::builder()
                     .id(process)
                     .name("process")
                     .origin(ProjectOrigin::System)
@@ -668,9 +670,9 @@ mod tests {
             IngestProjectSelection::Connection(connection)
         );
         assert_eq!(selections[3], IngestProjectSelection::Process(process));
-        let defaults = crate::ProjectDefaults::builder()
+        let defaults = ProjectDefaults::builder()
             .system(
-                crate::ResolvedProject::builder()
+                ResolvedProject::builder()
                     .id(system)
                     .name("General")
                     .origin(ProjectOrigin::System)
@@ -718,7 +720,7 @@ mod tests {
             .insert_git(
                 conn,
                 &a_new_project()
-                    .git_remote(GitRemote::from_parts(
+                    .remote(GitRemote::from_parts(
                         "github.com",
                         &format!("test/ingest-real-{suffix}"),
                         None,
@@ -760,9 +762,9 @@ mod tests {
             .await
             .expect("find System project");
         drop(conn);
-        let defaults = crate::ProjectDefaults::builder()
+        let defaults = ProjectDefaults::builder()
             .system(
-                crate::ResolvedProject::builder()
+                ResolvedProject::builder()
                     .id(system.id())
                     .name(system.name())
                     .origin(system.origin().clone())

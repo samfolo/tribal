@@ -4,7 +4,7 @@ use std::{fmt, path::Path};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tribal_domain::{AuthTokenId, GitRemote, ProjectId, Scope};
+use tribal_domain::{AuthTokenId, GitRemote, ProjectId, ProjectOrigin, Scope};
 
 use super::{ConfigRevision, RuntimeIdentity};
 
@@ -153,7 +153,7 @@ pub type ProjectRegisterResult = Revisioned<ProjectRegisterOutcome>;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProjectSummary {
     pub id: ProjectId,
-    pub origin: tribal_domain::ProjectOrigin,
+    pub origin: ProjectOrigin,
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

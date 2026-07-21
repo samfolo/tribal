@@ -708,7 +708,7 @@ mod tests {
             .insert_git(
                 conn,
                 &a_new_project()
-                    .git_remote(GitRemote::from_parts("github.com", "test/relation", None))
+                    .remote(GitRemote::from_parts("github.com", "test/relation", None))
                     .build(),
             )
             .await
@@ -1037,7 +1037,7 @@ mod tests {
             .insert_git(
                 &mut txn,
                 &a_new_project()
-                    .git_remote(GitRemote::from_parts(
+                    .remote(GitRemote::from_parts(
                         "github.com",
                         "test/relation-verify-a",
                         None,
@@ -1050,7 +1050,7 @@ mod tests {
             .insert_git(
                 &mut txn,
                 &a_new_project()
-                    .git_remote(GitRemote::from_parts(
+                    .remote(GitRemote::from_parts(
                         "github.com",
                         "test/relation-verify-b",
                         None,

@@ -8,7 +8,7 @@ use std::path::Path;
 use sqlx::PgPool;
 use tribal_config::ENV_PROJECT_ID;
 use tribal_db::{DbError, PgProjectRepository, ProjectRepository};
-use tribal_domain::ProjectId;
+use tribal_domain::{Project, ProjectId};
 use tribal_mcp::ResolvedProject;
 
 use super::POOL_NAME_MCP;
@@ -155,7 +155,7 @@ async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>,
     }
 }
 
-fn resolved_project(project: &tribal_domain::Project) -> ResolvedProject {
+fn resolved_project(project: &Project) -> ResolvedProject {
     ResolvedProject::builder()
         .id(project.id())
         .name(project.name())

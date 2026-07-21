@@ -45,7 +45,7 @@ async fn test_multi_session_isolation() {
                     seed.conn(),
                     &a_new_project()
                         .name("canopy-backend".to_owned())
-                        .git_remote(GitRemote::from_parts(
+                        .remote(GitRemote::from_parts(
                             "github.com",
                             "meridian/canopy-backend",
                             None,
@@ -60,7 +60,7 @@ async fn test_multi_session_isolation() {
                     seed.conn(),
                     &a_new_project()
                         .name("canopy-frontend".to_owned())
-                        .git_remote(GitRemote::from_parts(
+                        .remote(GitRemote::from_parts(
                             "github.com",
                             "meridian/canopy-frontend",
                             None,
@@ -75,7 +75,7 @@ async fn test_multi_session_isolation() {
                     seed.conn(),
                     &a_new_project()
                         .name("canopy-platform".to_owned())
-                        .git_remote(GitRemote::from_parts(
+                        .remote(GitRemote::from_parts(
                             "github.com",
                             "meridian/canopy-platform",
                             None,
