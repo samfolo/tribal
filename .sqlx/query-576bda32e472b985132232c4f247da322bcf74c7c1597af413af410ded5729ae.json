@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    SELECT * FROM projects\n                    WHERE (created_at, id) <= ($1, $2)\n                    ORDER BY created_at DESC, id DESC\n                    LIMIT $3\n                    ",
+  "query": "\n            INSERT INTO projects (origin, name, project_type, schema_version, settings)\n            VALUES ('{\"kind\":\"system\"}'::jsonb, 'General', NULL, 1, '{}'::jsonb)\n            ON CONFLICT DO NOTHING\n            RETURNING *\n            ",
   "describe": {
     "columns": [
       {
@@ -45,11 +45,7 @@
       }
     ],
     "parameters": {
-      "Left": [
-        "Timestamptz",
-        "Uuid",
-        "Int8"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
@@ -62,5 +58,5 @@
       false
     ]
   },
-  "hash": "c0fbe953b5ba2cf7bf17a5d561397ca3ab436a85cbcc1c720f6fd7877593ff14"
+  "hash": "576bda32e472b985132232c4f247da322bcf74c7c1597af413af410ded5729ae"
 }

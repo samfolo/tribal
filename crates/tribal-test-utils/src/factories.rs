@@ -134,6 +134,10 @@ mod tests {
     fn test_setter_overrides_default() {
         let project = a_project().name("custom".to_owned()).build();
         assert_eq!(project.name(), "custom");
-        assert_eq!(project.default_branch(), "main");
+        assert!(matches!(
+            project.origin(),
+            tribal_domain::ProjectOrigin::Git { default_branch, .. }
+                if default_branch == "main"
+        ));
     }
 }

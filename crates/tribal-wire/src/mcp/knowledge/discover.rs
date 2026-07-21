@@ -24,7 +24,6 @@ pub struct McpDiscoverRequest {
         deserialize_with = "deserialise_optional_nullable",
         skip_serializing_if = "Option::is_none"
     )]
-    #[allow(clippy::option_option)]
     pub project_id: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kinds: Option<Vec<KnowledgeKind>>,
@@ -50,24 +49,6 @@ pub struct McpDiscoverRequest {
 pub struct McpTimeRange {
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
-}
-
-/// Custom deserialiser that distinguishes an absent field (`None`) from an
-/// explicit JSON `null` (`Some(None)`) from a present value (`Some(Some(v))`).
-///
-/// serde's default `Option<Option<T>>` handling does not distinguish absent
-/// from null — both produce `None` for the outer option. This deserialiser
-/// is used with `#[serde(default, deserialize_with = "...")]` to preserve
-/// the distinction.
-#[allow(clippy::option_option)]
-fn deserialise_optional_nullable<'de, D, T>(deserialiser: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    // If the field is present in the JSON, this function is called.
-    // Deserialise as Option<T>: null → None, value → Some(value).
-    Ok(Some(Option::deserialize(deserialiser)?))
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +90,19 @@ pub struct McpDiscoveryResult {
     pub standing: Option<McpStanding>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub references: Option<Vec<McpReference>>,
+}
+
+/// Preserves whether the nullable project member was absent, null, or valued.
+#[expect(
+    clippy::option_option,
+    reason = "absent, null, and valued wire members are distinct states"
+)]
+fn deserialise_optional_nullable<'de, D, T>(deserialiser: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Some(Option::deserialize(deserialiser)?))
 }
 
 // ---------------------------------------------------------------------------

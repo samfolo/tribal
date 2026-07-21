@@ -1,6 +1,6 @@
 //! Mock implementation of [`PrincipalRepository`].
 
-use tribal_db::{NewPrincipal, PrincipalRepository};
+use tribal_db::{EnsurePrincipalOutcome, NewPrincipal, PrincipalRepository};
 use tribal_domain::{PlatformBinding, Principal, PrincipalId};
 
 use super::mock_repository;
@@ -9,6 +9,8 @@ mock_repository! {
     MockPrincipalRepository for PrincipalRepository, tribal_db::DbError {
         insert(NewPrincipal => Principal)
             (new_principal: &NewPrincipal) { new_principal.clone() };
+        ensure_local_by_key(String => EnsurePrincipalOutcome)
+            (principal_key: &str) { principal_key.to_owned() };
         find_or_create_platform_bound(PlatformBinding => Principal)
             (binding: &PlatformBinding) { binding.clone() };
         find_by_id(PrincipalId => Principal)

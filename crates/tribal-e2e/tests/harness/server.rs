@@ -23,7 +23,8 @@ use tribal_config::{
     DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL, InferenceStage, TribalConfig, validate,
 };
 use tribal_db::{
-    NewProject, PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
+    NewGitProject, PgPrincipalRepository, PgProjectRepository, PrincipalRepository,
+    ProjectRepository,
 };
 use tribal_domain::{IngestChannel, JobOutcome, PrincipalId, Project, ProviderKind};
 use tribal_inference::RequestClass;
@@ -87,7 +88,7 @@ type GraphFn = Box<dyn FnOnce(Seed) -> Seed>;
 /// care about — everything else uses sensible defaults.
 pub struct HarnessSetup {
     principal_key: String,
-    project: Option<NewProject>,
+    project: Option<NewGitProject>,
     no_project: bool,
     config_override: Option<ConfigOverrideFn>,
     seed: Option<AsyncSeedFn>,
@@ -112,7 +113,7 @@ impl HarnessSetup {
     }
 
     /// Overrides the default project.
-    pub fn project(&mut self, project: NewProject) {
+    pub fn project(&mut self, project: NewGitProject) {
         self.project = Some(project);
     }
 
@@ -223,10 +224,14 @@ impl SeedContext {
     ///
     /// Panics if `no_project()` was set on `HarnessSetup`.
     pub fn project_git_remote(&self) -> &tribal_domain::GitRemote {
-        self.project
+        let project = self
+            .project
             .as_ref()
-            .expect("project_git_remote unavailable — no_project() was set")
-            .git_remote()
+            .expect("project_git_remote unavailable — no_project() was set");
+        let tribal_domain::ProjectOrigin::Git { remote, .. } = project.origin() else {
+            panic!("the harness project is not Git")
+        };
+        remote
     }
 
     /// Principal key string.
@@ -363,7 +368,7 @@ impl TestHarness {
             // Seed's project for server startup.
             let new_project = setup.project.unwrap_or_else(|| a_new_project().build());
             let pre_configured = Seed::new()
-                .define_project(&new_project.name, new_project.git_remote.to_string())
+                .define_project(&new_project.name, new_project.remote.to_string())
                 .define_principal("default", &setup.principal_key)
                 .set_embedding_model(
                     DEFAULT_EMBEDDING_MODEL,
@@ -387,7 +392,7 @@ impl TestHarness {
             } else {
                 let new_project = setup.project.unwrap_or_else(|| a_new_project().build());
                 let project = PgProjectRepository
-                    .insert(&mut raw_conn, &new_project)
+                    .insert_git(&mut raw_conn, &new_project)
                     .await
                     .expect("insert project");
                 Some(project)
@@ -811,7 +816,7 @@ async fn start_and_connect(
     let state = Arc::clone(handle.state());
 
     let auth = resolve_e2e_auth(&state, principal_key).await;
-    let session_project = state.resolved_project().map(SessionProject::from);
+    let session_project = state.project_defaults().process().map(SessionProject::from);
     let session = SessionContext::new(session_project);
     let repositories = ConnectionRepositories::new();
     let handler_config = HandlerConfig::from(config);

@@ -227,7 +227,7 @@ mod tests {
             .await
             .unwrap();
         let project = PgProjectRepository
-            .insert(
+            .insert_git(
                 connection,
                 &a_new_project()
                     .git_remote(GitRemote::from_parts(

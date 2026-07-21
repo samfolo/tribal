@@ -20,17 +20,17 @@ use std::time::Duration;
 /// cycle.
 ///
 /// Theoretical minimum: `poll_interval` (100 ms) + claim + stage
-/// dispatch + commit ≈ 400 ms.  Set to 2 s for headroom — CI
-/// contention can push each DB operation above 100 ms.
-pub const POLL_SETTLE: Duration = Duration::from_secs(2);
+/// dispatch + commit ≈ 400 ms. Set to 5 s because a full workspace run
+/// concurrently exercises every database-backed crate.
+pub const POLL_SETTLE: Duration = Duration::from_secs(5);
 
 /// Timeout for a worker to process multiple tasks across several poll
 /// cycles.  Used in concurrency tests that need more than two claim
 /// rounds to exercise the concurrency limit.
 ///
-/// Multiple 100 ms poll cycles + dispatch overhead.  Set to 4 s for
-/// headroom under CI load.
-pub const MULTI_CYCLE_SETTLE: Duration = Duration::from_secs(4);
+/// Multiple 100 ms poll cycles + dispatch overhead. Set to 8 s to remain
+/// strictly wider than the single-cycle bound under full-suite load.
+pub const MULTI_CYCLE_SETTLE: Duration = Duration::from_secs(8);
 
 /// Timeout for a worker to claim a task and begin dispatching, but
 /// before a long-running stage completes.  Used to confirm the

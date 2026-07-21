@@ -78,6 +78,9 @@ pub trait MetricsRecorder: Send + Sync {
     /// failure) — the counter fires but the histogram is skipped.
     fn record_job_completed(&self, outcome: &str, duration_ms: Option<f64>);
 
+    /// Records the bounded source of an ingest project selection.
+    fn record_ingest_project_selection(&self, source: &str);
+
     /// Sets the queue gauge for a specific task type and status.
     ///
     /// Only `"queued"` and `"claimed"` statuses are recorded; other
@@ -136,6 +139,10 @@ impl<T: MetricsRecorder + ?Sized> MetricsRecorder for Arc<T> {
 
     fn record_job_completed(&self, outcome: &str, duration_ms: Option<f64>) {
         (**self).record_job_completed(outcome, duration_ms);
+    }
+
+    fn record_ingest_project_selection(&self, source: &str) {
+        (**self).record_ingest_project_selection(source);
     }
 
     fn set_queue_gauge(&self, task_type: &str, status: &str, count: i64) {
@@ -279,6 +286,16 @@ impl MetricsRecorder for OtelMetricsRecorder {
         }
     }
 
+    fn record_ingest_project_selection(&self, source: &str) {
+        self.metrics.ingest_project_selections.add(
+            1,
+            &[KeyValue::new(
+                span_attrs::INGEST_PROJECT_SELECTION,
+                source.to_owned(),
+            )],
+        );
+    }
+
     fn set_queue_gauge(&self, task_type: &str, status: &str, count: i64) {
         let attrs = &[KeyValue::new(LABEL_TASK_TYPE, task_type.to_owned())];
         match status {
@@ -355,6 +372,7 @@ impl MetricsRecorder for NoopMetricsRecorder {
     fn record_task_retried(&self, _task_type: &str) {}
     fn record_task_dead_lettered(&self, _task_type: &str) {}
     fn record_job_completed(&self, _outcome: &str, _duration_ms: Option<f64>) {}
+    fn record_ingest_project_selection(&self, _source: &str) {}
     fn set_queue_gauge(&self, _task_type: &str, _status: &str, _count: i64) {}
     fn record_agent_suspension(&self, _reason: &str) {}
     fn record_agent_budget_admission(&self, _decision: &str) {}
@@ -389,6 +407,7 @@ mod tests {
         recorder.record_task_dead_lettered("relation");
         recorder.record_job_completed("success", Some(1200.0));
         recorder.record_job_completed("failure", None);
+        recorder.record_ingest_project_selection("system");
         recorder.set_queue_gauge("extraction", "queued", 5);
         recorder.record_agent_suspension("budget_exhausted");
         recorder.record_agent_budget_admission("admitted");
@@ -435,6 +454,7 @@ mod tests {
         recorder.record_task_dead_lettered("extraction");
         recorder.record_job_completed("partial", Some(5000.0));
         recorder.record_job_completed("failure", None);
+        recorder.record_ingest_project_selection("requested_system");
         recorder.set_queue_gauge("triage", "queued", 3);
         recorder.set_queue_gauge("extraction", "claimed", 1);
         recorder.set_queue_gauge("relation", "completed", 10);

@@ -25,13 +25,14 @@ const SERIALISE_SET_CONTEXT_RESPONSE: &str =
 /// The `principal_key` is sourced from the authenticated principal on
 /// the handler, not from the session itself.
 pub(crate) fn session_to_json(ctx: &SessionContext, principal_key: &str) -> serde_json::Value {
-    let project = ctx.project.as_ref().map_or(serde_json::Value::Null, |p| {
-        serde_json::json!({
+    let project = match ctx.project.as_ref() {
+        Some(p) => serde_json::json!({
             "id": p.id.to_string(),
             "name": p.name,
-            "git_remote": p.git_remote.to_string(),
-        })
-    });
+            "origin": p.origin,
+        }),
+        None => serde_json::Value::Null,
+    };
 
     serde_json::json!({
         "project": project,
@@ -55,12 +56,13 @@ pub(crate) fn set_context_response(
     ctx: &SessionContext,
     principal_key: &str,
 ) -> McpSetContextResponse {
+    let project = ctx.project.as_ref().map(|p| McpSessionProject {
+        id: p.id.to_string(),
+        name: p.name.clone(),
+        origin: p.origin.clone(),
+    });
     McpSetContextResponse {
-        project: ctx.project.as_ref().map(|p| McpSessionProject {
-            id: p.id.to_string(),
-            name: p.name.clone(),
-            git_remote: p.git_remote.to_string(),
-        }),
+        project,
         principal_key: principal_key.to_owned(),
         actor: McpSessionActor {
             client_name: ctx.actor.client_name.clone(),
@@ -114,10 +116,19 @@ impl IntoCallToolResult for McpSetContextResponse {
 #[cfg(test)]
 mod tests {
     use rmcp::model::RawContent;
-    use tribal_domain::ProjectId;
+    use tribal_domain::{GitRemote, ProjectId, ProjectOrigin};
 
     use super::*;
     use crate::session::{SessionActor, SessionContext, SessionProject};
+
+    fn test_origin() -> ProjectOrigin {
+        ProjectOrigin::Git {
+            remote: "git@github.com:user/tribal.git"
+                .parse::<GitRemote>()
+                .expect("valid test git remote"),
+            default_branch: "main".to_owned(),
+        }
+    }
 
     // -- Existing resource JSON tests -------------------------------------
 
@@ -127,9 +138,7 @@ mod tests {
         let ctx = SessionContext::new(Some(SessionProject {
             id,
             name: "tribal".into(),
-            git_remote: "git@github.com:user/tribal.git"
-                .parse()
-                .expect("valid test git remote"),
+            origin: test_origin(),
         }));
 
         let json = session_to_json(&ctx, "user:sam");
@@ -137,7 +146,8 @@ mod tests {
         let project = &json["project"];
         assert_eq!(project["id"], id.to_string());
         assert_eq!(project["name"], "tribal");
-        assert_eq!(project["git_remote"], "github.com/user/tribal");
+        assert_eq!(project["origin"]["kind"], "git");
+        assert_eq!(project["origin"]["remote"], "github.com/user/tribal");
         assert_eq!(json["principal_key"], "user:sam");
     }
 
@@ -169,6 +179,32 @@ mod tests {
         assert!(actor["provider"].is_null());
     }
 
+    #[test]
+    fn test_session_projections_cover_every_current_origin_shape() {
+        let cases = [
+            ProjectOrigin::System,
+            ProjectOrigin::Git {
+                remote: "git@github.com:user/tribal.git"
+                    .parse::<GitRemote>()
+                    .expect("valid remote"),
+                default_branch: "main".to_owned(),
+            },
+        ];
+
+        for origin in cases {
+            let ctx = SessionContext::new(Some(SessionProject {
+                id: ProjectId::new(),
+                name: "project".into(),
+                origin: origin.clone(),
+            }));
+            let resource = session_to_json(&ctx, "user:sam");
+            let response = set_context_response(&ctx, "user:sam");
+
+            assert_eq!(resource["project"]["origin"], serde_json::json!(origin));
+            assert_eq!(response.project.map(|project| project.origin), Some(origin));
+        }
+    }
+
     // -- set_context_response builder -------------------------------------
 
     #[test]
@@ -177,9 +213,7 @@ mod tests {
         let ctx = SessionContext::new(Some(SessionProject {
             id,
             name: "tribal".into(),
-            git_remote: "git@github.com:user/tribal.git"
-                .parse()
-                .expect("valid test git remote"),
+            origin: test_origin(),
         }));
         let resp = set_context_response(&ctx, "user:sam");
         let json = serde_json::to_value(&resp).expect("serialises");
@@ -206,9 +240,7 @@ mod tests {
         let mut ctx = SessionContext::new(Some(SessionProject {
             id: ProjectId::new(),
             name: "tribal".into(),
-            git_remote: "git@github.com:user/tribal.git"
-                .parse()
-                .expect("valid test git remote"),
+            origin: test_origin(),
         }));
         ctx.actor = SessionActor {
             client_name: None,

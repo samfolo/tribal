@@ -115,6 +115,17 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
             .cancellation_token(ct)
             .job_state_txs(Arc::new(DashMap::new()))
             .metrics(noop_recorder())
+            .project_defaults(
+                tribal_mcp::ProjectDefaults::builder()
+                    .system(
+                        tribal_mcp::ResolvedProject::builder()
+                            .id(tribal_domain::ProjectId::new())
+                            .name("General")
+                            .origin(tribal_domain::ProjectOrigin::System)
+                            .build(),
+                    )
+                    .build(),
+            )
             .build(),
     )
 }

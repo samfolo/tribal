@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::{AgentsConfig, ServerConfig, WorkerConfig};
-use tribal_domain::{GitRemote, PipelineParameters, ProjectId};
+use tribal_domain::{PipelineParameters, ProjectId, ProjectOrigin};
 use tribal_inference::{CompletionStageSpecs, InferenceGateway, ProviderIdentity};
 use tribal_telemetry::MetricsRecorder;
 use typed_builder::TypedBuilder;
@@ -24,9 +24,6 @@ use crate::{server_handler::ActivePromptVersions, session::SessionProject};
 // ---------------------------------------------------------------------------
 
 /// Project context resolved during startup.
-///
-/// Populated when the startup cascade (CLI flag, env var, or git remote
-/// heuristic) successfully identifies a registered project.
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct ResolvedProject {
     /// Database identifier for the project.
@@ -37,8 +34,8 @@ pub struct ResolvedProject {
     #[builder(setter(into))]
     pub(crate) name: String,
 
-    /// Normalised git remote identity used as the project's stable identity.
-    pub(crate) git_remote: GitRemote,
+    /// Persisted source of project identity.
+    pub(crate) origin: ProjectOrigin,
 }
 
 impl ResolvedProject {
@@ -54,10 +51,10 @@ impl ResolvedProject {
         &self.name
     }
 
-    /// Returns the normalised git remote identity.
+    /// Returns the persisted source of project identity.
     #[must_use]
-    pub fn git_remote(&self) -> &GitRemote {
-        &self.git_remote
+    pub fn origin(&self) -> &ProjectOrigin {
+        &self.origin
     }
 }
 
@@ -66,8 +63,32 @@ impl From<&ResolvedProject> for SessionProject {
         Self {
             id: rp.id,
             name: rp.name.clone(),
-            git_remote: rp.git_remote.clone(),
+            origin: rp.origin.clone(),
         }
+    }
+}
+
+/// Immutable project defaults installed before the server accepts traffic.
+#[derive(Debug, Clone, TypedBuilder)]
+pub struct ProjectDefaults {
+    /// The graph-owned System project.
+    pub(crate) system: ResolvedProject,
+    /// Project selected for this process, when startup resolved one.
+    #[builder(default, setter(strip_option))]
+    pub(crate) process: Option<ResolvedProject>,
+}
+
+impl ProjectDefaults {
+    /// Returns the graph-owned System project.
+    #[must_use]
+    pub fn system(&self) -> &ResolvedProject {
+        &self.system
+    }
+
+    /// Returns the process project, when startup selected one.
+    #[must_use]
+    pub fn process(&self) -> Option<&ResolvedProject> {
+        self.process.as_ref()
     }
 }
 
@@ -152,10 +173,9 @@ pub struct AppState {
     /// Telemetry metric instruments.
     pub(crate) metrics: Arc<dyn MetricsRecorder>,
 
-    // -- Session -------------------------------------------------------------
-    /// Resolved project context from the startup cascade, if any.
-    #[builder(default, setter(strip_option))]
-    pub(crate) resolved_project: Option<ResolvedProject>,
+    // -- Projects ------------------------------------------------------------
+    /// Immutable graph and process project defaults.
+    pub(crate) project_defaults: ProjectDefaults,
 }
 
 impl AppState {
@@ -177,10 +197,10 @@ impl AppState {
         &self.metrics
     }
 
-    /// Returns the project resolved during startup, if any.
+    /// Returns the immutable startup project defaults.
     #[must_use]
-    pub fn resolved_project(&self) -> Option<&ResolvedProject> {
-        self.resolved_project.as_ref()
+    pub fn project_defaults(&self) -> &ProjectDefaults {
+        &self.project_defaults
     }
 
     /// Returns a reference to the shared active prompt versions lock.

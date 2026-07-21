@@ -52,9 +52,11 @@ pub(crate) async fn register(config_path: &str, args: ProjectRegisterArgs) -> Re
         .call::<ProjectRegisterCall>(&ProjectRegisterRequest {
             expected_revision,
             project: ProjectRegisterInput {
-                source: ProjectRegistrationSource::WorkingTree { directory },
+                source: ProjectRegistrationSource::WorkingTree {
+                    directory,
+                    default_branch: args.branch,
+                },
                 name: args.name,
-                default_branch: args.branch,
             },
         })
         .await

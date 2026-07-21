@@ -1,14 +1,18 @@
 //! Mock implementation of [`ProjectRepository`].
 
-use tribal_db::{NewProject, ProjectPageKey, ProjectRepository};
+use tribal_db::{EnsureSystemOutcome, NewGitProject, ProjectPageKey, ProjectRepository};
 use tribal_domain::{GitRemote, Project, ProjectId};
 
 use super::mock_repository;
 
 mock_repository! {
     MockProjectRepository for ProjectRepository, tribal_db::DbError {
-        insert(NewProject => Project)
-            (new_project: &NewProject) { new_project.clone() };
+        insert_git(NewGitProject => Project)
+            (new_project: &NewGitProject) { new_project.clone() };
+        ensure_system(() => EnsureSystemOutcome)
+            () { () };
+        find_system(() => Project)
+            () { () };
         find_by_id(ProjectId => Project)
             (id: ProjectId) { id };
         find_by_git_remote(GitRemote => Option<Project>)
@@ -172,23 +176,23 @@ mod tests {
         let project = a_project().build();
 
         let mock = MockProjectRepository::builder()
-            .on_insert(project, None)
+            .on_insert_git(project, None)
             .build();
 
         let ctx = TestDb::new().await;
         let mut tx = ctx.begin().await.expect(EXPECT_BEGIN);
 
-        let new_project = NewProject::builder()
-            .git_remote(GitRemote::from_parts("github.com", "user/test", None))
+        let new_project = NewGitProject::builder()
+            .remote(GitRemote::from_parts("github.com", "user/test", None))
             .name("test".to_owned())
             .default_branch("main".to_owned())
             .schema_version(1)
             .settings(serde_json::json!({}))
             .build();
 
-        let _ = mock.insert(&mut tx, &new_project).await.unwrap();
+        let _ = mock.insert_git(&mut tx, &new_project).await.unwrap();
 
-        let history = mock.insert_history();
+        let history = mock.insert_git_history();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].name, "test");
     }

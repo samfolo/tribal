@@ -20,7 +20,7 @@ use tribal_common::JobStateTxs;
 use tribal_config::{PromptSource, TribalConfig};
 use tribal_domain::PipelineParameters;
 use tribal_inference::{InferenceGateway, ProviderIdentity};
-use tribal_mcp::{AppState, SharedActivePrompts};
+use tribal_mcp::{AppState, ProjectDefaults, SharedActivePrompts};
 use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
 use tribal_worker::{Worker, WorkerError};
 
@@ -32,7 +32,7 @@ use crate::{
         build_provider_registry, check_first_run, completion_stage_specs, create_pool_with_retry,
         ensure_prompt_files, generate_instance_id, init_prompt_watcher, load_prompts,
         load_prompts_embedded, probe_startup_providers, provision_genesis, read_active_profile,
-        resolve_project_mode, run_migrations, validate_embedding_identity,
+        resolve_project_mode, resolve_system_project, run_migrations, validate_embedding_identity,
     },
 };
 
@@ -441,7 +441,15 @@ async fn bootstrap(
 
     // -- Project resolution --------------------------------------------------
 
-    let resolved_project = resolve_project_mode(&pool_mcp, project_mode).await?;
+    let system_project = resolve_system_project(&pool_mcp).await?;
+    let process_project = resolve_project_mode(&pool_mcp, project_mode).await?;
+    let project_defaults = match process_project {
+        Some(project) => ProjectDefaults::builder()
+            .system(system_project)
+            .process(project)
+            .build(),
+        None => ProjectDefaults::builder().system(system_project).build(),
+    };
 
     // -- Worker construction -------------------------------------------------
     // Worker is built before AppState so shared values can be cloned for the
@@ -486,12 +494,10 @@ async fn bootstrap(
         .server_config(Arc::new(config.server.clone()))
         .cancellation_token(cancellation_token)
         .job_state_txs(job_state_txs)
-        .metrics(metrics);
+        .metrics(metrics)
+        .project_defaults(project_defaults);
 
-    let state = Arc::new(match resolved_project {
-        Some(project) => base.resolved_project(project).build(),
-        None => base.build(),
-    });
+    let state = Arc::new(base.build());
 
     Ok((state, worker))
 }

@@ -24,6 +24,8 @@ pub const TASKS_RETRIED: &str = "tribal.tasks.retried";
 pub const TASKS_DEAD_LETTER: &str = "tribal.tasks.dead_letter";
 /// Counter: jobs that reached a terminal state.
 pub const JOBS_COMPLETED: &str = "tribal.jobs.completed";
+/// Counter: ingest project selections, by bounded source.
+pub const INGEST_PROJECT_SELECTIONS: &str = "tribal.ingest.project_selections";
 /// Histogram: database pool acquire wait in milliseconds.
 pub const POOL_ACQUIRE_WAIT_MS: &str = "tribal.pool.acquire_wait_ms";
 /// Histogram: semaphore acquire wait in milliseconds.
@@ -79,6 +81,8 @@ pub struct Metrics {
     pub tasks_dead_letter: Counter<u64>,
     /// Jobs reaching a terminal state, labelled by `outcome`.
     pub jobs_completed: Counter<u64>,
+    /// Ingest project selections, labelled by `tribal.ingest.project_selection`.
+    pub ingest_project_selections: Counter<u64>,
     /// Database pool acquire wait time, labelled by `pool`.
     pub pool_acquire_wait_ms: Histogram<f64>,
     /// Semaphore acquire wait time, labelled by `provider_key`.
@@ -121,6 +125,7 @@ impl Metrics {
             tasks_retried: meter.u64_counter(TASKS_RETRIED).build(),
             tasks_dead_letter: meter.u64_counter(TASKS_DEAD_LETTER).build(),
             jobs_completed: meter.u64_counter(JOBS_COMPLETED).build(),
+            ingest_project_selections: meter.u64_counter(INGEST_PROJECT_SELECTIONS).build(),
             pool_acquire_wait_ms: meter.f64_histogram(POOL_ACQUIRE_WAIT_MS).build(),
             semaphore_acquire_wait_ms: meter.f64_histogram(SEMAPHORE_ACQUIRE_WAIT_MS).build(),
             job_duration_ms: meter.f64_histogram(JOB_DURATION_MS).build(),
@@ -166,6 +171,7 @@ mod tests {
         let cloned = metrics.clone();
         // Verify instruments accept recordings without panic.
         cloned.tasks_completed.add(1, &[]);
+        cloned.ingest_project_selections.add(1, &[]);
         cloned.pool_acquire_wait_ms.record(42.0, &[]);
         cloned.tasks_queued.record(5, &[]);
     }

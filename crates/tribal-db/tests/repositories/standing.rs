@@ -32,7 +32,7 @@ async fn setup_prerequisites(
         .expect("insert principal");
 
     let project = PgProjectRepository
-        .insert(
+        .insert_git(
             txn,
             &a_new_project()
                 .git_remote(GitRemote::from_parts(
@@ -250,7 +250,7 @@ async fn test_compute_diversity_metrics() {
 
     // Second project (same principal is reused for all items below).
     let project_id_2 = PgProjectRepository
-        .insert(
+        .insert_git(
             &mut txn,
             &a_new_project()
                 .git_remote(GitRemote::from_parts(

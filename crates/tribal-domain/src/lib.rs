@@ -159,7 +159,7 @@ pub use oauth_authorization_code::{OauthAuthorizationCode, OauthAuthorizationCod
 pub use oauth_client::{ApplicationType, OauthClient, OauthClientBuilder, TokenEndpointAuthMethod};
 pub use pipeline_stage::PipelineStage;
 pub use principal::{LOCAL_PRINCIPAL_KEY, PlatformBinding, Principal, PrincipalBuilder};
-pub use project::{Project, ProjectBuilder};
+pub use project::{Project, ProjectBuilder, ProjectOrigin};
 pub use prompt_class::PromptClass;
 pub use prompt_role::PromptRole;
 pub use prompt_stage::PromptStage;

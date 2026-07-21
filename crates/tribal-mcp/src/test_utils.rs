@@ -16,7 +16,7 @@ use tribal_inference::{
     CompletionStageSpec, CompletionStageSpecs, EmbeddingProvider, InferenceProvider,
     ProviderIdentity,
 };
-use tribal_telemetry::noop_recorder;
+use tribal_telemetry::{MetricsRecorder, noop_recorder};
 use tribal_test_utils::{
     MockEmbeddingProvider, MockInferenceProvider, MockIngestJobRepository,
     MockKnowledgeItemRepository, MockPrincipalRepository, MockProjectRepository,
@@ -28,7 +28,7 @@ use tribal_test_utils::{
 use typed_builder::TypedBuilder;
 
 use crate::{
-    app_state::AppState,
+    app_state::{AppState, ProjectDefaults, ResolvedProject},
     config::HandlerConfig,
     fingerprint::FingerprintInputs,
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
@@ -105,6 +105,12 @@ pub(crate) struct TestHandler {
 
     #[builder(default = CancellationToken::new())]
     cancellation_token: CancellationToken,
+
+    #[builder(default = ProjectDefaults::builder().system(test_system_project()).build())]
+    project_defaults: ProjectDefaults,
+
+    #[builder(default = noop_recorder())]
+    metrics: Arc<dyn MetricsRecorder>,
 }
 
 impl From<TestHandler> for TribalServerHandler {
@@ -126,7 +132,8 @@ impl From<TestHandler> for TribalServerHandler {
                 .server_config(Arc::new(ServerConfig::default()))
                 .cancellation_token(th.cancellation_token)
                 .job_state_txs(th.job_state_txs)
-                .metrics(noop_recorder())
+                .metrics(th.metrics)
+                .project_defaults(th.project_defaults)
                 .build(),
         );
         Self::new(
@@ -140,6 +147,14 @@ impl From<TestHandler> for TribalServerHandler {
     }
 }
 
+fn test_system_project() -> ResolvedProject {
+    ResolvedProject::builder()
+        .id(ProjectId::new())
+        .name("General")
+        .origin(tribal_domain::ProjectOrigin::System)
+        .build()
+}
+
 /// Returns a [`SessionContext`] with a default project attached.
 ///
 /// Use with `TestHandler::builder().session(session_with_project()).build()`
@@ -148,9 +163,12 @@ pub(crate) fn session_with_project() -> SessionContext {
     let project = SessionProject {
         id: ProjectId::new(),
         name: "tribal".into(),
-        git_remote: "git@github.com:user/tribal.git"
-            .parse()
-            .expect("valid test git remote"),
+        origin: tribal_domain::ProjectOrigin::Git {
+            remote: "git@github.com:user/tribal.git"
+                .parse()
+                .expect("valid test git remote"),
+            default_branch: "main".to_owned(),
+        },
     };
     SessionContext::new(Some(project))
 }

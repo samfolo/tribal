@@ -30,7 +30,7 @@ async fn setup_prerequisites(
         .expect("insert principal");
 
     let project = PgProjectRepository
-        .insert(
+        .insert_git(
             txn,
             &a_new_project()
                 .git_remote(GitRemote::from_parts(

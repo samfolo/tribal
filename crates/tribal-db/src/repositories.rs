@@ -93,8 +93,12 @@ pub use oauth_authorization_code::{
     NewOauthAuthorizationCode, OauthAuthorizationCodeRepository, PgOauthAuthorizationCodeRepository,
 };
 pub use oauth_client::{NewOauthClient, OauthClientRepository, PgOauthClientRepository};
-pub use principal::{NewPrincipal, PgPrincipalRepository, PrincipalRepository};
-pub use project::{NewProject, PgProjectRepository, ProjectPageKey, ProjectRepository};
+pub use principal::{
+    EnsurePrincipalOutcome, NewPrincipal, PgPrincipalRepository, PrincipalRepository,
+};
+pub use project::{
+    EnsureSystemOutcome, NewGitProject, PgProjectRepository, ProjectPageKey, ProjectRepository,
+};
 pub use prompt_version::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
 pub use reference::{NewReference, PgReferenceRepository, ReferenceRepository};
 pub use reindex_quarantine::{

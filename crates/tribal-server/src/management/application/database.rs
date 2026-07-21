@@ -4,8 +4,8 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use sqlx::PgPool;
 use tribal_config::TribalConfig;
 use tribal_db::{
-    DbError, MigrationHeadStatus, MigrationRepository, NewPrincipal, PgMigrationRepository,
-    PgPrincipalRepository, PrincipalRepository,
+    DbError, EnsurePrincipalOutcome, EnsureSystemOutcome, PgPrincipalRepository,
+    PgProjectRepository, PrincipalRepository, ProjectRepository,
 };
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, Principal};
 use tribal_wire::management::{
@@ -132,11 +132,6 @@ pub(crate) enum DatabaseAccessError {
 pub(crate) enum DatabaseInitialiseError {
     #[error(transparent)]
     Session(#[from] DatabaseAccessError),
-    #[error("database migration state is unavailable: {source}")]
-    MigrationState {
-        #[source]
-        source: tribal_db::DbError,
-    },
     #[error("database migration connection is unavailable: {source}")]
     MigrationConnection {
         #[source]
@@ -152,8 +147,11 @@ pub(crate) enum DatabaseInitialiseError {
         #[source]
         source: DbError,
     },
-    #[error("compiled database migration catalogue is empty")]
-    EmptyMigrationCatalogue,
+    #[error("System project initialisation failed: {source}")]
+    Project {
+        #[source]
+        source: DbError,
+    },
 }
 
 impl DatabaseAccess {
@@ -246,46 +244,27 @@ impl DatabaseAccess {
         let session = self
             .mutation_session(operation, &request.expected_revision)
             .await?;
-        let expected_head = tribal_db::MIGRATOR
-            .iter()
-            .last()
-            .ok_or(DatabaseInitialiseError::EmptyMigrationCatalogue)?
-            .version;
-        let migration_state = operation
-            .cancel_safe(async {
-                let mut connection =
-                    session.pool.acquire().await.map_err(|source| {
-                        DatabaseInitialiseError::MigrationConnection { source }
-                    })?;
-                PgMigrationRepository
-                    .current_head_matches(&mut connection, expected_head)
-                    .await
-                    .map_err(|source| DatabaseInitialiseError::MigrationState { source })
-            })
-            .await
-            .map_err(DatabaseAccessError::from)??;
-
-        operation
+        let migration_outcome = operation
             .terminal(MIGRATION_TERMINAL_WINDOW, run_migrations(&session.pool))
             .await
             .map_err(DatabaseAccessError::from)?
             .map_err(|source| DatabaseInitialiseError::Migration { source })?;
 
-        let (transaction, principal_existed) = operation
+        let (transaction, principal_outcome, system_outcome) = operation
             .cancel_safe(async {
                 let mut transaction =
                     session.pool.begin().await.map_err(|source| {
                         DatabaseInitialiseError::MigrationConnection { source }
                     })?;
-                let principal_existed = tribal_db::PgPrincipalRepository
-                    .find_by_key(&mut transaction, LOCAL_PRINCIPAL_KEY)
-                    .await
-                    .map_err(|source| DatabaseInitialiseError::Principal { source })?
-                    .is_some();
-                find_or_create_principal(&mut transaction, LOCAL_PRINCIPAL_KEY)
+                let principal_outcome = PgPrincipalRepository
+                    .ensure_local_by_key(&mut transaction, LOCAL_PRINCIPAL_KEY)
                     .await
                     .map_err(|source| DatabaseInitialiseError::Principal { source })?;
-                Ok::<_, DatabaseInitialiseError>((transaction, principal_existed))
+                let system_outcome = PgProjectRepository
+                    .ensure_system(&mut transaction)
+                    .await
+                    .map_err(|source| DatabaseInitialiseError::Project { source })?;
+                Ok::<_, DatabaseInitialiseError>((transaction, principal_outcome, system_outcome))
             })
             .await
             .map_err(DatabaseAccessError::from)??;
@@ -296,12 +275,16 @@ impl DatabaseAccess {
             .map_err(DatabaseAccessError::from)?
             .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })?;
 
-        let outcome =
-            if matches!(migration_state, MigrationHeadStatus::Matches) && principal_existed {
-                DatabaseInitialiseOutcome::AlreadyInitialised
-            } else {
-                DatabaseInitialiseOutcome::Initialised
-            };
+        let changed = matches!(
+            migration_outcome,
+            crate::startup::MigrationRunOutcome::Applied
+        ) || matches!(principal_outcome, EnsurePrincipalOutcome::Inserted(_))
+            || matches!(system_outcome, EnsureSystemOutcome::Inserted(_));
+        let outcome = if changed {
+            DatabaseInitialiseOutcome::Initialised
+        } else {
+            DatabaseInitialiseOutcome::AlreadyInitialised
+        };
         Ok(session.revisioned(outcome).into())
     }
 }
@@ -317,32 +300,20 @@ pub(super) async fn find_or_create_principal(
     connection: &mut sqlx::PgConnection,
     principal_key: &str,
 ) -> Result<Principal, DbError> {
-    if let Some(principal) = PgPrincipalRepository
-        .find_by_key(&mut *connection, principal_key)
+    match PgPrincipalRepository
+        .ensure_local_by_key(connection, principal_key)
         .await?
     {
-        return Ok(principal);
-    }
-
-    let new = NewPrincipal::builder()
-        .principal_key(principal_key.to_owned())
-        .build();
-    match PgPrincipalRepository.insert(&mut *connection, &new).await {
-        Ok(principal) => Ok(principal),
-        Err(DbError::UniqueViolation { .. }) => PgPrincipalRepository
-            .find_by_key(connection, principal_key)
-            .await?
-            .ok_or_else(|| DbError::NotFound {
-                entity: "principal",
-                id: principal_key.to_owned(),
-            }),
-        Err(source) => Err(source),
+        EnsurePrincipalOutcome::Inserted(principal)
+        | EnsurePrincipalOutcome::Existing(principal) => Ok(principal),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use tribal_test_utils::truncate_all_tables;
 
     use super::*;
     use crate::management::{configuration::ConfigAuthority, worker};
@@ -433,7 +404,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_initialise_ensures_local_principal_then_becomes_a_typed_noop() {
+    async fn test_initialise_ensures_graph_defaults_then_becomes_a_typed_noop() {
         let database = tribal_test_utils::TestDb::new().await;
         let (_temp, _path, worker, _runtime) = config_worker(database.database_url());
         let revision = worker.resolved_snapshot().await.unwrap().revision;
@@ -464,5 +435,94 @@ mod tests {
             repeated.value,
             DatabaseInitialiseOutcome::AlreadyInitialised
         );
+    }
+
+    #[tokio::test]
+    async fn test_initialise_repairs_a_missing_system_project_at_current_head() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let (_temp, _path, worker, _runtime) = config_worker(database.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let access = DatabaseAccess::new(worker);
+        access
+            .initialise(
+                &operation(),
+                DatabaseInitialiseRequest {
+                    expected_revision: revision.clone(),
+                },
+            )
+            .await
+            .expect("establish graph defaults");
+        let mut connection = database.raw_connection().await.expect("connect");
+        truncate_all_tables(&mut connection).await;
+        PgPrincipalRepository
+            .ensure_local_by_key(&mut connection, LOCAL_PRINCIPAL_KEY)
+            .await
+            .expect("restore local principal");
+        drop(connection);
+
+        let repaired = access
+            .initialise(
+                &operation(),
+                DatabaseInitialiseRequest {
+                    expected_revision: revision.clone(),
+                },
+            )
+            .await
+            .expect("repair System project");
+        let repeated = access
+            .initialise(
+                &operation(),
+                DatabaseInitialiseRequest {
+                    expected_revision: revision,
+                },
+            )
+            .await
+            .expect("repeat repair");
+
+        assert_eq!(repaired.value, DatabaseInitialiseOutcome::Initialised);
+        assert_eq!(
+            repeated.value,
+            DatabaseInitialiseOutcome::AlreadyInitialised
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_concurrent_initialise_calls_report_their_observed_mutations() {
+        let database = tribal_test_utils::TestDb::new_unmigrated().await;
+        let (_temp, _path, worker, _runtime) = config_worker(database.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let first_access = DatabaseAccess::new(worker.clone());
+        let second_access = DatabaseAccess::new(worker);
+        let first_operation = operation();
+        let second_operation = operation();
+        let first_request = DatabaseInitialiseRequest {
+            expected_revision: revision.clone(),
+        };
+        let second_request = DatabaseInitialiseRequest {
+            expected_revision: revision,
+        };
+
+        let (first, second) = tokio::join!(
+            first_access.initialise(&first_operation, first_request),
+            second_access.initialise(&second_operation, second_request),
+        );
+        let outcomes = [
+            first.expect("first initialisation").value,
+            second.expect("second initialisation").value,
+        ];
+
+        assert!(outcomes.contains(&DatabaseInitialiseOutcome::Initialised));
+        let mut connection = database.raw_connection().await.expect("connect");
+        assert!(
+            PgPrincipalRepository
+                .find_by_key(&mut connection, LOCAL_PRINCIPAL_KEY)
+                .await
+                .expect("find local principal")
+                .is_some()
+        );
+        PgProjectRepository
+            .find_system(&mut connection)
+            .await
+            .expect("find System project");
     }
 }

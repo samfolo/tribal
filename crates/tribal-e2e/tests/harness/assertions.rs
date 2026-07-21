@@ -12,19 +12,4 @@ macro_rules! assert_success {
     }};
 }
 
-/// Asserts that a tool call result indicates an error.
-///
-/// On failure, includes the success content.
-macro_rules! assert_error {
-    ($result:expr) => {{
-        let result = &$result;
-        assert!(
-            result.is_error.unwrap_or(false),
-            "expected tool error, got success: {}",
-            $crate::harness::tool_call::tool_result_text(result),
-        );
-    }};
-}
-
-pub(crate) use assert_error;
 pub(crate) use assert_success;

@@ -6,8 +6,9 @@ use url::Url;
 
 use super::{
     ConfigRevision, DatabaseInitialiseOutcome, IssuedBearerToken, McpTargetSelection,
-    ProcessingProfile, ProjectRegisterInput, ProjectRegisterOutcome, ProviderConnectionInput,
-    PublicMcpConfigDocument, Revisioned, SecretLiteral, SensitiveMcpConfigDocument, TokenSummary,
+    ProcessingProfile, ProjectRegisterInput, ProjectRegisterOutcome, ProjectSummary,
+    ProviderConnectionInput, PublicMcpConfigDocument, Revisioned, SecretLiteral,
+    SensitiveMcpConfigDocument, TokenSummary,
 };
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -125,7 +126,7 @@ pub struct BootstrapRequest {
     pub processing: Option<ProcessingProfile>,
     pub genesis: Option<BootstrapGenesisInput>,
     pub telemetry: Option<BootstrapTelemetryInput>,
-    pub project: Option<ProjectRegisterInput>,
+    pub additional_project: Option<ProjectRegisterInput>,
     pub token: BootstrapTokenPolicy,
     pub integration: McpTargetSelection,
 }
@@ -170,7 +171,8 @@ pub enum BootstrapHandoff {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BootstrapOutcome {
     pub database: DatabaseInitialiseOutcome,
-    pub project: Option<ProjectRegisterOutcome>,
+    pub system_project: ProjectSummary,
+    pub additional_project: Option<ProjectRegisterOutcome>,
     pub handoff: BootstrapHandoff,
 }
 

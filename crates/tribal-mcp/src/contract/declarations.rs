@@ -38,8 +38,8 @@ to a different project.
 
 Session context is used as the default for all subsequent tool calls. \
 For example, setting a project here means tribal_ingest and \
-tribal_discover will use it automatically without needing project_id \
-on every call.
+tribal_discover will use it automatically without repeating a project \
+selector on every call.
 
 The server resolves what it can at connection start (project from git \
 remote, principal from auth). Use this tool to fill in what the server \
@@ -76,8 +76,9 @@ Do NOT use this for storing code snippets, file contents, or \
 documentation. Tribal stores knowledge *about* work, not the \
 artefacts themselves.
 
-Project, model, and principal are sourced from session context (see \
-tribal_set_context). You only need to provide the content itself.",
+Project selection may be explicit, inherited from session or process context, \
+or omitted to use the graph-owned System project. Model and principal are \
+derived by the server.",
     };
     type Request = McpIngestRequest;
     type Response = McpIngestResponse;

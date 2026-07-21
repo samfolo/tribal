@@ -648,7 +648,7 @@ mod tests {
             .await
             .expect("principal");
         let project = PgProjectRepository
-            .insert(
+            .insert_git(
                 &mut txn,
                 &a_new_project()
                     .git_remote(GitRemote::from_parts(
@@ -798,7 +798,7 @@ mod tests {
             .await
             .expect("principal");
         let project = PgProjectRepository
-            .insert(
+            .insert_git(
                 txn,
                 &a_new_project()
                     .git_remote(GitRemote::from_parts("github.com", "test/submission", None))
@@ -807,7 +807,7 @@ mod tests {
             .await
             .expect("project");
         let foreign_project = PgProjectRepository
-            .insert(
+            .insert_git(
                 txn,
                 &a_new_project()
                     .git_remote(GitRemote::from_parts(
@@ -990,7 +990,7 @@ mod tests {
             .await
             .expect("principal");
         let project = PgProjectRepository
-            .insert(
+            .insert_git(
                 &mut txn,
                 &a_new_project()
                     .git_remote(GitRemote::from_parts(
@@ -1099,7 +1099,7 @@ mod tests {
             .await
             .expect("principal");
         let project = PgProjectRepository
-            .insert(
+            .insert_git(
                 &mut txn,
                 &a_new_project()
                     .git_remote(GitRemote::from_parts("github.com", "test/verifier", None))
@@ -1235,7 +1235,7 @@ mod tests {
             .await
             .expect("principal");
         let project = PgProjectRepository
-            .insert(
+            .insert_git(
                 &mut txn,
                 &a_new_project()
                     .git_remote(GitRemote::from_parts(

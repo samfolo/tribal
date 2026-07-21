@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    SELECT * FROM projects\n                    WHERE (created_at, id) <= ($1, $2)\n                    ORDER BY created_at DESC, id DESC\n                    LIMIT $3\n                    ",
+  "query": "SELECT * FROM projects WHERE origin->>'kind' = 'git' AND origin->>'remote' = $1",
   "describe": {
     "columns": [
       {
@@ -46,9 +46,7 @@
     ],
     "parameters": {
       "Left": [
-        "Timestamptz",
-        "Uuid",
-        "Int8"
+        "Text"
       ]
     },
     "nullable": [
@@ -62,5 +60,5 @@
       false
     ]
   },
-  "hash": "c0fbe953b5ba2cf7bf17a5d561397ca3ab436a85cbcc1c720f6fd7877593ff14"
+  "hash": "60e89cceeadf9cf180fe24d925fd7a2aa01a89e88cf4fae587cc3cf8ebc88d12"
 }

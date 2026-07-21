@@ -82,7 +82,7 @@ pub(crate) async fn run(config_path: &str, args: BootstrapArgs) -> Result<(), Ap
             processing: None,
             genesis: request_parts.genesis,
             telemetry: request_parts.telemetry,
-            project: request_parts.project,
+            additional_project: request_parts.additional_project,
             token: request_parts.token,
             integration: request_parts.integration,
         })
@@ -101,7 +101,7 @@ struct BootstrapRequestParts {
     provider_connections: Vec<BootstrapProviderConnectionInput>,
     genesis: Option<BootstrapGenesisInput>,
     telemetry: Option<BootstrapTelemetryInput>,
-    project: Option<ProjectRegisterInput>,
+    additional_project: Option<ProjectRegisterInput>,
     token: BootstrapTokenPolicy,
     integration: McpTargetSelection,
     json: bool,
@@ -166,7 +166,7 @@ fn request_parts(args: BootstrapArgs) -> Result<BootstrapRequestParts, AppError>
         .transpose()
         .map_err(|source| command_error(BootstrapCommandError::Otlp { source }))?
         .map(|otlp_endpoint| BootstrapTelemetryInput { otlp_endpoint });
-    let project = args
+    let additional_project = args
         .project_path
         .map(|path| project_input(path, args.project_name, args.project_branch))
         .transpose()?;
@@ -183,9 +183,9 @@ fn request_parts(args: BootstrapArgs) -> Result<BootstrapRequestParts, AppError>
             scopes: args.scope,
         }
     };
-    let stdio_context = match project.as_ref().map(|project| &project.source) {
+    let stdio_context = match additional_project.as_ref().map(|project| &project.source) {
         None => StdioProjectContext::Unscoped,
-        Some(ProjectRegistrationSource::WorkingTree { directory }) => {
+        Some(ProjectRegistrationSource::WorkingTree { directory, .. }) => {
             StdioProjectContext::Project {
                 selector: ProjectSelector::WorkingTree {
                     directory: directory.clone(),
@@ -231,7 +231,7 @@ fn request_parts(args: BootstrapArgs) -> Result<BootstrapRequestParts, AppError>
         provider_connections,
         genesis,
         telemetry,
-        project,
+        additional_project,
         token,
         integration,
         json: args.json,
@@ -285,9 +285,11 @@ fn project_input(
     let directory = AbsoluteDirectoryPath::try_from(absolute.to_string_lossy().into_owned())
         .map_err(|_| command_error(BootstrapCommandError::RelativeProjectDirectory))?;
     Ok(ProjectRegisterInput {
-        source: ProjectRegistrationSource::WorkingTree { directory },
+        source: ProjectRegistrationSource::WorkingTree {
+            directory,
+            default_branch,
+        },
         name,
-        default_branch,
     })
 }
 

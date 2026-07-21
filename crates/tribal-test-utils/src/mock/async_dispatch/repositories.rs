@@ -59,8 +59,8 @@ pub use triage_result::MockTriageResultRepository;
 /// ```ignore
 /// mock_repository! {
 ///     MockProjectRepository for ProjectRepository, tribal_db::DbError {
-///         insert(NewProject => Project)
-///             (new_project: &NewProject) { new_project.clone() };
+///         insert(NewGitProject => Project)
+///             (new_project: &NewGitProject) { new_project.clone() };
 ///         find_by_id(ProjectId => Project)
 ///             (id: ProjectId) { id };
 ///         list(() => Vec<Project>)

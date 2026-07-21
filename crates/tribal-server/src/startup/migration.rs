@@ -2,7 +2,7 @@
 
 use sqlx::PgPool;
 use tribal_common::random_duration_in_range;
-use tribal_db::{MigrationRepository, PgMigrationRepository, advisory_locks};
+use tribal_db::{MigrationHeadStatus, MigrationRepository, PgMigrationRepository, advisory_locks};
 
 use super::{
     POOL_NAME_MCP,
@@ -37,12 +37,21 @@ pub(crate) async fn check_first_run(pool: &PgPool) -> Result<(), AppError> {
     }
 }
 
+/// Database-observed result of a migration run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MigrationRunOutcome {
+    /// At least one migration remained when this call held the arbiter lock.
+    Applied,
+    /// The database was already at the compiled head under the lock.
+    AlreadyCurrent,
+}
+
 /// Runs pending migrations under a `Postgres` advisory lock.
 ///
 /// Retries lock acquisition up to [`MIGRATION_MAX_ATTEMPTS`] times with
 /// jittered sleep between attempts. If the lock cannot be acquired after
 /// all attempts, returns `AppError::MigrationLockFailed` (exit code 75).
-pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
+pub(crate) async fn run_migrations(pool: &PgPool) -> Result<MigrationRunOutcome, AppError> {
     let repo = PgMigrationRepository;
 
     for attempt in 1..=MIGRATION_MAX_ATTEMPTS {
@@ -57,6 +66,20 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
             .map_err(|source| AppError::Database { source })?;
 
         if acquired {
+            let expected_head = tribal_db::MIGRATOR
+                .iter()
+                .last()
+                .ok_or(AppError::EmptyMigrationCatalogue)?
+                .version;
+            let observed = repo
+                .current_head_matches(&mut conn, expected_head)
+                .await
+                .map_err(|source| AppError::Database { source })?;
+            let outcome = if matches!(observed, MigrationHeadStatus::Matches) {
+                MigrationRunOutcome::AlreadyCurrent
+            } else {
+                MigrationRunOutcome::Applied
+            };
             // Detach the connection from the pool so the migrator can
             // acquire a pool slot, while we retain the session that
             // holds the advisory lock.
@@ -78,7 +101,8 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
                 }
             }
 
-            return result.map_err(|source| AppError::MigrationFailed { source });
+            result.map_err(|source| AppError::MigrationFailed { source })?;
+            return Ok(outcome);
         }
 
         if attempt < MIGRATION_MAX_ATTEMPTS {

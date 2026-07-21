@@ -3,7 +3,7 @@
 use std::{path::Path, str::FromStr as _};
 
 use sqlx::Acquire as _;
-use tribal_db::{DbError, NewProject, PgProjectRepository, ProjectPageKey, ProjectRepository};
+use tribal_db::{DbError, NewGitProject, PgProjectRepository, ProjectPageKey, ProjectRepository};
 use tribal_domain::{GitRemote, Project, ProjectId};
 use tribal_wire::management::{
     AdministrationFailure, InventoryItemRef, ManagementError, ManagementResponseError, ProjectList,
@@ -67,17 +67,14 @@ impl ProjectAdministration {
             .database
             .mutation_session(operation, &request.expected_revision)
             .await?;
-        let remote = resolve_source(request.project.source)?;
+        let (remote, source_branch) = resolve_source(request.project.source)?;
         let name = request
             .project
             .name
             .unwrap_or_else(|| remote.path().to_owned());
-        let default_branch = request
-            .project
-            .default_branch
-            .unwrap_or_else(|| DEFAULT_BRANCH.to_owned());
-        let candidate = NewProject::builder()
-            .git_remote(remote.clone())
+        let default_branch = source_branch.unwrap_or_else(|| DEFAULT_BRANCH.to_owned());
+        let candidate = NewGitProject::builder()
+            .remote(remote.clone())
             .name(name)
             .default_branch(default_branch)
             .schema_version(PROJECT_SCHEMA_VERSION)
@@ -87,7 +84,10 @@ impl ProjectAdministration {
             .cancel_safe(async {
                 let mut transaction = session.pool.begin().await.map_err(database_connection)?;
                 let mut insertion = transaction.begin().await.map_err(database_connection)?;
-                let outcome = match PgProjectRepository.insert(&mut insertion, &candidate).await {
+                let outcome = match PgProjectRepository
+                    .insert_git(&mut insertion, &candidate)
+                    .await
+                {
                     Ok(project) => {
                         insertion.commit().await.map_err(database_connection)?;
                         ProjectRegisterOutcome::Registered {
@@ -119,6 +119,20 @@ impl ProjectAdministration {
         operation.checkpoint().map_err(DatabaseAccessError::from)?;
         transaction.commit().await.map_err(database_connection)?;
         Ok(session.revisioned(outcome))
+    }
+
+    pub(super) async fn system(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<tribal_wire::management::Revisioned<ProjectSummary>, ProjectAdministrationError>
+    {
+        let session = self.database.read_session(operation).await?;
+        let mut connection = session.pool.acquire().await.map_err(database_connection)?;
+        let project = PgProjectRepository
+            .find_system(&mut connection)
+            .await
+            .map_err(repository)?;
+        Ok(session.revisioned(summary(&project)))
     }
 
     pub(super) async fn list(
@@ -260,22 +274,26 @@ pub(super) fn public_error(error: ProjectAdministrationError) -> ManagementRespo
 
 fn resolve_source(
     source: ProjectRegistrationSource,
-) -> Result<GitRemote, ProjectAdministrationError> {
+) -> Result<(GitRemote, Option<String>), ProjectAdministrationError> {
     match source {
-        ProjectRegistrationSource::GitRemote { remote } => Ok(remote),
-        ProjectRegistrationSource::WorkingTree { directory } => {
-            crate::git::detect_git_remote_from(Path::new(directory.as_str()))
-                .map_err(|_| ProjectAdministrationError::Source)
-        }
+        ProjectRegistrationSource::GitRemote {
+            remote,
+            default_branch,
+        } => Ok((remote, default_branch)),
+        ProjectRegistrationSource::WorkingTree {
+            directory,
+            default_branch,
+        } => crate::git::detect_git_remote_from(Path::new(directory.as_str()))
+            .map(|remote| (remote, default_branch))
+            .map_err(|_| ProjectAdministrationError::Source),
     }
 }
 
 fn summary(project: &Project) -> ProjectSummary {
     ProjectSummary {
         id: project.id(),
-        git_remote: project.git_remote().clone(),
+        origin: project.origin().clone(),
         name: project.name().to_owned(),
-        default_branch: project.default_branch().to_owned(),
         created_at: project.created_at(),
         updated_at: project.updated_at(),
     }

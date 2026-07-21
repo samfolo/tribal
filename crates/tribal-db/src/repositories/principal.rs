@@ -33,6 +33,15 @@ pub struct NewPrincipal {
     pub platform_binding: Option<PlatformBinding>,
 }
 
+/// Database-observed result of ensuring a local principal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnsurePrincipalOutcome {
+    /// This call inserted the principal.
+    Inserted(Principal),
+    /// The principal already existed.
+    Existing(Principal),
+}
+
 /// Data access operations for principals.
 ///
 /// All methods take `&mut PgConnection` as an explicit executor,
@@ -51,6 +60,18 @@ pub trait PrincipalRepository {
         conn: &mut PgConnection,
         new_principal: &NewPrincipal,
     ) -> Result<Principal, DbError>;
+
+    /// Ensures a local principal exists without aborting a racing transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::NotFound`] if a conflicting write leaves no matching
+    /// principal and [`DbError::QueryFailed`] on database errors.
+    async fn ensure_local_by_key(
+        &self,
+        conn: &mut PgConnection,
+        principal_key: &str,
+    ) -> Result<EnsurePrincipalOutcome, DbError>;
 
     /// Finds the principal bound to a platform `(user, account)`, creating it
     /// if none exists, and returns it. Keyed on the binding, so two users in
@@ -164,6 +185,47 @@ impl PrincipalRepository for PgPrincipalRepository {
                 }
             }
         }
+    }
+
+    async fn ensure_local_by_key(
+        &self,
+        conn: &mut PgConnection,
+        principal_key: &str,
+    ) -> Result<EnsurePrincipalOutcome, DbError> {
+        let inserted = sqlx::query!(
+            r#"
+            INSERT INTO principals (principal_key)
+            VALUES ($1)
+            ON CONFLICT DO NOTHING
+            RETURNING *
+            "#,
+            principal_key,
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|source| DbError::QueryFailed {
+            context: format!("ensuring local principal '{principal_key}'"),
+            source,
+        })?;
+
+        if let Some(row) = inserted {
+            return Ok(EnsurePrincipalOutcome::Inserted(build_principal(
+                row.id,
+                row.principal_key,
+                row.display_name,
+                row.account_reference,
+                row.platform_user_id,
+                row.created_at,
+            )));
+        }
+
+        self.find_by_key(conn, principal_key)
+            .await?
+            .map(EnsurePrincipalOutcome::Existing)
+            .ok_or_else(|| DbError::NotFound {
+                entity: "principal",
+                id: principal_key.to_owned(),
+            })
     }
 
     async fn find_or_create_platform_bound(

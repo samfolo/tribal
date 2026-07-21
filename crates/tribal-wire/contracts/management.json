@@ -111,6 +111,16 @@
       "token"
     ],
     "properties": {
+      "additional_project": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ProjectRegisterInput"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "expected_revision": {
         "$ref": "#/definitions/ConfigRevision"
       },
@@ -131,16 +141,6 @@
         "anyOf": [
           {
             "$ref": "#/definitions/ProcessingProfile"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "project": {
-        "anyOf": [
-          {
-            "$ref": "#/definitions/ProjectRegisterInput"
           },
           {
             "type": "null"
@@ -759,12 +759,6 @@
           "source"
         ],
         "properties": {
-          "default_branch": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "name": {
             "type": [
               "string",
@@ -791,6 +785,12 @@
                   "directory"
                 ],
                 "properties": {
+                  "default_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "directory": {
                     "$ref": "#/definitions/AbsoluteDirectoryPath"
                   }
@@ -817,6 +817,12 @@
                   "remote"
                 ],
                 "properties": {
+                  "default_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "remote": {
                     "$ref": "#/definitions/GitRemote"
                   }
@@ -13672,12 +13678,6 @@
           "source"
         ],
         "properties": {
-          "default_branch": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "name": {
             "type": [
               "string",
@@ -13704,6 +13704,12 @@
                   "directory"
                 ],
                 "properties": {
+                  "default_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "directory": {
                     "$ref": "#/definitions/AbsoluteDirectoryPath"
                   }
@@ -13730,6 +13736,12 @@
                   "remote"
                 ],
                 "properties": {
+                  "default_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "remote": {
                     "$ref": "#/definitions/GitRemote"
                   }
@@ -16529,16 +16541,11 @@
         "type": "object",
         "required": [
           "database",
-          "handoff"
+          "handoff",
+          "system_project"
         ],
         "properties": {
-          "database": {
-            "$ref": "#/definitions/DatabaseInitialiseOutcome"
-          },
-          "handoff": {
-            "$ref": "#/definitions/BootstrapHandoff"
-          },
-          "project": {
+          "additional_project": {
             "anyOf": [
               {
                 "$ref": "#/definitions/ProjectRegisterOutcome"
@@ -16547,6 +16554,15 @@
                 "type": "null"
               }
             ]
+          },
+          "database": {
+            "$ref": "#/definitions/DatabaseInitialiseOutcome"
+          },
+          "handoff": {
+            "$ref": "#/definitions/BootstrapHandoff"
+          },
+          "system_project": {
+            "$ref": "#/definitions/ProjectSummary"
           }
         }
       },
@@ -16676,6 +16692,55 @@
         "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
         "x-tribal-swift-type": "validated-string"
       },
+      "ProjectOrigin": {
+        "description": "The source of a project's stable identity.",
+        "oneOf": [
+          {
+            "description": "The graph-wide project maintained by Tribal.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "system"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A project established from a Git remote.",
+            "type": "object",
+            "required": [
+              "default_branch",
+              "kind",
+              "remote"
+            ],
+            "properties": {
+              "default_branch": {
+                "description": "Branch used when a caller supplies no branch.",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "git"
+                ]
+              },
+              "remote": {
+                "description": "Canonical remote identity.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/GitRemote"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
       "ProjectRegisterOutcome": {
         "oneOf": [
           {
@@ -16736,10 +16801,9 @@
         "type": "object",
         "required": [
           "created_at",
-          "default_branch",
-          "git_remote",
           "id",
           "name",
+          "origin",
           "updated_at"
         ],
         "properties": {
@@ -16747,17 +16811,14 @@
             "type": "string",
             "format": "date-time"
           },
-          "default_branch": {
-            "type": "string"
-          },
-          "git_remote": {
-            "$ref": "#/definitions/GitRemote"
-          },
           "id": {
             "$ref": "#/definitions/ProjectId"
           },
           "name": {
             "type": "string"
+          },
+          "origin": {
+            "$ref": "#/definitions/ProjectOrigin"
           },
           "updated_at": {
             "type": "string",
@@ -17432,6 +17493,55 @@
         "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
         "x-tribal-swift-type": "validated-string"
       },
+      "ProjectOrigin": {
+        "description": "The source of a project's stable identity.",
+        "oneOf": [
+          {
+            "description": "The graph-wide project maintained by Tribal.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "system"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A project established from a Git remote.",
+            "type": "object",
+            "required": [
+              "default_branch",
+              "kind",
+              "remote"
+            ],
+            "properties": {
+              "default_branch": {
+                "description": "Branch used when a caller supplies no branch.",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "git"
+                ]
+              },
+              "remote": {
+                "description": "Canonical remote identity.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/GitRemote"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
       "ProjectPage": {
         "type": "object",
         "required": [
@@ -17460,10 +17570,9 @@
         "type": "object",
         "required": [
           "created_at",
-          "default_branch",
-          "git_remote",
           "id",
           "name",
+          "origin",
           "updated_at"
         ],
         "properties": {
@@ -17471,17 +17580,14 @@
             "type": "string",
             "format": "date-time"
           },
-          "default_branch": {
-            "type": "string"
-          },
-          "git_remote": {
-            "$ref": "#/definitions/GitRemote"
-          },
           "id": {
             "$ref": "#/definitions/ProjectId"
           },
           "name": {
             "type": "string"
+          },
+          "origin": {
+            "$ref": "#/definitions/ProjectOrigin"
           },
           "updated_at": {
             "type": "string",
@@ -17531,6 +17637,55 @@
         "type": "string",
         "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
         "x-tribal-swift-type": "validated-string"
+      },
+      "ProjectOrigin": {
+        "description": "The source of a project's stable identity.",
+        "oneOf": [
+          {
+            "description": "The graph-wide project maintained by Tribal.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "system"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A project established from a Git remote.",
+            "type": "object",
+            "required": [
+              "default_branch",
+              "kind",
+              "remote"
+            ],
+            "properties": {
+              "default_branch": {
+                "description": "Branch used when a caller supplies no branch.",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "git"
+                ]
+              },
+              "remote": {
+                "description": "Canonical remote identity.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/GitRemote"
+                  }
+                ]
+              }
+            }
+          }
+        ]
       },
       "ProjectRegisterOutcome": {
         "oneOf": [
@@ -17592,10 +17747,9 @@
         "type": "object",
         "required": [
           "created_at",
-          "default_branch",
-          "git_remote",
           "id",
           "name",
+          "origin",
           "updated_at"
         ],
         "properties": {
@@ -17603,17 +17757,14 @@
             "type": "string",
             "format": "date-time"
           },
-          "default_branch": {
-            "type": "string"
-          },
-          "git_remote": {
-            "$ref": "#/definitions/GitRemote"
-          },
           "id": {
             "$ref": "#/definitions/ProjectId"
           },
           "name": {
             "type": "string"
+          },
+          "origin": {
+            "$ref": "#/definitions/ProjectOrigin"
           },
           "updated_at": {
             "type": "string",

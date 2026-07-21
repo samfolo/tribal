@@ -71,7 +71,7 @@ impl<'a> BootstrapAdministration<'a> {
             processing,
             genesis,
             telemetry,
-            project,
+            additional_project,
             token,
             integration,
         } = request;
@@ -84,7 +84,7 @@ impl<'a> BootstrapAdministration<'a> {
                 processing,
                 genesis,
                 telemetry,
-                project.as_ref(),
+                additional_project.as_ref(),
                 token,
                 &integration,
             ))
@@ -111,8 +111,18 @@ impl<'a> BootstrapAdministration<'a> {
             .await
             .map_err(super::database_initialise_error)?;
         let database_outcome = database.value;
-        let mut revision = database.config_revision.clone();
-        let project_outcome = if let Some(project) = project {
+        let revision = database.config_revision.clone();
+        self.checkpoint()?;
+        let system_project = self
+            .projects
+            .system(&self.operation)
+            .await
+            .map_err(super::project::public_error)?;
+        if system_project.config_revision != revision {
+            return Err(config_conflict(revision, system_project.config_revision));
+        }
+        let mut revision = system_project.config_revision;
+        let additional_project_outcome = if let Some(project) = additional_project {
             self.checkpoint()?;
             let result = self
                 .projects
@@ -196,7 +206,8 @@ impl<'a> BootstrapAdministration<'a> {
             config_revision: integration.config_revision,
             value: BootstrapOutcome {
                 database: database_outcome,
-                project: project_outcome,
+                system_project: system_project.value,
+                additional_project: additional_project_outcome,
                 handoff,
             },
         })

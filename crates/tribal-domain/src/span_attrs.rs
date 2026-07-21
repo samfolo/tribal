@@ -34,6 +34,9 @@ pub const OTEL_NAME: &str = "otel.name";
 /// Span field name for the project identifier.
 pub const PROJECT_ID: &str = "tribal.project_id";
 
+/// Project-origin class resolved for an operation.
+pub const PROJECT_ORIGIN: &str = "tribal.project_origin";
+
 /// Span field name for the principal (user or agent) key.
 pub const PRINCIPAL_KEY: &str = "tribal.principal_key";
 
@@ -57,6 +60,9 @@ pub const INGEST_ARBITRATION: &str = "tribal.ingest.arbitration";
 
 /// The stored source classification an ingest wrote.
 pub const INGEST_SOURCE_TYPE: &str = "tribal.ingest.source_type";
+
+/// Precedence source that selected an ingest project.
+pub const INGEST_PROJECT_SELECTION: &str = "tribal.ingest.project_selection";
 
 // ---------------------------------------------------------------------------
 // Embedding spans

@@ -14,9 +14,9 @@ use sqlx::PgConnection;
 use tracing::{debug, warn};
 use tribal_db::{
     EmbeddingProfileRepository, EmbeddingRepository, ItemObservationRepository,
-    KnowledgeItemRepository, NewEmbedding, NewEmbeddingProfile, NewItemObservation,
-    NewKnowledgeItem, NewKnowledgeItemRelation, NewPrincipal, NewProject, NewPromptVersion,
-    NewReference, NewTagEmbedding, PgEmbeddingProfileRepository, PgEmbeddingRepository,
+    KnowledgeItemRepository, NewEmbedding, NewEmbeddingProfile, NewGitProject, NewItemObservation,
+    NewKnowledgeItem, NewKnowledgeItemRelation, NewPrincipal, NewPromptVersion, NewReference,
+    NewTagEmbedding, PgEmbeddingProfileRepository, PgEmbeddingRepository,
     PgItemObservationRepository, PgKnowledgeItemRepository, PgPrincipalRepository,
     PgProjectRepository, PgPromptVersionRepository, PgReferenceRepository, PgRelationRepository,
     PgTagEmbeddingRepository, PgTagRegistryRepository, PrincipalRepository, ProjectRepository,
@@ -317,8 +317,8 @@ async fn handle_create_project(
 
     debug!("seed[{idx}]: CreateProject label={label:?} git_remote={git_remote:?}");
 
-    let new_project = NewProject::builder()
-        .git_remote(git_remote.clone())
+    let new_project = NewGitProject::builder()
+        .remote(git_remote.clone())
         .name(name.to_owned())
         .default_branch("main".to_owned())
         .schema_version(1)
@@ -326,7 +326,7 @@ async fn handle_create_project(
         .build();
 
     let project = PgProjectRepository
-        .insert(&mut *conn, &new_project)
+        .insert_git(&mut *conn, &new_project)
         .await
         .expect("seed: insert project");
 

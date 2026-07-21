@@ -38,7 +38,7 @@ async fn setup_prerequisites(
         .expect("insert principal");
 
     let project = PgProjectRepository
-        .insert(
+        .insert_git(
             txn,
             &a_new_project()
                 .git_remote(GitRemote::from_parts(
@@ -223,7 +223,7 @@ async fn test_items_without_embedding_is_the_set_difference() {
         .await
         .expect("insert principal");
     let project = PgProjectRepository
-        .insert(
+        .insert_git(
             &mut txn,
             &a_new_project()
                 .git_remote(GitRemote::from_parts("github.com", "test/set-diff", None))
@@ -335,7 +335,7 @@ async fn test_batch_insert_skipping_existing_skips_embedded_pairs() {
         .await
         .expect("insert principal");
     let project = PgProjectRepository
-        .insert(
+        .insert_git(
             &mut txn,
             &a_new_project()
                 .git_remote(GitRemote::from_parts(
@@ -418,7 +418,7 @@ async fn test_find_items_without_embedding_pages_by_cursor() {
         .await
         .expect("insert principal");
     let project = PgProjectRepository
-        .insert(
+        .insert_git(
             &mut txn,
             &a_new_project()
                 .git_remote(GitRemote::from_parts(

@@ -3,20 +3,33 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tribal_domain::{Job, JobId, JobOutcome, JobStatus};
+use tribal_domain::{Job, JobId, JobOutcome, JobStatus, ProjectId};
 
 // ---------------------------------------------------------------------------
 // Ingest
 // ---------------------------------------------------------------------------
 
+/// Project target named by an ingest request.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RequestedProject {
+    /// A specific project named by identifier.
+    Explicit { id: ProjectId },
+    /// The graph-owned System project.
+    System {},
+}
+
 /// Deserialisation target for `tribal_ingest` input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct McpIngestRequest {
     /// Raw text submitted for extraction.
     pub content: String,
-    /// Target project; absent means the session's resolved project.
-    pub project_id: Option<String>,
+    /// Requested target; absence applies connection, process, then System defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<RequestedProject>,
     /// Producer-generated key reused only for retries of one logical
     /// ingest operation; absent for ordinary create-on-every-call use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,7 +148,41 @@ mod tests {
         let json = serde_json::json!({"content": "learned something"});
         let req: McpIngestRequest = serde_json::from_value(json).expect("deserialises");
         assert_eq!(req.content, "learned something");
-        assert!(req.project_id.is_none());
+        assert!(req.project.is_none());
+    }
+
+    #[test]
+    fn test_ingest_request_rejects_the_removed_project_id_field() {
+        let result = serde_json::from_value::<McpIngestRequest>(serde_json::json!({
+            "content": "learned something",
+            "project_id": ProjectId::new(),
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_system_project_selector_rejects_an_explicit_id() {
+        let result = serde_json::from_value::<McpIngestRequest>(serde_json::json!({
+            "content": "learned something",
+            "project": {
+                "kind": "system",
+                "id": ProjectId::new(),
+            },
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_explicit_project_selector_rejects_an_extra_field() {
+        let result = serde_json::from_value::<McpIngestRequest>(serde_json::json!({
+            "content": "learned something",
+            "project": {
+                "kind": "explicit",
+                "id": ProjectId::new(),
+                "extra": true,
+            },
+        }));
+        assert!(result.is_err());
     }
 
     // -- Job status -------------------------------------------------------

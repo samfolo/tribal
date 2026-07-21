@@ -116,6 +116,10 @@ pub enum AppError {
         source: sqlx::migrate::MigrateError,
     },
 
+    /// The binary contains no database migrations.
+    #[error("compiled database migration catalogue is empty")]
+    EmptyMigrationCatalogue,
+
     /// First-boot provisioning advisory lock could not be acquired.
     #[error("could not acquire provisioning lock after {attempts} attempts")]
     ProvisioningLockFailed {
