@@ -44,7 +44,7 @@ async fn test_missing_bearer_token_returns_401() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool, ct.clone());
+    let state = test_app_state(pool, ct.clone()).await;
 
     let transport = spawn_transport(
         ct,
@@ -86,7 +86,7 @@ async fn test_valid_bearer_token_passes_auth() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool.clone(), ct.clone());
+    let state = test_app_state(pool.clone(), ct.clone()).await;
 
     seed_auth(&pool, "user:valid-token", RAW_TOKEN, Duration::hours(1)).await;
 
@@ -135,7 +135,7 @@ async fn test_expired_token_returns_401() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool.clone(), ct.clone());
+    let state = test_app_state(pool.clone(), ct.clone()).await;
 
     let expired_raw = "expired-token-value";
     seed_auth(
@@ -195,7 +195,7 @@ async fn test_read_only_principal_sees_only_read_tools() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool.clone(), ct.clone());
+    let state = test_app_state(pool.clone(), ct.clone()).await;
 
     let intern_token = "canopy-intern-token";
     let granted_scopes = vec![

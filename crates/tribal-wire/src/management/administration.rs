@@ -4,7 +4,7 @@ use std::{fmt, path::Path};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tribal_domain::{AuthTokenId, GitRemote, ProjectId, Scope};
+use tribal_domain::{AuthTokenId, GitRemote, ProjectId, ProjectOrigin, Scope};
 
 use super::{ConfigRevision, RuntimeIdentity};
 
@@ -64,8 +64,14 @@ impl std::ops::Deref for DatabaseInitialiseResult {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "source", content = "data", rename_all = "snake_case")]
 pub enum ProjectRegistrationSource {
-    WorkingTree { directory: AbsoluteDirectoryPath },
-    GitRemote { remote: GitRemote },
+    WorkingTree {
+        directory: AbsoluteDirectoryPath,
+        default_branch: Option<String>,
+    },
+    GitRemote {
+        remote: GitRemote,
+        default_branch: Option<String>,
+    },
 }
 
 /// An absolute path whose filesystem meaning remains manager-owned.
@@ -124,7 +130,6 @@ impl AbsoluteDirectoryPath {
 pub struct ProjectRegisterInput {
     pub source: ProjectRegistrationSource,
     pub name: Option<String>,
-    pub default_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,9 +153,8 @@ pub type ProjectRegisterResult = Revisioned<ProjectRegisterOutcome>;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProjectSummary {
     pub id: ProjectId,
-    pub git_remote: GitRemote,
+    pub origin: ProjectOrigin,
     pub name: String,
-    pub default_branch: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

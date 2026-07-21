@@ -4,7 +4,7 @@ use std::path::Path;
 
 use tribal_config::TribalConfig;
 use tribal_db::{DbError, PgProjectRepository, ProjectRepository as _};
-use tribal_domain::{BearerToken, Project, ProjectId, TransportKind};
+use tribal_domain::{BearerToken, Project, ProjectId, ProjectOrigin, TransportKind};
 use tribal_wire::management::{
     AdministrationFailure, ConfiguredMcpTarget, McpConfigEntry, McpConfigRequest, McpConfigResult,
     McpTarget, McpTargetSelection, NetworkIntegrationAuth, ProjectSelector,
@@ -247,9 +247,16 @@ async fn resolve_stdio(
         StdioProjectContext::Unscoped => Ok((ServeProjectMode::Unscoped, "tribal".to_owned())),
         StdioProjectContext::Project { selector } => {
             let project = resolve_project(session, selector).await?;
-            let name = snippet_key(project.git_remote());
+            let name = stdio_project_key(&project);
             Ok((ServeProjectMode::Project(project.id()), name))
         }
+    }
+}
+
+fn stdio_project_key(project: &Project) -> String {
+    match project.origin() {
+        ProjectOrigin::System => "tribal".to_owned(),
+        ProjectOrigin::Git { remote, .. } => snippet_key(remote),
     }
 }
 
@@ -328,11 +335,11 @@ pub(super) fn public_failure(error: &IntegrationAdministrationError) -> Administ
         IntegrationAdministrationError::ProjectSource => {
             AdministrationFailure::ProjectSourceInvalid
         }
-        IntegrationAdministrationError::ProjectNotFound { id: Some(id) } => {
-            AdministrationFailure::ProjectNotFound { id: *id }
-        }
         IntegrationAdministrationError::ProjectNotFound { id: None } => {
             AdministrationFailure::IntegrationUnavailable
+        }
+        IntegrationAdministrationError::ProjectNotFound { id: Some(id) } => {
+            AdministrationFailure::ProjectNotFound { id: *id }
         }
         IntegrationAdministrationError::Credential {
             source: CredentialCoordinatorError::Unavailable,
@@ -369,7 +376,7 @@ pub(super) fn public_failure(error: &IntegrationAdministrationError) -> Administ
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, Utc};
-    use tribal_db::{NewProject, PgProjectRepository, ProjectRepository as _};
+    use tribal_db::{NewGitProject, PgProjectRepository, ProjectRepository as _};
     use tribal_domain::{GitRemote, LOCAL_PRINCIPAL_KEY, full_access_scopes};
     use tribal_wire::management::{ConfigRevision, McpConfigEntry};
 
@@ -569,10 +576,10 @@ mod tests {
         let harness = Harness::new(TransportKind::Http).await;
         let remote = GitRemote::from_parts("github.com", "acme/widgets", None);
         let project = PgProjectRepository
-            .insert(
+            .insert_git(
                 &mut harness.database.pool().acquire().await.unwrap(),
-                &NewProject::builder()
-                    .git_remote(remote)
+                &NewGitProject::builder()
+                    .remote(remote)
                     .name("widgets".to_owned())
                     .default_branch("main".to_owned())
                     .schema_version(1)

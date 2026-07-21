@@ -1,16 +1,16 @@
 use serde_json::json;
-use tribal_db::{PgProjectRepository, ProjectRepository};
-use tribal_domain::GitRemote;
+use tribal_db::{JobRepository, PgJobRepository, PgProjectRepository, ProjectRepository};
+use tribal_domain::{GitRemote, JobId};
 use tribal_test_utils::a_new_project;
 
 use crate::harness::{
-    assertions::{assert_error, assert_success},
+    assertions::assert_success,
     server::{TestHarness, seed},
     tool_call::tool_result_json,
 };
 
-/// Verifies the session context lifecycle: a fresh client cannot
-/// ingest without a project, setting a project enables ingestion,
+/// Verifies the session context lifecycle: a fresh client ingests into
+/// System, setting a project changes the ingestion default,
 /// and switching projects updates the discover scope.
 ///
 /// Theme: two Canopy teams — API and dashboard — operating in
@@ -22,11 +22,11 @@ async fn test_session_context_lifecycle() {
 
         seed!(setup, |seed| {
             let project_1 = PgProjectRepository
-                .insert(
+                .insert_git(
                     seed.conn(),
                     &a_new_project()
                         .name("canopy-api".to_owned())
-                        .git_remote(GitRemote::from_parts(
+                        .remote(GitRemote::from_parts(
                             "github.com",
                             "meridian/canopy-api",
                             None,
@@ -37,11 +37,11 @@ async fn test_session_context_lifecycle() {
                 .expect("insert canopy-api project");
 
             let project_2 = PgProjectRepository
-                .insert(
+                .insert_git(
                     seed.conn(),
                     &a_new_project()
                         .name("canopy-dashboard".to_owned())
-                        .git_remote(GitRemote::from_parts(
+                        .remote(GitRemote::from_parts(
                             "github.com",
                             "meridian/canopy-dashboard",
                             None,
@@ -60,7 +60,7 @@ async fn test_session_context_lifecycle() {
     let project_1_id = harness.label("project_1");
     let project_2_id = harness.label("project_2");
 
-    // -- Step 1: ingest without a project → error -----------------------------
+    // -- An omitted target falls back to System -------------------------------
 
     let result = harness
         .call_tool(
@@ -68,9 +68,28 @@ async fn test_session_context_lifecycle() {
             json!({ "content": "Canopy API rate limiting configuration" }),
         )
         .await;
-    assert_error!(result);
+    assert_success!(result);
+    let job_id: JobId = tool_result_json(&result)["job_id"]
+        .as_str()
+        .expect("ingest response job id")
+        .parse()
+        .expect("valid job id");
+    let mut connection = harness
+        .pool
+        .acquire()
+        .await
+        .expect("acquire assertion connection");
+    let job = PgJobRepository
+        .find_by_id(&mut connection, job_id)
+        .await
+        .expect("find System-targeted job");
+    let system = PgProjectRepository
+        .find_system(&mut connection)
+        .await
+        .expect("find System project");
+    assert_eq!(job.project_id(), system.id());
 
-    // -- Step 2: set context to canopy-api ------------------------------------
+    // -- The session binds to canopy-api --------------------------------------
 
     let result = harness
         .call_tool("tribal_set_context", json!({ "project_id": project_1_id }))
@@ -81,10 +100,10 @@ async fn test_session_context_lifecycle() {
     assert_eq!(
         ctx_json["project"]["id"].as_str(),
         Some(project_1_id),
-        "set_context should reflect canopy-api",
+        "set_context reflects canopy-api",
     );
 
-    // -- Step 3: ingest now succeeds (session project active) -----------------
+    // -- Ingest uses the active session project -------------------------------
 
     let result = harness
         .call_tool(
@@ -94,7 +113,7 @@ async fn test_session_context_lifecycle() {
         .await;
     assert_success!(result);
 
-    // -- Step 4: discover reflects canopy-api ----------------------------------
+    // -- Discovery reflects canopy-api ----------------------------------------
 
     let result = harness
         .call_tool("tribal_discover", json!({ "query": "rate limiting" }))
@@ -105,10 +124,10 @@ async fn test_session_context_lifecycle() {
     assert_eq!(
         discover_json["applied_project_id"].as_str(),
         Some(project_1_id),
-        "discover should scope to canopy-api",
+        "discover scopes to canopy-api",
     );
 
-    // -- Step 5: switch to canopy-dashboard -----------------------------------
+    // -- The session switches to canopy-dashboard -----------------------------
 
     let result = harness
         .call_tool("tribal_set_context", json!({ "project_id": project_2_id }))
@@ -119,10 +138,10 @@ async fn test_session_context_lifecycle() {
     assert_eq!(
         ctx_json["project"]["id"].as_str(),
         Some(project_2_id),
-        "set_context should reflect canopy-dashboard",
+        "set_context reflects canopy-dashboard",
     );
 
-    // -- Step 6: discover now scoped to canopy-dashboard ----------------------
+    // -- Discovery follows the context switch ---------------------------------
 
     let result = harness
         .call_tool("tribal_discover", json!({ "query": "rate limiting" }))
@@ -133,7 +152,7 @@ async fn test_session_context_lifecycle() {
     assert_eq!(
         discover_json["applied_project_id"].as_str(),
         Some(project_2_id),
-        "discover should scope to canopy-dashboard after context switch",
+        "discover scopes to canopy-dashboard after the context switch",
     );
 
     // -- Cleanup --------------------------------------------------------------

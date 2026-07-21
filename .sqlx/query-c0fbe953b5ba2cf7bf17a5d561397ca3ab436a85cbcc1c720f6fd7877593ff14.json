@@ -10,43 +10,38 @@
       },
       {
         "ordinal": 1,
-        "name": "git_remote",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 2,
         "name": "name",
         "type_info": "Text"
       },
       {
-        "ordinal": 3,
-        "name": "default_branch",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 4,
+        "ordinal": 2,
         "name": "project_type",
         "type_info": "Text"
       },
       {
-        "ordinal": 5,
+        "ordinal": 3,
         "name": "schema_version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 6,
+        "ordinal": 4,
         "name": "settings",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 7,
+        "ordinal": 5,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 6,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "origin",
+        "type_info": "Jsonb"
       }
     ],
     "parameters": {
@@ -59,9 +54,8 @@
     "nullable": [
       false,
       false,
-      false,
-      false,
       true,
+      false,
       false,
       false,
       false,

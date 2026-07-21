@@ -449,10 +449,10 @@ mod tests {
             .await
             .expect("insert principal");
         let project = tribal_db::PgProjectRepository
-            .insert(
+            .insert_git(
                 conn,
                 &a_new_project()
-                    .git_remote(GitRemote::from_parts(
+                    .remote(GitRemote::from_parts(
                         "github.com",
                         &format!("test/sweep-{suffix}"),
                         None,

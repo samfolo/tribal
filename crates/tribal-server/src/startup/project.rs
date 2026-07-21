@@ -8,7 +8,7 @@ use std::path::Path;
 use sqlx::PgPool;
 use tribal_config::ENV_PROJECT_ID;
 use tribal_db::{DbError, PgProjectRepository, ProjectRepository};
-use tribal_domain::ProjectId;
+use tribal_domain::{Project, ProjectId};
 use tribal_mcp::ResolvedProject;
 
 use super::POOL_NAME_MCP;
@@ -24,7 +24,7 @@ use crate::{commands::serve::ServeProjectMode, error::AppError, git::detect_git_
 /// 1. `TRIBAL_PROJECT_ID` — environment variable (format: `proj_{uuid}`)
 /// 2. Git remote heuristic — discovers the repository and reads the
 ///    origin remote URL
-/// 3. `None` — no project context; MCP `set_context` must be used
+/// 3. `None` — no process project; request-specific defaults still apply
 pub(crate) async fn resolve_project_mode(
     pool: &PgPool,
     mode: ServeProjectMode,
@@ -51,7 +51,7 @@ pub(crate) async fn resolve_project_mode(
     }
 
     // 3. No project context
-    tracing::info!("no project resolved; MCP set_context required");
+    tracing::info!("no process project resolved; request defaults remain available");
     Ok(None)
 }
 
@@ -68,6 +68,23 @@ pub(crate) async fn resolve_project(
         None => ServeProjectMode::Auto,
     };
     resolve_project_mode(pool, mode).await
+}
+
+/// Loads the graph-owned System project.
+pub(crate) async fn resolve_system_project(pool: &PgPool) -> Result<ResolvedProject, AppError> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "System project lookup", e))?;
+    let project =
+        PgProjectRepository
+            .find_system(&mut conn)
+            .await
+            .map_err(|source| match source {
+                DbError::NotFound { .. } => AppError::SystemProjectMissing,
+                source => AppError::Database { source },
+            })?;
+    Ok(resolved_project(&project))
 }
 
 // ---------------------------------------------------------------------------
@@ -106,11 +123,7 @@ async fn resolve_by_id(pool: &PgPool, raw: &str) -> Result<ResolvedProject, AppE
         "resolved project from explicit ID",
     );
 
-    Ok(ResolvedProject::builder()
-        .id(project.id())
-        .name(project.name())
-        .git_remote(project.git_remote().clone())
-        .build())
+    Ok(resolved_project(&project))
 }
 
 /// Discovers the git repository from the current working directory,
@@ -139,15 +152,35 @@ async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>,
             git_remote = %remote_url,
             "resolved project from git remote",
         );
-        Ok(Some(
-            ResolvedProject::builder()
-                .id(p.id())
-                .name(p.name())
-                .git_remote(p.git_remote().clone())
-                .build(),
-        ))
+        Ok(Some(resolved_project(&p)))
     } else {
         tracing::debug!(git_remote = %remote_url, "no project registered for this remote");
         Ok(None)
+    }
+}
+
+fn resolved_project(project: &Project) -> ResolvedProject {
+    ResolvedProject::builder()
+        .id(project.id())
+        .name(project.name())
+        .origin(project.origin().clone())
+        .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_resolve_system_project_fails_closed_when_invariant_is_missing() {
+        let database = tribal_test_utils::TestDb::new().await;
+        let mut connection = database.raw_connection().await.expect("connect");
+        tribal_test_utils::truncate_all_tables(&mut connection).await;
+
+        let error = resolve_system_project(database.pool())
+            .await
+            .expect_err("startup must reject a missing System project");
+
+        assert!(matches!(error, AppError::SystemProjectMissing));
     }
 }

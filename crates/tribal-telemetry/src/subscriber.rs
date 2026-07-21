@@ -75,7 +75,7 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 /// on shutdown.
 ///
 /// The returned [`MetricsRecorder`] provides methods for recording
-/// all 11 operational metrics.  When telemetry is disabled or no OTLP
+/// all operational metrics. When telemetry is disabled or no OTLP
 /// endpoint is configured, recordings are silently discarded.
 ///
 /// # Errors

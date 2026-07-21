@@ -1,8 +1,4 @@
 //! Project entity — the top-level organisational unit.
-//!
-//! A project is identified by its `git_remote`, not by local filesystem
-//! path. The same repository cloned on two machines resolves to the same
-//! project.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -10,23 +6,34 @@ use typed_builder::TypedBuilder;
 
 use crate::{GitRemote, ProjectId};
 
+/// The source of a project's stable identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProjectOrigin {
+    /// The graph-wide project maintained by Tribal.
+    System,
+    /// A project established from a Git remote.
+    Git {
+        /// Canonical remote identity.
+        remote: GitRemote,
+        /// Branch used when a caller supplies no branch.
+        default_branch: String,
+    },
+}
+
 /// A project in the Tribal knowledge graph.
 ///
-/// `git_remote` is the stable identity in canonical form (e.g.
-/// `github.com/user/tribal`). `name` is human-friendly and mutable.
-/// `settings` is opaque JSONB for project-specific configuration,
-/// versioned by `schema_version`.
+/// The origin is immutable identity; the name and settings may change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TypedBuilder)]
 #[allow(clippy::struct_field_names)]
 pub struct Project {
     /// Unique identifier with `proj_` prefix.
     id: ProjectId,
-    /// Stable identity — the git remote in canonical form.
-    git_remote: GitRemote,
+    /// Typed source of project identity.
+    origin: ProjectOrigin,
     /// Human-friendly project name (mutable).
     name: String,
-    /// Default branch (e.g. `"main"`).
-    default_branch: String,
     /// Loose project type hint (e.g. `"cli_tool"`, `"web_service"`).
     #[builder(default)]
     project_type: Option<String>,
@@ -46,19 +53,14 @@ impl Project {
         self.id
     }
 
-    /// Returns the git remote identity in canonical form.
-    pub fn git_remote(&self) -> &GitRemote {
-        &self.git_remote
+    /// Returns the persisted project origin.
+    pub fn origin(&self) -> &ProjectOrigin {
+        &self.origin
     }
 
     /// Returns the human-friendly name.
     pub fn name(&self) -> &str {
         &self.name
-    }
-
-    /// Returns the default branch.
-    pub fn default_branch(&self) -> &str {
-        &self.default_branch
     }
 
     /// Returns the project type hint, if set.

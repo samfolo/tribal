@@ -4,7 +4,7 @@ use rmcp::{
 };
 use tokio::sync::RwLock;
 use tribal_domain::{
-    ClaimedActor, ClaimedClientIdentity, ClaimedInferenceIdentity, GitRemote, ProjectId,
+    ClaimedActor, ClaimedClientIdentity, ClaimedInferenceIdentity, ProjectId, ProjectOrigin,
 };
 
 // ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ pub(crate) const SESSION_RESOURCE_URI: &str = "tribal://session/context";
 pub struct SessionProject {
     pub id: ProjectId,
     pub name: String,
-    pub git_remote: GitRemote,
+    pub origin: ProjectOrigin,
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +144,8 @@ pub(crate) async fn notify_session_updated(
 
 #[cfg(test)]
 mod tests {
+    use tribal_domain::GitRemote;
+
     use super::*;
 
     #[test]
@@ -170,9 +172,12 @@ mod tests {
         let project = SessionProject {
             id,
             name: "tribal".into(),
-            git_remote: "git@github.com:user/tribal.git"
-                .parse()
-                .expect("valid test git remote"),
+            origin: ProjectOrigin::Git {
+                remote: "git@github.com:user/tribal.git"
+                    .parse::<GitRemote>()
+                    .expect("valid test git remote"),
+                default_branch: "main".to_owned(),
+            },
         };
         let ctx = SessionContext::new(Some(project));
         assert_eq!(ctx.resolved_project_id(), Some(id));

@@ -1,6 +1,8 @@
-use tribal_db::{DbError, PgProjectRepository, ProjectPageKey, ProjectRepository};
-use tribal_domain::{GitRemote, Project, ProjectId};
-use tribal_test_utils::{TestDb, a_new_project, set_timestamp};
+use tribal_db::{
+    DbError, EnsureSystemOutcome, PgProjectRepository, ProjectPageKey, ProjectRepository,
+};
+use tribal_domain::{GitRemote, Project, ProjectId, ProjectOrigin};
+use tribal_test_utils::{TestDb, a_new_project, set_timestamp, truncate_all_tables};
 
 #[tokio::test]
 async fn test_insert_with_none_optional_fields_returns_none() {
@@ -9,13 +11,13 @@ async fn test_insert_with_none_optional_fields_returns_none() {
     let repo = PgProjectRepository;
 
     let new = a_new_project()
-        .git_remote(GitRemote::from_parts(
+        .remote(GitRemote::from_parts(
             "github.com",
             "test/null-fields",
             None,
         ))
         .build();
-    let project = repo.insert(&mut txn, &new).await.expect("insert");
+    let project = repo.insert_git(&mut txn, &new).await.expect("insert");
 
     assert_eq!(project.project_type(), None);
 }
@@ -27,7 +29,7 @@ async fn test_insert_returns_populated_project() {
     let repo = PgProjectRepository;
 
     let new = a_new_project()
-        .git_remote(GitRemote::from_parts(
+        .remote(GitRemote::from_parts(
             "github.com",
             "test/insert-test",
             None,
@@ -37,11 +39,16 @@ async fn test_insert_returns_populated_project() {
         .settings(serde_json::json!({"key": "value"}))
         .build();
 
-    let project = repo.insert(&mut txn, &new).await.expect("insert");
+    let project = repo.insert_git(&mut txn, &new).await.expect("insert");
 
-    assert_eq!(project.git_remote().as_str(), "github.com/test/insert-test");
+    assert_eq!(
+        project.origin(),
+        &ProjectOrigin::Git {
+            remote: GitRemote::from_parts("github.com", "test/insert-test", None,),
+            default_branch: "main".to_owned(),
+        }
+    );
     assert_eq!(project.name(), "insert-test");
-    assert_eq!(project.default_branch(), "main");
     assert_eq!(project.project_type(), Some("cli_tool"));
     assert_eq!(project.schema_version(), 1);
     assert_eq!(project.settings(), &serde_json::json!({"key": "value"}));
@@ -55,11 +62,11 @@ async fn test_insert_duplicate_git_remote_returns_unique_violation() {
     let repo = PgProjectRepository;
 
     let new = a_new_project()
-        .git_remote(GitRemote::from_parts("github.com", "test/dup-remote", None))
+        .remote(GitRemote::from_parts("github.com", "test/dup-remote", None))
         .build();
-    repo.insert(&mut txn, &new).await.expect("first insert");
+    repo.insert_git(&mut txn, &new).await.expect("first insert");
 
-    let result = repo.insert(&mut txn, &new).await;
+    let result = repo.insert_git(&mut txn, &new).await;
     assert!(
         matches!(result, Err(DbError::UniqueViolation { .. })),
         "expected UniqueViolation, got: {result:?}"
@@ -73,9 +80,9 @@ async fn test_find_by_id_returns_project() {
     let repo = PgProjectRepository;
 
     let new = a_new_project()
-        .git_remote(GitRemote::from_parts("github.com", "test/find-id", None))
+        .remote(GitRemote::from_parts("github.com", "test/find-id", None))
         .build();
-    let inserted = repo.insert(&mut txn, &new).await.expect("insert");
+    let inserted = repo.insert_git(&mut txn, &new).await.expect("insert");
 
     let found = repo
         .find_by_id(&mut txn, inserted.id())
@@ -83,7 +90,7 @@ async fn test_find_by_id_returns_project() {
         .expect("find_by_id");
 
     assert_eq!(found.id(), inserted.id());
-    assert_eq!(found.git_remote(), inserted.git_remote());
+    assert_eq!(found.origin(), inserted.origin());
 }
 
 #[tokio::test]
@@ -106,8 +113,8 @@ async fn test_find_by_git_remote_returns_project() {
     let repo = PgProjectRepository;
 
     let remote = GitRemote::from_parts("github.com", "test/find-remote", None);
-    let new = a_new_project().git_remote(remote.clone()).build();
-    let inserted = repo.insert(&mut txn, &new).await.expect("insert");
+    let new = a_new_project().remote(remote.clone()).build();
+    let inserted = repo.insert_git(&mut txn, &new).await.expect("insert");
 
     let found = repo
         .find_by_git_remote(&mut txn, &remote)
@@ -142,19 +149,19 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
     let repo = PgProjectRepository;
 
     let first = repo
-        .insert(
+        .insert_git(
             &mut txn,
             &a_new_project()
-                .git_remote(GitRemote::from_parts("github.com", "test/list-first", None))
+                .remote(GitRemote::from_parts("github.com", "test/list-first", None))
                 .build(),
         )
         .await
         .expect("insert first");
     let second = repo
-        .insert(
+        .insert_git(
             &mut txn,
             &a_new_project()
-                .git_remote(GitRemote::from_parts(
+                .remote(GitRemote::from_parts(
                     "github.com",
                     "test/list-second",
                     None,
@@ -190,13 +197,14 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
 }
 
 #[tokio::test]
-async fn test_list_returns_empty_vec_when_no_projects() {
+async fn test_list_returns_only_the_system_project_on_a_fresh_database() {
     let ctx = TestDb::new().await;
     let mut txn = ctx.begin().await.expect("begin");
     let repo = PgProjectRepository;
 
     let projects = repo.list(&mut txn).await.expect("list");
-    assert!(projects.is_empty());
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].origin(), &ProjectOrigin::System);
 }
 
 #[tokio::test]
@@ -205,10 +213,10 @@ async fn test_keyset_page_keeps_captured_high_water_across_later_insert() {
     let mut connection = ctx.raw_connection().await.expect("connect");
     let repo = PgProjectRepository;
     for suffix in ["one", "two", "three"] {
-        repo.insert(
+        repo.insert_git(
             &mut connection,
             &a_new_project()
-                .git_remote(GitRemote::from_parts(
+                .remote(GitRemote::from_parts(
                     "github.com",
                     &format!("test/page-{suffix}"),
                     None,
@@ -230,10 +238,10 @@ async fn test_keyset_page_keeps_captured_high_water_across_later_insert() {
     assert_eq!(first.len(), 2);
 
     let inserted_later = repo
-        .insert(
+        .insert_git(
             &mut connection,
             &a_new_project()
-                .git_remote(GitRemote::from_parts("github.com", "test/page-later", None))
+                .remote(GitRemote::from_parts("github.com", "test/page-later", None))
                 .build(),
         )
         .await
@@ -253,10 +261,70 @@ async fn test_keyset_page_keeps_captured_high_water_across_later_insert() {
         .expect("second page");
 
     let ids: Vec<ProjectId> = first.iter().chain(&second).map(Project::id).collect();
-    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.len(), 4);
     assert_eq!(
         ids.iter().collect::<std::collections::HashSet<_>>().len(),
-        3
+        4
     );
     assert!(!ids.contains(&inserted_later.id()));
+}
+
+#[tokio::test]
+async fn test_ensure_system_reports_existing_project() {
+    let ctx = TestDb::new().await;
+    let mut connection = ctx.raw_connection().await.expect("connect");
+    let repo = PgProjectRepository;
+
+    let outcome = repo
+        .ensure_system(&mut connection)
+        .await
+        .expect("ensure System project");
+
+    let EnsureSystemOutcome::Existing(project) = outcome else {
+        panic!("migrated database already contains the System project");
+    };
+    assert_eq!(project.origin(), &ProjectOrigin::System);
+}
+
+#[tokio::test]
+async fn test_ensure_system_converges_under_concurrent_callers() {
+    let ctx = TestDb::new().await;
+    let mut setup = ctx.raw_connection().await.expect("setup connection");
+    truncate_all_tables(&mut setup).await;
+    drop(setup);
+
+    let mut first = ctx.raw_connection().await.expect("first connection");
+    let mut second = ctx.raw_connection().await.expect("second connection");
+    let (first, second) = tokio::join!(
+        PgProjectRepository.ensure_system(&mut first),
+        PgProjectRepository.ensure_system(&mut second),
+    );
+    let outcomes = [first.expect("first ensure"), second.expect("second ensure")];
+
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, EnsureSystemOutcome::Inserted(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, EnsureSystemOutcome::Existing(_)))
+            .count(),
+        1
+    );
+    let mut verify = ctx.raw_connection().await.expect("verification connection");
+    let projects = PgProjectRepository
+        .list(&mut verify)
+        .await
+        .expect("list projects");
+    assert_eq!(
+        projects
+            .iter()
+            .filter(|project| matches!(project.origin(), ProjectOrigin::System))
+            .count(),
+        1
+    );
 }

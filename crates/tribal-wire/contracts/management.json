@@ -111,6 +111,16 @@
       "token"
     ],
     "properties": {
+      "additional_project": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ProjectRegisterInput"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "expected_revision": {
         "$ref": "#/definitions/ConfigRevision"
       },
@@ -131,16 +141,6 @@
         "anyOf": [
           {
             "$ref": "#/definitions/ProcessingProfile"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "project": {
-        "anyOf": [
-          {
-            "$ref": "#/definitions/ProjectRegisterInput"
           },
           {
             "type": "null"
@@ -514,16 +514,9 @@
         }
       },
       "GitRemote": {
-        "description": "Protocol-agnostic git remote identity.\n\nStores the canonical `host/path` form (e.g. `github.com/user/repo`), stripping the transport scheme and `.git` suffix. Two remotes that point to the same repository — regardless of whether they use SSH, HTTPS, or SCP syntax — produce the same `GitRemote` value.\n\nNon-standard ports are preserved in the canonical form as `host:port/path` since different ports may serve different content.\n\nAll major git hosts (GitHub, GitLab, Bitbucket, Gitea) treat organisation and repository names as case-insensitive, so the canonical form is fully lowercased.\n\n# Construction\n\nParse any common git remote URL format via [`FromStr`]:\n\n```text git@github.com:user/repo.git   → github.com/user/repo https://github.com/user/repo   → github.com/user/repo ssh://git@github.com/user/repo → github.com/user/repo ```\n\nOr build from already-parsed components via [`GitRemote::from_parts`].",
-        "type": "object",
-        "required": [
-          "canonical"
-        ],
-        "properties": {
-          "canonical": {
-            "type": "string"
-          }
-        }
+        "type": "string",
+        "pattern": "^[^\\s/]+/\\S*$",
+        "x-tribal-swift-type": "validated-string"
       },
       "McpTarget": {
         "oneOf": [
@@ -759,12 +752,6 @@
           "source"
         ],
         "properties": {
-          "default_branch": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "name": {
             "type": [
               "string",
@@ -791,6 +778,12 @@
                   "directory"
                 ],
                 "properties": {
+                  "default_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "directory": {
                     "$ref": "#/definitions/AbsoluteDirectoryPath"
                   }
@@ -817,6 +810,12 @@
                   "remote"
                 ],
                 "properties": {
+                  "default_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "remote": {
                     "$ref": "#/definitions/GitRemote"
                   }
@@ -13655,16 +13654,9 @@
         "x-tribal-swift-type": "canonical-base64url-32"
       },
       "GitRemote": {
-        "description": "Protocol-agnostic git remote identity.\n\nStores the canonical `host/path` form (e.g. `github.com/user/repo`), stripping the transport scheme and `.git` suffix. Two remotes that point to the same repository — regardless of whether they use SSH, HTTPS, or SCP syntax — produce the same `GitRemote` value.\n\nNon-standard ports are preserved in the canonical form as `host:port/path` since different ports may serve different content.\n\nAll major git hosts (GitHub, GitLab, Bitbucket, Gitea) treat organisation and repository names as case-insensitive, so the canonical form is fully lowercased.\n\n# Construction\n\nParse any common git remote URL format via [`FromStr`]:\n\n```text git@github.com:user/repo.git   → github.com/user/repo https://github.com/user/repo   → github.com/user/repo ssh://git@github.com/user/repo → github.com/user/repo ```\n\nOr build from already-parsed components via [`GitRemote::from_parts`].",
-        "type": "object",
-        "required": [
-          "canonical"
-        ],
-        "properties": {
-          "canonical": {
-            "type": "string"
-          }
-        }
+        "type": "string",
+        "pattern": "^[^\\s/]+/\\S*$",
+        "x-tribal-swift-type": "validated-string"
       },
       "ProjectRegisterInput": {
         "type": "object",
@@ -13672,12 +13664,6 @@
           "source"
         ],
         "properties": {
-          "default_branch": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "name": {
             "type": [
               "string",
@@ -13704,6 +13690,12 @@
                   "directory"
                 ],
                 "properties": {
+                  "default_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "directory": {
                     "$ref": "#/definitions/AbsoluteDirectoryPath"
                   }
@@ -13730,6 +13722,12 @@
                   "remote"
                 ],
                 "properties": {
+                  "default_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "remote": {
                     "$ref": "#/definitions/GitRemote"
                   }
@@ -16529,16 +16527,11 @@
         "type": "object",
         "required": [
           "database",
-          "handoff"
+          "handoff",
+          "system_project"
         ],
         "properties": {
-          "database": {
-            "$ref": "#/definitions/DatabaseInitialiseOutcome"
-          },
-          "handoff": {
-            "$ref": "#/definitions/BootstrapHandoff"
-          },
-          "project": {
+          "additional_project": {
             "anyOf": [
               {
                 "$ref": "#/definitions/ProjectRegisterOutcome"
@@ -16547,6 +16540,15 @@
                 "type": "null"
               }
             ]
+          },
+          "database": {
+            "$ref": "#/definitions/DatabaseInitialiseOutcome"
+          },
+          "handoff": {
+            "$ref": "#/definitions/BootstrapHandoff"
+          },
+          "system_project": {
+            "$ref": "#/definitions/ProjectSummary"
           }
         }
       },
@@ -16656,16 +16658,9 @@
         ]
       },
       "GitRemote": {
-        "description": "Protocol-agnostic git remote identity.\n\nStores the canonical `host/path` form (e.g. `github.com/user/repo`), stripping the transport scheme and `.git` suffix. Two remotes that point to the same repository — regardless of whether they use SSH, HTTPS, or SCP syntax — produce the same `GitRemote` value.\n\nNon-standard ports are preserved in the canonical form as `host:port/path` since different ports may serve different content.\n\nAll major git hosts (GitHub, GitLab, Bitbucket, Gitea) treat organisation and repository names as case-insensitive, so the canonical form is fully lowercased.\n\n# Construction\n\nParse any common git remote URL format via [`FromStr`]:\n\n```text git@github.com:user/repo.git   → github.com/user/repo https://github.com/user/repo   → github.com/user/repo ssh://git@github.com/user/repo → github.com/user/repo ```\n\nOr build from already-parsed components via [`GitRemote::from_parts`].",
-        "type": "object",
-        "required": [
-          "canonical"
-        ],
-        "properties": {
-          "canonical": {
-            "type": "string"
-          }
-        }
+        "type": "string",
+        "pattern": "^[^\\s/]+/\\S*$",
+        "x-tribal-swift-type": "validated-string"
       },
       "IssuedBearerToken": {
         "type": "string",
@@ -16675,6 +16670,55 @@
         "type": "string",
         "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
         "x-tribal-swift-type": "validated-string"
+      },
+      "ProjectOrigin": {
+        "description": "The source of a project's stable identity.",
+        "oneOf": [
+          {
+            "description": "The graph-wide project maintained by Tribal.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "system"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A project established from a Git remote.",
+            "type": "object",
+            "required": [
+              "default_branch",
+              "kind",
+              "remote"
+            ],
+            "properties": {
+              "default_branch": {
+                "description": "Branch used when a caller supplies no branch.",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "git"
+                ]
+              },
+              "remote": {
+                "description": "Canonical remote identity.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/GitRemote"
+                  }
+                ]
+              }
+            }
+          }
+        ]
       },
       "ProjectRegisterOutcome": {
         "oneOf": [
@@ -16736,10 +16780,9 @@
         "type": "object",
         "required": [
           "created_at",
-          "default_branch",
-          "git_remote",
           "id",
           "name",
+          "origin",
           "updated_at"
         ],
         "properties": {
@@ -16747,17 +16790,14 @@
             "type": "string",
             "format": "date-time"
           },
-          "default_branch": {
-            "type": "string"
-          },
-          "git_remote": {
-            "$ref": "#/definitions/GitRemote"
-          },
           "id": {
             "$ref": "#/definitions/ProjectId"
           },
           "name": {
             "type": "string"
+          },
+          "origin": {
+            "$ref": "#/definitions/ProjectOrigin"
           },
           "updated_at": {
             "type": "string",
@@ -17411,16 +17451,9 @@
         "x-tribal-swift-type": "canonical-base64url-32"
       },
       "GitRemote": {
-        "description": "Protocol-agnostic git remote identity.\n\nStores the canonical `host/path` form (e.g. `github.com/user/repo`), stripping the transport scheme and `.git` suffix. Two remotes that point to the same repository — regardless of whether they use SSH, HTTPS, or SCP syntax — produce the same `GitRemote` value.\n\nNon-standard ports are preserved in the canonical form as `host:port/path` since different ports may serve different content.\n\nAll major git hosts (GitHub, GitLab, Bitbucket, Gitea) treat organisation and repository names as case-insensitive, so the canonical form is fully lowercased.\n\n# Construction\n\nParse any common git remote URL format via [`FromStr`]:\n\n```text git@github.com:user/repo.git   → github.com/user/repo https://github.com/user/repo   → github.com/user/repo ssh://git@github.com/user/repo → github.com/user/repo ```\n\nOr build from already-parsed components via [`GitRemote::from_parts`].",
-        "type": "object",
-        "required": [
-          "canonical"
-        ],
-        "properties": {
-          "canonical": {
-            "type": "string"
-          }
-        }
+        "type": "string",
+        "pattern": "^[^\\s/]+/\\S*$",
+        "x-tribal-swift-type": "validated-string"
       },
       "PageCursor": {
         "type": "string",
@@ -17431,6 +17464,55 @@
         "type": "string",
         "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
         "x-tribal-swift-type": "validated-string"
+      },
+      "ProjectOrigin": {
+        "description": "The source of a project's stable identity.",
+        "oneOf": [
+          {
+            "description": "The graph-wide project maintained by Tribal.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "system"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A project established from a Git remote.",
+            "type": "object",
+            "required": [
+              "default_branch",
+              "kind",
+              "remote"
+            ],
+            "properties": {
+              "default_branch": {
+                "description": "Branch used when a caller supplies no branch.",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "git"
+                ]
+              },
+              "remote": {
+                "description": "Canonical remote identity.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/GitRemote"
+                  }
+                ]
+              }
+            }
+          }
+        ]
       },
       "ProjectPage": {
         "type": "object",
@@ -17460,10 +17542,9 @@
         "type": "object",
         "required": [
           "created_at",
-          "default_branch",
-          "git_remote",
           "id",
           "name",
+          "origin",
           "updated_at"
         ],
         "properties": {
@@ -17471,17 +17552,14 @@
             "type": "string",
             "format": "date-time"
           },
-          "default_branch": {
-            "type": "string"
-          },
-          "git_remote": {
-            "$ref": "#/definitions/GitRemote"
-          },
           "id": {
             "$ref": "#/definitions/ProjectId"
           },
           "name": {
             "type": "string"
+          },
+          "origin": {
+            "$ref": "#/definitions/ProjectOrigin"
           },
           "updated_at": {
             "type": "string",
@@ -17516,21 +17594,63 @@
         "x-tribal-swift-type": "canonical-base64url-32"
       },
       "GitRemote": {
-        "description": "Protocol-agnostic git remote identity.\n\nStores the canonical `host/path` form (e.g. `github.com/user/repo`), stripping the transport scheme and `.git` suffix. Two remotes that point to the same repository — regardless of whether they use SSH, HTTPS, or SCP syntax — produce the same `GitRemote` value.\n\nNon-standard ports are preserved in the canonical form as `host:port/path` since different ports may serve different content.\n\nAll major git hosts (GitHub, GitLab, Bitbucket, Gitea) treat organisation and repository names as case-insensitive, so the canonical form is fully lowercased.\n\n# Construction\n\nParse any common git remote URL format via [`FromStr`]:\n\n```text git@github.com:user/repo.git   → github.com/user/repo https://github.com/user/repo   → github.com/user/repo ssh://git@github.com/user/repo → github.com/user/repo ```\n\nOr build from already-parsed components via [`GitRemote::from_parts`].",
-        "type": "object",
-        "required": [
-          "canonical"
-        ],
-        "properties": {
-          "canonical": {
-            "type": "string"
-          }
-        }
+        "type": "string",
+        "pattern": "^[^\\s/]+/\\S*$",
+        "x-tribal-swift-type": "validated-string"
       },
       "ProjectId": {
         "type": "string",
         "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
         "x-tribal-swift-type": "validated-string"
+      },
+      "ProjectOrigin": {
+        "description": "The source of a project's stable identity.",
+        "oneOf": [
+          {
+            "description": "The graph-wide project maintained by Tribal.",
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "system"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A project established from a Git remote.",
+            "type": "object",
+            "required": [
+              "default_branch",
+              "kind",
+              "remote"
+            ],
+            "properties": {
+              "default_branch": {
+                "description": "Branch used when a caller supplies no branch.",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "git"
+                ]
+              },
+              "remote": {
+                "description": "Canonical remote identity.",
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/GitRemote"
+                  }
+                ]
+              }
+            }
+          }
+        ]
       },
       "ProjectRegisterOutcome": {
         "oneOf": [
@@ -17592,10 +17712,9 @@
         "type": "object",
         "required": [
           "created_at",
-          "default_branch",
-          "git_remote",
           "id",
           "name",
+          "origin",
           "updated_at"
         ],
         "properties": {
@@ -17603,17 +17722,14 @@
             "type": "string",
             "format": "date-time"
           },
-          "default_branch": {
-            "type": "string"
-          },
-          "git_remote": {
-            "$ref": "#/definitions/GitRemote"
-          },
           "id": {
             "$ref": "#/definitions/ProjectId"
           },
           "name": {
             "type": "string"
+          },
+          "origin": {
+            "$ref": "#/definitions/ProjectOrigin"
           },
           "updated_at": {
             "type": "string",

@@ -4,7 +4,7 @@
       "name": "tribal_ingest",
       "requiredScope": "tribal.knowledge:write",
       "title": "Tribal: Ingest Knowledge",
-      "description": "Submit raw text for knowledge extraction into Tribal. The system extracts structured knowledge items (facts, heuristics, procedures, decision records), detects duplicates, identifies relationships with existing knowledge, and stores the results.\n\nThis is an asynchronous operation. Returns a job_id immediately. Use tribal_job_status to poll for completion.\n\nUse this tool when you've learned something worth preserving: a debugging insight, an architectural decision, a reusable pattern, a gotcha about a library, or any experience that would help you or another agent working on this codebase in the future.\n\nDo NOT use this for storing code snippets, file contents, or documentation. Tribal stores knowledge *about* work, not the artefacts themselves.\n\nProject, model, and principal are sourced from session context (see tribal_set_context). You only need to provide the content itself.",
+      "description": "Submit raw text for knowledge extraction into Tribal. The system extracts structured knowledge items (facts, heuristics, procedures, decision records), detects duplicates, identifies relationships with existing knowledge, and stores the results.\n\nThis is an asynchronous operation. Returns a job_id immediately. Use tribal_job_status to poll for completion.\n\nUse this tool when you've learned something worth preserving: a debugging insight, an architectural decision, a reusable pattern, a gotcha about a library, or any experience that would help you or another agent working on this codebase in the future.\n\nDo NOT use this for storing code snippets, file contents, or documentation. Tribal stores knowledge *about* work, not the artefacts themselves.\n\nProject selection may be explicit, inherited from session or process context, or omitted to use the graph-owned System project. Model and principal are derived by the server.",
       "input": "McpIngestRequest",
       "output": "McpIngestResponse"
     },
@@ -69,11 +69,64 @@
           ],
           "format": "uuid"
         },
-        "project_id": {
-          "description": "Target project; absent means the session's resolved project.",
-          "type": [
-            "string",
-            "null"
+        "project": {
+          "description": "Requested target; absence applies connection, process, then System defaults.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RequestedProject"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "definitions": {
+        "ProjectId": {
+          "type": "string",
+          "pattern": "^proj_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "x-tribal-swift-type": "validated-string"
+        },
+        "RequestedProject": {
+          "description": "Project target named by an ingest request.",
+          "oneOf": [
+            {
+              "description": "A specific project named by identifier.",
+              "type": "object",
+              "required": [
+                "id",
+                "kind"
+              ],
+              "properties": {
+                "id": {
+                  "$ref": "#/definitions/ProjectId"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "explicit"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "description": "The graph-owned System project.",
+              "type": "object",
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "system"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
           ]
         }
       }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT * FROM projects WHERE git_remote = $1",
+  "query": "\n            INSERT INTO projects (origin, name, project_type, schema_version, settings)\n            VALUES (\n                jsonb_build_object(\n                    'kind', 'git',\n                    'remote', $1::text,\n                    'default_branch', $2::text\n                ),\n                $3, $4, $5, $6\n            )\n            RETURNING *\n            ",
   "describe": {
     "columns": [
       {
@@ -10,61 +10,60 @@
       },
       {
         "ordinal": 1,
-        "name": "git_remote",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 2,
         "name": "name",
         "type_info": "Text"
       },
       {
-        "ordinal": 3,
-        "name": "default_branch",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 4,
+        "ordinal": 2,
         "name": "project_type",
         "type_info": "Text"
       },
       {
-        "ordinal": 5,
+        "ordinal": 3,
         "name": "schema_version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 6,
+        "ordinal": 4,
         "name": "settings",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 7,
+        "ordinal": 5,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 6,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "origin",
+        "type_info": "Jsonb"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Jsonb"
       ]
     },
     "nullable": [
-      false,
-      false,
       false,
       false,
       true,
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "b20185840d419d5417ae04589a6edcc54b398cb1ddd1b1ab21322dc935696760"
+  "hash": "5956dde2fa062383120889d2b16935755ab05e751de8da337802e01354b1d2b7"
 }

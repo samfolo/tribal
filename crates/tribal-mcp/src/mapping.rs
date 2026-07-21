@@ -16,5 +16,5 @@ pub(crate) use tribal_wire::mcp::{
     McpGetItemEntry, McpGetItemRequest, McpGetItemResponse, McpIngestRequest, McpIngestResponse,
     McpIngestionInputResponse, McpJobStatusRequest, McpJobStatusResponse, McpKnowledgeItem,
     McpRecentIngestionsResponse, McpReference, McpReindexCancelResponse, McpReindexPruneResponse,
-    McpReindexRequest, McpReindexResponse, McpSetContextRequest, McpStanding,
+    McpReindexRequest, McpReindexResponse, McpSetContextRequest, McpStanding, RequestedProject,
 };

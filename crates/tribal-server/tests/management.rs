@@ -15,22 +15,23 @@ use fs2::FileExt as _;
 use tribal::{ManagementClientError, ManagerConnector, ManagerConnectorError};
 use tribal_config::TribalConfig;
 use tribal_db::{
-    MigrationHeadStatus, MigrationRepository, NewProject, PgProjectRepository, PrincipalRepository,
-    ProjectRepository,
+    MigrationHeadStatus, MigrationRepository, NewGitProject, PgProjectRepository,
+    PrincipalRepository, ProjectRepository,
 };
-use tribal_domain::{GitRemote, LOCAL_PRINCIPAL_KEY, TransportKind};
+use tribal_domain::{GitRemote, LOCAL_PRINCIPAL_KEY, ProjectOrigin, Scope, TransportKind};
 use tribal_test_utils::{TestDb, duration::POLL_INTERVAL};
 use tribal_wire::management::{
-    ConfigDigest, ConfigDocument, ConfigFieldPath, ConfigLiteral, ConfigRevision, ConfigSetRequest,
-    ConfigWriteOutcome, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
+    BootstrapRequest, BootstrapResult, BootstrapStorage, BootstrapTokenPolicy, ConfigDigest,
+    ConfigDocument, ConfigFieldPath, ConfigLiteral, ConfigRevision, ConfigSetRequest,
+    ConfigWriteOutcome, ConfiguredMcpTarget, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
     DatabaseInitialiseResult, LifecycleSnapshot, MANAGEMENT_CONTRACT_VERSION,
     ManagedRuntimeStatusResult, ManagementBootstrapRequest, ManagementBootstrapResponse,
     ManagementClientHello, ManagementError, ManagementResponseError, ManagementServerHello,
     ManagerAnnouncement, ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord,
-    ManagerShutdownCall, ManagerSnapshot, NetworkTransport, PageCursor, PageRequest, PageSize,
-    ProjectList, ProjectListRequest, ProjectRegisterInput, ProjectRegisterOutcome,
-    ProjectRegisterRequest, ProjectRegistrationSource, RuntimeIdentity, RuntimeStartResult,
-    TokenCreateRequest, TokenCreateResult,
+    ManagerShutdownCall, ManagerSnapshot, McpTargetSelection, NetworkTransport, PageCursor,
+    PageRequest, PageSize, ProjectList, ProjectListRequest, ProjectRegisterInput,
+    ProjectRegisterOutcome, ProjectRegisterRequest, ProjectRegistrationSource, RuntimeIdentity,
+    RuntimeStartResult, StdioProjectContext, TokenCreateRequest, TokenCreateResult,
 };
 
 /// Upper bound for manager replacement and child-process observations.
@@ -175,11 +176,11 @@ async fn startup_serve_project_mode_process_matrix() {
     let database = TestDb::new().await;
     let mut connection = database.raw_connection().await.expect("database connects");
     let ambient = PgProjectRepository
-        .insert(&mut connection, &new_project("ambient", "cortex/ambient"))
+        .insert_git(&mut connection, &new_project("ambient", "cortex/ambient"))
         .await
         .expect("ambient project inserts");
     let repository_project = PgProjectRepository
-        .insert(
+        .insert_git(
             &mut connection,
             &new_project("repository", "cortex/serve-mode"),
         )
@@ -824,6 +825,76 @@ async fn test_database_initialise_negotiates_v3_and_migrates_once_after_revision
     wait_for_success(&mut manager, "manager shutdown");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn test_bootstrap_without_a_git_repository_returns_the_system_project() {
+    let database = TestDb::new_unmigrated().await;
+    let temp = tempfile::Builder::new()
+        .prefix("tm")
+        .tempdir_in("/tmp")
+        .expect("temporary manager root");
+    let config_path = temp.path().join("tribal.yaml");
+    let config = TribalConfig::minimum_valid(database.database_url());
+    std::fs::write(
+        &config_path,
+        serde_yaml::to_string(&config).expect("config serialises"),
+    )
+    .expect("config writes");
+
+    let mut command = manager_command(&config_path, temp.path());
+    command.current_dir(temp.path());
+    let mut manager = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("manager spawns outside a Git repository");
+    let announcement = continuing_announcement(read_manager_record(&mut manager));
+    let mut client = handshake(&announcement);
+    let document: ConfigDocument = call(&mut client, 1, "config.getAll", None);
+    let ConfigDocument::DurableValid { revision, .. } = document else {
+        panic!("valid configuration must expose its durable revision");
+    };
+    let result: BootstrapResult = call(
+        &mut client,
+        2,
+        "bootstrap.run",
+        Some(
+            &serde_json::to_value(BootstrapRequest {
+                expected_revision: revision,
+                storage: BootstrapStorage::Configured,
+                provider_connections: Vec::new(),
+                processing: None,
+                genesis: None,
+                telemetry: None,
+                additional_project: None,
+                token: BootstrapTokenPolicy::EnsureLocalCredential {
+                    principal: None,
+                    ttl_hours: None,
+                    scopes: vec![
+                        Scope::parse(Scope::FULL_ACCESS_READ).expect("read scope is valid"),
+                        Scope::parse(Scope::FULL_ACCESS_WRITE).expect("write scope is valid"),
+                    ],
+                },
+                integration: McpTargetSelection::Configured {
+                    policy: ConfiguredMcpTarget::Public {
+                        stdio_context: StdioProjectContext::Unscoped,
+                    },
+                },
+            })
+            .expect("bootstrap request serialises"),
+        ),
+    );
+
+    assert!(matches!(
+        result.value.system_project.origin,
+        ProjectOrigin::System
+    ));
+    assert!(result.value.additional_project.is_none());
+
+    let _: tribal_wire::management::ManagerShutdownResult =
+        call(&mut client, 3, "manager.shutdown", None);
+    wait_for_success(&mut manager, "manager shutdown");
+}
+
 #[tokio::test]
 async fn test_a_targeted_token_request_without_an_attached_runtime_reports_the_conflict() {
     let database = TestDb::new().await;
@@ -1110,13 +1181,12 @@ async fn test_project_pagination_is_revision_bound_bounded_and_high_water_stable
             if expected == stale && actual == revision
     ));
     let mut connection = database.raw_connection().await.expect("database connects");
-    assert!(
-        PgProjectRepository
-            .list(&mut connection)
-            .await
-            .expect("projects list")
-            .is_empty()
-    );
+    let projects = PgProjectRepository
+        .list(&mut connection)
+        .await
+        .expect("projects list");
+    assert_eq!(projects.len(), 1);
+    assert!(matches!(projects[0].origin(), ProjectOrigin::System));
     drop(connection);
 
     let mut seeded = Vec::new();
@@ -1193,7 +1263,7 @@ async fn test_project_pagination_is_revision_bound_bounded_and_high_water_stable
             .expect("request serialises"),
         ),
     );
-    assert_eq!(second.value.items.len(), 1);
+    assert_eq!(second.value.items.len(), 2);
     assert!(second.value.next.is_none());
     let walked: Vec<_> = first
         .value
@@ -1202,16 +1272,24 @@ async fn test_project_pagination_is_revision_bound_bounded_and_high_water_stable
         .chain(&second.value.items)
         .map(|project| project.id)
         .collect();
-    assert_eq!(walked.len(), 3);
+    assert_eq!(walked.len(), 4);
     assert_eq!(
         walked
             .iter()
             .collect::<std::collections::HashSet<_>>()
             .len(),
-        3
+        4
     );
     assert!(!walked.contains(&later_id));
     assert!(seeded.iter().all(|id| walked.contains(id)));
+    assert!(
+        first
+            .value
+            .items
+            .iter()
+            .chain(&second.value.items)
+            .any(|project| matches!(project.origin, ProjectOrigin::System))
+    );
 
     let malformed = PageCursor::try_from("not-base64".to_owned()).expect("cursor is non-empty");
     let malformed_error = call_error(
@@ -1271,10 +1349,10 @@ async fn test_project_pagination_is_revision_bound_bounded_and_high_water_stable
         .await
         .expect("database reconnects");
     PgProjectRepository
-        .insert(
+        .insert_git(
             &mut connection,
-            &NewProject::builder()
-                .git_remote(GitRemote::from_parts(
+            &NewGitProject::builder()
+                .remote(GitRemote::from_parts(
                     "github.com",
                     "cortex/oversized-project",
                     None,
@@ -1322,9 +1400,9 @@ fn project_request(revision: &ConfigRevision, suffix: &str) -> ProjectRegisterRe
         project: ProjectRegisterInput {
             source: ProjectRegistrationSource::GitRemote {
                 remote: GitRemote::from_parts("github.com", &format!("cortex/{suffix}"), None),
+                default_branch: None,
             },
             name: None,
-            default_branch: None,
         },
     }
 }
@@ -1348,9 +1426,9 @@ fn manager_command(config_path: &std::path::Path, root: &std::path::Path) -> Com
     command
 }
 
-fn new_project(name: &str, path: &str) -> NewProject {
-    NewProject::builder()
-        .git_remote(GitRemote::from_parts("github.com", path, None))
+fn new_project(name: &str, path: &str) -> NewGitProject {
+    NewGitProject::builder()
+        .remote(GitRemote::from_parts("github.com", path, None))
         .name(name.to_owned())
         .default_branch("main".to_owned())
         .schema_version(1)

@@ -720,14 +720,10 @@ fn database_initialise_error(error: DatabaseInitialiseError) -> ManagementRespon
             "database migration failed",
             AdministrationFailure::DatabaseMigrationFailed,
         ),
-        error @ DatabaseInitialiseError::EmptyMigrationCatalogue => private_failure(
-            &error,
-            internal_error("compiled database migration catalogue is empty"),
-        ),
         error @ (DatabaseInitialiseError::Session(DatabaseAccessError::Connection { .. })
-        | DatabaseInitialiseError::MigrationState { .. }
         | DatabaseInitialiseError::MigrationConnection { .. }
-        | DatabaseInitialiseError::Principal { .. }) => private_administration_error(
+        | DatabaseInitialiseError::Principal { .. }
+        | DatabaseInitialiseError::Project { .. }) => private_administration_error(
             &error,
             "database is unavailable",
             AdministrationFailure::DatabaseUnavailable,

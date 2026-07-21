@@ -705,10 +705,10 @@ mod tests {
             .await
             .expect("principal");
         let project = PgProjectRepository
-            .insert(
+            .insert_git(
                 conn,
                 &a_new_project()
-                    .git_remote(GitRemote::from_parts("github.com", "test/relation", None))
+                    .remote(GitRemote::from_parts("github.com", "test/relation", None))
                     .build(),
             )
             .await
@@ -1034,10 +1034,10 @@ mod tests {
         // Two projects: the edge connects a claim in each, so the launch must
         // resolve both endpoints with no project fence.
         let project_a = PgProjectRepository
-            .insert(
+            .insert_git(
                 &mut txn,
                 &a_new_project()
-                    .git_remote(GitRemote::from_parts(
+                    .remote(GitRemote::from_parts(
                         "github.com",
                         "test/relation-verify-a",
                         None,
@@ -1047,10 +1047,10 @@ mod tests {
             .await
             .expect("project a");
         let project_b = PgProjectRepository
-            .insert(
+            .insert_git(
                 &mut txn,
                 &a_new_project()
-                    .git_remote(GitRemote::from_parts(
+                    .remote(GitRemote::from_parts(
                         "github.com",
                         "test/relation-verify-b",
                         None,

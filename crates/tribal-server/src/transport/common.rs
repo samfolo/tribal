@@ -163,7 +163,10 @@ pub(super) fn mcp_service(
 
     StreamableHttpService::new(
         move || {
-            let session_project = factory_state.resolved_project().map(SessionProject::from);
+            let session_project = factory_state
+                .project_defaults()
+                .process()
+                .map(SessionProject::from);
             let session = SessionContext::new(session_project);
             let repositories = ConnectionRepositories::new();
             Ok(TribalServerHandler::new(

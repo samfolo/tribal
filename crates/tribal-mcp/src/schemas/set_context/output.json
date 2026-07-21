@@ -26,6 +26,11 @@
     }
   },
   "definitions": {
+    "GitRemote": {
+      "type": "string",
+      "pattern": "^[^\\s/]+/\\S*$",
+      "x-tribal-swift-type": "validated-string"
+    },
     "McpSessionActor": {
       "description": "Actor metadata on the MCP `set_context` response surface.\n\nAll fields are always present in serialised JSON (null when absent), matching the existing session resource representation.",
       "type": "object",
@@ -60,21 +65,70 @@
       "description": "Project on the MCP `set_context` response surface.",
       "type": "object",
       "required": [
-        "git_remote",
         "id",
-        "name"
+        "name",
+        "origin"
       ],
       "properties": {
-        "git_remote": {
-          "type": "string"
-        },
         "id": {
           "type": "string"
         },
         "name": {
           "type": "string"
+        },
+        "origin": {
+          "$ref": "#/definitions/ProjectOrigin"
         }
       }
+    },
+    "ProjectOrigin": {
+      "description": "The source of a project's stable identity.",
+      "oneOf": [
+        {
+          "description": "The graph-wide project maintained by Tribal.",
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "system"
+              ]
+            }
+          }
+        },
+        {
+          "description": "A project established from a Git remote.",
+          "type": "object",
+          "required": [
+            "default_branch",
+            "kind",
+            "remote"
+          ],
+          "properties": {
+            "default_branch": {
+              "description": "Branch used when a caller supplies no branch.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "git"
+              ]
+            },
+            "remote": {
+              "description": "Canonical remote identity.",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/GitRemote"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   }
 }

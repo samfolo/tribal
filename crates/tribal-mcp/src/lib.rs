@@ -17,7 +17,7 @@ pub mod sweep;
 mod test_utils;
 mod tools;
 
-pub use app_state::{AppState, ResolvedProject};
+pub use app_state::{AppState, ProjectDefaults, ResolvedProject};
 pub use config::{HandlerConfig, HandlerDiscoveryConfig, HandlerExplorationConfig};
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
 pub use server_handler::{

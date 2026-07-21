@@ -50,10 +50,10 @@ async fn setup_thread_prerequisites(
         .expect("insert principal");
 
     let project = PgProjectRepository
-        .insert(
+        .insert_git(
             txn,
             &a_new_project()
-                .git_remote(GitRemote::from_parts(
+                .remote(GitRemote::from_parts(
                     "github.com",
                     &format!("test/agent-thread-{suffix}"),
                     None,

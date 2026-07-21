@@ -10,7 +10,7 @@ use tribal_test_utils::{
 };
 
 use crate::harness::{
-    assertions::{assert_error, assert_success},
+    assertions::assert_success,
     fixtures::{ExtractionFixture, RelationFixture, candidate, novel},
     mocks::fixed_embedding_vector,
     server::{DEFAULT_PRINCIPAL_KEY, TestHarness, seed},
@@ -41,11 +41,11 @@ async fn test_multi_session_isolation() {
 
         seed!(setup, |seed| {
             let backend = PgProjectRepository
-                .insert(
+                .insert_git(
                     seed.conn(),
                     &a_new_project()
                         .name("canopy-backend".to_owned())
-                        .git_remote(GitRemote::from_parts(
+                        .remote(GitRemote::from_parts(
                             "github.com",
                             "meridian/canopy-backend",
                             None,
@@ -56,11 +56,11 @@ async fn test_multi_session_isolation() {
                 .expect("insert backend project");
 
             let frontend = PgProjectRepository
-                .insert(
+                .insert_git(
                     seed.conn(),
                     &a_new_project()
                         .name("canopy-frontend".to_owned())
-                        .git_remote(GitRemote::from_parts(
+                        .remote(GitRemote::from_parts(
                             "github.com",
                             "meridian/canopy-frontend",
                             None,
@@ -71,11 +71,11 @@ async fn test_multi_session_isolation() {
                 .expect("insert frontend project");
 
             let platform = PgProjectRepository
-                .insert(
+                .insert_git(
                     seed.conn(),
                     &a_new_project()
                         .name("canopy-platform".to_owned())
-                        .git_remote(GitRemote::from_parts(
+                        .remote(GitRemote::from_parts(
                             "github.com",
                             "meridian/canopy-platform",
                             None,
@@ -199,29 +199,34 @@ async fn test_multi_session_isolation() {
     assert_eq!(
         items.len(),
         1,
-        "primary client should discover exactly the backend item via session context",
+        "the primary client discovers exactly the backend item via session context",
     );
 
     // -- Second client: independent session -----------------------------------
 
     let client_2 = harness.connect_client(DEFAULT_PRINCIPAL_KEY).await;
 
-    // Step 1: without a project context, ingest should fail.
+    // Without a project context, ingest falls back to System.
     let result = client_2
         .call_tool(
             "tribal_ingest",
-            json!({ "content": "this should fail without a project" }),
+            json!({ "content": "Meridian keeps organisation-wide operating notes in System" }),
         )
         .await;
-    assert_error!(result);
+    assert_success!(result);
+    let system_job_id = tool_result_json(&result)["job_id"]
+        .as_str()
+        .expect("System ingest job id")
+        .to_owned();
+    harness.expect_completion(&system_job_id).await;
 
-    // Step 2: set context to frontend project.
+    // The second session binds to the frontend project.
     let result = client_2
         .call_tool("tribal_set_context", json!({ "project_id": &frontend_id }))
         .await;
     assert_success!(result);
 
-    // Step 3: session-scoped discover (frontend) — nothing ingested there.
+    // Frontend-scoped discovery excludes knowledge from other projects.
     let result = client_2
         .call_tool("tribal_discover", json!({ "query": "canopy services" }))
         .await;
@@ -232,10 +237,10 @@ async fn test_multi_session_isolation() {
     assert_eq!(
         items.len(),
         0,
-        "frontend session should not see backend or platform knowledge",
+        "the frontend session does not see backend or platform knowledge",
     );
 
-    // Step 4: explicit project_id (backend) — should find the ingested item.
+    // An explicit backend project finds its ingested item.
     let result = client_2
         .call_tool(
             "tribal_discover",
@@ -252,10 +257,10 @@ async fn test_multi_session_isolation() {
     assert_eq!(
         items.len(),
         1,
-        "explicit backend project_id should return exactly the backend item",
+        "explicit backend project_id returns exactly the backend item",
     );
 
-    // Step 5: null project_id (global) — should find both backend and platform.
+    // Global discovery includes System, backend, and platform.
     let result = client_2
         .call_tool(
             "tribal_discover",
@@ -271,8 +276,8 @@ async fn test_multi_session_isolation() {
     let items = discover_json["items"].as_array().expect("items array");
     assert_eq!(
         items.len(),
-        2,
-        "null project_id should return items from all projects (backend + platform)",
+        3,
+        "null project_id returns items from System, backend, and platform",
     );
 
     // -- Cleanup --------------------------------------------------------------

@@ -1,6 +1,6 @@
 //! Handler for `tribal_ingest` — job and extraction task creation.
 
-use std::{str::FromStr, sync::Arc};
+use std::sync::Arc;
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
@@ -12,27 +12,74 @@ use tracing::Instrument;
 use tribal_common::JobWatchEntry;
 use tribal_db::{DbError, IngestInsertOutcome, NewJob, NewTask};
 use tribal_domain::{
-    JobId, JobState, McpErrorCode, PrincipalId, ProjectId, SourceContextV1, TaskType, span_attrs,
+    JobId, JobState, McpErrorCode, PrincipalId, ProjectId, ProjectOrigin, SourceContextV1,
+    TaskType, span_attrs,
 };
 
 use super::common::begin_transaction;
 use crate::{
+    ProjectDefaults,
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
     fingerprint::{FingerprintError, FingerprintInputs, compute_and_upsert_fingerprint},
-    mapping::{McpIngestRequest, McpIngestResponse},
+    mapping::{McpIngestRequest, McpIngestResponse, RequestedProject},
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
 };
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const NO_PROJECT: &str =
-    "no project_id in request and no project set in session — call tribal_set_context first";
-
-// ---------------------------------------------------------------------------
 // Service types
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IngestProjectSelection {
+    Explicit(ProjectId),
+    RequestedSystem(ProjectId),
+    Connection(ProjectId),
+    Process(ProjectId),
+    System(ProjectId),
+}
+
+impl IngestProjectSelection {
+    fn resolve(
+        request: Option<RequestedProject>,
+        connection: Option<ProjectId>,
+        defaults: &ProjectDefaults,
+    ) -> Self {
+        match request {
+            Some(RequestedProject::Explicit { id }) => return Self::Explicit(id),
+            Some(RequestedProject::System {}) => {
+                return Self::RequestedSystem(defaults.system().id());
+            }
+            None => {}
+        }
+        if let Some(id) = connection {
+            return Self::Connection(id);
+        }
+        if let Some(project) = defaults.process() {
+            return Self::Process(project.id());
+        }
+        Self::System(defaults.system().id())
+    }
+
+    fn project_id(self) -> ProjectId {
+        match self {
+            Self::Explicit(id)
+            | Self::RequestedSystem(id)
+            | Self::Connection(id)
+            | Self::Process(id)
+            | Self::System(id) => id,
+        }
+    }
+
+    fn source_label(self) -> &'static str {
+        match self {
+            Self::Explicit(_) => "explicit",
+            Self::RequestedSystem(_) => "requested_system",
+            Self::Connection(_) => "connection",
+            Self::Process(_) => "process",
+            Self::System(_) => "system",
+        }
+    }
+}
 
 /// Domain-level parameters for the ingest service function.
 struct IngestParams {
@@ -50,6 +97,14 @@ struct IngestParams {
 #[derive(Debug)]
 struct IngestResult {
     job_id: JobId,
+    disposition: IngestDisposition,
+}
+
+/// Whether this call created the job or recovered an existing claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IngestDisposition {
+    Created,
+    Recovered,
 }
 
 /// Errors that can occur during ingest execution.
@@ -101,6 +156,8 @@ impl TribalServerHandler {
             { span_attrs::INGEST_IDEMPOTENCY_KEY } = tracing::field::Empty,
             { span_attrs::INGEST_ARBITRATION } = tracing::field::Empty,
             { span_attrs::INGEST_SOURCE_TYPE } = tracing::field::Empty,
+            { span_attrs::INGEST_PROJECT_SELECTION } = tracing::field::Empty,
+            { span_attrs::PROJECT_ORIGIN } = tracing::field::Empty,
         );
         self.apply_ingest(params, principal.principal_id())
             .instrument(span)
@@ -110,8 +167,8 @@ impl TribalServerHandler {
     /// Core logic for `tribal_ingest`, separated from the outer handler
     /// so it can be tested without a `Peer<RoleServer>`.
     ///
-    /// Parses the request, reads session state (project, actor fields),
-    /// resolves a project ID, builds source context, then
+    /// Parses the request, reads session state, resolves a project, then
+    /// builds source context and
     /// opens a transaction and delegates to [`execute_ingest`] for all
     /// domain logic. Domain errors are returned as error `CallToolResult`
     /// values via `IntoMcpError` / `IntoCallToolResult`. Only
@@ -134,26 +191,23 @@ impl TribalServerHandler {
             (guard.project.as_ref().map(|p| p.id), guard.actor.claimed())
         };
 
-        let project_id = match request.project_id {
-            Some(raw_id) => match ProjectId::from_str(&raw_id) {
-                Ok(id) => id,
-                Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
-            },
-            None => match session_project_id {
-                Some(id) => id,
-                None => {
-                    return Ok(McpToolError {
-                        code: McpErrorCode::FailedPrecondition,
-                        message: NO_PROJECT.into(),
-                        details: serde_json::json!({}),
-                    }
-                    .into_call_tool_result());
-                }
-            },
-        };
+        let selection = IngestProjectSelection::resolve(
+            request.project,
+            session_project_id,
+            self.state.project_defaults(),
+        );
+        let project_id = selection.project_id();
+
+        self.state
+            .metrics
+            .record_ingest_project_selection(selection.source_label());
 
         tracing::Span::current()
             .record(span_attrs::PROJECT_ID, tracing::field::display(&project_id));
+        tracing::Span::current().record(
+            span_attrs::INGEST_PROJECT_SELECTION,
+            selection.source_label(),
+        );
 
         let context = SourceContextV1::from_claims(self.channel, claimed_actor);
         tracing::Span::current().record(
@@ -223,10 +277,12 @@ impl TribalServerHandler {
             return Ok(db_err.into_mcp_error().into_call_tool_result());
         }
 
-        let (watch_tx, keepalive_rx) = watch::channel(JobState::Queued);
-        self.state
-            .job_state_txs
-            .insert(result.job_id, JobWatchEntry::new(watch_tx, keepalive_rx));
+        if result.disposition == IngestDisposition::Created {
+            let (watch_tx, keepalive_rx) = watch::channel(JobState::Queued);
+            self.state
+                .job_state_txs
+                .insert(result.job_id, JobWatchEntry::new(watch_tx, keepalive_rx));
+        }
 
         Ok(McpIngestResponse::from(result.job_id).into_call_tool_result())
     }
@@ -246,10 +302,11 @@ async fn execute_ingest(
     repositories: &ConnectionRepositories,
     params: IngestParams,
 ) -> Result<IngestResult, IngestError> {
-    repositories
+    let project = repositories
         .project
         .find_by_id(conn, params.project_id)
         .await?;
+    record_project_origin(project.origin());
 
     // -- System fingerprint ---------------------------------------------------
 
@@ -286,7 +343,7 @@ async fn execute_ingest(
 
     // The extraction task exists only for a job this call created: a
     // recovered job already has its task, and a conflict creates nothing.
-    let job = match repositories
+    let (job, disposition) = match repositories
         .job
         .insert_or_resolve_idempotency(conn, &new_job)
         .await?
@@ -298,11 +355,11 @@ async fn execute_ingest(
                 .task_type(TaskType::Extraction)
                 .build();
             repositories.task.insert(conn, &new_task).await?;
-            job
+            (job, IngestDisposition::Created)
         }
         IngestInsertOutcome::Existing(job) => {
             tracing::Span::current().record(span_attrs::INGEST_ARBITRATION, "recovered");
-            job
+            (job, IngestDisposition::Recovered)
         }
         IngestInsertOutcome::Conflict => {
             tracing::Span::current().record(span_attrs::INGEST_ARBITRATION, "conflict");
@@ -310,7 +367,20 @@ async fn execute_ingest(
         }
     };
 
-    Ok(IngestResult { job_id: job.id() })
+    Ok(IngestResult {
+        job_id: job.id(),
+        disposition,
+    })
+}
+
+fn record_project_origin(origin: &ProjectOrigin) {
+    tracing::Span::current().record(
+        span_attrs::PROJECT_ORIGIN,
+        match origin {
+            ProjectOrigin::System => "system",
+            ProjectOrigin::Git { .. } => "git",
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -319,9 +389,12 @@ async fn execute_ingest(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+    use std::{
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
     };
 
     use opentelemetry::trace::TracerProvider;
@@ -331,18 +404,20 @@ mod tests {
     use tracing::Instrument;
     use tracing_subscriber::layer::SubscriberExt;
     use tribal_db::{
-        PgPrincipalRepository, PgProjectRepository, PgTaskRepository, PrincipalRepository,
-        ProjectRepository, TaskRepository,
+        JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
+        PgTaskRepository, PrincipalRepository, ProjectRepository, TaskRepository,
     };
     use tribal_domain::{GitRemote, IngestChannel, KnowledgeItemId, PrincipalId, ProjectId};
+    use tribal_telemetry::{InferenceOperationRecord, MetricsRecorder};
     use tribal_test_utils::{
         MockIngestJobRepository, MockProjectRepository, MockPromptVersionRepository,
-        MockTaskRepository, TestDb, a_job, a_new_principal, a_new_project, a_new_prompt_version,
-        a_project, a_prompt_version, a_task, insert_prompt_version,
+        MockTaskRepository, TestDb, TracingCapture, a_job, a_new_principal, a_new_project,
+        a_new_prompt_version, a_project, a_prompt_version, a_task, insert_prompt_version,
     };
 
     use super::*;
     use crate::{
+        ProjectDefaults, ResolvedProject,
         error::ERROR_META_KEY,
         session::SessionActor,
         test_utils::{
@@ -381,6 +456,55 @@ mod tests {
         }
     }
 
+    fn ingest_telemetry_span() -> tracing::Span {
+        tracing::info_span!(
+            "tribal.ingest",
+            { span_attrs::PROJECT_ID } = tracing::field::Empty,
+            { span_attrs::INGEST_PROJECT_SELECTION } = tracing::field::Empty,
+            { span_attrs::PROJECT_ORIGIN } = tracing::field::Empty,
+        )
+    }
+
+    #[derive(Default)]
+    struct SelectionMetricsRecorder {
+        selections: Mutex<Vec<String>>,
+    }
+
+    impl SelectionMetricsRecorder {
+        fn selections(&self) -> Vec<String> {
+            self.selections
+                .lock()
+                .expect("selection metrics lock")
+                .clone()
+        }
+    }
+
+    impl MetricsRecorder for SelectionMetricsRecorder {
+        fn record_pool_acquire(&self, _pool: &str, _elapsed: Duration) {}
+        fn record_semaphore_acquire(&self, _provider_key: &str, _elapsed: Duration) {}
+        fn record_inference_operation(&self, _record: &InferenceOperationRecord<'_>) {}
+        fn record_task_completed(&self, _task_type: &str, _duration_ms: f64) {}
+        fn record_task_retried(&self, _task_type: &str) {}
+        fn record_task_dead_lettered(&self, _task_type: &str) {}
+        fn record_job_completed(&self, _outcome: &str, _duration_ms: Option<f64>) {}
+
+        fn record_ingest_project_selection(&self, source: &str) {
+            self.selections
+                .lock()
+                .expect("selection metrics lock")
+                .push(source.to_owned());
+        }
+
+        fn set_queue_gauge(&self, _task_type: &str, _status: &str, _count: i64) {}
+        fn record_agent_suspension(&self, _reason: &str) {}
+        fn record_agent_budget_admission(&self, _decision: &str) {}
+        fn record_agent_child_launch(&self) {}
+        fn record_agent_child_terminal(&self, _outcome: &str, _is_error: bool) {}
+        fn record_agent_thread_resume(&self) {}
+        fn record_agent_conflict_retry(&self) {}
+        fn record_agent_sweep_action(&self, _action: &str, _count: u64) {}
+    }
+
     // -- Adapter: validation -----------------------------------------------
 
     #[tokio::test]
@@ -396,47 +520,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_ingest_no_project_returns_failed_precondition() {
-        let handler = TestHandler::builder().build();
+    async fn test_apply_ingest_without_a_selection_uses_the_system_default() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, _, active_prompts) =
+            setup_real_ingest_prerequisites(&mut conn, "system-default").await;
+        let system = PgProjectRepository
+            .find_system(&mut conn)
+            .await
+            .expect("find System project");
+        drop(conn);
+        let defaults = ProjectDefaults::builder()
+            .system(
+                ResolvedProject::builder()
+                    .id(system.id())
+                    .name(system.name())
+                    .origin(system.origin().clone())
+                    .build(),
+            )
+            .build();
+        let metrics = Arc::new(SelectionMetricsRecorder::default());
+        let handler = TestHandler::builder()
+            .pool(ctx.pool().clone())
+            .repositories(ConnectionRepositories::new())
+            .active_prompt_versions(Arc::new(RwLock::new(active_prompts)))
+            .project_defaults(defaults)
+            .metrics(metrics.clone())
+            .build();
 
         let result = handler
             .apply_ingest(
                 serde_json::json!({"content": "some knowledge"}),
-                PrincipalId::new(),
+                principal_id,
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
-        assert_eq!(result.is_error, Some(true));
-        assert!(
-            result.structured_content.is_none(),
-            "{NO_STRUCTURED_CONTENT}"
-        );
-        assert!(first_text_content(&result).contains(NO_PROJECT));
+        assert_eq!(result.is_error, Some(false));
+        let job_id: JobId = result.structured_content.expect(STRUCTURED_CONTENT)["job_id"]
+            .as_str()
+            .expect("job id string")
+            .parse()
+            .expect("job id parses");
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let job = PgJobRepository
+            .find_by_id(&mut conn, job_id)
+            .await
+            .expect("find job");
+        assert_eq!(job.project_id(), system.id());
+        assert_eq!(metrics.selections(), ["system"]);
     }
 
     #[tokio::test]
-    async fn test_apply_ingest_invalid_project_prefix_returns_application_error() {
+    async fn test_apply_ingest_invalid_project_prefix_returns_protocol_error() {
         let handler = TestHandler::builder().build();
 
         let wrong_prefix_id = KnowledgeItemId::new().to_string();
-        let result = handler
+        let error = handler
             .apply_ingest(
-                serde_json::json!({"content": "some knowledge", "project_id": wrong_prefix_id}),
+                serde_json::json!({
+                    "content": "some knowledge",
+                    "project": {"kind": "explicit", "id": wrong_prefix_id},
+                }),
                 PrincipalId::new(),
             )
             .await
-            .expect(NO_PROTOCOL_ERROR);
+            .expect_err("invalid selector is a malformed request");
 
-        assert_eq!(result.is_error, Some(true));
-        assert!(
-            result.structured_content.is_none(),
-            "{NO_STRUCTURED_CONTENT}"
-        );
-        assert!(first_text_content(&result).contains("expected prefix"));
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
     }
 
-    /// With a session project set and no `project_id` in the request, the
+    /// With a session project set and no project selector in the request, the
     /// handler should resolve the session project and continue past the
     /// precondition check. `lazy_pool` cannot open connections, so the
     /// call fails at the pool phase — we assert the error message is NOT the
@@ -464,13 +618,82 @@ mod tests {
 
         let message = first_text_content(&result);
         assert!(
-            !message.contains(NO_PROJECT),
-            "session project should be used when request omits project_id: {message}",
-        );
-        // The failure must come from the pool layer downstream of resolution.
-        assert!(
             message.contains("pool") || message.contains("query failed"),
             "error should originate from the pool, not the precondition check: {message}",
+        );
+    }
+
+    #[test]
+    fn test_project_selection_precedence_is_request_connection_process_system() {
+        let system = ProjectId::new();
+        let process = ProjectId::new();
+        let connection = ProjectId::new();
+        let explicit = ProjectId::new();
+        let defaults = ProjectDefaults::builder()
+            .system(
+                ResolvedProject::builder()
+                    .id(system)
+                    .name("General")
+                    .origin(ProjectOrigin::System)
+                    .build(),
+            )
+            .process(
+                ResolvedProject::builder()
+                    .id(process)
+                    .name("process")
+                    .origin(ProjectOrigin::System)
+                    .build(),
+            )
+            .build();
+
+        let selections = [
+            IngestProjectSelection::resolve(
+                Some(RequestedProject::Explicit { id: explicit }),
+                Some(connection),
+                &defaults,
+            ),
+            IngestProjectSelection::resolve(
+                Some(RequestedProject::System {}),
+                Some(connection),
+                &defaults,
+            ),
+            IngestProjectSelection::resolve(None, Some(connection), &defaults),
+            IngestProjectSelection::resolve(None, None, &defaults),
+        ];
+        assert_eq!(selections[0], IngestProjectSelection::Explicit(explicit));
+        assert_eq!(
+            selections[1],
+            IngestProjectSelection::RequestedSystem(system)
+        );
+        assert_eq!(
+            selections[2],
+            IngestProjectSelection::Connection(connection)
+        );
+        assert_eq!(selections[3], IngestProjectSelection::Process(process));
+        let defaults = ProjectDefaults::builder()
+            .system(
+                ResolvedProject::builder()
+                    .id(system)
+                    .name("General")
+                    .origin(ProjectOrigin::System)
+                    .build(),
+            )
+            .build();
+        let fallback = IngestProjectSelection::resolve(None, None, &defaults);
+        assert_eq!(fallback, IngestProjectSelection::System(system));
+        assert_eq!(
+            selections
+                .into_iter()
+                .chain([fallback])
+                .map(IngestProjectSelection::source_label)
+                .collect::<Vec<_>>(),
+            [
+                "explicit",
+                "requested_system",
+                "connection",
+                "process",
+                "system",
+            ]
         );
     }
 
@@ -494,10 +717,10 @@ mod tests {
             .await
             .expect("insert principal");
         let project = PgProjectRepository
-            .insert(
+            .insert_git(
                 conn,
                 &a_new_project()
-                    .git_remote(GitRemote::from_parts(
+                    .remote(GitRemote::from_parts(
                         "github.com",
                         &format!("test/ingest-real-{suffix}"),
                         None,
@@ -529,6 +752,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_explicit_system_selector_bypasses_connection_scope() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, _, active_prompts) =
+            setup_real_ingest_prerequisites(&mut conn, "requested-system").await;
+        let system = PgProjectRepository
+            .find_system(&mut conn)
+            .await
+            .expect("find System project");
+        drop(conn);
+        let defaults = ProjectDefaults::builder()
+            .system(
+                ResolvedProject::builder()
+                    .id(system.id())
+                    .name(system.name())
+                    .origin(system.origin().clone())
+                    .build(),
+            )
+            .build();
+        let handler = TestHandler::builder()
+            .pool(ctx.pool().clone())
+            .repositories(ConnectionRepositories::new())
+            .active_prompt_versions(Arc::new(RwLock::new(active_prompts)))
+            .session(session_with_project())
+            .project_defaults(defaults)
+            .build();
+
+        let result = handler
+            .apply_ingest(
+                serde_json::json!({
+                    "content": "System-scoped knowledge",
+                    "project": { "kind": "system" },
+                }),
+                principal_id,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+        let job_id: JobId = result.structured_content.expect(STRUCTURED_CONTENT)["job_id"]
+            .as_str()
+            .expect("job id string")
+            .parse()
+            .expect("job id parses");
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let job = PgJobRepository
+            .find_by_id(&mut conn, job_id)
+            .await
+            .expect("find job");
+        assert_eq!(job.project_id(), system.id());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn test_a_retried_ingest_call_converges_on_one_job_and_one_extraction_task() {
         let ctx = TestDb::new().await;
         let mut conn = ctx.raw_connection().await.expect("conn");
@@ -539,7 +815,7 @@ mod tests {
         let handler = real_ingest_handler(ctx.pool().clone(), active_prompts);
         let key = uuid::Uuid::new_v4();
         let params = serde_json::json!({
-            "project_id": project_id.to_string(),
+            "project": {"kind": "explicit", "id": project_id},
             "content": "shared knowledge",
             "idempotency_key": key,
         });
@@ -548,8 +824,10 @@ mod tests {
             .apply_ingest(params.clone(), principal_id)
             .await
             .expect(NO_PROTOCOL_ERROR);
+        let (capture, _guard) = TracingCapture::install();
         let retry = handler
             .apply_ingest(params, principal_id)
+            .instrument(ingest_telemetry_span())
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -578,6 +856,116 @@ mod tests {
             "a retry must not create a second extraction task",
         );
         assert_eq!(tasks[0].task_type(), TaskType::Extraction);
+        let span = capture.span("tribal.ingest").expect("captured ingest span");
+        assert_eq!(
+            span.field(span_attrs::PROJECT_ID),
+            Some(project_id.to_string().as_str())
+        );
+        assert_eq!(
+            span.field(span_attrs::INGEST_PROJECT_SELECTION),
+            Some("explicit")
+        );
+        assert_eq!(span.field(span_attrs::PROJECT_ORIGIN), Some("git"));
+        assert!(
+            !span
+                .fields
+                .values()
+                .any(|value| value.contains("shared knowledge")),
+            "telemetry excludes capture content",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_an_idempotent_retry_preserves_the_live_job_watch_entry() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, project_id, active_prompts) =
+            setup_real_ingest_prerequisites(&mut conn, "retry-watch").await;
+        drop(conn);
+
+        let job_state_txs = Arc::new(dashmap::DashMap::new());
+        let handler = TestHandler::builder()
+            .pool(ctx.pool().clone())
+            .repositories(ConnectionRepositories::new())
+            .active_prompt_versions(Arc::new(RwLock::new(active_prompts)))
+            .job_state_txs(Arc::clone(&job_state_txs))
+            .build();
+        let params = serde_json::json!({
+            "project": {"kind": "explicit", "id": project_id},
+            "content": "watch this job",
+            "idempotency_key": uuid::Uuid::new_v4(),
+        });
+        let first = handler
+            .apply_ingest(params.clone(), principal_id)
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+        let job_id: JobId = first.structured_content.expect(STRUCTURED_CONTENT)["job_id"]
+            .as_str()
+            .expect("job id string")
+            .parse()
+            .expect("job id parses");
+        let mut original_rx = job_state_txs
+            .get(&job_id)
+            .expect("created job has a watch entry")
+            .sender
+            .subscribe();
+
+        let retry = handler
+            .apply_ingest(params, principal_id)
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+        assert_eq!(retry.is_error, Some(false));
+        job_state_txs
+            .get(&job_id)
+            .expect("recovered job retains the entry")
+            .sender
+            .send_replace(JobState::Completed);
+
+        original_rx
+            .changed()
+            .await
+            .expect("the original subscriber remains connected");
+        assert_eq!(*original_rx.borrow_and_update(), JobState::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_ingest_calls_converge_on_one_job_and_one_extraction_task() {
+        let ctx = TestDb::new().await;
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let (principal_id, project_id, active_prompts) =
+            setup_real_ingest_prerequisites(&mut conn, "concurrent-retry").await;
+        drop(conn);
+
+        let handler = real_ingest_handler(ctx.pool().clone(), active_prompts);
+        let params = serde_json::json!({
+            "project": {"kind": "explicit", "id": project_id},
+            "content": "concurrent shared knowledge",
+            "idempotency_key": uuid::Uuid::new_v4(),
+        });
+        let (first, retry) = tokio::join!(
+            handler.apply_ingest(params.clone(), principal_id),
+            handler.apply_ingest(params, principal_id),
+        );
+        let first = first.expect(NO_PROTOCOL_ERROR);
+        let retry = retry.expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(first.is_error, Some(false));
+        assert_eq!(retry.is_error, Some(false));
+        let first_structured = first.structured_content.expect(STRUCTURED_CONTENT);
+        let retry_structured = retry.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(first_structured["job_id"], retry_structured["job_id"]);
+        let job_id: JobId = first_structured["job_id"]
+            .as_str()
+            .expect("job id string")
+            .parse()
+            .expect("job id parses");
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        let tasks = PgTaskRepository
+            .find_by_job_id(&mut conn, job_id)
+            .await
+            .expect("find tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].task_type(), TaskType::Extraction);
     }
 
     #[tokio::test]
@@ -595,7 +983,7 @@ mod tests {
         let first = handler
             .apply_ingest(
                 serde_json::json!({
-                    "project_id": project_id.to_string(),
+                    "project": {"kind": "explicit", "id": project_id},
                     "content": original_content,
                     "idempotency_key": key,
                 }),
@@ -608,7 +996,7 @@ mod tests {
         let conflicting = handler
             .apply_ingest(
                 serde_json::json!({
-                    "project_id": project_id.to_string(),
+                    "project": {"kind": "explicit", "id": project_id},
                     "content": "a completely different note",
                     "idempotency_key": key,
                 }),
@@ -639,7 +1027,7 @@ mod tests {
 
         let handler = real_ingest_handler(ctx.pool().clone(), active_prompts);
         let params = serde_json::json!({
-            "project_id": project_id.to_string(),
+            "project": {"kind": "explicit", "id": project_id},
             "content": "a keyless note",
         });
 

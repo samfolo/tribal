@@ -66,7 +66,7 @@ pub(crate) async fn run_stdio_transport(
 
     // -- Handler -------------------------------------------------------------
 
-    let session_project = state.resolved_project().map(SessionProject::from);
+    let session_project = state.project_defaults().process().map(SessionProject::from);
     let session = SessionContext::new(session_project);
     let repositories = ConnectionRepositories::new();
 

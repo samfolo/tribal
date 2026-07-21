@@ -148,6 +148,7 @@ impl MetricsRecorder for CountingRecorder {
     fn record_task_retried(&self, _task_type: &str) {}
     fn record_task_dead_lettered(&self, _task_type: &str) {}
     fn record_job_completed(&self, _outcome: &str, _duration_ms: Option<f64>) {}
+    fn record_ingest_project_selection(&self, _source: &str) {}
     fn set_queue_gauge(&self, _task_type: &str, _status: &str, _count: i64) {}
     fn record_agent_suspension(&self, _reason: &str) {
         self.suspensions.fetch_add(1, Ordering::SeqCst);

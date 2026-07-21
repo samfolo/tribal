@@ -2,6 +2,7 @@
 //! exchanged over the MCP surface.
 
 use serde::{Deserialize, Serialize};
+use tribal_domain::ProjectOrigin;
 
 // ---------------------------------------------------------------------------
 // Request
@@ -26,7 +27,7 @@ pub struct McpSetContextRequest {
 pub struct McpSessionProject {
     pub id: String,
     pub name: String,
-    pub git_remote: String,
+    pub origin: ProjectOrigin,
 }
 
 /// Actor metadata on the MCP `set_context` response surface.
@@ -96,7 +97,10 @@ mod tests {
             project: Some(McpSessionProject {
                 id: "proj-1".into(),
                 name: "tribal".into(),
-                git_remote: "github.com/user/tribal".into(),
+                origin: ProjectOrigin::Git {
+                    remote: "github.com/user/tribal".parse().expect("valid remote"),
+                    default_branch: "main".to_owned(),
+                },
             }),
             principal_key: "user:sam".into(),
             actor: McpSessionActor {
@@ -164,7 +168,10 @@ mod tests {
             project: Some(McpSessionProject {
                 id: "proj-1".into(),
                 name: "tribal".into(),
-                git_remote: "github.com/user/tribal".into(),
+                origin: ProjectOrigin::Git {
+                    remote: "github.com/user/tribal".parse().expect("valid remote"),
+                    default_branch: "main".to_owned(),
+                },
             }),
             principal_key: "user:sam".into(),
             actor: McpSessionActor {
