@@ -95,6 +95,11 @@ pub enum AppError {
     #[error("{FIRST_RUN_REQUIRED}")]
     FirstRunRequired,
 
+    /// The graph-owned System project row is absent — a broken invariant
+    /// that `tribal database initialise` repairs.
+    #[error("graph-owned System project is missing; run `tribal database initialise` to repair it")]
+    SystemProjectMissing,
+
     /// `tribal check` produced one or more failing rows; the diagnostic
     /// output has already been written to the selected stream, so this
     /// variant exists purely to flip the process exit code.

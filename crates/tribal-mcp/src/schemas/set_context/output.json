@@ -27,16 +27,9 @@
   },
   "definitions": {
     "GitRemote": {
-      "description": "Protocol-agnostic git remote identity.\n\nStores the canonical `host/path` form (e.g. `github.com/user/repo`), stripping the transport scheme and `.git` suffix. Two remotes that point to the same repository — regardless of whether they use SSH, HTTPS, or SCP syntax — produce the same `GitRemote` value.\n\nNon-standard ports are preserved in the canonical form as `host:port/path` since different ports may serve different content.\n\nAll major git hosts (GitHub, GitLab, Bitbucket, Gitea) treat organisation and repository names as case-insensitive, so the canonical form is fully lowercased.\n\n# Construction\n\nParse any common git remote URL format via [`FromStr`]:\n\n```text git@github.com:user/repo.git   → github.com/user/repo https://github.com/user/repo   → github.com/user/repo ssh://git@github.com/user/repo → github.com/user/repo ```\n\nOr build from already-parsed components via [`GitRemote::from_parts`].",
-      "type": "object",
-      "required": [
-        "canonical"
-      ],
-      "properties": {
-        "canonical": {
-          "type": "string"
-        }
-      }
+      "type": "string",
+      "pattern": "^[^\\s/]+/\\S*$",
+      "x-tribal-swift-type": "validated-string"
     },
     "McpSessionActor": {
       "description": "Actor metadata on the MCP `set_context` response surface.\n\nAll fields are always present in serialised JSON (null when absent), matching the existing session resource representation.",

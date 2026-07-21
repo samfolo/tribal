@@ -824,7 +824,7 @@ mod tests {
             .apply_ingest(params.clone(), principal_id)
             .await
             .expect(NO_PROTOCOL_ERROR);
-        let (capture, _capture) = TracingCapture::install();
+        let (capture, _guard) = TracingCapture::install();
         let retry = handler
             .apply_ingest(params, principal_id)
             .instrument(ingest_telemetry_span())

@@ -113,7 +113,7 @@ async fn test_missing_bearer_token_returns_401() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool, ct.clone());
+    let state = test_app_state(pool, ct.clone()).await;
     let transport = spawn_sse(&state, ct, ServerConfig::default()).await;
 
     let response = test_client()
@@ -138,7 +138,7 @@ async fn test_valid_bearer_token_passes_auth() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool.clone(), ct.clone());
+    let state = test_app_state(pool.clone(), ct.clone()).await;
 
     seed_auth(
         &pool,
@@ -174,7 +174,7 @@ async fn test_expired_token_returns_401() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool.clone(), ct.clone());
+    let state = test_app_state(pool.clone(), ct.clone()).await;
 
     seed_auth(
         &pool,
@@ -213,7 +213,7 @@ async fn test_max_connection_age_closes_stream() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool.clone(), ct.clone());
+    let state = test_app_state(pool.clone(), ct.clone()).await;
 
     seed_auth(
         &pool,
@@ -264,7 +264,7 @@ async fn test_idle_timeout_closes_stream() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool.clone(), ct.clone());
+    let state = test_app_state(pool.clone(), ct.clone()).await;
 
     seed_auth(
         &pool,
@@ -322,7 +322,7 @@ async fn test_underprovisioned_principal_sees_minimal_tools() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool.clone(), ct.clone());
+    let state = test_app_state(pool.clone(), ct.clone()).await;
 
     let granted_scopes = vec![Scope::parse("tribal.jobs:read").expect("valid scope")];
 
@@ -356,7 +356,7 @@ async fn test_get_to_existing_session_returns_sse_stream() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool.clone(), ct.clone());
+    let state = test_app_state(pool.clone(), ct.clone()).await;
 
     seed_auth(
         &pool,
@@ -395,7 +395,7 @@ async fn test_get_without_session_id_returns_400() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool.clone(), ct.clone());
+    let state = test_app_state(pool.clone(), ct.clone()).await;
 
     seed_auth(
         &pool,
@@ -426,7 +426,7 @@ async fn test_get_with_unknown_session_id_returns_404() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool.clone(), ct.clone());
+    let state = test_app_state(pool.clone(), ct.clone()).await;
 
     seed_auth(
         &pool,
@@ -470,7 +470,7 @@ async fn test_get_with_last_event_id_returns_sse_stream() {
     let db = fresh_pool().await;
     let pool = db.pool().clone();
     let ct = CancellationToken::new();
-    let state = test_app_state(pool.clone(), ct.clone());
+    let state = test_app_state(pool.clone(), ct.clone()).await;
 
     seed_auth(
         &pool,

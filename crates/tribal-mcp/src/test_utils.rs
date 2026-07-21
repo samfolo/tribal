@@ -11,7 +11,9 @@ use tokio_util::sync::CancellationToken;
 use tribal_auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy};
 use tribal_common::JobStateTxs;
 use tribal_config::{ServerConfig, WorkerConfig};
-use tribal_domain::{IngestChannel, PrincipalId, ProjectId, PromptVersionId, ProviderKind};
+use tribal_domain::{
+    IngestChannel, PrincipalId, ProjectId, ProjectOrigin, PromptVersionId, ProviderKind,
+};
 use tribal_inference::{
     CompletionStageSpec, CompletionStageSpecs, EmbeddingProvider, InferenceProvider,
     ProviderIdentity,
@@ -151,7 +153,7 @@ fn test_system_project() -> ResolvedProject {
     ResolvedProject::builder()
         .id(ProjectId::new())
         .name("General")
-        .origin(tribal_domain::ProjectOrigin::System)
+        .origin(ProjectOrigin::System)
         .build()
 }
 
@@ -163,7 +165,7 @@ pub(crate) fn session_with_project() -> SessionContext {
     let project = SessionProject {
         id: ProjectId::new(),
         name: "tribal".into(),
-        origin: tribal_domain::ProjectOrigin::Git {
+        origin: ProjectOrigin::Git {
             remote: "git@github.com:user/tribal.git"
                 .parse()
                 .expect("valid test git remote"),

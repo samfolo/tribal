@@ -86,7 +86,10 @@ pub trait ProjectRepository: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::QueryFailed`] when the write or follow-up lookup fails.
+    /// Returns [`DbError::QueryFailed`] when the write or follow-up lookup
+    /// fails, and [`DbError::NotFound`] when the skipped insert's follow-up
+    /// lookup cannot see the competing row (a concurrent delete, or a
+    /// caller-held snapshot that predates it).
     async fn ensure_system(&self, conn: &mut PgConnection) -> Result<EnsureSystemOutcome, DbError>;
 
     /// Returns the graph-owned System project.
@@ -391,7 +394,7 @@ fn map_project(row: ProjectRow) -> Result<Project, DbError> {
         .build())
 }
 
-pub(super) fn decode_project_origin(origin: serde_json::Value) -> Result<ProjectOrigin, DbError> {
+fn decode_project_origin(origin: serde_json::Value) -> Result<ProjectOrigin, DbError> {
     serde_json::from_value(origin).map_err(|source| decode_error("decoding project origin", source))
 }
 

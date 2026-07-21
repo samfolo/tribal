@@ -20,7 +20,10 @@ use super::{
     },
     operation::{OperationContext, OperationError},
 };
-use crate::startup::run_migrations;
+use crate::{
+    error::AppError,
+    startup::{MigrationRunOutcome, run_migrations},
+};
 
 const POOL_NAME: &str = "management";
 const DEFAULT_DATABASE_URL: &str = "postgresql://tribal:tribal@localhost:5432/tribal";
@@ -140,7 +143,7 @@ pub(crate) enum DatabaseInitialiseError {
     #[error("database migration failed: {source}")]
     Migration {
         #[source]
-        source: crate::error::AppError,
+        source: AppError,
     },
     #[error("local principal initialisation failed: {source}")]
     Principal {
@@ -275,10 +278,8 @@ impl DatabaseAccess {
             .map_err(DatabaseAccessError::from)?
             .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })?;
 
-        let changed = matches!(
-            migration_outcome,
-            crate::startup::MigrationRunOutcome::Applied
-        ) || matches!(principal_outcome, EnsurePrincipalOutcome::Inserted(_))
+        let changed = matches!(migration_outcome, MigrationRunOutcome::Applied)
+            || matches!(principal_outcome, EnsurePrincipalOutcome::Inserted(_))
             || matches!(system_outcome, EnsureSystemOutcome::Inserted(_));
         let outcome = if changed {
             DatabaseInitialiseOutcome::Initialised
@@ -506,10 +507,19 @@ mod tests {
             first_access.initialise(&first_operation, first_request),
             second_access.initialise(&second_operation, second_request),
         );
-        let outcomes = [
-            first.expect("first initialisation").value,
-            second.expect("second initialisation").value,
-        ];
+        let mut outcomes = Vec::new();
+        for result in [first, second] {
+            match result {
+                Ok(revisioned) => outcomes.push(revisioned.value),
+                // The loser's bounded lock budget may expire while the
+                // winner still runs the full catalogue; the documented
+                // transient failure is a valid loser outcome.
+                Err(DatabaseInitialiseError::Migration {
+                    source: AppError::MigrationLockFailed { .. },
+                }) => {}
+                Err(other) => panic!("initialise failed: {other:?}"),
+            }
+        }
 
         assert!(outcomes.contains(&DatabaseInitialiseOutcome::Initialised));
         let mut connection = database.raw_connection().await.expect("connect");

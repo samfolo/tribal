@@ -111,7 +111,7 @@ impl<'a> BootstrapAdministration<'a> {
             .await
             .map_err(super::database_initialise_error)?;
         let database_outcome = database.value;
-        let revision = database.config_revision.clone();
+        let mut revision = database.config_revision.clone();
         self.checkpoint()?;
         let system_project = self
             .projects
@@ -121,7 +121,6 @@ impl<'a> BootstrapAdministration<'a> {
         if system_project.config_revision != revision {
             return Err(config_conflict(revision, system_project.config_revision));
         }
-        let mut revision = system_project.config_revision;
         let additional_project_outcome = if let Some(project) = additional_project {
             self.checkpoint()?;
             let result = self

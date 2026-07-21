@@ -10,7 +10,7 @@ use tribal_common::sha256_hex;
 use tribal_config::{ServerConfig, WorkerConfig};
 use tribal_db::{
     AuthTokenRepository, NewAuthToken, NewPrincipal, PgAuthTokenRepository, PgPrincipalRepository,
-    PrincipalRepository,
+    PgProjectRepository, PrincipalRepository, ProjectRepository,
 };
 use tribal_domain::{PromptVersionId, ProviderKind, Scope, full_access_scopes};
 use tribal_inference::{
@@ -18,7 +18,7 @@ use tribal_inference::{
     InjectedCompletion, InjectedProviders, NoopLedgerSink, ProviderIdentity, ProviderRegistry,
     RequestClass,
 };
-use tribal_mcp::{ActivePromptVersions, AppState};
+use tribal_mcp::{ActivePromptVersions, AppState, ProjectDefaults, ResolvedProject};
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{MockInferenceProvider, TestDb};
 
@@ -54,8 +54,25 @@ pub async fn fresh_pool() -> TestDb {
 // ---------------------------------------------------------------------------
 
 /// Builds an [`AppState`] backed by a real test database pool and mock
-/// providers.
-pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState> {
+/// providers. The System default is the migrated database's own row, so
+/// unscoped ingestion resolves to a project that exists.
+pub async fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState> {
+    let system_project = {
+        let mut conn = pool
+            .acquire()
+            .await
+            .expect("acquire connection for System project lookup");
+        let project = PgProjectRepository
+            .find_system(&mut conn)
+            .await
+            .expect("migrated test database carries the System project");
+        ResolvedProject::builder()
+            .id(project.id())
+            .name(project.name())
+            .origin(project.origin().clone())
+            .build()
+    };
+
     let provider_kind = ProviderKind::default().to_string();
 
     let inference_key = tribal_inference::ProviderKey::new(
@@ -115,17 +132,7 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
             .cancellation_token(ct)
             .job_state_txs(Arc::new(DashMap::new()))
             .metrics(noop_recorder())
-            .project_defaults(
-                tribal_mcp::ProjectDefaults::builder()
-                    .system(
-                        tribal_mcp::ResolvedProject::builder()
-                            .id(tribal_domain::ProjectId::new())
-                            .name("General")
-                            .origin(tribal_domain::ProjectOrigin::System)
-                            .build(),
-                    )
-                    .build(),
-            )
+            .project_defaults(ProjectDefaults::builder().system(system_project).build())
             .build(),
     )
 }

@@ -70,16 +70,20 @@ pub(crate) async fn resolve_project(
     resolve_project_mode(pool, mode).await
 }
 
-/// Loads the graph-owned System project before MCP state is constructed.
+/// Loads the graph-owned System project.
 pub(crate) async fn resolve_system_project(pool: &PgPool) -> Result<ResolvedProject, AppError> {
     let mut conn = pool
         .acquire()
         .await
         .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "System project lookup", e))?;
-    let project = PgProjectRepository
-        .find_system(&mut conn)
-        .await
-        .map_err(|source| AppError::Database { source })?;
+    let project =
+        PgProjectRepository
+            .find_system(&mut conn)
+            .await
+            .map_err(|source| match source {
+                DbError::NotFound { .. } => AppError::SystemProjectMissing,
+                source => AppError::Database { source },
+            })?;
     Ok(resolved_project(&project))
 }
 
@@ -177,14 +181,6 @@ mod tests {
             .await
             .expect_err("startup must reject a missing System project");
 
-        assert!(matches!(
-            error,
-            AppError::Database {
-                source: DbError::NotFound {
-                    entity: "system project",
-                    ..
-                }
-            }
-        ));
+        assert!(matches!(error, AppError::SystemProjectMissing));
     }
 }

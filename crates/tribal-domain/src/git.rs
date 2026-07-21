@@ -37,11 +37,15 @@ use serde::{Deserialize, Serialize};
 ///
 /// Or build from already-parsed components via [`GitRemote::from_parts`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "String", into = "String")]
 pub struct GitRemote {
     canonical: String,
 }
+
+/// Anchored grammar of the canonical wire form: a host segment (which may
+/// carry a `:port` suffix), one `/`, then a whitespace-free path.
+#[cfg(feature = "schema")]
+const GIT_REMOTE_PATTERN: &str = r"^[^\s/]+/\S*$";
 
 impl GitRemote {
     /// Constructs a `GitRemote` from pre-parsed host, path, and optional
@@ -146,6 +150,30 @@ impl fmt::Display for GitRemote {
 impl AsRef<str> for GitRemote {
     fn as_ref(&self) -> &str {
         &self.canonical
+    }
+}
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for GitRemote {
+    fn schema_name() -> String {
+        "GitRemote".to_owned()
+    }
+
+    fn json_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        let validation = schemars::schema::StringValidation {
+            pattern: Some(GIT_REMOTE_PATTERN.to_owned()),
+            ..Default::default()
+        };
+        let mut schema = schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            string: Some(Box::new(validation)),
+            ..Default::default()
+        };
+        schema.extensions.insert(
+            "x-tribal-swift-type".to_owned(),
+            serde_json::Value::String("validated-string".to_owned()),
+        );
+        schema.into()
     }
 }
 

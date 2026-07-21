@@ -1,4 +1,4 @@
-use tribal_db::{DbError, PgPrincipalRepository, PrincipalRepository};
+use tribal_db::{DbError, EnsurePrincipalOutcome, PgPrincipalRepository, PrincipalRepository};
 use tribal_domain::{PlatformBinding, Principal, PrincipalId};
 use tribal_test_utils::{TestDb, a_new_principal};
 
@@ -201,6 +201,86 @@ async fn test_find_by_ids_all_missing_returns_empty_vec() {
     let found = repo.find_by_ids(&mut txn, &ids).await.expect("find_by_ids");
 
     assert!(found.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// ensure_local_by_key
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_ensure_local_by_key_inserts_a_missing_principal() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgPrincipalRepository;
+
+    let outcome = repo
+        .ensure_local_by_key(&mut txn, "user:ensure-new")
+        .await
+        .expect("ensure");
+
+    let EnsurePrincipalOutcome::Inserted(principal) = outcome else {
+        panic!("ensuring a missing principal inserts it, got: {outcome:?}");
+    };
+    assert_eq!(principal.principal_key(), "user:ensure-new");
+}
+
+#[tokio::test]
+async fn test_ensure_local_by_key_resolves_the_existing_principal() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgPrincipalRepository;
+
+    let first = repo
+        .ensure_local_by_key(&mut txn, "user:ensure-idem")
+        .await
+        .expect("first ensure");
+    let second = repo
+        .ensure_local_by_key(&mut txn, "user:ensure-idem")
+        .await
+        .expect("second ensure");
+
+    let EnsurePrincipalOutcome::Inserted(inserted) = first else {
+        panic!("the first ensure inserts the principal, got: {first:?}");
+    };
+    let EnsurePrincipalOutcome::Existing(existing) = second else {
+        panic!("the second ensure resolves the existing principal, got: {second:?}");
+    };
+    assert_eq!(existing.id(), inserted.id());
+}
+
+#[tokio::test]
+async fn test_ensure_local_by_key_converges_under_concurrent_callers() {
+    let ctx = TestDb::new().await;
+    let mut first = ctx.raw_connection().await.expect("first connection");
+    let mut second = ctx.raw_connection().await.expect("second connection");
+    let (first, second) = tokio::join!(
+        PgPrincipalRepository.ensure_local_by_key(&mut first, "user:ensure-race"),
+        PgPrincipalRepository.ensure_local_by_key(&mut second, "user:ensure-race"),
+    );
+    let outcomes = [first.expect("first ensure"), second.expect("second ensure")];
+
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, EnsurePrincipalOutcome::Inserted(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, EnsurePrincipalOutcome::Existing(_)))
+            .count(),
+        1
+    );
+    let ids: Vec<PrincipalId> = outcomes
+        .iter()
+        .map(|outcome| match outcome {
+            EnsurePrincipalOutcome::Inserted(principal)
+            | EnsurePrincipalOutcome::Existing(principal) => principal.id(),
+        })
+        .collect();
+    assert_eq!(ids[0], ids[1], "both callers resolve the same principal");
 }
 
 // ---------------------------------------------------------------------------

@@ -61,11 +61,11 @@ mod reindex;
 #[path = "repositories/relation.rs"]
 mod relation;
 
-#[path = "repositories/schema_invariants.rs"]
-mod schema_invariants;
-
 #[path = "repositories/retrieval_feedback.rs"]
 mod retrieval_feedback;
+
+#[path = "repositories/schema_invariants.rs"]
+mod schema_invariants;
 
 #[path = "repositories/standing.rs"]
 mod standing;

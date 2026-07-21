@@ -197,7 +197,7 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
 }
 
 #[tokio::test]
-async fn test_list_returns_empty_vec_when_no_projects() {
+async fn test_list_returns_only_the_system_project_on_a_fresh_database() {
     let ctx = TestDb::new().await;
     let mut txn = ctx.begin().await.expect("begin");
     let repo = PgProjectRepository;

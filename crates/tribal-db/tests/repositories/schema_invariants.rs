@@ -6,6 +6,25 @@ use sqlx::migrate::Migrator;
 use tribal_db::MIGRATOR;
 use tribal_test_utils::TestDb;
 
+const INSERT_FLAT_REMOTE_PROJECT: &str = include_str!("sql/insert_flat_remote_project.sql");
+const INSERT_OWNING_PRINCIPAL: &str = include_str!("sql/insert_owning_principal.sql");
+const INSERT_PROJECT_OWNED_KNOWLEDGE_ITEM: &str =
+    include_str!("sql/insert_project_owned_knowledge_item.sql");
+const INSERT_PROJECT_OWNED_EXTERNAL_REFERENCE: &str =
+    include_str!("sql/insert_project_owned_external_reference.sql");
+const INSERT_PROMPT_VERSION: &str = include_str!("sql/insert_prompt_version.sql");
+const INSERT_SYSTEM_FINGERPRINT: &str = include_str!("sql/insert_system_fingerprint.sql");
+const INSERT_PROJECT_OWNED_JOB: &str = include_str!("sql/insert_project_owned_job.sql");
+const INSERT_PROJECT_WITH_ORIGIN: &str = include_str!("sql/insert_project_with_origin.sql");
+const INSERT_SECOND_SYSTEM_PROJECT: &str = include_str!("sql/insert_second_system_project.sql");
+const SELECT_PROJECT_ORIGIN_BY_ID: &str = include_str!("sql/select_project_origin_by_id.sql");
+const SELECT_KNOWLEDGE_ITEM_PROJECT_BY_ID: &str =
+    include_str!("sql/select_knowledge_item_project_by_id.sql");
+const SELECT_EXTERNAL_REFERENCE_PROJECT_BY_ID: &str =
+    include_str!("sql/select_external_reference_project_by_id.sql");
+const SELECT_JOB_PROJECT_BY_ID: &str = include_str!("sql/select_job_project_by_id.sql");
+const SELECT_SYSTEM_PROJECT_COUNT: &str = include_str!("sql/select_system_project_count.sql");
+
 const PRIOR_PROJECT_HEAD: i64 = 20_260_718_224_843;
 
 async fn migrate_to_prior_project_head(ctx: &TestDb) {
@@ -22,20 +41,21 @@ async fn migrate_to_prior_project_head(ctx: &TestDb) {
     prior.run(ctx.pool()).await.expect("migrate to prior head");
 }
 
-async fn seed_legacy_project(ctx: &TestDb, index: usize, remote: &str, branch: &str) -> uuid::Uuid {
+async fn seed_flat_remote_project(
+    ctx: &TestDb,
+    index: usize,
+    remote: &str,
+    branch: &str,
+) -> uuid::Uuid {
     let id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO projects \
-         (id, git_remote, name, default_branch, schema_version, settings) \
-         VALUES ($1, $2, $3, $4, 1, '{}'::jsonb)",
-    )
-    .bind(id)
-    .bind(remote)
-    .bind(format!("legacy-{index}"))
-    .bind(branch)
-    .execute(ctx.pool())
-    .await
-    .expect("seed legacy project");
+    sqlx::query(INSERT_FLAT_REMOTE_PROJECT)
+        .bind(id)
+        .bind(remote)
+        .bind(format!("flat-remote-{index}"))
+        .bind(branch)
+        .execute(ctx.pool())
+        .await
+        .expect("seed flat-remote project");
     id
 }
 
@@ -51,35 +71,27 @@ async fn seed_direct_project_references(
 ) -> DirectProjectReferences {
     let principal_id = uuid::Uuid::new_v4();
     let item_id = uuid::Uuid::new_v4();
-    sqlx::query("INSERT INTO principals (id, principal_key) VALUES ($1, 'user:migration-owner')")
+    sqlx::query(INSERT_OWNING_PRINCIPAL)
         .bind(principal_id)
         .execute(ctx.pool())
         .await
         .expect("seed owning principal");
-    sqlx::query(
-        "INSERT INTO knowledge_items \
-         (id, project_id, principal_id, kind, content, tags, confidence, source_context) \
-         VALUES ($1, $2, $3, 'fact', 'owned', '{}', 'verified', '{}'::jsonb)",
-    )
-    .bind(item_id)
-    .bind(project_ids[2])
-    .bind(principal_id)
-    .execute(ctx.pool())
-    .await
-    .expect("seed project-owned row");
+    sqlx::query(INSERT_PROJECT_OWNED_KNOWLEDGE_ITEM)
+        .bind(item_id)
+        .bind(project_ids[2])
+        .bind(principal_id)
+        .execute(ctx.pool())
+        .await
+        .expect("seed project-owned row");
 
     let reference_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO item_external_references \
-         (id, knowledge_item_id, kind, value, project_id) \
-         VALUES ($1, $2, 'concept', 'migration-reference', $3)",
-    )
-    .bind(reference_id)
-    .bind(item_id)
-    .bind(project_ids[3])
-    .execute(ctx.pool())
-    .await
-    .expect("seed project-owned external reference");
+    sqlx::query(INSERT_PROJECT_OWNED_EXTERNAL_REFERENCE)
+        .bind(reference_id)
+        .bind(item_id)
+        .bind(project_ids[3])
+        .execute(ctx.pool())
+        .await
+        .expect("seed project-owned external reference");
 
     let prompt_ids: Vec<uuid::Uuid> = (0_u8..6).map(|_| uuid::Uuid::new_v4()).collect();
     for (index, ((stage, role), id)) in [
@@ -94,54 +106,37 @@ async fn seed_direct_project_references(
     .zip(&prompt_ids)
     .enumerate()
     {
-        sqlx::query(
-            "INSERT INTO prompt_versions (id, stage, class, role, content_hash, content) \
-             VALUES ($1, $2, 'one_shot', $3, $4, 'migration prompt')",
-        )
-        .bind(id)
-        .bind(stage)
-        .bind(role)
-        .bind(format!("{index:064x}"))
-        .execute(ctx.pool())
-        .await
-        .expect("seed prompt version");
+        sqlx::query(INSERT_PROMPT_VERSION)
+            .bind(id)
+            .bind(stage)
+            .bind(role)
+            .bind(format!("{index:064x}"))
+            .execute(ctx.pool())
+            .await
+            .expect("seed prompt version");
     }
     let fingerprint_hash = "f".repeat(64);
-    sqlx::query(
-        "INSERT INTO system_fingerprints \
-         (content_hash, build_version, extraction_binding_hash, triage_binding_hash, \
-          relation_binding_hash, embedding_provider, embedding_model, embedding_dimensions, \
-          pipeline_parameters) \
-         VALUES ($1, 'migration', $2, $2, $2, 'openai', 'text-embedding-3-small', 1536, '{}')",
-    )
-    .bind(&fingerprint_hash)
-    .bind("a".repeat(64))
-    .execute(ctx.pool())
-    .await
-    .expect("seed system fingerprint");
+    sqlx::query(INSERT_SYSTEM_FINGERPRINT)
+        .bind(&fingerprint_hash)
+        .bind("a".repeat(64))
+        .execute(ctx.pool())
+        .await
+        .expect("seed system fingerprint");
     let job_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO jobs \
-         (id, project_id, principal_id, source_context, status, \
-          extraction_system_prompt_version_id, extraction_user_prompt_version_id, \
-          triage_system_prompt_version_id, triage_user_prompt_version_id, \
-          relation_system_prompt_version_id, relation_user_prompt_version_id, \
-          raw_input, system_fingerprint_hash) \
-         VALUES ($1, $2, $3, '{}', 'queued', $4, $5, $6, $7, $8, $9, 'owned', $10)",
-    )
-    .bind(job_id)
-    .bind(project_ids[4])
-    .bind(principal_id)
-    .bind(prompt_ids[0])
-    .bind(prompt_ids[1])
-    .bind(prompt_ids[2])
-    .bind(prompt_ids[3])
-    .bind(prompt_ids[4])
-    .bind(prompt_ids[5])
-    .bind(&fingerprint_hash)
-    .execute(ctx.pool())
-    .await
-    .expect("seed project-owned job");
+    sqlx::query(INSERT_PROJECT_OWNED_JOB)
+        .bind(job_id)
+        .bind(project_ids[4])
+        .bind(principal_id)
+        .bind(prompt_ids[0])
+        .bind(prompt_ids[1])
+        .bind(prompt_ids[2])
+        .bind(prompt_ids[3])
+        .bind(prompt_ids[4])
+        .bind(prompt_ids[5])
+        .bind(&fingerprint_hash)
+        .execute(ctx.pool())
+        .await
+        .expect("seed project-owned job");
 
     DirectProjectReferences {
         knowledge_item: item_id,
@@ -170,30 +165,27 @@ async fn test_project_origin_constraint_rejects_malformed_and_extra_key_shapes()
         }),
         serde_json::json!({
             "kind": "git",
-            "remote": {"kind": "legacy", "value": "raw", "extra": true},
+            "remote": {"kind": "wrapped", "value": "raw", "extra": true},
             "default_branch": "main",
         }),
         serde_json::json!({
             "kind": "git",
-            "remote": {"kind": "legacy", "value": "raw"},
+            "remote": {"kind": "wrapped", "value": "raw"},
             "default_branch": 1,
         }),
         serde_json::json!({
             "kind": "git",
-            "remote": {"kind": "legacy", "value": "raw"},
+            "remote": {"kind": "wrapped", "value": "raw"},
             "default_branch": "main",
             "extra": true,
         }),
     ];
 
     for origin in malformed {
-        let result = sqlx::query(
-            "INSERT INTO projects (origin, name, schema_version, settings) \
-             VALUES ($1, 'invalid', 1, '{}'::jsonb)",
-        )
-        .bind(origin.clone())
-        .execute(ctx.pool())
-        .await;
+        let result = sqlx::query(INSERT_PROJECT_WITH_ORIGIN)
+            .bind(origin.clone())
+            .execute(ctx.pool())
+            .await;
         assert!(result.is_err(), "malformed origin was accepted: {origin}");
     }
 }
@@ -201,12 +193,9 @@ async fn test_project_origin_constraint_rejects_malformed_and_extra_key_shapes()
 #[tokio::test]
 async fn test_system_project_origin_is_a_database_singleton() {
     let ctx = TestDb::new().await;
-    let duplicate = sqlx::query(
-        "INSERT INTO projects (origin, name, schema_version, settings) \
-         VALUES ('{\"kind\":\"system\"}'::jsonb, 'Duplicate', 1, '{}'::jsonb)",
-    )
-    .execute(ctx.pool())
-    .await;
+    let duplicate = sqlx::query(INSERT_SECOND_SYSTEM_PROJECT)
+        .execute(ctx.pool())
+        .await;
 
     assert!(duplicate.is_err());
 }
@@ -225,7 +214,7 @@ async fn test_project_origin_migration_preserves_canonical_identity_and_referenc
     ];
     let mut ids = Vec::new();
     for (index, (remote, branch)) in fixtures.iter().enumerate() {
-        ids.push(seed_legacy_project(&ctx, index, remote, branch).await);
+        ids.push(seed_flat_remote_project(&ctx, index, remote, branch).await);
     }
     let references = seed_direct_project_references(&ctx, &ids).await;
 
@@ -235,12 +224,11 @@ async fn test_project_origin_migration_preserves_canonical_identity_and_referenc
         .expect("migrate to current head");
 
     for ((remote, branch), id) in fixtures.iter().zip(&ids) {
-        let origin =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT origin FROM projects WHERE id = $1")
-                .bind(id)
-                .fetch_one(ctx.pool())
-                .await
-                .expect("read migrated origin");
+        let origin = sqlx::query_scalar::<_, serde_json::Value>(SELECT_PROJECT_ORIGIN_BY_ID)
+            .bind(id)
+            .fetch_one(ctx.pool())
+            .await
+            .expect("read migrated origin");
         assert_eq!(
             origin,
             serde_json::json!({
@@ -252,32 +240,28 @@ async fn test_project_origin_migration_preserves_canonical_identity_and_referenc
     }
 
     let referenced_project =
-        sqlx::query_scalar::<_, uuid::Uuid>("SELECT project_id FROM knowledge_items WHERE id = $1")
+        sqlx::query_scalar::<_, uuid::Uuid>(SELECT_KNOWLEDGE_ITEM_PROJECT_BY_ID)
             .bind(references.knowledge_item)
             .fetch_one(ctx.pool())
             .await
             .expect("read migrated reference");
     assert_eq!(referenced_project, ids[2]);
-    let external_reference_project = sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT project_id FROM item_external_references WHERE id = $1",
-    )
-    .bind(references.external_reference)
-    .fetch_one(ctx.pool())
-    .await
-    .expect("read migrated external reference");
-    assert_eq!(external_reference_project, ids[3]);
-    let job_project =
-        sqlx::query_scalar::<_, uuid::Uuid>("SELECT project_id FROM jobs WHERE id = $1")
-            .bind(references.job)
+    let external_reference_project =
+        sqlx::query_scalar::<_, uuid::Uuid>(SELECT_EXTERNAL_REFERENCE_PROJECT_BY_ID)
+            .bind(references.external_reference)
             .fetch_one(ctx.pool())
             .await
-            .expect("read migrated job");
+            .expect("read migrated external reference");
+    assert_eq!(external_reference_project, ids[3]);
+    let job_project = sqlx::query_scalar::<_, uuid::Uuid>(SELECT_JOB_PROJECT_BY_ID)
+        .bind(references.job)
+        .fetch_one(ctx.pool())
+        .await
+        .expect("read migrated job");
     assert_eq!(job_project, ids[4]);
-    let system_count = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM projects WHERE origin = '{\"kind\":\"system\"}'::jsonb",
-    )
-    .fetch_one(ctx.pool())
-    .await
-    .expect("count System projects");
+    let system_count = sqlx::query_scalar::<_, i64>(SELECT_SYSTEM_PROJECT_COUNT)
+        .fetch_one(ctx.pool())
+        .await
+        .expect("count System projects");
     assert_eq!(system_count, 1);
 }
