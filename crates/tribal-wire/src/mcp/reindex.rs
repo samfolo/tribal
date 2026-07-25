@@ -98,7 +98,7 @@ mod tests {
             "provider": "openai",
             "model": "text-embedding-3-small",
             "dimensions": 1536,
-            "base_url": "https://api.openai.com/v1",
+            "base_url": "https://api.openai.com",
             "dry_run": true
         }"#;
         let request: McpReindexRequest = serde_json::from_str(json).unwrap();
@@ -108,7 +108,7 @@ mod tests {
                 provider: "openai".to_owned(),
                 model: "text-embedding-3-small".to_owned(),
                 dimensions: Some(1536),
-                base_url: Some("https://api.openai.com/v1".to_owned()),
+                base_url: Some("https://api.openai.com".to_owned()),
                 dry_run: true,
             }
         );
@@ -159,7 +159,7 @@ mod tests {
             provider: "openai".to_owned(),
             model: "text-embedding-3-small".to_owned(),
             dimensions: 1536,
-            base_url: "https://api.openai.com/v1".to_owned(),
+            base_url: "https://api.openai.com".to_owned(),
             estimated_items: 1000,
             estimated_tags: 250,
         };

@@ -686,16 +686,16 @@ mod tests {
     fn test_display_embedding_credential_unresolved_names_the_missing_entry() {
         let err = AppError::EmbeddingCredentialUnresolved {
             provider: ProviderKind::OpenAi,
-            base_url: "https://api.openai.com:443/v1".to_owned(),
+            base_url: "https://api.openai.com:443".to_owned(),
             source: ProviderConnectionResolutionError::MissingEndpoint {
                 provider: ProviderKind::OpenAi,
-                normalised_base_url: "https://api.openai.com:443/v1".to_owned(),
+                normalised_base_url: "https://api.openai.com:443".to_owned(),
             },
         };
         let display = err.to_string();
         assert!(display.contains("openai"), "got: {display}");
         assert!(
-            display.contains("https://api.openai.com:443/v1"),
+            display.contains("https://api.openai.com:443"),
             "got: {display}",
         );
         assert!(
@@ -712,7 +712,7 @@ mod tests {
     fn test_display_embedding_credential_unresolved_names_the_empty_key() {
         let err = AppError::EmbeddingCredentialUnresolved {
             provider: ProviderKind::OpenAi,
-            base_url: "https://api.openai.com:443/v1".to_owned(),
+            base_url: "https://api.openai.com:443".to_owned(),
             source: ProviderConnectionResolutionError::MissingCredential {
                 connection: tribal_domain::ProviderConnectionName::parse("openai_default")
                     .expect("fixture connection name is valid"),

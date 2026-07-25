@@ -169,7 +169,7 @@ inference:
 provider_connections:
   openai_default:
     provider: openai
-    base_url: https://api.openai.com/v1
+    base_url: https://api.openai.com
     api_key: sk-secret-one
   ollama_staged:
     provider: ollama

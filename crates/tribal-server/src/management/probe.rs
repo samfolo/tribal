@@ -604,7 +604,7 @@ mod tests {
         config.provider_connections.insert(
             tribal_domain::ProviderConnectionName::parse("unrelated").unwrap(),
             tribal_config::ProviderConnectionConfig::OpenAi {
-                base_url: "https://api.openai.com/v1".to_owned(),
+                base_url: "https://api.openai.com".to_owned(),
                 api_key: Some("sk-test".parse().unwrap()),
             },
         );

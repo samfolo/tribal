@@ -1902,7 +1902,7 @@ mod tests {
             provider: ProviderKind::OpenAi,
             model: "text-embedding-3-small".to_owned(),
             dimensions: 1536,
-            base_url: "https://api.openai.com/v1".to_owned(),
+            base_url: "https://api.openai.com".to_owned(),
             profile_id: None,
         };
         let err = gateway

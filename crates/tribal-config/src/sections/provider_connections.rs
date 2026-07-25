@@ -285,6 +285,13 @@ impl ProviderConnections {
                 });
                 continue;
             };
+            if ends_with_provider_path_prefix(connection.provider(), &normalised) {
+                violations.push(ProviderConnectionViolation::EndpointIncludesRequestPrefix {
+                    connection: name.clone(),
+                    value: base_url.to_owned(),
+                });
+                continue;
+            }
 
             let endpoint = (connection.provider().as_str(), normalised.clone());
             match endpoints.entry(endpoint) {
@@ -304,6 +311,17 @@ impl ProviderConnections {
 
         violations
     }
+}
+
+fn ends_with_provider_path_prefix(provider: ProviderKind, normalised_base_url: &str) -> bool {
+    let Some(prefix) = provider
+        .request_path()
+        .and_then(|path| path.strip_prefix('/'))
+        .and_then(|path| path.split('/').next())
+    else {
+        return false;
+    };
+    normalised_base_url.rsplit('/').next() == Some(prefix)
 }
 
 impl Default for ProviderConnections {
@@ -421,6 +439,13 @@ pub enum ProviderConnectionViolation {
     },
     /// A connection endpoint is invalid.
     InvalidEndpoint {
+        /// Connection name.
+        connection: ProviderConnectionName,
+        /// Invalid endpoint value.
+        value: String,
+    },
+    /// A base URL includes the provider-owned request-path prefix.
+    EndpointIncludesRequestPrefix {
         /// Connection name.
         connection: ProviderConnectionName,
         /// Invalid endpoint value.

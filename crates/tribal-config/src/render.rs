@@ -354,7 +354,7 @@ mod tests {
         config.provider_connections.insert(
             connection_name("openai_default"),
             crate::ProviderConnectionConfig::OpenAi {
-                base_url: "https://api.openai.com/v1".to_owned(),
+                base_url: "https://api.openai.com".to_owned(),
                 api_key: api_key.map(|value| value.parse().unwrap()),
             },
         );

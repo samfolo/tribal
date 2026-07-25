@@ -840,7 +840,7 @@ prompts:
     fn openai_connections_yaml(api_key_line: &str) -> String {
         format!(
             "provider_connections:\n  openai_default:\n    provider: openai\n    \
-             base_url: https://api.openai.com/v1\n{api_key_line}\
+             base_url: https://api.openai.com\n{api_key_line}\
              init:\n  embedding:\n    connection: openai_default\n",
         )
     }
@@ -898,8 +898,8 @@ prompts:
     fn test_conventional_env_fills_only_canonical_connection() {
         Jail::expect_with(|jail| {
             let yaml = "provider_connections:\n  openai_default:\n    provider: openai\n    \
-                        base_url: https://api.openai.com/v1\n  openai_secondary:\n    \
-                        provider: openai\n    base_url: https://openai.example/v1\ninit:\n  \
+                        base_url: https://api.openai.com\n  openai_secondary:\n    \
+                        provider: openai\n    base_url: https://openai.example\ninit:\n  \
                         embedding:\n    connection: openai_default\n";
             jail.create_file("tribal.yaml", yaml)?;
             jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");

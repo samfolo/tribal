@@ -827,7 +827,7 @@ mod tests {
         config.provider_connections.insert(
             ProviderConnectionName::parse("openai_default").unwrap(),
             crate::ProviderConnectionConfig::OpenAi {
-                base_url: "https://api.openai.com/v1".to_owned(),
+                base_url: "https://api.openai.com".to_owned(),
                 api_key: Some("sk-provider-secret".parse().unwrap()),
             },
         );
@@ -1047,7 +1047,7 @@ mod tests {
             config.provider_connections.insert(
                 ProviderConnectionName::parse("openai_default").unwrap(),
                 crate::ProviderConnectionConfig::OpenAi {
-                    base_url: "https://api.openai.com/v1".to_owned(),
+                    base_url: "https://api.openai.com".to_owned(),
                     api_key: None,
                 },
             );
@@ -1080,7 +1080,7 @@ mod tests {
             config.provider_connections.insert(
                 ProviderConnectionName::parse("openai_default").unwrap(),
                 crate::ProviderConnectionConfig::OpenAi {
-                    base_url: "https://api.openai.com/v1".to_owned(),
+                    base_url: "https://api.openai.com".to_owned(),
                     api_key: None,
                 },
             );
