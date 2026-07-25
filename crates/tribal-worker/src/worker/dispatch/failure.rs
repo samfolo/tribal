@@ -56,12 +56,14 @@ impl Worker {
         job: Option<&Job>,
         error: &StageError,
     ) {
+        let error_detail = error.provider_detail();
         tracing::error!(
             task_id = %task.id(),
             task_type = %task.task_type(),
             job_id = %task.job_id(),
             error_kind = %error.to_error_kind(),
             error_message = %error,
+            error_detail = error_detail.as_deref().unwrap_or(""),
             "stage execution failed",
         );
 
@@ -384,6 +386,7 @@ impl Worker {
         task_dead_lettered: bool,
         job_failed: bool,
     ) {
+        let error_detail = outcome.error.provider_detail();
         if task_dead_lettered {
             tracing::error!(
                 task_id = %task.id(),
@@ -391,6 +394,7 @@ impl Worker {
                 job_id = %task.job_id(),
                 error_kind = %outcome.error_kind,
                 error_message = %outcome.error,
+                error_detail = error_detail.as_deref().unwrap_or(""),
                 retry_count = outcome.retry_count,
                 "task.dead_lettered",
             );
@@ -401,6 +405,7 @@ impl Worker {
                 job_id = %task.job_id(),
                 error_kind = %outcome.error_kind,
                 error_message = %outcome.error,
+                error_detail = error_detail.as_deref().unwrap_or(""),
                 retry_count = outcome.retry_count,
                 available_at = %outcome.available_at,
                 "task.failed",
