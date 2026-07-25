@@ -723,10 +723,25 @@ async fn recover_or_report(
         }
     };
     let listener = bind_or_report(pending.lease(), writer, announce_json).await?;
-    let recovered = tokio::task::spawn_blocking(move || pending.commit())
-        .await
-        .map_err(|source| ManageError::RecoveryTask { source })?
-        .map_err(|source| ManageError::Custody { source })?;
+    let recovered = match tokio::task::spawn_blocking(move || pending.commit()).await {
+        Ok(Ok(recovered)) => recovered,
+        Ok(Err(source)) => {
+            let record = startup_failure_record(
+                &canonical_config_path,
+                ManagerStartupFailure::ManagedRuntimeRecoveryFailed,
+            );
+            emit_if_requested(writer, announce_json, &record)?;
+            return Err(ManageError::Custody { source });
+        }
+        Err(source) => {
+            let record = startup_failure_record(
+                &canonical_config_path,
+                ManagerStartupFailure::ManagedRuntimeRecoveryFailed,
+            );
+            emit_if_requested(writer, announce_json, &record)?;
+            return Err(ManageError::RecoveryTask { source });
+        }
+    };
     Ok((
         recovered.lease,
         listener,

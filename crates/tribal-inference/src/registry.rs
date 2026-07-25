@@ -24,7 +24,7 @@ use url::Url;
 // ---------------------------------------------------------------------------
 
 /// User-Agent header value sent on all registry-constructed HTTP clients.
-const USER_AGENT: &str = concat!("tribal/", env!("CARGO_PKG_VERSION"));
+pub(crate) const USER_AGENT: &str = concat!("tribal/", env!("CARGO_PKG_VERSION"));
 
 // ---------------------------------------------------------------------------
 // RequestClass

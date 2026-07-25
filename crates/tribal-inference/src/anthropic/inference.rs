@@ -29,7 +29,7 @@ use crate::{
 
 const PROVIDER_NAME: &str = "anthropic";
 pub const MESSAGES_PATH: &str = "/v1/messages";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
+pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 // ---------------------------------------------------------------------------

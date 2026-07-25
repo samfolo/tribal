@@ -3,6 +3,7 @@
 
 mod anthropic;
 mod capabilities;
+mod connection_probe;
 mod drift;
 mod embedding_capabilities;
 mod embedding_factory;
@@ -27,6 +28,10 @@ pub use anthropic::MESSAGES_PATH as ANTHROPIC_MESSAGES_PATH;
 pub use capabilities::{
     MaxOutputTokensParam, ModelCapabilities, SamplingControl, StructuredOutputMode,
     effective_stage_parameters, resolve,
+};
+pub use connection_probe::{
+    ProviderConnectionFailure, ProviderConnectionFailureKind, ProviderConnectionProbeOutcome,
+    ProviderConnectionProbeSkipReason, probe_provider_connection,
 };
 pub use drift::probe_digest;
 pub use embedding_capabilities::{
