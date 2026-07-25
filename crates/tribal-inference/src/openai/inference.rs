@@ -62,6 +62,8 @@ struct OpenAiChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<OpenAiStreamOptions>,
@@ -422,6 +424,7 @@ fn build_request<'a>(
         .as_ref()
         .map(|format| map_response_format(format, caps.structured_output_mode));
     let temperature = reconcile_temperature(caps.sampling, request.temperature, model);
+    let reasoning_effort = caps.tool_reasoning.wire_value(!request.tools.is_empty());
     let (max_tokens, max_completion_tokens) = match caps.max_output_tokens_param {
         MaxOutputTokensParam::MaxTokens => (request.max_tokens, None),
         MaxOutputTokensParam::MaxCompletionTokens => {
@@ -455,6 +458,7 @@ fn build_request<'a>(
         max_tokens,
         max_completion_tokens,
         response_format,
+        reasoning_effort,
         stream: streaming.then_some(true),
         stream_options: streaming.then_some(OpenAiStreamOptions {
             include_usage: true,
@@ -497,7 +501,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        Message,
+        Message, ToolWireDefinition,
         http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS},
     };
 
@@ -705,7 +709,7 @@ mod tests {
                     content: "[]".to_owned(),
                 },
             ],
-            tools: vec![crate::ToolWireDefinition {
+            tools: vec![ToolWireDefinition {
                 name: "search".to_owned(),
                 description: "Project-scoped similarity search.".to_owned(),
                 input_schema: schema,
@@ -1017,6 +1021,60 @@ mod tests {
         let _ = provider.complete(request).await.unwrap();
     }
 
+    #[tokio::test]
+    async fn test_chat_gpt_56_disables_reasoning_for_function_tools() {
+        let server = MockServer::start().await;
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        });
+
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .and(body_json(serde_json::json!({
+                "model": "gpt-5.6-terra",
+                "messages": [{"role": "user", "content": "test"}],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "submit",
+                        "description": "Submit the result.",
+                        "parameters": apply_dialect(ProviderKind::OpenAi, schema.clone()),
+                        "strict": true,
+                    },
+                }],
+                "reasoning_effort": "none",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiInferenceProvider::new(
+            reqwest::Client::new(),
+            server.uri(),
+            "gpt-5.6-terra",
+            "test-key",
+        );
+        let request = CompletionRequest {
+            system: None,
+            messages: vec![Message::User {
+                content: "test".to_owned(),
+            }],
+            tools: vec![ToolWireDefinition {
+                name: "submit".to_owned(),
+                description: "Submit the result.".to_owned(),
+                input_schema: schema,
+            }],
+            temperature: None,
+            max_tokens: None,
+            response_format: None,
+        };
+
+        let _ = provider.complete(request).await.unwrap();
+    }
+
     #[test]
     fn test_probe_and_ingest_agree_on_admissible_fields_for_reasoning_model() {
         // Probe and ingest share `build_request`, so a reasoning identity
@@ -1053,6 +1111,54 @@ mod tests {
         assert!(!probe_keys.contains(&"temperature".to_owned()));
         assert!(!probe_keys.contains(&"max_tokens".to_owned()));
         assert!(probe_keys.contains(&"max_completion_tokens".to_owned()));
+    }
+
+    #[test]
+    fn test_probe_and_tool_bearing_ingest_diverge_only_by_reasoning_effort() {
+        // The readiness probe carries no tools, so for a GPT-5.6 target it omits
+        // the one field a tool-bearing ingest adds. That is the whole of the
+        // divergence, and pinning it here keeps the gap from widening unseen.
+        let probe = CompletionRequest {
+            system: None,
+            messages: vec![Message::User {
+                content: INFERENCE_PROBE_INPUT.to_owned(),
+            }],
+            tools: vec![],
+            temperature: Some(0.0),
+            max_tokens: Some(PROBE_MAX_TOKENS),
+            response_format: None,
+        };
+        let ingest = CompletionRequest {
+            system: None,
+            messages: vec![Message::User {
+                content: "real input".to_owned(),
+            }],
+            tools: vec![ToolWireDefinition {
+                name: "submit".to_owned(),
+                description: "Submit the result.".to_owned(),
+                input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            }],
+            temperature: Some(0.5),
+            max_tokens: Some(512),
+            response_format: None,
+        };
+
+        let probe_body =
+            serde_json::to_value(build_request("gpt-5.6", &probe, WireMode::Buffered)).unwrap();
+        let ingest_body =
+            serde_json::to_value(build_request("gpt-5.6", &ingest, WireMode::Buffered)).unwrap();
+        let probe_keys: BTreeSet<&String> = probe_body.as_object().unwrap().keys().collect();
+        let ingest_keys: BTreeSet<&String> = ingest_body.as_object().unwrap().keys().collect();
+
+        let only_in_ingest: BTreeSet<_> = ingest_keys.difference(&probe_keys).copied().collect();
+        assert_eq!(
+            only_in_ingest,
+            ["reasoning_effort".to_owned(), "tools".to_owned()]
+                .iter()
+                .collect::<BTreeSet<_>>(),
+        );
+        assert!(probe_keys.difference(&ingest_keys).next().is_none());
+        assert_eq!(ingest_body["reasoning_effort"], "none");
     }
 
     // -- Input validation ----------------------------------------------------
