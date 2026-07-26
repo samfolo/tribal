@@ -1,13 +1,11 @@
 //! Per-model request-field admissibility for inference providers.
 //!
 //! [`resolve`] maps a `(ProviderKind, model)` target to the
-//! [`ModelCapabilities`] describing how the endpoint handles three request
-//! axes that vary by model: whether it honours caller-supplied sampling
-//! parameters, which field carries the maximum-output-token cap, and how it
-//! enforces a caller-supplied JSON Schema on its output. It is the single
-//! source of capability truth — every site that shapes a request for the wire
-//! or records its effective shape reads this one resolver, so they agree by
-//! construction (ingest and the readiness probe included).
+//! [`ModelCapabilities`] describing how the endpoint handles the request
+//! axes that vary by model: sampling parameters, output-token caps, structured
+//! output, and tool-bearing reasoning. It is the single source of capability
+//! truth — every site that shapes a request for the wire or records its
+//! effective shape reads this one resolver.
 //!
 //! The schema-dialect transform that rewrites a schema into a provider's
 //! accepted shape is a separate mechanism, keyed on the transport rather than
@@ -54,6 +52,20 @@ const OPENAI_REASONING_MODELS: &[&str] = &[
     "gpt-5.4-nano",
     "gpt-5.5",
 ];
+
+/// GPT-5.6 variants whose Chat Completions surface requires reasoning to be
+/// disabled when function tools are present. Reasoning models in their own
+/// right, so [`resolve`] admits them wherever [`OPENAI_REASONING_MODELS`] is
+/// consulted rather than restating them there.
+const OPENAI_CHAT_TOOL_REASONING_NONE_MODELS: &[&str] =
+    &["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+
+/// Every `OpenAI` model served over Chat Completions with adaptive sampling,
+/// whichever tool-reasoning profile it carries.
+fn is_openai_reasoning_model(model: &str) -> bool {
+    OPENAI_REASONING_MODELS.contains(&model)
+        || OPENAI_CHAT_TOOL_REASONING_NONE_MODELS.contains(&model)
+}
 
 /// `Anthropic` model IDs that sample adaptively, carrying the
 /// [`ModelCapabilities::ANTHROPIC_ADAPTIVE`] profile. Exact-match for the
@@ -136,6 +148,27 @@ impl StructuredOutputMode {
     }
 }
 
+/// How Chat Completions reasoning is shaped when a request carries tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolReasoningControl {
+    /// Leave the field absent and use the provider default.
+    ProviderDefault,
+    /// Send `reasoning_effort: "none"` while tools are present.
+    Disabled,
+}
+
+impl ToolReasoningControl {
+    pub(crate) fn wire_value(self, has_tools: bool) -> Option<&'static str> {
+        if !has_tools {
+            return None;
+        }
+        match self {
+            Self::ProviderDefault => None,
+            Self::Disabled => Some("none"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ModelCapabilities
 // ---------------------------------------------------------------------------
@@ -154,6 +187,9 @@ pub struct ModelCapabilities {
 
     /// How the target enforces a caller-supplied JSON Schema on its output.
     pub structured_output_mode: StructuredOutputMode,
+
+    /// How tool-bearing Chat Completions requests control reasoning.
+    pub tool_reasoning: ToolReasoningControl,
 }
 
 impl ModelCapabilities {
@@ -164,6 +200,7 @@ impl ModelCapabilities {
         sampling: SamplingControl::Configurable,
         max_output_tokens_param: MaxOutputTokensParam::MaxTokens,
         structured_output_mode: StructuredOutputMode::Strict,
+        tool_reasoning: ToolReasoningControl::ProviderDefault,
     };
 
     /// Reasoning models served over the Chat Completions API: adaptive
@@ -172,6 +209,15 @@ impl ModelCapabilities {
         sampling: SamplingControl::Adaptive,
         max_output_tokens_param: MaxOutputTokensParam::MaxCompletionTokens,
         structured_output_mode: StructuredOutputMode::Strict,
+        tool_reasoning: ToolReasoningControl::ProviderDefault,
+    };
+
+    /// GPT-5.6 Chat Completions request shape for agentic tool calls.
+    const OPENAI_REASONING_WITH_TOOL_COMPATIBILITY: Self = Self {
+        sampling: SamplingControl::Adaptive,
+        max_output_tokens_param: MaxOutputTokensParam::MaxCompletionTokens,
+        structured_output_mode: StructuredOutputMode::Strict,
+        tool_reasoning: ToolReasoningControl::Disabled,
     };
 
     /// Adaptive-sampling models that retain the conventional `max_tokens`
@@ -180,6 +226,7 @@ impl ModelCapabilities {
         sampling: SamplingControl::Adaptive,
         max_output_tokens_param: MaxOutputTokensParam::MaxTokens,
         structured_output_mode: StructuredOutputMode::Strict,
+        tool_reasoning: ToolReasoningControl::ProviderDefault,
     };
 }
 
@@ -198,7 +245,10 @@ impl ModelCapabilities {
 #[must_use]
 pub fn resolve(provider: ProviderKind, model: &str) -> ModelCapabilities {
     match provider {
-        ProviderKind::OpenAi if OPENAI_REASONING_MODELS.contains(&model) => {
+        ProviderKind::OpenAi if OPENAI_CHAT_TOOL_REASONING_NONE_MODELS.contains(&model) => {
+            ModelCapabilities::OPENAI_REASONING_WITH_TOOL_COMPATIBILITY
+        }
+        ProviderKind::OpenAi if is_openai_reasoning_model(model) => {
             ModelCapabilities::OPENAI_REASONING
         }
         ProviderKind::Anthropic if ANTHROPIC_ADAPTIVE_MODELS.contains(&model) => {
@@ -295,7 +345,10 @@ mod tests {
 
     #[test]
     fn test_openai_reasoning_models_sample_adaptively_and_rename_cap() {
-        for &model in OPENAI_REASONING_MODELS {
+        let reasoning = OPENAI_REASONING_MODELS
+            .iter()
+            .chain(OPENAI_CHAT_TOOL_REASONING_NONE_MODELS);
+        for &model in reasoning {
             let caps = resolve(ProviderKind::OpenAi, model);
             assert_eq!(
                 caps.sampling,
@@ -313,6 +366,21 @@ mod tests {
                 "{model} should request strict schema enforcement",
             );
         }
+    }
+
+    #[test]
+    fn test_gpt_56_disables_chat_reasoning_only_when_tools_are_present() {
+        for &model in OPENAI_CHAT_TOOL_REASONING_NONE_MODELS {
+            let control = resolve(ProviderKind::OpenAi, model).tool_reasoning;
+            assert_eq!(control.wire_value(false), None);
+            assert_eq!(control.wire_value(true), Some("none"));
+        }
+        assert_eq!(
+            resolve(ProviderKind::OpenAi, "o3")
+                .tool_reasoning
+                .wire_value(true),
+            None,
+        );
     }
 
     #[test]

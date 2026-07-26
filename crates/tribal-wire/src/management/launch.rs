@@ -90,4 +90,5 @@ pub enum ManagerStartupFailure {
     BootstrapProtocolInitializationFailed,
     ManagementSocketUnavailable,
     AuthorityDescriptorPersistenceFailed,
+    ManagedRuntimeRecoveryFailed,
 }

@@ -4,13 +4,21 @@ use std::{sync::Arc, time::SystemTime};
 
 use tokio::sync::Mutex;
 use tribal_config::TribalConfig;
-use tribal_domain::ProviderConnectionName;
-use tribal_inference::known_models;
+use tribal_domain::{ApiKey, ProviderConnectionName};
+use tribal_inference::{
+    ProviderConnectionFailure as InferenceProviderConnectionFailure,
+    ProviderConnectionFailureKind as InferenceProviderConnectionFailureKind,
+    ProviderConnectionProbeOutcome as InferenceProviderConnectionProbeOutcome,
+    ProviderConnectionProbeSkipReason as InferenceProviderConnectionProbeSkipReason,
+    probe_provider_connection,
+};
 use tribal_wire::management::{
     CandidateProviderProbeObservation, CheckName, CheckResult, ConfigDigest, ConfigDocument,
     ConfigRevision, DatabaseProbeRequest, DatabaseProbeTarget, ProbeOutcome, ProbeReceipt,
-    ProbeReceiptFreshness, ProbeSubject, ProviderConnectionProbeReceipt, ProviderProbeCapability,
-    ProviderProbeRequest, ProviderProbeResponse, ProviderProbeTarget,
+    ProbeReceiptFreshness, ProbeSubject, ProviderConnectionFailure, ProviderConnectionFailureKind,
+    ProviderConnectionProbeReceipt, ProviderConnectionProbeResult,
+    ProviderConnectionProbeSkipReason, ProviderProbeCapability, ProviderProbeRequest,
+    ProviderProbeResponse, ProviderProbeTarget,
 };
 
 use super::{
@@ -100,7 +108,7 @@ impl ProbeService {
             url.expose_secret()
                 .clone_into(&mut snapshot.config.database.url);
         }
-        let result = run_report(&snapshot, false)
+        let result = run_report(&snapshot)
             .await?
             .into_iter()
             .find(|result| result_name(result) == CheckName::DatabaseReachable)
@@ -134,49 +142,42 @@ impl ProbeService {
         &self,
         request: ProviderProbeRequest,
     ) -> Result<ProviderProbeResponse, ProbeError> {
-        let mut snapshot = self.config.probe_snapshot().await?;
+        let snapshot = self.config.probe_snapshot().await?;
         ensure_revision(&request.expected_revision, &snapshot.revision)?;
-        let (name, provider, retain) = match request.target {
+        let (name, connection, retain) = match request.target {
             ProviderProbeTarget::Stored { name } => {
                 let connection = snapshot
                     .config
                     .provider_connections
                     .get(name.as_str())
+                    .cloned()
                     .ok_or(ProbeError::MissingObservation)?;
-                (name, connection.provider(), true)
+                (name, connection, true)
             }
             ProviderProbeTarget::Candidate {
                 existing,
                 connection,
             } => {
-                let name = existing.unwrap_or_else(|| {
-                    ProviderConnectionName::parse("probe_candidate")
-                        .expect("probe candidate name is valid")
-                });
+                let name = match existing {
+                    Some(name) => name,
+                    None => ProviderConnectionName::parse("probe_candidate")
+                        .map_err(|_| ProbeError::MissingObservation)?,
+                };
                 let current = snapshot.config.provider_connections.get(name.as_str());
                 let connection = super::product::provider_input(connection, current)
                     .map_err(|_| ProbeError::MissingObservation)?;
-                let provider = connection.provider();
-                snapshot
-                    .config
-                    .provider_connections
-                    .insert(name.clone(), connection);
-                (name, provider, false)
+                (name, connection, false)
             }
         };
-        let model = known_models()
-            .iter()
-            .find(|model| model.provider == provider)
-            .map(|model| model.model.to_owned())
-            .ok_or(ProbeError::MissingObservation)?;
-        snapshot.config.inference.extraction.connection = name.clone();
-        snapshot.config.inference.extraction.model = model;
-        let result = run_report(&snapshot, true)
-            .await?
-            .into_iter()
-            .find(|result| result_name(result) == CheckName::ProviderExtraction)
-            .ok_or(ProbeError::MissingObservation)?;
-        let outcome = probe_outcome(result);
+        let provider = connection.provider();
+        let outcome = provider_probe_result(
+            probe_provider_connection(
+                provider,
+                connection.base_url(),
+                connection.api_key().map(ApiKey::as_str),
+            )
+            .await,
+        );
         ensure_revision(
             &request.expected_revision,
             &self.config.probe_snapshot().await?.revision,
@@ -363,23 +364,88 @@ fn provider_connection_digest(
     digest(&(name, connection))
 }
 
-async fn run_report(
-    snapshot: &ConfigProbeSnapshot,
-    providers: bool,
-) -> Result<Vec<CheckResult>, ProbeError> {
+async fn run_report(snapshot: &ConfigProbeSnapshot) -> Result<Vec<CheckResult>, ProbeError> {
     let output = crate::management::operator_check::run_report_async(
         crate::management::operator_check::CheckReportOptions {
             config_path: &snapshot.path,
             source: crate::management::operator_check::CheckConfigSource::Parsed(Box::new(
                 snapshot.config.clone(),
             )),
-            providers,
+            providers: false,
             project: None,
             token: None,
         },
     )
     .await?;
     Ok(output.checks)
+}
+
+fn provider_probe_result(
+    outcome: InferenceProviderConnectionProbeOutcome,
+) -> ProviderConnectionProbeResult {
+    match outcome {
+        InferenceProviderConnectionProbeOutcome::Reachable => {
+            ProviderConnectionProbeResult::Reachable
+        }
+        InferenceProviderConnectionProbeOutcome::Skipped(reason) => {
+            ProviderConnectionProbeResult::Skipped {
+                reason: match reason {
+                    InferenceProviderConnectionProbeSkipReason::ManagedConnection => {
+                        ProviderConnectionProbeSkipReason::ManagedConnection
+                    }
+                },
+            }
+        }
+        InferenceProviderConnectionProbeOutcome::Failed(failure) => {
+            ProviderConnectionProbeResult::Failed {
+                failure: provider_connection_failure(failure),
+            }
+        }
+    }
+}
+
+fn provider_connection_failure(
+    failure: InferenceProviderConnectionFailure,
+) -> ProviderConnectionFailure {
+    ProviderConnectionFailure {
+        kind: match failure.kind {
+            InferenceProviderConnectionFailureKind::Authentication => {
+                ProviderConnectionFailureKind::Authentication
+            }
+            InferenceProviderConnectionFailureKind::Permission => {
+                ProviderConnectionFailureKind::Permission
+            }
+            InferenceProviderConnectionFailureKind::QuotaExhausted => {
+                ProviderConnectionFailureKind::QuotaExhausted
+            }
+            InferenceProviderConnectionFailureKind::RateLimited => {
+                ProviderConnectionFailureKind::RateLimited
+            }
+            InferenceProviderConnectionFailureKind::Overloaded => {
+                ProviderConnectionFailureKind::Overloaded
+            }
+            InferenceProviderConnectionFailureKind::UpstreamUnavailable => {
+                ProviderConnectionFailureKind::UpstreamUnavailable
+            }
+            InferenceProviderConnectionFailureKind::EndpointUnreachable => {
+                ProviderConnectionFailureKind::EndpointUnreachable
+            }
+            InferenceProviderConnectionFailureKind::TimedOut => {
+                ProviderConnectionFailureKind::TimedOut
+            }
+            InferenceProviderConnectionFailureKind::InvalidRequest => {
+                ProviderConnectionFailureKind::InvalidRequest
+            }
+            InferenceProviderConnectionFailureKind::Unknown => {
+                ProviderConnectionFailureKind::Unknown
+            }
+        },
+        provider_code: failure.provider_code,
+        http_status: failure.http_status,
+        message: failure.message,
+        request_id: failure.request_id,
+        retry_after_seconds: failure.retry_after_seconds,
+    }
 }
 
 fn subject_digest(
@@ -494,6 +560,10 @@ fn subject_order(subject: &ProbeSubject) -> u8 {
 #[cfg(test)]
 mod tests {
     use tribal_wire::management::{ConfigLiteral, ConfigSetRequest};
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
 
     use super::*;
 
@@ -534,7 +604,7 @@ mod tests {
         config.provider_connections.insert(
             tribal_domain::ProviderConnectionName::parse("unrelated").unwrap(),
             tribal_config::ProviderConnectionConfig::OpenAi {
-                base_url: "https://api.openai.com/v1".to_owned(),
+                base_url: "https://api.openai.com".to_owned(),
                 api_key: Some("sk-test".parse().unwrap()),
             },
         );
@@ -548,6 +618,65 @@ mod tests {
             subject_digest(&subject, &config).expect("changed digest computes"),
             original,
         );
+    }
+
+    #[tokio::test]
+    async fn test_provider_probe_uses_discovery_without_selecting_a_model() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "models": [] })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().expect("temporary config root");
+        let path = temp.path().join("tribal.yaml");
+        let mut config = TribalConfig::minimum_valid("postgres://user:pass@localhost:5432/tribal");
+        let name = config.inference.extraction.connection.clone();
+        config.provider_connections.insert(
+            name.clone(),
+            tribal_config::ProviderConnectionConfig::Ollama {
+                base_url: server.uri(),
+            },
+        );
+        std::fs::write(
+            &path,
+            serde_yaml::to_string(&config).expect("config serialises"),
+        )
+        .expect("config writes");
+        let (config, runtime) =
+            super::super::worker::spawn(super::super::configuration::ConfigAuthority::new(path))
+                .expect("config worker starts");
+        let service = ProbeService::new(config.clone());
+        let revision = config
+            .probe_snapshot()
+            .await
+            .expect("probe snapshot is valid")
+            .revision;
+
+        let response = service
+            .provider(ProviderProbeRequest {
+                target: ProviderProbeTarget::Stored { name },
+                expected_revision: revision,
+            })
+            .await
+            .expect("provider probe completes");
+
+        assert!(matches!(
+            response,
+            ProviderProbeResponse::Stored {
+                receipt: ProviderConnectionProbeReceipt {
+                    result: ProviderConnectionProbeResult::Reachable,
+                    ..
+                }
+            }
+        ));
+        drop(service);
+        drop(config);
+        runtime.join().expect("config worker joins");
     }
 
     #[tokio::test]

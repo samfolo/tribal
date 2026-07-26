@@ -196,6 +196,23 @@ impl StageError {
             Self::ResumeBindingDivergence { .. } => TaskErrorKind::BindingDivergence,
         }
     }
+
+    /// Provider response detail for operator diagnostics, absent for internal failures.
+    pub(crate) fn provider_detail(&self) -> Option<String> {
+        match self {
+            Self::Provider { source, .. } => Some(source.to_string()),
+            Self::SemaphoreTimeout { .. }
+            | Self::Parse { .. }
+            | Self::OwnershipLost
+            | Self::Timeout { .. }
+            | Self::TemplateRender { .. }
+            | Self::Runtime { .. }
+            | Self::BindingDerivation { .. }
+            | Self::BudgetExhausted { .. }
+            | Self::Database { .. }
+            | Self::ResumeBindingDivergence { .. } => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -338,12 +338,13 @@ impl Drop for AuthorityLease {
 }
 
 fn materialise_config(path: &Path) -> Result<PathBuf, AuthorityError> {
+    let path = expand_tilde(path);
     let absolute = if path.is_absolute() {
-        path.to_owned()
+        path
     } else {
         std::env::current_dir()
-            .map_err(|source| filesystem(path, source))?
-            .join(path)
+            .map_err(|source| filesystem(&path, source))?
+            .join(&path)
     };
     let parent = absolute
         .parent()
@@ -364,6 +365,13 @@ fn materialise_config(path: &Path) -> Result<PathBuf, AuthorityError> {
     absolute
         .canonicalize()
         .map_err(|source| filesystem(&absolute, source))
+}
+
+fn expand_tilde(path: &Path) -> PathBuf {
+    path.to_str().map_or_else(
+        || path.to_owned(),
+        |path| PathBuf::from(shellexpand::tilde(path).into_owned()),
+    )
 }
 
 fn derive_paths(
@@ -530,6 +538,15 @@ mod tests {
             .expect("second path acquisition succeeds");
         assert!(matches!(first, AuthorityAcquire::Acquired(_)));
         assert!(matches!(second, AuthorityAcquire::Acquired(_)));
+    }
+
+    #[test]
+    fn test_tilde_config_path_is_resolved_against_home() {
+        let home = PathBuf::from(shellexpand::tilde("~").into_owned());
+
+        let resolved = expand_tilde(Path::new("~/.config/tribal/tribal.yaml"));
+
+        assert_eq!(resolved, home.join(".config/tribal/tribal.yaml"));
     }
 
     #[test]

@@ -83,7 +83,7 @@ async fn test_validate_failure_targeted_skip_for_provider_under_providers_flag()
     config.provider_connections.insert(
         connection.clone(),
         ProviderConnectionConfig::OpenAi {
-            base_url: "https://api.openai.com/v1".to_owned(),
+            base_url: "https://api.openai.com".to_owned(),
             api_key: None,
         },
     );
@@ -118,7 +118,7 @@ async fn test_unreachable_embedding_connection_fails_the_provider_probe() {
     config.provider_connections.insert(
         connection.clone(),
         ProviderConnectionConfig::OpenAi {
-            base_url: "http://127.0.0.1:9/v1".to_owned(),
+            base_url: "http://127.0.0.1:9".to_owned(),
             api_key: Some("sk-check-unreachable".parse().unwrap()),
         },
     );

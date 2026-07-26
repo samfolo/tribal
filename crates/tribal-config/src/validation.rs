@@ -32,6 +32,8 @@ pub use error::{
 // Constants
 // ---------------------------------------------------------------------------
 
+const PROVIDER_BASE_URL_REQUIREMENT: &str = "must omit the provider-owned request-path prefix";
+
 /// Additional connections the worker pool requires beyond the concurrent task
 /// count (heartbeat, reclaim, poll, and one spare).
 const POOL_CONNECTION_OVERHEAD: u64 = 4;
@@ -502,6 +504,14 @@ fn validate_provider_connections(config: &TribalConfig, diags: &mut Diagnostics)
                     field: ConfigPath::child("provider_connections", connection.as_str())
                         .extend("base_url"),
                     value,
+                });
+            }
+            ProviderConnectionViolation::EndpointIncludesRequestPrefix { connection, value } => {
+                diags.push(ValidationError::UrlUnsupportedForm {
+                    field: ConfigPath::child("provider_connections", connection.as_str())
+                        .extend("base_url"),
+                    value,
+                    requirement: PROVIDER_BASE_URL_REQUIREMENT,
                 });
             }
             ProviderConnectionViolation::DuplicateEndpoint {
@@ -1343,9 +1353,43 @@ mod tests {
         let mut config = valid_config();
         config.provider_connections.insert(
             connection_name("openai_default"),
-            openai("https://api.openai.com/v1", Some("sk-test")),
+            openai("https://api.openai.com", Some("sk-test")),
         );
         assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_provider_request_prefix_in_base_url() {
+        let mut config = valid_config();
+        config.provider_connections.insert(
+            connection_name("openai_default"),
+            openai("https://gateway.example/openai/v1/", Some("sk-test")),
+        );
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |diagnostic| matches!(
+            diagnostic,
+            ValidationError::UrlUnsupportedForm { field, requirement, .. }
+                if field.as_str() == "provider_connections.openai_default.base_url"
+                    && *requirement == PROVIDER_BASE_URL_REQUIREMENT,
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_ollama_request_prefix_in_base_url() {
+        let mut config = valid_config();
+        config.provider_connections.insert(
+            connection_name("ollama_default"),
+            crate::ProviderConnectionConfig::Ollama {
+                base_url: "http://localhost:11434/api".to_owned(),
+            },
+        );
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |diagnostic| matches!(
+            diagnostic,
+            ValidationError::UrlUnsupportedForm { field, requirement, .. }
+                if field.as_str() == "provider_connections.ollama_default.base_url"
+                    && *requirement == PROVIDER_BASE_URL_REQUIREMENT,
+        )));
     }
 
     #[test]
@@ -1479,7 +1523,7 @@ mod tests {
         let mut config = valid_config();
         config.provider_connections.insert(
             connection_name("openai_default"),
-            openai("https://api.openai.com/v1", None),
+            openai("https://api.openai.com", None),
         );
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(

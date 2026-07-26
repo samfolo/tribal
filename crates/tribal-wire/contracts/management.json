@@ -7227,7 +7227,8 @@
           "entropy_unavailable",
           "bootstrap_protocol_initialization_failed",
           "management_socket_unavailable",
-          "authority_descriptor_persistence_failed"
+          "authority_descriptor_persistence_failed",
+          "managed_runtime_recovery_failed"
         ]
       }
     }
@@ -14282,101 +14283,6 @@
           "relation"
         ]
       },
-      "ProbeOutcome": {
-        "description": "Result of a probe whose subject already owns its check identity.",
-        "oneOf": [
-          {
-            "description": "The external capability answered successfully.",
-            "type": "object",
-            "required": [
-              "detail",
-              "status"
-            ],
-            "properties": {
-              "detail": {
-                "description": "Operator-facing observation detail.",
-                "type": "string"
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "pass"
-                ]
-              }
-            }
-          },
-          {
-            "description": "The capability answered with a non-blocking concern.",
-            "type": "object",
-            "required": [
-              "detail",
-              "remediation",
-              "status"
-            ],
-            "properties": {
-              "detail": {
-                "description": "Operator-facing observation detail.",
-                "type": "string"
-              },
-              "remediation": {
-                "description": "Suggested operator action.",
-                "type": "string"
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "warn"
-                ]
-              }
-            }
-          },
-          {
-            "description": "The capability failed its probe.",
-            "type": "object",
-            "required": [
-              "detail",
-              "remediation",
-              "status"
-            ],
-            "properties": {
-              "detail": {
-                "description": "Operator-facing observation detail.",
-                "type": "string"
-              },
-              "remediation": {
-                "description": "Suggested operator action.",
-                "type": "string"
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "fail"
-                ]
-              }
-            }
-          },
-          {
-            "description": "A typed prerequisite prevented the probe.",
-            "type": "object",
-            "required": [
-              "detail",
-              "status"
-            ],
-            "properties": {
-              "detail": {
-                "description": "Operator-facing skip detail.",
-                "type": "string"
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "skip"
-                ]
-              }
-            }
-          }
-        ]
-      },
       "ProbeReceiptFreshness": {
         "description": "Relationship between a retained probe and current configuration.",
         "oneOf": [
@@ -14496,6 +14402,68 @@
           }
         }
       },
+      "ProviderConnectionFailure": {
+        "description": "Safe diagnostic details from a failed provider connection probe.",
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "http_status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint16",
+            "minimum": 0.0
+          },
+          "kind": {
+            "$ref": "#/definitions/ProviderConnectionFailureKind"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retry_after_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0.0
+          }
+        }
+      },
+      "ProviderConnectionFailureKind": {
+        "description": "Stable classification for a failed provider connection probe.",
+        "type": "string",
+        "enum": [
+          "authentication",
+          "permission",
+          "quota_exhausted",
+          "rate_limited",
+          "overloaded",
+          "upstream_unavailable",
+          "endpoint_unreachable",
+          "timed_out",
+          "invalid_request",
+          "unknown"
+        ]
+      },
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
@@ -14527,12 +14495,98 @@
             "$ref": "#/definitions/ProviderKind"
           },
           "result": {
-            "$ref": "#/definitions/ProbeOutcome"
+            "$ref": "#/definitions/ProviderConnectionProbeResult"
           },
           "revision": {
             "$ref": "#/definitions/ConfigRevision"
           }
         }
+      },
+      "ProviderConnectionProbeResult": {
+        "description": "Result of a non-billable provider connection probe.",
+        "oneOf": [
+          {
+            "description": "The endpoint accepted its model-discovery request.",
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "reachable"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The endpoint or credential rejected the discovery request.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "failure"
+                ],
+                "properties": {
+                  "failure": {
+                    "$ref": "#/definitions/ProviderConnectionFailure"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The connection has no direct endpoint to probe.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/definitions/ProviderConnectionProbeSkipReason"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "skipped"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProviderConnectionProbeSkipReason": {
+        "description": "Why a provider connection cannot be probed directly.",
+        "oneOf": [
+          {
+            "description": "Tribal Platform availability is established by its authenticated gateway.",
+            "type": "string",
+            "enum": [
+              "managed_connection"
+            ]
+          }
+        ]
       },
       "ProviderConnectionSummary": {
         "type": "object",
@@ -15114,7 +15168,7 @@
             "minimum": 0.0
           },
           "result": {
-            "$ref": "#/definitions/ProbeOutcome"
+            "$ref": "#/definitions/ProviderConnectionProbeResult"
           },
           "validated_against_revision": {
             "$ref": "#/definitions/ConfigRevision"
@@ -15126,101 +15180,6 @@
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-tribal-base64url-prefix": "cfg_",
         "x-tribal-swift-type": "canonical-base64url-32"
-      },
-      "ProbeOutcome": {
-        "description": "Result of a probe whose subject already owns its check identity.",
-        "oneOf": [
-          {
-            "description": "The external capability answered successfully.",
-            "type": "object",
-            "required": [
-              "detail",
-              "status"
-            ],
-            "properties": {
-              "detail": {
-                "description": "Operator-facing observation detail.",
-                "type": "string"
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "pass"
-                ]
-              }
-            }
-          },
-          {
-            "description": "The capability answered with a non-blocking concern.",
-            "type": "object",
-            "required": [
-              "detail",
-              "remediation",
-              "status"
-            ],
-            "properties": {
-              "detail": {
-                "description": "Operator-facing observation detail.",
-                "type": "string"
-              },
-              "remediation": {
-                "description": "Suggested operator action.",
-                "type": "string"
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "warn"
-                ]
-              }
-            }
-          },
-          {
-            "description": "The capability failed its probe.",
-            "type": "object",
-            "required": [
-              "detail",
-              "remediation",
-              "status"
-            ],
-            "properties": {
-              "detail": {
-                "description": "Operator-facing observation detail.",
-                "type": "string"
-              },
-              "remediation": {
-                "description": "Suggested operator action.",
-                "type": "string"
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "fail"
-                ]
-              }
-            }
-          },
-          {
-            "description": "A typed prerequisite prevented the probe.",
-            "type": "object",
-            "required": [
-              "detail",
-              "status"
-            ],
-            "properties": {
-              "detail": {
-                "description": "Operator-facing skip detail.",
-                "type": "string"
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "skip"
-                ]
-              }
-            }
-          }
-        ]
       },
       "ProbeReceiptFreshness": {
         "description": "Relationship between a retained probe and current configuration.",
@@ -15274,6 +15233,68 @@
           }
         ]
       },
+      "ProviderConnectionFailure": {
+        "description": "Safe diagnostic details from a failed provider connection probe.",
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "http_status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint16",
+            "minimum": 0.0
+          },
+          "kind": {
+            "$ref": "#/definitions/ProviderConnectionFailureKind"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retry_after_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0.0
+          }
+        }
+      },
+      "ProviderConnectionFailureKind": {
+        "description": "Stable classification for a failed provider connection probe.",
+        "type": "string",
+        "enum": [
+          "authentication",
+          "permission",
+          "quota_exhausted",
+          "rate_limited",
+          "overloaded",
+          "upstream_unavailable",
+          "endpoint_unreachable",
+          "timed_out",
+          "invalid_request",
+          "unknown"
+        ]
+      },
       "ProviderConnectionName": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$",
@@ -15305,12 +15326,98 @@
             "$ref": "#/definitions/ProviderKind"
           },
           "result": {
-            "$ref": "#/definitions/ProbeOutcome"
+            "$ref": "#/definitions/ProviderConnectionProbeResult"
           },
           "revision": {
             "$ref": "#/definitions/ConfigRevision"
           }
         }
+      },
+      "ProviderConnectionProbeResult": {
+        "description": "Result of a non-billable provider connection probe.",
+        "oneOf": [
+          {
+            "description": "The endpoint accepted its model-discovery request.",
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "reachable"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The endpoint or credential rejected the discovery request.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "failure"
+                ],
+                "properties": {
+                  "failure": {
+                    "$ref": "#/definitions/ProviderConnectionFailure"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          },
+          {
+            "description": "The connection has no direct endpoint to probe.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/definitions/ProviderConnectionProbeSkipReason"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "skipped"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ProviderConnectionProbeSkipReason": {
+        "description": "Why a provider connection cannot be probed directly.",
+        "oneOf": [
+          {
+            "description": "Tribal Platform availability is established by its authenticated gateway.",
+            "type": "string",
+            "enum": [
+              "managed_connection"
+            ]
+          }
+        ]
       },
       "ProviderKind": {
         "description": "LLM provider.\n\nUsed as the type for embedding and per-stage inference configuration, as the key type for per-provider limits, and as the capability-resolution key (with the model string) for request-field admissibility.",

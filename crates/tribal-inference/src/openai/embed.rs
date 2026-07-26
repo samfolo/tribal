@@ -241,11 +241,14 @@ mod tests {
     }
 
     fn a_valid_response_json(dims: usize) -> serde_json::Value {
+        let vector = (0..dims)
+            .map(|index| if index.is_multiple_of(2) { 0.1 } else { -0.2 })
+            .collect::<Vec<f32>>();
         serde_json::json!({
             "object": "list",
             "data": [{
                 "object": "embedding",
-                "embedding": vec![0.1_f32; dims],
+                "embedding": vector,
                 "index": 0,
             }],
             "model": "text-embedding-3-small",
@@ -305,7 +308,7 @@ mod tests {
         let provider = setup(&server, 3);
         let response = provider.embed(a_request("test input")).await.unwrap();
 
-        assert_eq!(response.vector, vec![0.1, 0.1, 0.1]);
+        assert_eq!(response.vector, vec![0.1, -0.2, 0.1]);
         assert_eq!(response.usage.provider, PROVIDER_NAME);
         assert_eq!(response.usage.model, "text-embedding-3-small");
         assert_eq!(response.usage.total_tokens, 5);

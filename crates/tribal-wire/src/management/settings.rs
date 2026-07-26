@@ -5,8 +5,8 @@ use tribal_domain::{ProviderConnectionName, ProviderKind};
 
 use super::{
     CheckSubject, ConfigFieldPath, ConfigPatchChange, ConfigPatchOutcome, ConfigRevision,
-    CredentialRequirement, EndpointRequirement, LifecycleSnapshot, ProbeOutcome,
-    ProbeReceiptFreshness, SecretLiteral,
+    CredentialRequirement, EndpointRequirement, LifecycleSnapshot, ProbeReceiptFreshness,
+    SecretLiteral,
 };
 use crate::operator_check::CheckName;
 
@@ -232,8 +232,61 @@ pub struct ProviderConnectionProbeReceipt {
     pub provider: ProviderKind,
     pub observed_at_unix_ms: u64,
     pub revision: ConfigRevision,
-    pub result: ProbeOutcome,
+    pub result: ProviderConnectionProbeResult,
     pub freshness: ProbeReceiptFreshness,
+}
+
+/// Result of a non-billable provider connection probe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "state", content = "data", rename_all = "snake_case")]
+pub enum ProviderConnectionProbeResult {
+    /// The endpoint accepted its model-discovery request.
+    Reachable,
+    /// The endpoint or credential rejected the discovery request.
+    Failed { failure: ProviderConnectionFailure },
+    /// The connection has no direct endpoint to probe.
+    Skipped {
+        reason: ProviderConnectionProbeSkipReason,
+    },
+}
+
+/// Why a provider connection cannot be probed directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderConnectionProbeSkipReason {
+    /// Tribal Platform availability is established by its authenticated gateway.
+    ManagedConnection,
+}
+
+/// Stable classification for a failed provider connection probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderConnectionFailureKind {
+    Authentication,
+    Permission,
+    QuotaExhausted,
+    RateLimited,
+    Overloaded,
+    UpstreamUnavailable,
+    EndpointUnreachable,
+    TimedOut,
+    InvalidRequest,
+    Unknown,
+}
+
+/// Safe diagnostic details from a failed provider connection probe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ProviderConnectionFailure {
+    pub kind: ProviderConnectionFailureKind,
+    pub provider_code: Option<String>,
+    pub http_status: Option<u16>,
+    pub message: Option<String>,
+    pub request_id: Option<String>,
+    pub retry_after_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -398,7 +451,7 @@ pub enum ProviderProbeResponse {
 pub struct CandidateProviderProbeObservation {
     pub observed_at_unix_ms: u64,
     pub validated_against_revision: ConfigRevision,
-    pub result: ProbeOutcome,
+    pub result: ProviderConnectionProbeResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

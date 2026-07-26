@@ -9,8 +9,10 @@ use crate::InferenceError;
 /// Validates an embeddings array and extracts the single vector.
 ///
 /// Embedding providers return arrays of vectors, but Tribal always sends
-/// a single input per request.  This function enforces: non-empty,
-/// exactly one element, and correct dimensionality.
+/// a single input per request. This function enforces one vector of the
+/// expected dimensionality whose components are finite and not uniformly
+/// zero — the two shapes that poison a cosine-similarity index rather than
+/// merely embedding poorly.
 pub(crate) fn validate_embeddings(
     embeddings: Vec<Vec<f32>>,
     expected_dimensions: u32,
@@ -42,6 +44,20 @@ pub(crate) fn validate_embeddings(
         return Err(InferenceError::ResponseParseFailed {
             expected_shape: format!("embedding vector length == {expected}"),
             actual: format!("embedding vector length == {}", vector.len()),
+        });
+    }
+
+    if vector.iter().any(|component| !component.is_finite()) {
+        return Err(InferenceError::ResponseParseFailed {
+            expected_shape: "embedding vector containing only finite values".to_owned(),
+            actual: "embedding vector contains a non-finite value".to_owned(),
+        });
+    }
+
+    if vector.iter().all(|component| *component == 0.0) {
+        return Err(InferenceError::ResponseParseFailed {
+            expected_shape: "embedding vector with non-zero magnitude".to_owned(),
+            actual: "embedding vector has zero magnitude".to_owned(),
         });
     }
 
@@ -105,5 +121,26 @@ mod tests {
             if expected_shape == "embedding vector length == 3"
                 && actual == "embedding vector length == 5"
         ));
+    }
+
+    #[test]
+    fn test_non_finite_embedding_is_rejected() {
+        let err = validate_embeddings(vec![vec![0.1, f32::NAN, 0.3]], 3, "model").unwrap_err();
+
+        assert!(matches!(err, InferenceError::ResponseParseFailed { .. }));
+    }
+
+    #[test]
+    fn test_zero_magnitude_embedding_is_rejected() {
+        let err = validate_embeddings(vec![vec![0.0, 0.0, 0.0]], 3, "model").unwrap_err();
+
+        assert!(matches!(err, InferenceError::ResponseParseFailed { .. }));
+    }
+
+    #[test]
+    fn test_uniform_non_zero_embedding_is_accepted() {
+        let vector = validate_embeddings(vec![vec![0.02, 0.02, 0.02]], 3, "model").unwrap();
+
+        assert_eq!(vector, vec![0.02, 0.02, 0.02]);
     }
 }

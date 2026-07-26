@@ -24,7 +24,7 @@ use url::Url;
 // ---------------------------------------------------------------------------
 
 /// User-Agent header value sent on all registry-constructed HTTP clients.
-const USER_AGENT: &str = concat!("tribal/", env!("CARGO_PKG_VERSION"));
+pub(crate) const USER_AGENT: &str = concat!("tribal/", env!("CARGO_PKG_VERSION"));
 
 // ---------------------------------------------------------------------------
 // RequestClass
@@ -635,12 +635,8 @@ mod tests {
     #[test]
     fn test_register_building_adds_resolvable_provider() {
         let registry = ProviderRegistry::new(Vec::new()).unwrap();
-        let target = ProviderKey::new(
-            "openai",
-            "https://api.openai.com/v1",
-            RequestClass::Embedding,
-        )
-        .unwrap();
+        let target =
+            ProviderKey::new("openai", "https://api.openai.com", RequestClass::Embedding).unwrap();
         let limits = ProviderLimits {
             max_in_flight: 2,
             request_timeout: Duration::from_secs(30),
