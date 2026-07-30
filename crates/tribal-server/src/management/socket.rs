@@ -21,7 +21,10 @@ use tribal_wire::management::{
 };
 
 use super::{
-    application::{ManagementApplication, credential::CredentialCoordinator},
+    application::{
+        ManagementApplication, credential::CredentialCoordinator,
+        storage_transition::StorageTransitionGate,
+    },
     lifecycle::LifecycleController,
     probe::ProbeService,
     product::ProductService,
@@ -50,6 +53,7 @@ pub(crate) struct ManagerSocketServices {
     probe: ProbeService,
     lifecycle: LifecycleController,
     credentials: CredentialCoordinator,
+    storage: StorageTransitionGate,
     shutdown: CancellationToken,
 }
 
@@ -68,6 +72,7 @@ impl ManagerSocketServices {
             probe,
             lifecycle,
             credentials,
+            storage: StorageTransitionGate::new(),
             shutdown,
         }
     }
@@ -227,6 +232,7 @@ async fn handle_connection(
                 &services.probe,
                 &services.lifecycle,
                 services.credentials.clone(),
+                services.storage.clone(),
                 services.shutdown.clone(),
             ),
             shutdown: &services.shutdown,

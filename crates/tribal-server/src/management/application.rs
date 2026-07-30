@@ -10,6 +10,7 @@ pub(in crate::management) mod operation;
 mod pagination;
 mod project;
 mod reindex;
+pub(in crate::management) mod storage_transition;
 mod thread;
 mod token;
 
@@ -24,22 +25,26 @@ use integration::IntegrationAdministration;
 use operation::OperationContext;
 use project::ProjectAdministration;
 use reindex::ReindexAdministration;
+pub(in crate::management) use storage_transition::StorageTransitionGate;
 use thread::ThreadAdministration;
 use token::TokenAdministration;
 use tribal_wire::management::{
     AdministrationFailure, AuthenticationSettingsCall, BootstrapRunCall, CheckReportCall,
     ConfigGetAllCall, ConfigGetCall, ConfigPatchCall, ConfigPatchValidation, ConfigPathCall,
     ConfigSchemaCall, ConfigSetCall, ConfigValidatePatchCall, DatabaseConnectionCall,
-    DatabaseInitialiseCall, DatabaseInspectCall, DatabaseProbeCall, GraphConfigureGenesisCall,
-    GraphConvergeGenesisCall, GraphEmbeddingProfileCall, GraphGenesisOptionsCall,
-    IntegrationMcpConfigCall, LogsTailCall, ManagementCall, ManagementError, ManagementMethod,
-    ManagementResponseError, ManagerShutdownCall, ManagerSnapshot, ManagerSnapshotCall,
-    ModelsCatalogueCall, PatchConfigViolation, ProcessingProfileCall, ProcessingProfileSetCall,
-    ProjectListCall, ProjectRegisterCall, ProviderConnectionRemoveCall,
-    ProviderConnectionUpsertCall, ProviderConnectionsCall, ProviderProbeCall, ReindexCancelCall,
-    ReindexPruneCall, ReindexRunCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall,
-    ServerStatusCall, SettingsResetPreviewCall, ThreadsPruneCall, TokenCreateCall, TokenListCall,
-    TokenRevokeAllCall, TokenRevokeCall,
+    DatabaseInitialiseCall, DatabaseInitialiseOutcome, DatabaseInspectCall, DatabaseProbeCall,
+    GraphConfigureGenesisCall, GraphConvergeGenesisCall, GraphEmbeddingProfileCall,
+    GraphGenesisOptionsCall, IntegrationMcpConfigCall, LogsTailCall, ManagementCall,
+    ManagementError, ManagementMethod, ManagementResponseError, ManagerShutdownCall,
+    ManagerSnapshot, ManagerSnapshotCall, ModelsCatalogueCall, PatchConfigViolation,
+    ProcessingProfileCall, ProcessingProfileSetCall, ProjectListCall, ProjectRegisterCall,
+    ProviderConnectionRemoveCall, ProviderConnectionUpsertCall, ProviderConnectionsCall,
+    ProviderProbeCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall,
+    RestartOperationInProgress, Revisioned, RuntimeRestartCall, RuntimeRestartResult,
+    RuntimeStartCall, RuntimeStartResult, RuntimeStopCall, RuntimeStopResult, ServerStatusCall,
+    SettingsResetPreviewCall, StartOperationInProgress, StopOperationInProgress, StorageAssessCall,
+    StorageAssessResult, ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall,
+    TokenRevokeCall,
 };
 
 use super::{
@@ -64,16 +69,18 @@ pub(crate) struct ManagementApplication<'a> {
     integration: IntegrationAdministration,
     reindex: ReindexAdministration,
     threads: ThreadAdministration,
+    storage: StorageTransitionGate,
     shutdown: tokio_util::sync::CancellationToken,
 }
 
 impl<'a> ManagementApplication<'a> {
-    pub(crate) fn new(
+    pub(in crate::management) fn new(
         config: &'a ConfigWorkerClient,
         product: &'a ProductSession,
         probe: &'a ProbeService,
         lifecycle: &'a LifecycleController,
         credentials: CredentialCoordinator,
+        storage: StorageTransitionGate,
         shutdown: tokio_util::sync::CancellationToken,
     ) -> Self {
         let database = DatabaseAccess::new(config.clone());
@@ -91,6 +98,7 @@ impl<'a> ManagementApplication<'a> {
             ),
             reindex: ReindexAdministration::new(database.clone()),
             threads: ThreadAdministration::new(database.clone()),
+            storage,
             database,
             shutdown,
         }
@@ -121,15 +129,36 @@ impl<'a> ManagementApplication<'a> {
                     settings,
                 }))
             }
-            ManagementMethod::RuntimeStart => {
-                encode_lifecycle::<RuntimeStartCall>(self.lifecycle.start_for(&operation).await)
-            }
-            ManagementMethod::RuntimeStop => {
-                encode_lifecycle::<RuntimeStopCall>(self.lifecycle.stop_for(&operation).await)
-            }
-            ManagementMethod::RuntimeRestart => {
-                encode_lifecycle::<RuntimeRestartCall>(self.lifecycle.restart_for(&operation).await)
-            }
+            ManagementMethod::RuntimeStart => match self.storage.admit_lifecycle() {
+                Err(transition_id) => encode_lifecycle::<RuntimeStartCall>(Ok(Some(
+                    RuntimeStartResult::OperationInProgress {
+                        state: StartOperationInProgress::GraphTransition { transition_id },
+                    },
+                ))),
+                Ok(_admission) => {
+                    encode_lifecycle::<RuntimeStartCall>(self.lifecycle.start_for(&operation).await)
+                }
+            },
+            ManagementMethod::RuntimeStop => match self.storage.admit_lifecycle() {
+                Err(transition_id) => encode_lifecycle::<RuntimeStopCall>(Ok(Some(
+                    RuntimeStopResult::OperationInProgress {
+                        state: StopOperationInProgress::GraphTransition { transition_id },
+                    },
+                ))),
+                Ok(_admission) => {
+                    encode_lifecycle::<RuntimeStopCall>(self.lifecycle.stop_for(&operation).await)
+                }
+            },
+            ManagementMethod::RuntimeRestart => match self.storage.admit_lifecycle() {
+                Err(transition_id) => encode_lifecycle::<RuntimeRestartCall>(Ok(Some(
+                    RuntimeRestartResult::OperationInProgress {
+                        state: RestartOperationInProgress::GraphTransition { transition_id },
+                    },
+                ))),
+                Ok(_admission) => encode_lifecycle::<RuntimeRestartCall>(
+                    self.lifecycle.restart_for(&operation).await,
+                ),
+            },
             ManagementMethod::ManagerShutdown => encode_lifecycle::<ManagerShutdownCall>(
                 self.lifecycle.shutdown_for(&operation).await,
             ),
@@ -192,12 +221,21 @@ impl<'a> ManagementApplication<'a> {
             }
             ManagementMethod::DatabaseInitialise => {
                 let request = parse_call::<DatabaseInitialiseCall>(params)?;
-                encode_call::<DatabaseInitialiseCall>(
-                    self.database
-                        .initialise(&operation, request)
-                        .await
-                        .map_err(database_initialise_error),
-                )
+                match self.storage.admit_migration() {
+                    Err(transition_id) => encode_call::<DatabaseInitialiseCall>(Ok(Revisioned {
+                        config_revision: request.expected_revision.clone(),
+                        value: DatabaseInitialiseOutcome::GraphTransitionInProgress {
+                            transition_id: Some(transition_id),
+                        },
+                    }
+                    .into())),
+                    Ok(_admission) => encode_call::<DatabaseInitialiseCall>(
+                        self.database
+                            .initialise(&operation, request)
+                            .await
+                            .map_err(database_initialise_error),
+                    ),
+                }
             }
             ManagementMethod::ProjectRegister => {
                 let request = parse_call::<ProjectRegisterCall>(params)?;
@@ -288,6 +326,16 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::DatabaseConnection => encode_call::<DatabaseConnectionCall>(
                 self.product.database_connection(&operation).await,
             ),
+            ManagementMethod::StorageAssess => {
+                let request = parse_call::<StorageAssessCall>(params)?;
+                encode_call::<StorageAssessCall>(
+                    self.storage
+                        .assess(&operation, &self.database, Some(&request.expected_revision))
+                        .await
+                        .map(StorageAssessResult::from)
+                        .map_err(database_access_error),
+                )
+            }
             ManagementMethod::DatabaseInspect => {
                 let request = parse_call::<DatabaseInspectCall>(params)?;
                 encode_call::<DatabaseInspectCall>(

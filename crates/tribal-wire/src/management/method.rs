@@ -18,9 +18,9 @@ use super::{
     ReindexCancelResult, ReindexPruneRequest, ReindexPruneResult, ReindexRunRequest,
     ReindexRunResult, Revisioned, RuntimeLogsTailRequest, RuntimeLogsTailResult,
     RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult, SettingsResetPreview,
-    SettingsResetPreviewRequest, ThreadPruneRequest, ThreadPruneResult, TokenCreateRequest,
-    TokenCreateResult, TokenInventory, TokenListRequest, TokenRevokeAllRequest,
-    TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
+    SettingsResetPreviewRequest, StorageAssessRequest, StorageAssessResult, ThreadPruneRequest,
+    ThreadPruneResult, TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest,
+    TokenRevokeAllRequest, TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
 };
 
 /// The request and response types owned by one management method.
@@ -252,6 +252,12 @@ management_calls! {
         call: DatabaseInspectCall,
         request: DatabaseTargetInspectRequest,
         response: DatabaseTargetInspectResult,
+    },
+    StorageAssess => {
+        wire: "storage.assess",
+        call: StorageAssessCall,
+        request: StorageAssessRequest,
+        response: StorageAssessResult,
     },
     AuthenticationSettings => {
         wire: "authentication.settings",

@@ -3918,6 +3918,12 @@
         "response": "DatabaseTargetInspectResult"
       },
       {
+        "call": "StorageAssessCall",
+        "method": "storage.assess",
+        "request": "StorageAssessRequest",
+        "response": "StorageAssessResult"
+      },
+      {
         "call": "AuthenticationSettingsCall",
         "method": "authentication.settings",
         "request": null,
@@ -6428,6 +6434,7 @@
       "database.probe",
       "database.connection",
       "database.inspect",
+      "storage.assess",
       "authentication.settings",
       "providers.catalogue",
       "providers.upsert",
@@ -21780,6 +21787,33 @@
         "description": "Operation occupying the lifecycle when restart is requested.",
         "oneOf": [
           {
+            "description": "A graph transition owns the local barrier; no command was sent.",
+            "type": "object",
+            "required": [
+              "data",
+              "operation"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "transition_id"
+                ],
+                "properties": {
+                  "transition_id": {
+                    "$ref": "#/definitions/StorageTransitionId"
+                  }
+                }
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "graph_transition"
+                ]
+              }
+            }
+          },
+          {
             "type": "object",
             "required": [
               "data",
@@ -22960,6 +22994,11 @@
             }
           }
         ]
+      },
+      "StorageTransitionId": {
+        "type": "string",
+        "pattern": "^stx_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-tribal-swift-type": "validated-string"
       }
     }
   },
@@ -25406,6 +25445,33 @@
         "description": "Operation occupying the lifecycle when start is requested.",
         "oneOf": [
           {
+            "description": "A graph transition owns the local barrier; no command was sent.",
+            "type": "object",
+            "required": [
+              "data",
+              "operation"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "transition_id"
+                ],
+                "properties": {
+                  "transition_id": {
+                    "$ref": "#/definitions/StorageTransitionId"
+                  }
+                }
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "graph_transition"
+                ]
+              }
+            }
+          },
+          {
             "type": "object",
             "required": [
               "data",
@@ -25811,6 +25877,11 @@
           }
         ]
       },
+      "StorageTransitionId": {
+        "type": "string",
+        "pattern": "^stx_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-tribal-swift-type": "validated-string"
+      },
       "UnconfiguredLifecycleSnapshot": {
         "description": "Revision identity shared by every lifecycle projection.",
         "type": "object",
@@ -25916,6 +25987,33 @@
             "type": "string",
             "enum": [
               "stopped"
+            ]
+          }
+        }
+      },
+      {
+        "description": "A graph transition owns the local barrier; no stop was begun.",
+        "type": "object",
+        "required": [
+          "data",
+          "outcome"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "$ref": "#/definitions/StopOperationInProgress"
+              }
+            }
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "operation_in_progress"
             ]
           }
         }
@@ -28074,6 +28172,38 @@
           }
         ]
       },
+      "StopOperationInProgress": {
+        "description": "Operation occupying the lifecycle when stop is requested.",
+        "oneOf": [
+          {
+            "description": "A graph transition owns the local barrier; no command was sent.",
+            "type": "object",
+            "required": [
+              "data",
+              "operation"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "transition_id"
+                ],
+                "properties": {
+                  "transition_id": {
+                    "$ref": "#/definitions/StorageTransitionId"
+                  }
+                }
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "graph_transition"
+                ]
+              }
+            }
+          }
+        ]
+      },
       "StopRuntimeOperation": {
         "description": "The single runtime operation legal in a stop-specific result.",
         "type": "string",
@@ -28366,6 +28496,11 @@
             }
           }
         ]
+      },
+      "StorageTransitionId": {
+        "type": "string",
+        "pattern": "^stx_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-tribal-swift-type": "validated-string"
       }
     }
   },
@@ -28794,6 +28929,241 @@
               }
             }
           }
+        ]
+      }
+    }
+  },
+  "StorageAssessRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "StorageAssessRequest",
+    "description": "A revision-fenced read of the transition assessment; takes no barrier.",
+    "type": "object",
+    "required": [
+      "expected_revision"
+    ],
+    "properties": {
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
+      }
+    }
+  },
+  "StorageAssessResult": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "StorageAssessResult",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/StorageTransitionAssessment"
+      }
+    },
+    "definitions": {
+      "BlockingResolution": {
+        "type": "string",
+        "enum": [
+          "wait",
+          "wait_or_cancel_reindex",
+          "wait_for_lifecycle"
+        ]
+      },
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
+      },
+      "GraphActivity": {
+        "description": "One live graph-bound activity and how a blocked switch resolves it.",
+        "type": "object",
+        "required": [
+          "kind",
+          "resolution",
+          "status"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/definitions/GraphActivityKind"
+          },
+          "resolution": {
+            "$ref": "#/definitions/BlockingResolution"
+          },
+          "status": {
+            "$ref": "#/definitions/GraphActivityStatus"
+          }
+        }
+      },
+      "GraphActivityKind": {
+        "description": "The closed inventory of operation classes relevant to switching; adding a graph-bound long-running operation means classifying it here.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "kind"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "run_id"
+                ],
+                "properties": {
+                  "run_id": {
+                    "$ref": "#/definitions/ReindexRunId"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "embedding_reindex"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "database_migration"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "runtime_lifecycle"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "GraphActivityStatus": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "running"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "status"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "resume_at_unix_ms": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "uint64",
+                    "minimum": 0.0
+                  }
+                }
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "waiting_for_retry"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "GraphId": {
+        "type": "string",
+        "pattern": "^graph_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-tribal-swift-type": "validated-string"
+      },
+      "ReindexRunId": {
+        "type": "string",
+        "pattern": "^rrun_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-tribal-swift-type": "validated-string"
+      },
+      "StorageTransitionAssessment": {
+        "description": "Whether this manager may stop the source runtime now without abandoning a graph mutation or confusing its lifecycle.",
+        "type": "object",
+        "required": [
+          "activities",
+          "source_graph_id",
+          "verdict"
+        ],
+        "properties": {
+          "activities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/GraphActivity"
+            }
+          },
+          "source_graph_id": {
+            "$ref": "#/definitions/GraphId"
+          },
+          "verdict": {
+            "$ref": "#/definitions/StorageTransitionVerdict"
+          }
+        }
+      },
+      "StorageTransitionVerdict": {
+        "type": "string",
+        "enum": [
+          "ready",
+          "blocked"
         ]
       }
     }
