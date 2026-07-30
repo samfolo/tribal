@@ -2,7 +2,10 @@
 
 use sqlx::{PgConnection, PgPool};
 use tribal_common::random_duration_in_range;
-use tribal_db::{MigrationHeadStatus, MigrationRepository, PgMigrationRepository, advisory_locks};
+use tribal_db::{
+    AdvisoryLockRepository, MigrationHeadStatus, MigrationRepository, PgAdvisoryLockRepository,
+    PgMigrationRepository, advisory_locks,
+};
 
 use super::{
     POOL_NAME_MCP,
@@ -65,8 +68,8 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<MigrationRunOutcome,
             .await
             .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "migration", e))?;
 
-        let acquired = repo
-            .try_advisory_lock(&mut conn, advisory_locks::MIGRATION)
+        let acquired = PgAdvisoryLockRepository
+            .try_acquire_exclusive(&mut conn, advisory_locks::MIGRATION)
             .await
             .map_err(|source| AppError::Database { source })?;
 
@@ -77,7 +80,7 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<MigrationRunOutcome,
             let observed = match repo.current_head_matches(&mut conn, expected_head).await {
                 Ok(observed) => observed,
                 Err(source) => {
-                    release_migration_lock(&repo, &mut conn).await;
+                    release_migration_lock(&mut conn).await;
                     return Err(AppError::Database { source });
                 }
             };
@@ -93,7 +96,7 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<MigrationRunOutcome,
 
             let result = tribal_db::MIGRATOR.run(pool).await;
 
-            release_migration_lock(&repo, &mut lock_conn).await;
+            release_migration_lock(&mut lock_conn).await;
 
             result.map_err(|source| AppError::MigrationFailed { source })?;
             return Ok(outcome);
@@ -124,9 +127,9 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<MigrationRunOutcome,
 
 /// Releases the migration advisory lock, downgrading failures to warnings:
 /// the caller's own result must not be masked by release trouble.
-async fn release_migration_lock(repo: &PgMigrationRepository, conn: &mut PgConnection) {
-    match repo
-        .release_advisory_lock(conn, advisory_locks::MIGRATION)
+async fn release_migration_lock(conn: &mut PgConnection) {
+    match PgAdvisoryLockRepository
+        .release_exclusive(conn, advisory_locks::MIGRATION)
         .await
     {
         Ok(true) => {}

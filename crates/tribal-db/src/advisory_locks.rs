@@ -25,14 +25,27 @@ pub const EMBEDDING_PROFILE_AUTHORITY: i64 = 0x7472_6962_616C_6570;
 /// Domain-separates namespace-scoped default-credential replacement locks.
 pub const CREDENTIAL_REPLACEMENT: i64 = 0x7472_6962_616C_6372;
 
+/// Serialises one storage transition against graph-mutating admission: held
+/// exclusively on the source by the manager driving a switch, in shared form
+/// by every operation class that creates durable live graph work
+/// (`"tribalgt"`).
+pub const GRAPH_TRANSITION: i64 = 0x7472_6962_616C_6774;
+
+/// Reserves a switch's candidate database: held exclusively on the candidate
+/// from final assessment through source quiescence or abort, in shared form by
+/// the migration runner for its schema work (`"tribaltr"`).
+pub const TARGET_MIGRATION_RESERVATION: i64 = 0x7472_6962_616C_7472;
+
 /// Every advisory-lock id, the input to the compile-time uniqueness check.
-pub const ALL: [i64; 6] = [
+pub const ALL: [i64; 8] = [
     MIGRATION,
     PROVISIONING,
     REINDEX_SINGLE_FLIGHT,
     CUTOVER,
     EMBEDDING_PROFILE_AUTHORITY,
     CREDENTIAL_REPLACEMENT,
+    GRAPH_TRANSITION,
+    TARGET_MIGRATION_RESERVATION,
 ];
 
 const fn all_distinct(ids: &[i64]) -> bool {
@@ -58,8 +71,10 @@ mod tests {
 
     #[test]
     fn test_all_advisory_lock_ids_are_declared_once() {
-        assert_eq!(ALL.len(), 6);
+        assert_eq!(ALL.len(), 8);
         assert!(ALL.contains(&EMBEDDING_PROFILE_AUTHORITY));
         assert!(ALL.contains(&CREDENTIAL_REPLACEMENT));
+        assert!(ALL.contains(&GRAPH_TRANSITION));
+        assert!(ALL.contains(&TARGET_MIGRATION_RESERVATION));
     }
 }
