@@ -49,6 +49,10 @@ impl IntoMcpError for DbError {
                 format!("source context unreadable for job {job_id}"),
             ),
             DbError::Migration { .. } => (McpErrorCode::Internal, "migration failed".to_owned()),
+            DbError::GraphIdentityMissing => (
+                McpErrorCode::FailedPrecondition,
+                "graph identity missing: the database is uninitialised or behind".to_owned(),
+            ),
         };
 
         McpToolError {

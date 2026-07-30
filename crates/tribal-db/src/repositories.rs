@@ -16,6 +16,7 @@ mod embedding;
 mod embedding_index;
 mod embedding_profile;
 mod extraction_result;
+mod graph_identity;
 mod item_observation;
 mod job;
 mod knowledge_item;
@@ -71,6 +72,7 @@ pub use embedding_profile::{
 pub use extraction_result::{
     ExtractionResultRepository, NewExtractionResult, PgExtractionResultRepository,
 };
+pub use graph_identity::{GraphIdentityRepository, PgGraphIdentityRepository};
 pub use item_observation::{
     ItemObservationRepository, NewItemObservation, PgItemObservationRepository,
 };

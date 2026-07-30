@@ -48,6 +48,12 @@ pub enum DbError {
         id: String,
     },
 
+    /// The `graph_identity` row is absent. The identity is created exactly
+    /// once by migration; its absence means the database is uninitialised
+    /// or behind, never a state a caller repairs in place.
+    #[error("graph identity missing: the database has no graph_identity row")]
+    GraphIdentityMissing,
+
     /// A pagination cursor could not be decoded.
     ///
     /// Returned when a cursor is malformed, truncated, or otherwise
