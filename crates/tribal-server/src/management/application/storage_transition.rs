@@ -43,12 +43,20 @@ use super::{
 /// The manager's observation margin past the runtime's graceful deadline.
 const TRANSITION_OBSERVATION_MARGIN: Duration = Duration::from_secs(5);
 
+// ---------------------------------------------------------------------------
+// Gate
+// ---------------------------------------------------------------------------
+
 /// The shared local barrier and assessment service; one instance per manager.
 #[derive(Clone, Debug)]
 pub(in crate::management) struct StorageTransitionGate {
     occupancy: Arc<Mutex<Occupancy>>,
     pending: Arc<tokio::sync::Mutex<Option<PendingTransition>>>,
 }
+
+// ---------------------------------------------------------------------------
+// Pending transition and lock leases
+// ---------------------------------------------------------------------------
 
 /// One manager-held transition: its identity, the recorded source posture,
 /// the reinspected target, and the two lock leases whose live custody every
@@ -115,6 +123,10 @@ impl TransitionLockLease {
             .is_ok()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /// Why a switch attempt could not take the transition slot.
 #[derive(Debug)]
