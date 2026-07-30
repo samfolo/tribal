@@ -2438,8 +2438,44 @@
                 ]
               }
             }
+          },
+          {
+            "description": "A storage transition holds the database; nothing was begun. The id is present when this manager's own pending transition refused the work, and absent when the refusal came from another process's admission lock, which exposes no transition identity.",
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "transition_id": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/StorageTransitionId"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "graph_transition_in_progress"
+                ]
+              }
+            }
           }
         ]
+      },
+      "StorageTransitionId": {
+        "type": "string",
+        "pattern": "^stx_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-tribal-swift-type": "validated-string"
       }
     }
   },
@@ -16761,6 +16797,37 @@
                 ]
               }
             }
+          },
+          {
+            "description": "A storage transition holds the database; nothing was begun. The id is present when this manager's own pending transition refused the work, and absent when the refusal came from another process's admission lock, which exposes no transition identity.",
+            "type": "object",
+            "required": [
+              "data",
+              "outcome"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "transition_id": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/StorageTransitionId"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "graph_transition_in_progress"
+                ]
+              }
+            }
           }
         ]
       },
@@ -17023,6 +17090,11 @@
       },
       "SensitiveMcpConfigDocument": {
         "x-tribal-swift-type": "scoped-redacted-json"
+      },
+      "StorageTransitionId": {
+        "type": "string",
+        "pattern": "^stx_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-tribal-swift-type": "validated-string"
       },
       "TokenState": {
         "oneOf": [

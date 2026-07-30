@@ -113,6 +113,10 @@ pub enum AppError {
         attempts: u32,
     },
 
+    /// A storage transition holds this database; migration was refused.
+    #[error("a storage transition holds this database; retry once it settles")]
+    MigrationRefusedByGraphTransition,
+
     /// Migration execution failed.
     #[error("migration failed: {source}")]
     MigrationFailed {
@@ -372,7 +376,9 @@ impl AppError {
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::MigrationLockFailed { .. } => EXIT_CODE_MIGRATION_LOCK,
+            Self::MigrationLockFailed { .. } | Self::MigrationRefusedByGraphTransition => {
+                EXIT_CODE_MIGRATION_LOCK
+            }
             Self::WorkerStartup { .. }
             | Self::WorkerRuntime { .. }
             | Self::WorkerDeath

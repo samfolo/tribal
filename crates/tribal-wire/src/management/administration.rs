@@ -4,7 +4,7 @@ use std::{fmt, path::Path};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tribal_domain::{AuthTokenId, GitRemote, ProjectId, ProjectOrigin, Scope};
+use tribal_domain::{AuthTokenId, GitRemote, ProjectId, ProjectOrigin, Scope, StorageTransitionId};
 
 use super::{ConfigRevision, RuntimeIdentity};
 
@@ -28,6 +28,13 @@ pub struct DatabaseInitialiseRequest {
 pub enum DatabaseInitialiseOutcome {
     Initialised,
     AlreadyInitialised,
+    /// A storage transition holds the database; nothing was begun. The id is
+    /// present when this manager's own pending transition refused the work,
+    /// and absent when the refusal came from another process's admission
+    /// lock, which exposes no transition identity.
+    GraphTransitionInProgress {
+        transition_id: Option<StorageTransitionId>,
+    },
 }
 
 /// Concrete schema identity for a revisioned database-initialisation receipt.

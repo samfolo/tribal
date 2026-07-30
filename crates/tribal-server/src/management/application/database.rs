@@ -252,6 +252,13 @@ impl DatabaseAccess {
             .await
             .map_err(DatabaseAccessError::from)?
             .map_err(|source| DatabaseInitialiseError::Migration { source })?;
+        if migration_outcome == MigrationRunOutcome::GraphTransitionInProgress {
+            return Ok(session
+                .revisioned(DatabaseInitialiseOutcome::GraphTransitionInProgress {
+                    transition_id: None,
+                })
+                .into());
+        }
 
         let (transaction, principal_outcome, system_outcome) = operation
             .cancel_safe(async {
