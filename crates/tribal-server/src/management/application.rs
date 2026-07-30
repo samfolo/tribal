@@ -30,16 +30,16 @@ use tribal_wire::management::{
     AdministrationFailure, AuthenticationSettingsCall, BootstrapRunCall, CheckReportCall,
     ConfigGetAllCall, ConfigGetCall, ConfigPatchCall, ConfigPatchValidation, ConfigPathCall,
     ConfigSchemaCall, ConfigSetCall, ConfigValidatePatchCall, DatabaseConnectionCall,
-    DatabaseInitialiseCall, DatabaseProbeCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall,
-    GraphEmbeddingProfileCall, GraphGenesisOptionsCall, IntegrationMcpConfigCall, LogsTailCall,
-    ManagementCall, ManagementError, ManagementMethod, ManagementResponseError,
-    ManagerShutdownCall, ManagerSnapshot, ManagerSnapshotCall, ModelsCatalogueCall,
-    PatchConfigViolation, ProcessingProfileCall, ProcessingProfileSetCall, ProjectListCall,
-    ProjectRegisterCall, ProviderConnectionRemoveCall, ProviderConnectionUpsertCall,
-    ProviderConnectionsCall, ProviderProbeCall, ReindexCancelCall, ReindexPruneCall,
-    ReindexRunCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall,
-    SettingsResetPreviewCall, ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall,
-    TokenRevokeCall,
+    DatabaseInitialiseCall, DatabaseInspectCall, DatabaseProbeCall, GraphConfigureGenesisCall,
+    GraphConvergeGenesisCall, GraphEmbeddingProfileCall, GraphGenesisOptionsCall,
+    IntegrationMcpConfigCall, LogsTailCall, ManagementCall, ManagementError, ManagementMethod,
+    ManagementResponseError, ManagerShutdownCall, ManagerSnapshot, ManagerSnapshotCall,
+    ModelsCatalogueCall, PatchConfigViolation, ProcessingProfileCall, ProcessingProfileSetCall,
+    ProjectListCall, ProjectRegisterCall, ProviderConnectionRemoveCall,
+    ProviderConnectionUpsertCall, ProviderConnectionsCall, ProviderProbeCall, ReindexCancelCall,
+    ReindexPruneCall, ReindexRunCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall,
+    ServerStatusCall, SettingsResetPreviewCall, ThreadsPruneCall, TokenCreateCall, TokenListCall,
+    TokenRevokeAllCall, TokenRevokeCall,
 };
 
 use super::{
@@ -288,6 +288,15 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::DatabaseConnection => encode_call::<DatabaseConnectionCall>(
                 self.product.database_connection(&operation).await,
             ),
+            ManagementMethod::DatabaseInspect => {
+                let request = parse_call::<DatabaseInspectCall>(params)?;
+                encode_call::<DatabaseInspectCall>(
+                    self.database
+                        .inspect(&operation, request)
+                        .await
+                        .map_err(database_access_error),
+                )
+            }
             ManagementMethod::AuthenticationSettings => encode_call::<AuthenticationSettingsCall>(
                 self.product.authentication_settings(&operation).await,
             ),

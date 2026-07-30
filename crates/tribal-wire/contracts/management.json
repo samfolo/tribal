@@ -2553,6 +2553,354 @@
       }
     }
   },
+  "DatabaseTargetInspectRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DatabaseTargetInspectRequest",
+    "description": "Read-only inspection of one candidate database target. The secret lives only for the request; no receipt, log, or diagnostic carries it.",
+    "type": "object",
+    "required": [
+      "candidate_url",
+      "expected_revision"
+    ],
+    "properties": {
+      "candidate_url": {
+        "$ref": "#/definitions/SecretLiteral"
+      },
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
+      },
+      "SecretLiteral": {
+        "type": "string",
+        "pattern": "^\\S+$",
+        "x-tribal-swift-type": "redacted-validated-string"
+      }
+    }
+  },
+  "DatabaseTargetInspectResult": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DatabaseTargetInspectResult",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/DatabaseTargetReceipt"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
+      },
+      "DatabaseEndpointSummary": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unconfigured"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "has_additional_options",
+                  "host",
+                  "password",
+                  "safe_option_keys",
+                  "scheme"
+                ],
+                "properties": {
+                  "database": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "has_additional_options": {
+                    "type": "boolean"
+                  },
+                  "host": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "$ref": "#/definitions/SecretPresence"
+                  },
+                  "port": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "uint16",
+                    "minimum": 0.0
+                  },
+                  "safe_option_keys": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "scheme": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "parsed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "opaque_configured"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "DatabaseTargetFailure": {
+        "description": "A typed reachability or compatibility failure with operator-facing copy.",
+        "type": "object",
+        "required": [
+          "kind",
+          "presentation"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/definitions/DatabaseTargetFailureKind"
+          },
+          "presentation": {
+            "$ref": "#/definitions/FailurePresentation"
+          }
+        }
+      },
+      "DatabaseTargetFailureKind": {
+        "description": "The failure classes inspection distinguishes.",
+        "type": "string",
+        "enum": [
+          "invalid_url",
+          "authentication",
+          "tls",
+          "host_unreachable",
+          "database_missing",
+          "incompatible_server",
+          "unknown"
+        ]
+      },
+      "DatabaseTargetReceipt": {
+        "description": "What inspection observed about one target, at one instant.",
+        "type": "object",
+        "required": [
+          "endpoint",
+          "observed_at_unix_ms",
+          "state"
+        ],
+        "properties": {
+          "endpoint": {
+            "$ref": "#/definitions/DatabaseEndpointSummary"
+          },
+          "observed_at_unix_ms": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "state": {
+            "$ref": "#/definitions/DatabaseTargetState"
+          }
+        }
+      },
+      "DatabaseTargetState": {
+        "description": "The provider-neutral states a target can be in. Only `Ready` carries the observed graph identity, and only a ready target may enter the switch protocol; an ahead target is refused rather than downgraded.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "graph_id"
+                ],
+                "properties": {
+                  "graph_id": {
+                    "$ref": "#/definitions/GraphId"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "ready"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "failure"
+                ],
+                "properties": {
+                  "failure": {
+                    "$ref": "#/definitions/DatabaseTargetFailure"
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "uninitialised"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "pending"
+                ],
+                "properties": {
+                  "pending": {
+                    "type": "integer",
+                    "format": "uint32",
+                    "minimum": 0.0
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "behind"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "ahead"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "FailurePresentation": {
+        "description": "Redacted failure copy suitable for operator presentation.",
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "remediation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "GraphId": {
+        "type": "string",
+        "pattern": "^graph_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-tribal-swift-type": "validated-string"
+      },
+      "SecretPresence": {
+        "type": "string",
+        "enum": [
+          "absent",
+          "configured"
+        ]
+      }
+    }
+  },
   "GenesisConfigurationRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "GenesisConfigurationRequest",
@@ -3499,6 +3847,12 @@
         "method": "database.connection",
         "request": null,
         "response": "DatabaseConnectionSummary"
+      },
+      {
+        "call": "DatabaseInspectCall",
+        "method": "database.inspect",
+        "request": "DatabaseTargetInspectRequest",
+        "response": "DatabaseTargetInspectResult"
       },
       {
         "call": "AuthenticationSettingsCall",
@@ -6010,6 +6364,7 @@
       "bootstrap.run",
       "database.probe",
       "database.connection",
+      "database.inspect",
       "authentication.settings",
       "providers.catalogue",
       "providers.upsert",

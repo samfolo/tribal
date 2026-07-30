@@ -16,6 +16,7 @@ mod method;
 mod readiness;
 mod runtime;
 mod settings;
+mod storage;
 mod wire_id;
 
 pub use administration::{
@@ -100,15 +101,15 @@ pub use maintenance::{
 pub use method::{
     AuthenticationSettingsCall, BootstrapRunCall, CheckReportCall, ConfigGetAllCall, ConfigGetCall,
     ConfigPatchCall, ConfigPathCall, ConfigSchemaCall, ConfigSetCall, ConfigValidatePatchCall,
-    DatabaseConnectionCall, DatabaseInitialiseCall, DatabaseProbeCall, GraphConfigureGenesisCall,
-    GraphConvergeGenesisCall, GraphEmbeddingProfileCall, GraphGenesisOptionsCall,
-    IntegrationMcpConfigCall, LogsTailCall, ManagementCall, ManagementMethod, ManagerShutdownCall,
-    ManagerSnapshotCall, ModelsCatalogueCall, ProcessingProfileCall, ProcessingProfileSetCall,
-    ProjectListCall, ProjectRegisterCall, ProviderConnectionRemoveCall,
-    ProviderConnectionUpsertCall, ProviderConnectionsCall, ProviderProbeCall, ReindexCancelCall,
-    ReindexPruneCall, ReindexRunCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall,
-    ServerStatusCall, SettingsResetPreviewCall, ThreadsPruneCall, TokenCreateCall, TokenListCall,
-    TokenRevokeAllCall, TokenRevokeCall,
+    DatabaseConnectionCall, DatabaseInitialiseCall, DatabaseInspectCall, DatabaseProbeCall,
+    GraphConfigureGenesisCall, GraphConvergeGenesisCall, GraphEmbeddingProfileCall,
+    GraphGenesisOptionsCall, IntegrationMcpConfigCall, LogsTailCall, ManagementCall,
+    ManagementMethod, ManagerShutdownCall, ManagerSnapshotCall, ModelsCatalogueCall,
+    ProcessingProfileCall, ProcessingProfileSetCall, ProjectListCall, ProjectRegisterCall,
+    ProviderConnectionRemoveCall, ProviderConnectionUpsertCall, ProviderConnectionsCall,
+    ProviderProbeCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall, RuntimeRestartCall,
+    RuntimeStartCall, RuntimeStopCall, ServerStatusCall, SettingsResetPreviewCall,
+    ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall, TokenRevokeCall,
 };
 #[cfg(feature = "schema")]
 pub use method::{ManagementCallSchema, management_call_schemas};
@@ -142,6 +143,10 @@ pub use settings::{
     SettingsResetScope, SettingsSetupFocus, SettingsSetupReason, SettingsSetupSnapshot,
     SettingsSetupStep, SettingsSetupStepKind, SettingsSetupStepState, StageExecutionSettings,
     StageModelSettings, VerifiedStageExecutionSettings, VerifiedStageSettings,
+};
+pub use storage::{
+    DatabaseTargetFailure, DatabaseTargetFailureKind, DatabaseTargetInspectRequest,
+    DatabaseTargetInspectResult, DatabaseTargetReceipt, DatabaseTargetState,
 };
 pub use tribal_domain::{ConfigFieldPath, ProviderConnectionName, ProviderKind, TransportKind};
 pub use wire_id::{
