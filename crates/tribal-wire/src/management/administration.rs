@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tribal_domain::{AuthTokenId, GitRemote, ProjectId, ProjectOrigin, Scope, StorageTransitionId};
 
-use super::{ConfigRevision, RuntimeIdentity};
+use super::{ConfigRevision, RuntimeIdentity, SecretLiteral};
 
 /// A database result tied to the configuration revision it observed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -16,10 +16,36 @@ pub struct Revisioned<T> {
     pub value: T,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DatabaseInitialiseRequest {
     pub expected_revision: ConfigRevision,
+    /// Which database to initialise; defaults to the configured target so
+    /// existing callers keep their shape.
+    #[serde(default)]
+    pub target: DatabaseAdministrationTarget,
+}
+
+/// The database an administration request applies to.
+#[derive(Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "target", content = "data", rename_all = "snake_case")]
+pub enum DatabaseAdministrationTarget {
+    /// The database the configuration names.
+    #[default]
+    Configured,
+    /// A candidate supplied for this request alone; the secret is neither
+    /// persisted nor echoed.
+    Candidate { url: SecretLiteral },
+}
+
+impl fmt::Debug for DatabaseAdministrationTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Configured => formatter.write_str("Configured"),
+            Self::Candidate { .. } => formatter.write_str("Candidate { url: <redacted> }"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

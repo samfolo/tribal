@@ -21,14 +21,14 @@ mod wire_id;
 
 pub use administration::{
     AbsoluteDirectoryPath, AbsoluteDirectoryPathError, CredentialPersistenceResult,
-    DatabaseInitialiseOutcome, DatabaseInitialiseRequest, DatabaseInitialiseResult,
-    IssuedBearerToken, PageCursor, PageCursorError, PageRequest, PageSize, PageSizeError,
-    ProjectList, ProjectListRequest, ProjectPage, ProjectRegisterInput, ProjectRegisterOutcome,
-    ProjectRegisterRequest, ProjectRegisterResult, ProjectRegistrationSource, ProjectSummary,
-    Revisioned, TokenCreateOutcome, TokenCreateRequest, TokenCreateResult, TokenInventory,
-    TokenListRequest, TokenPage, TokenRevokeAllOutcome, TokenRevokeAllRequest,
-    TokenRevokeAllResult, TokenRevokeOutcome, TokenRevokeRequest, TokenRevokeResult, TokenState,
-    TokenSummary,
+    DatabaseAdministrationTarget, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
+    DatabaseInitialiseResult, IssuedBearerToken, PageCursor, PageCursorError, PageRequest,
+    PageSize, PageSizeError, ProjectList, ProjectListRequest, ProjectPage, ProjectRegisterInput,
+    ProjectRegisterOutcome, ProjectRegisterRequest, ProjectRegisterResult,
+    ProjectRegistrationSource, ProjectSummary, Revisioned, TokenCreateOutcome, TokenCreateRequest,
+    TokenCreateResult, TokenInventory, TokenListRequest, TokenPage, TokenRevokeAllOutcome,
+    TokenRevokeAllRequest, TokenRevokeAllResult, TokenRevokeOutcome, TokenRevokeRequest,
+    TokenRevokeResult, TokenState, TokenSummary,
 };
 pub use bootstrap::{
     BootstrapGenesisInput, BootstrapHandoff, BootstrapOutcome, BootstrapProviderConnectionInput,

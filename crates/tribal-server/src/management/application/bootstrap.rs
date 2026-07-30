@@ -5,9 +5,9 @@ use tribal_domain::{BearerToken, ConfigFieldPath};
 use tribal_wire::management::{
     BootstrapHandoff, BootstrapOutcome, BootstrapPublicCredential, BootstrapRequest,
     BootstrapResult, BootstrapStorage, ConfigLiteral, ConfigPatchChange, ConfigPatchOutcome,
-    ConfigPatchRequest, ConfigRevision, CredentialOrigin, DatabaseInitialiseRequest,
-    IssuedBearerToken, ManagementError, ManagementResponseError, McpConfigEntry, McpConfigRequest,
-    McpTarget, ProjectRegisterRequest, Revisioned,
+    ConfigPatchRequest, ConfigRevision, CredentialOrigin, DatabaseAdministrationTarget,
+    DatabaseInitialiseRequest, IssuedBearerToken, ManagementError, ManagementResponseError,
+    McpConfigEntry, McpConfigRequest, McpTarget, ProjectRegisterRequest, Revisioned,
 };
 
 use super::{
@@ -106,6 +106,7 @@ impl<'a> BootstrapAdministration<'a> {
                 &self.operation,
                 DatabaseInitialiseRequest {
                     expected_revision: revision,
+                    target: DatabaseAdministrationTarget::Configured,
                 },
             )
             .await

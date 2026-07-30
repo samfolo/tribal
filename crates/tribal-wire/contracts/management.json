@@ -2374,6 +2374,17 @@
     "properties": {
       "expected_revision": {
         "$ref": "#/definitions/ConfigRevision"
+      },
+      "target": {
+        "description": "Which database to initialise; defaults to the configured target so existing callers keep their shape.",
+        "default": {
+          "target": "configured"
+        },
+        "allOf": [
+          {
+            "$ref": "#/definitions/DatabaseAdministrationTarget"
+          }
+        ]
       }
     },
     "definitions": {
@@ -2382,6 +2393,58 @@
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-tribal-base64url-prefix": "cfg_",
         "x-tribal-swift-type": "canonical-base64url-32"
+      },
+      "DatabaseAdministrationTarget": {
+        "description": "The database an administration request applies to.",
+        "oneOf": [
+          {
+            "description": "The database the configuration names.",
+            "type": "object",
+            "required": [
+              "target"
+            ],
+            "properties": {
+              "target": {
+                "type": "string",
+                "enum": [
+                  "configured"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A candidate supplied for this request alone; the secret is neither persisted nor echoed.",
+            "type": "object",
+            "required": [
+              "data",
+              "target"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "url": {
+                    "$ref": "#/definitions/SecretLiteral"
+                  }
+                }
+              },
+              "target": {
+                "type": "string",
+                "enum": [
+                  "candidate"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "SecretLiteral": {
+        "type": "string",
+        "pattern": "^\\S+$",
+        "x-tribal-swift-type": "redacted-validated-string"
       }
     }
   },

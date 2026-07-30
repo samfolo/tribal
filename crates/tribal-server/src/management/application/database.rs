@@ -10,10 +10,10 @@ use tribal_db::{
 };
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, Principal};
 use tribal_wire::management::{
-    ConfigRevision, DatabaseInitialiseOutcome, DatabaseInitialiseRequest, DatabaseInitialiseResult,
-    DatabaseTargetFailure, DatabaseTargetFailureKind, DatabaseTargetInspectRequest,
-    DatabaseTargetInspectResult, DatabaseTargetReceipt, DatabaseTargetState, FailurePresentation,
-    Revisioned,
+    ConfigRevision, DatabaseAdministrationTarget, DatabaseInitialiseOutcome,
+    DatabaseInitialiseRequest, DatabaseInitialiseResult, DatabaseTargetFailure,
+    DatabaseTargetFailureKind, DatabaseTargetInspectRequest, DatabaseTargetInspectResult,
+    DatabaseTargetReceipt, DatabaseTargetState, FailurePresentation, Revisioned, SecretLiteral,
 };
 
 use super::{
@@ -252,28 +252,48 @@ impl DatabaseAccess {
         operation: &OperationContext,
         request: DatabaseInitialiseRequest,
     ) -> Result<DatabaseInitialiseResult, DatabaseInitialiseError> {
-        let session = self
-            .mutation_session(operation, &request.expected_revision)
-            .await?;
+        let (revision, pool) = match &request.target {
+            DatabaseAdministrationTarget::Configured => {
+                let session = self
+                    .mutation_session(operation, &request.expected_revision)
+                    .await?;
+                (session.revision.clone(), session.pool.clone())
+            }
+            DatabaseAdministrationTarget::Candidate { url } => {
+                let snapshot = self
+                    .config_snapshot(operation, Some(&request.expected_revision))
+                    .await?;
+                let pool = operation
+                    .cancel_safe(candidate_pool(url))
+                    .await
+                    .map_err(DatabaseAccessError::from)??;
+                (snapshot.revision, pool)
+            }
+        };
+        let revisioned = move |value| Revisioned {
+            config_revision: revision,
+            value,
+        };
         let migration_outcome = operation
-            .terminal(MIGRATION_TERMINAL_WINDOW, run_migrations(&session.pool))
+            .terminal(MIGRATION_TERMINAL_WINDOW, run_migrations(&pool))
             .await
             .map_err(DatabaseAccessError::from)?
             .map_err(|source| DatabaseInitialiseError::Migration { source })?;
         if migration_outcome == MigrationRunOutcome::GraphTransitionInProgress {
-            return Ok(session
-                .revisioned(DatabaseInitialiseOutcome::GraphTransitionInProgress {
+            return Ok(
+                revisioned(DatabaseInitialiseOutcome::GraphTransitionInProgress {
                     transition_id: None,
                 })
-                .into());
+                .into(),
+            );
         }
 
         let (transaction, principal_outcome, system_outcome) = operation
             .cancel_safe(async {
-                let mut transaction =
-                    session.pool.begin().await.map_err(|source| {
-                        DatabaseInitialiseError::MigrationConnection { source }
-                    })?;
+                let mut transaction = pool
+                    .begin()
+                    .await
+                    .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })?;
                 let principal_outcome = PgPrincipalRepository
                     .ensure_local_by_key(&mut transaction, LOCAL_PRINCIPAL_KEY)
                     .await
@@ -286,7 +306,10 @@ impl DatabaseAccess {
             })
             .await
             .map_err(DatabaseAccessError::from)??;
-        session.checkpoint()?;
+        operation
+            .checkpoint()
+            .map_err(DatabaseAccessError::from)
+            .map_err(DatabaseInitialiseError::from)?;
         operation
             .terminal(MUTATION_TERMINAL_WINDOW, transaction.commit())
             .await
@@ -301,7 +324,7 @@ impl DatabaseAccess {
         } else {
             DatabaseInitialiseOutcome::AlreadyInitialised
         };
-        Ok(session.revisioned(outcome).into())
+        Ok(revisioned(outcome).into())
     }
 
     /// Inspects one candidate database read-only: reachability, schema state,
@@ -328,6 +351,20 @@ impl DatabaseAccess {
         }
         .into())
     }
+}
+
+/// Opens a small one-off pool against the candidate for this request's
+/// initialisation; the secret shapes the options and goes no further.
+async fn candidate_pool(url: &SecretLiteral) -> Result<PgPool, DatabaseInitialiseError> {
+    let options = url
+        .expose_secret()
+        .parse::<PgConnectOptions>()
+        .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })?;
+    sqlx::pool::PoolOptions::new()
+        .max_connections(COMMAND_POOL_MAX_CONNECTIONS)
+        .connect_with(options)
+        .await
+        .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })
 }
 
 /// Connects to the candidate under one bounded window and reads its schema
@@ -622,6 +659,7 @@ mod tests {
                 &operation(),
                 DatabaseInitialiseRequest {
                     expected_revision: revision.clone(),
+                    target: DatabaseAdministrationTarget::Configured,
                 },
             )
             .await
@@ -631,6 +669,7 @@ mod tests {
                 &operation(),
                 DatabaseInitialiseRequest {
                     expected_revision: revision.clone(),
+                    target: DatabaseAdministrationTarget::Configured,
                 },
             )
             .await
@@ -655,6 +694,7 @@ mod tests {
                 &operation(),
                 DatabaseInitialiseRequest {
                     expected_revision: revision.clone(),
+                    target: DatabaseAdministrationTarget::Configured,
                 },
             )
             .await
@@ -672,6 +712,7 @@ mod tests {
                 &operation(),
                 DatabaseInitialiseRequest {
                     expected_revision: revision.clone(),
+                    target: DatabaseAdministrationTarget::Configured,
                 },
             )
             .await
@@ -681,6 +722,7 @@ mod tests {
                 &operation(),
                 DatabaseInitialiseRequest {
                     expected_revision: revision,
+                    target: DatabaseAdministrationTarget::Configured,
                 },
             )
             .await
@@ -704,9 +746,11 @@ mod tests {
         let second_operation = operation();
         let first_request = DatabaseInitialiseRequest {
             expected_revision: revision.clone(),
+            target: DatabaseAdministrationTarget::Configured,
         };
         let second_request = DatabaseInitialiseRequest {
             expected_revision: revision,
+            target: DatabaseAdministrationTarget::Configured,
         };
 
         let (first, second) = tokio::join!(
@@ -907,6 +951,56 @@ mod tests {
         assert!(
             matches!(ahead, DatabaseTargetState::Ahead),
             "a database past the catalogue is ahead, got {ahead:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_initialise_applies_to_a_candidate_target_and_converges() {
+        let configured = TestDb::new().await;
+        let candidate = TestDb::new_unmigrated().await;
+        let (_temp, _path, worker, _runtime) = config_worker(configured.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let access = DatabaseAccess::new(worker);
+        let candidate_request = |revision| DatabaseInitialiseRequest {
+            expected_revision: revision,
+            target: DatabaseAdministrationTarget::Candidate {
+                url: SecretLiteral::try_from(candidate.database_url().to_owned())
+                    .expect("a valid candidate url"),
+            },
+        };
+
+        let stale = ConfigRevision::from_digest(
+            &tribal_wire::management::ConfigDigest::from_bytes(b"stale"),
+        );
+        let refused = access
+            .initialise(&operation(), candidate_request(stale))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            refused,
+            DatabaseInitialiseError::Session(DatabaseAccessError::RevisionConflict { .. })
+        ));
+
+        let first = access
+            .initialise(&operation(), candidate_request(revision.clone()))
+            .await
+            .unwrap();
+        assert_eq!(first.value, DatabaseInitialiseOutcome::Initialised);
+
+        let ready = inspect_target_state(candidate.database_url()).await;
+        assert!(
+            matches!(ready, DatabaseTargetState::Ready { .. }),
+            "an initialised candidate is ready with an identity, got {ready:?}",
+        );
+
+        let repeated = access
+            .initialise(&operation(), candidate_request(revision))
+            .await
+            .unwrap();
+        assert_eq!(
+            repeated.value,
+            DatabaseInitialiseOutcome::AlreadyInitialised,
+            "candidate initialisation converges under repeats",
         );
     }
 

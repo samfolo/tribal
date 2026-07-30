@@ -1,7 +1,8 @@
 //! Typed projection of database administration.
 
 use tribal_wire::management::{
-    ConfigGetAllCall, DatabaseInitialiseCall, DatabaseInitialiseRequest,
+    ConfigGetAllCall, DatabaseAdministrationTarget, DatabaseInitialiseCall,
+    DatabaseInitialiseRequest,
 };
 
 use super::{config, presentation};
@@ -16,7 +17,10 @@ pub(crate) async fn initialise(config_path: &str, output: OutputArgs) -> Result<
             .map_err(config::client_error)?,
     )?;
     let result = connection
-        .call::<DatabaseInitialiseCall>(&DatabaseInitialiseRequest { expected_revision })
+        .call::<DatabaseInitialiseCall>(&DatabaseInitialiseRequest {
+            expected_revision,
+            target: DatabaseAdministrationTarget::Configured,
+        })
         .await
         .map_err(config::client_error)?;
     presentation::write(
