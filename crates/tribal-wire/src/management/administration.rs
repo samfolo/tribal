@@ -472,4 +472,25 @@ mod tests {
         assert!(!format!("{token:?}").contains("sentinel"));
         assert!(!token.to_string().contains("sentinel"));
     }
+
+    #[test]
+    fn test_administration_target_debug_is_redacted() {
+        let target = DatabaseAdministrationTarget::Candidate {
+            url: SecretLiteral::try_from(
+                "postgres://user:hunter2@db.internal:5432/tribal".to_owned(),
+            )
+            .expect("a valid secret"),
+        };
+
+        let rendered = format!("{target:?}");
+        assert!(
+            !rendered.contains("hunter2"),
+            "no credential in Debug: {rendered}"
+        );
+        assert!(
+            !rendered.contains("db.internal"),
+            "no host in Debug: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"));
+    }
 }

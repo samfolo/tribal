@@ -4809,6 +4809,54 @@ fn custody_loss_termination(runtime: CustodyLossTerminationRuntime) -> ManagerTe
     }
 }
 
+/// A spawned controller over a fresh config for cross-module tests.
+#[cfg(test)]
+pub(in crate::management) async fn controller_for_test(
+    database_url: &str,
+) -> (
+    tempfile::TempDir,
+    LifecycleController,
+    JoinHandle<LifecycleExit>,
+    crate::management::worker::ConfigWorkerRuntime,
+) {
+    let temp = tempfile::tempdir().expect("temporary authority root");
+    let config_path = temp.path().join("tribal.yaml");
+    let config = tribal_config::TribalConfig::minimum_valid(database_url);
+    std::fs::write(
+        &config_path,
+        serde_yaml::to_string(&config).expect("configuration serialises"),
+    )
+    .expect("configuration writes");
+    let authority = crate::management::authority::AuthorityLease::acquire_with_roots(
+        &config_path,
+        &temp.path().join("state"),
+        &temp.path().join("run"),
+    )
+    .expect("authority acquisition succeeds");
+    let crate::management::authority::AuthorityAcquire::Acquired(authority) = authority else {
+        panic!("temporary config path has one authority");
+    };
+    let (config, mut worker_runtime) = crate::management::worker::spawn(
+        crate::management::configuration::ConfigAuthority::new(config_path.clone()),
+    )
+    .expect("configuration worker starts");
+    let terminal = worker_runtime
+        .take_terminal()
+        .expect("worker terminal has one owner");
+    let (lifecycle, task) = LifecycleController::spawn(
+        "manager".to_owned(),
+        config_path,
+        config,
+        Arc::new(authority),
+        CancellationToken::new(),
+        terminal,
+        None,
+    )
+    .await
+    .expect("lifecycle owner starts");
+    (temp, lifecycle, task, worker_runtime)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{

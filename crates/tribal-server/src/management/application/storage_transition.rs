@@ -689,6 +689,7 @@ mod tests {
     ) -> (
         tempfile::TempDir,
         DatabaseAccess,
+        worker::ConfigWorkerClient,
         worker::ConfigWorkerRuntime,
     ) {
         let temp = tempfile::tempdir().expect("temporary config root");
@@ -696,13 +697,13 @@ mod tests {
         let config = TribalConfig::minimum_valid(database_url);
         std::fs::write(&path, serde_yaml::to_string(&config).unwrap()).unwrap();
         let (worker, runtime) = worker::spawn(ConfigAuthority::new(path)).unwrap();
-        (temp, DatabaseAccess::new(worker), runtime)
+        (temp, DatabaseAccess::new(worker.clone()), worker, runtime)
     }
 
     #[tokio::test]
     async fn test_assessment_is_ready_with_the_source_identity_when_nothing_is_live() {
         let ctx = TestDb::new().await;
-        let (_temp, database, _runtime) = database_access(ctx.database_url());
+        let (_temp, database, _worker, _runtime) = database_access(ctx.database_url());
         let gate = StorageTransitionGate::new();
 
         let assessment = gate
@@ -724,7 +725,7 @@ mod tests {
     #[tokio::test]
     async fn test_assessment_refuses_a_stale_revision() {
         let ctx = TestDb::new().await;
-        let (_temp, database, _runtime) = database_access(ctx.database_url());
+        let (_temp, database, _worker, _runtime) = database_access(ctx.database_url());
         let gate = StorageTransitionGate::new();
         let stale = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"stale"));
 
@@ -741,7 +742,7 @@ mod tests {
     #[tokio::test]
     async fn test_assessment_projects_a_live_reindex_and_its_retry_wait() {
         let ctx = TestDb::new().await;
-        let (_temp, database, _runtime) = database_access(ctx.database_url());
+        let (_temp, database, _worker, _runtime) = database_access(ctx.database_url());
         let gate = StorageTransitionGate::new();
 
         let mut conn = ctx.raw_connection().await.expect("seed connection");
@@ -814,6 +815,257 @@ mod tests {
         ));
     }
 
+    /// Everything two switch tests share: a ready source and target, the
+    /// gate, and a live controller over the source configuration.
+    struct SwitchHarness {
+        source: TestDb,
+        ready_target: TestDb,
+        database: DatabaseAccess,
+        revision: ConfigRevision,
+        lifecycle: LifecycleController,
+        gate: StorageTransitionGate,
+        source_id: GraphId,
+        target_id: GraphId,
+        _config_temp: tempfile::TempDir,
+        _authority_temp: tempfile::TempDir,
+        _worker_runtime: worker::ConfigWorkerRuntime,
+        _lifecycle_runtime: worker::ConfigWorkerRuntime,
+        _lifecycle_task: tokio::task::JoinHandle<crate::management::lifecycle::LifecycleExit>,
+    }
+
+    async fn a_switch_harness() -> SwitchHarness {
+        let source = TestDb::new().await;
+        let ready_target = TestDb::new().await;
+        let (config_temp, database, worker, worker_runtime) =
+            database_access(source.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let (authority_temp, lifecycle, lifecycle_task, lifecycle_runtime) =
+            crate::management::lifecycle::controller_for_test(source.database_url()).await;
+        let mut conn = source.raw_connection().await.expect("source identity");
+        let source_id = PgGraphIdentityRepository
+            .get(&mut conn)
+            .await
+            .expect("source id");
+        let mut conn = ready_target
+            .raw_connection()
+            .await
+            .expect("target identity");
+        let target_id = PgGraphIdentityRepository
+            .get(&mut conn)
+            .await
+            .expect("target id");
+        SwitchHarness {
+            source,
+            ready_target,
+            database,
+            revision,
+            lifecycle,
+            gate: StorageTransitionGate::new(),
+            source_id,
+            target_id,
+            _config_temp: config_temp,
+            _authority_temp: authority_temp,
+            _worker_runtime: worker_runtime,
+            _lifecycle_runtime: lifecycle_runtime,
+            _lifecycle_task: lifecycle_task,
+        }
+    }
+
+    impl SwitchHarness {
+        fn request(
+            &self,
+            source_graph_id: GraphId,
+            target_graph_id: GraphId,
+            url: &str,
+        ) -> StorageSwitchRequest {
+            StorageSwitchRequest {
+                expected_revision: self.revision.clone(),
+                expected_runtime: None,
+                source_graph_id,
+                target_graph_id,
+                target_url: SecretLiteral::try_from(url.to_owned()).expect("target url"),
+            }
+        }
+
+        async fn switch(&self, request: StorageSwitchRequest) -> StorageSwitchResult {
+            self.gate
+                .switch(&operation(), &self.database, &self.lifecycle, request)
+                .await
+                .expect("switch runs")
+        }
+    }
+
+    #[tokio::test]
+    async fn test_switch_checks_the_source_fence_before_the_target_reservation() {
+        let h = a_switch_harness().await;
+        let bare_target = TestDb::new_unmigrated().await;
+
+        // A changed source returns before the candidate is ever touched: a
+        // shared hold on the target reservation would turn any reservation
+        // attempt into contention, and the result is still SourceChanged.
+        let mut target_probe = h.ready_target.raw_connection().await.expect("probe");
+        assert!(
+            PgAdvisoryLockRepository
+                .try_acquire_shared(
+                    &mut target_probe,
+                    advisory_locks::TARGET_MIGRATION_RESERVATION
+                )
+                .await
+                .expect("hold shared reservation"),
+        );
+        let result = h
+            .switch(h.request(GraphId::new(), h.target_id, h.ready_target.database_url()))
+            .await;
+        assert!(
+            matches!(result, StorageSwitchResult::SourceChanged { observed_graph_id } if observed_graph_id == h.source_id),
+        );
+        assert!(
+            PgAdvisoryLockRepository
+                .release_shared(
+                    &mut target_probe,
+                    advisory_locks::TARGET_MIGRATION_RESERVATION
+                )
+                .await
+                .expect("release shared reservation"),
+        );
+
+        // An unready target ends the attempt with the reinspection receipt.
+        let result = h
+            .switch(h.request(h.source_id, h.target_id, bare_target.database_url()))
+            .await;
+        assert!(matches!(
+            result,
+            StorageSwitchResult::TargetNotReady { target } if matches!(target.state, DatabaseTargetState::Uninitialised)
+        ));
+
+        // A ready target whose identity is not the requested one is refused.
+        let result = h
+            .switch(h.request(h.source_id, GraphId::new(), h.ready_target.database_url()))
+            .await;
+        assert!(
+            matches!(result, StorageSwitchResult::TargetChanged { observed_graph_id } if observed_graph_id == h.target_id),
+        );
+
+        // An exclusively held reservation is admission contention.
+        assert!(
+            PgAdvisoryLockRepository
+                .try_acquire_exclusive(
+                    &mut target_probe,
+                    advisory_locks::TARGET_MIGRATION_RESERVATION
+                )
+                .await
+                .expect("hold the reservation"),
+        );
+        let result = h
+            .switch(h.request(h.source_id, h.target_id, h.ready_target.database_url()))
+            .await;
+        assert!(matches!(result, StorageSwitchResult::AdmissionContended));
+        assert!(
+            PgAdvisoryLockRepository
+                .release_exclusive(
+                    &mut target_probe,
+                    advisory_locks::TARGET_MIGRATION_RESERVATION
+                )
+                .await
+                .expect("release the reservation"),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_switch_quiesces_a_clean_no_runtime_source_and_strands_no_lock() {
+        let h = a_switch_harness().await;
+
+        // The clean-ready no-runtime source is already quiescent, so the
+        // switch walks admission, both leases, reinspection, and assessment
+        // to a proven quiescence — no signal sent, custody live throughout.
+        let result = h
+            .switch(h.request(h.source_id, h.target_id, h.ready_target.database_url()))
+            .await;
+        assert!(
+            matches!(
+                &result,
+                StorageSwitchResult::SourceQuiesced { target, .. }
+                    if matches!(target.state, DatabaseTargetState::Ready { graph_id } if graph_id == h.target_id)
+            ),
+            "a clean no-runtime source quiesces through the full path, got {result:?}",
+        );
+        let mut source_probe = h.source.raw_connection().await.expect("source probe");
+        assert!(
+            PgAdvisoryLockRepository
+                .try_acquire_exclusive(&mut source_probe, advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("probe the source lock"),
+            "a settled switch leaves no lock stranded",
+        );
+        assert!(
+            PgAdvisoryLockRepository
+                .release_exclusive(&mut source_probe, advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("release the source probe"),
+        );
+
+        // Without a pending transition, the follow-up operations are typed
+        // refusals rather than effects.
+        let continued = h
+            .gate
+            .continue_switch(
+                &operation(),
+                &h.lifecycle,
+                StorageSwitchContinueRequest {
+                    transition_id: StorageTransitionId::new(),
+                    expected_runtime: a_runtime_identity(),
+                },
+            )
+            .await
+            .expect("continue runs");
+        assert!(matches!(
+            continued,
+            StorageSwitchContinueResult::NoPendingTransition
+        ));
+        let forced = h
+            .gate
+            .force_stop(
+                &operation(),
+                &h.lifecycle,
+                StorageSwitchForceStopRequest {
+                    transition_id: StorageTransitionId::new(),
+                    expected_runtime: a_runtime_identity(),
+                },
+            )
+            .await
+            .expect("force runs");
+        assert!(matches!(
+            forced,
+            StorageSwitchForceStopResult::NoPendingTransition
+        ));
+        let aborted = h
+            .gate
+            .abort(
+                &operation(),
+                &h.lifecycle,
+                StorageSwitchAbortRequest {
+                    transition_id: StorageTransitionId::new(),
+                },
+            )
+            .await
+            .expect("abort runs");
+        assert!(matches!(
+            aborted,
+            StorageSwitchAbortResult::NoPendingTransition
+        ));
+    }
+
+    fn a_runtime_identity() -> tribal_wire::management::RuntimeIdentity {
+        tribal_wire::management::RuntimeIdentity {
+            instance_id: "test-runtime".to_owned(),
+            pid: 4242,
+            binary_version: "test".to_owned(),
+            config_path: tribal_wire::management::ConfigFilePath {
+                path: "/tmp/tribal.yaml".to_owned(),
+            },
+        }
+    }
+
     #[tokio::test]
     async fn test_lock_leases_hold_prove_and_release_across_sessions() {
         let ctx = TestDb::new().await;
@@ -858,7 +1110,7 @@ mod tests {
     #[tokio::test]
     async fn test_assessment_projects_admitted_migration_and_lifecycle_occupancy() {
         let ctx = TestDb::new().await;
-        let (_temp, database, _runtime) = database_access(ctx.database_url());
+        let (_temp, database, _worker, _runtime) = database_access(ctx.database_url());
         let gate = StorageTransitionGate::new();
 
         let migration = gate.admit_migration().expect("admit migration");
