@@ -18,9 +18,12 @@ use super::{
     ReindexCancelResult, ReindexPruneRequest, ReindexPruneResult, ReindexRunRequest,
     ReindexRunResult, Revisioned, RuntimeLogsTailRequest, RuntimeLogsTailResult,
     RuntimeRestartResult, RuntimeStartResult, RuntimeStopResult, SettingsResetPreview,
-    SettingsResetPreviewRequest, StorageAssessRequest, StorageAssessResult, ThreadPruneRequest,
-    ThreadPruneResult, TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest,
-    TokenRevokeAllRequest, TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
+    SettingsResetPreviewRequest, StorageAssessRequest, StorageAssessResult,
+    StorageSwitchAbortRequest, StorageSwitchAbortResult, StorageSwitchContinueRequest,
+    StorageSwitchContinueResult, StorageSwitchForceStopRequest, StorageSwitchForceStopResult,
+    StorageSwitchRequest, StorageSwitchResult, ThreadPruneRequest, ThreadPruneResult,
+    TokenCreateRequest, TokenCreateResult, TokenInventory, TokenListRequest, TokenRevokeAllRequest,
+    TokenRevokeAllResult, TokenRevokeRequest, TokenRevokeResult,
 };
 
 /// The request and response types owned by one management method.
@@ -258,6 +261,30 @@ management_calls! {
         call: StorageAssessCall,
         request: StorageAssessRequest,
         response: StorageAssessResult,
+    },
+    StorageSwitch => {
+        wire: "storage.switch",
+        call: StorageSwitchCall,
+        request: StorageSwitchRequest,
+        response: StorageSwitchResult,
+    },
+    StorageContinue => {
+        wire: "storage.continue",
+        call: StorageContinueCall,
+        request: StorageSwitchContinueRequest,
+        response: StorageSwitchContinueResult,
+    },
+    StorageForceStop => {
+        wire: "storage.forceStop",
+        call: StorageForceStopCall,
+        request: StorageSwitchForceStopRequest,
+        response: StorageSwitchForceStopResult,
+    },
+    StorageAbort => {
+        wire: "storage.abort",
+        call: StorageAbortCall,
+        request: StorageSwitchAbortRequest,
+        response: StorageSwitchAbortResult,
     },
     AuthenticationSettings => {
         wire: "authentication.settings",

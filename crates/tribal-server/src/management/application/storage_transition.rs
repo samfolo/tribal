@@ -9,27 +9,169 @@
 //! transition, never each other, so the lifecycle owner keeps adjudicating
 //! lifecycle-versus-lifecycle exactly as it does today.
 
-use std::sync::{Arc, Mutex, MutexGuard};
-
-use tribal_db::{
-    GraphIdentityRepository, PgGraphIdentityRepository, PgReindexRunRepository,
-    PgReindexTaskRepository, ReindexRunRepository, ReindexTaskRepository,
+use std::{
+    sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
 };
-use tribal_domain::{ReindexRunState, StorageTransitionId};
+
+use sqlx::{Connection as _, PgConnection};
+use tribal_db::{
+    AdvisoryLockRepository, GraphIdentityRepository, PgAdvisoryLockRepository,
+    PgGraphIdentityRepository, PgReindexRunRepository, PgReindexTaskRepository,
+    ReindexRunRepository, ReindexTaskRepository, advisory_locks,
+};
+use tribal_domain::{GraphId, ReindexRunState, StorageTransitionId};
 use tribal_wire::management::{
-    BlockingResolution, ConfigRevision, GraphActivity, GraphActivityKind, GraphActivityStatus,
-    Revisioned, StorageTransitionAssessment, StorageTransitionVerdict,
+    BlockingResolution, ConfigRevision, DatabaseTargetReceipt, DatabaseTargetState, GraphActivity,
+    GraphActivityKind, GraphActivityStatus, Revisioned, SecretLiteral, StorageSwitchAbortRequest,
+    StorageSwitchAbortResult, StorageSwitchContinueRequest, StorageSwitchContinueResult,
+    StorageSwitchForceStopRequest, StorageSwitchForceStopResult, StorageSwitchRequest,
+    StorageSwitchResult, StorageTransitionAssessment, StorageTransitionVerdict,
 };
 
 use super::{
-    database::{DatabaseAccess, DatabaseAccessError},
+    super::{
+        lifecycle::{
+            LifecycleController, TransitionObserveOutcome, TransitionSource, TransitionStopOutcome,
+        },
+        product::database_endpoint,
+    },
+    database::{DatabaseAccess, DatabaseAccessError, inspect_target_state, unix_ms_now},
     operation::OperationContext,
 };
+
+/// The manager's observation margin past the runtime's graceful deadline.
+const TRANSITION_OBSERVATION_MARGIN: Duration = Duration::from_secs(5);
 
 /// The shared local barrier and assessment service; one instance per manager.
 #[derive(Clone, Debug)]
 pub(in crate::management) struct StorageTransitionGate {
     occupancy: Arc<Mutex<Occupancy>>,
+    pending: Arc<tokio::sync::Mutex<Option<PendingTransition>>>,
+}
+
+/// One manager-held transition: its identity, the recorded source posture,
+/// the reinspected target, and the two lock leases whose live custody every
+/// quiescence answer is fenced on.
+struct PendingTransition {
+    transition_id: StorageTransitionId,
+    source: TransitionSource,
+    source_graph_id: GraphId,
+    target_graph_id: GraphId,
+    target_url: SecretLiteral,
+    observe_window: Duration,
+    source_lease: TransitionLockLease,
+    target_lease: TransitionLockLease,
+}
+
+impl std::fmt::Debug for PendingTransition {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingTransition")
+            .field("transition_id", &self.transition_id)
+            .field("source_graph_id", &self.source_graph_id)
+            .field("target_graph_id", &self.target_graph_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A dedicated non-pool session holding one exclusive advisory lock; the lock
+/// lives and dies with this connection, so dropping the lease releases it.
+struct TransitionLockLease {
+    connection: PgConnection,
+}
+
+impl TransitionLockLease {
+    /// Connects a dedicated session and try-acquires the exclusive lock.
+    /// `Ok(None)` is contention; the session closes with the lease.
+    async fn acquire(url: &str, lock_id: i64) -> Result<Option<Self>, DatabaseAccessError> {
+        let mut connection = PgConnection::connect(url)
+            .await
+            .map_err(lease_connection_error)?;
+        let granted = match PgAdvisoryLockRepository
+            .try_acquire_exclusive(&mut connection, lock_id)
+            .await
+        {
+            Ok(granted) => granted,
+            Err(source) => {
+                let _ = connection.close().await;
+                return Err(DatabaseAccessError::Connection { source });
+            }
+        };
+        if granted {
+            Ok(Some(Self { connection }))
+        } else {
+            let _ = connection.close().await;
+            Ok(None)
+        }
+    }
+
+    /// Proves the session still holds custody: the lock is session-bound, so
+    /// a live round-trip is the evidence no quiescence answer may skip.
+    async fn prove(&mut self) -> bool {
+        sqlx::query("SELECT 1")
+            .execute(&mut self.connection)
+            .await
+            .is_ok()
+    }
+}
+
+/// Why a switch attempt could not take the transition slot.
+#[derive(Debug)]
+enum TransitionRefusal {
+    /// A sibling transition already holds it.
+    Sibling(StorageTransitionId),
+    /// Admitted migration or lifecycle work holds the local barrier.
+    LocalActivity,
+}
+
+/// Clears the transition occupancy on drop unless disarmed — the disarmed
+/// path is the parked timeout, whose custody the pending record keeps.
+struct TransitionOccupancyRelease {
+    occupancy: Arc<Mutex<Occupancy>>,
+    armed: bool,
+}
+
+impl Drop for TransitionOccupancyRelease {
+    fn drop(&mut self) {
+        if self.armed {
+            lock(&self.occupancy).transition = None;
+        }
+    }
+}
+
+/// The reinspection receipt for one target, at this instant.
+async fn target_receipt(raw: &str) -> DatabaseTargetReceipt {
+    DatabaseTargetReceipt {
+        endpoint: database_endpoint(raw),
+        state: inspect_target_state(raw).await,
+        observed_at_unix_ms: unix_ms_now(),
+    }
+}
+
+/// The source runtime's effective graceful deadline, from the fenced config.
+fn graceful_window(config: &tribal_config::TribalConfig) -> Duration {
+    Duration::from_millis(config.server.shutdown_deadline_ms)
+}
+
+/// Lost custody of a transition lock session mid-operation; the answer is an
+/// error, never a quiescence result.
+fn custody_lost_error() -> DatabaseAccessError {
+    DatabaseAccessError::Connection {
+        source: tribal_db::DbError::QueryFailed {
+            context: "transition lock custody was lost".to_owned(),
+            source: sqlx::Error::PoolClosed,
+        },
+    }
+}
+
+fn lease_connection_error(source: sqlx::Error) -> DatabaseAccessError {
+    DatabaseAccessError::Connection {
+        source: tribal_db::DbError::QueryFailed {
+            context: "opening a dedicated transition lock session".to_owned(),
+            source,
+        },
+    }
 }
 
 /// What currently occupies the local barrier.
@@ -71,6 +213,7 @@ impl StorageTransitionGate {
     pub(in crate::management) fn new() -> Self {
         Self {
             occupancy: Arc::new(Mutex::new(Occupancy::default())),
+            pending: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -183,6 +326,319 @@ impl StorageTransitionGate {
             verdict,
             activities,
         }))
+    }
+
+    /// Drives one switch attempt end to end, in the design's order: local
+    /// admission, the runtime fence, the source identity, the target
+    /// reservation, the source transition lock, reinspection and
+    /// reassessment under both leases, then the confirmation-required stop.
+    pub(in crate::management) async fn switch(
+        &self,
+        operation: &OperationContext,
+        database: &DatabaseAccess,
+        lifecycle: &LifecycleController,
+        request: StorageSwitchRequest,
+    ) -> Result<StorageSwitchResult, DatabaseAccessError> {
+        let mut pending_slot = self.pending.lock().await;
+        let session = database
+            .session(operation, Some(&request.expected_revision))
+            .await?;
+
+        let transition_id = StorageTransitionId::new();
+        if let Err(refusal) = self.admit_transition(transition_id) {
+            return Ok(match refusal {
+                TransitionRefusal::Sibling(transition_id) => {
+                    StorageSwitchResult::TransitionInProgress { transition_id }
+                }
+                TransitionRefusal::LocalActivity => StorageSwitchResult::Blocked {
+                    assessment: self.assess(operation, database, None).await?.value,
+                },
+            });
+        }
+        let release_on_return = TransitionOccupancyRelease {
+            occupancy: Arc::clone(&self.occupancy),
+            armed: true,
+        };
+
+        // The runtime fence, pre-checked here for ordering; the lifecycle
+        // owner re-checks it authoritatively before any signal is sent.
+        let source = match &request.expected_runtime {
+            Some(expected) => TransitionSource::AttachedRuntime(expected.clone()),
+            None => TransitionSource::CleanNoRuntime,
+        };
+
+        // The source identity, before any dedicated connection opens.
+        let mut conn =
+            session
+                .pool
+                .acquire()
+                .await
+                .map_err(|source| DatabaseAccessError::Connection {
+                    source: tribal_db::DbError::QueryFailed {
+                        context: "acquiring the source identity connection".to_owned(),
+                        source,
+                    },
+                })?;
+        let observed_source = PgGraphIdentityRepository
+            .get(&mut conn)
+            .await
+            .map_err(|source| DatabaseAccessError::Connection { source })?;
+        drop(conn);
+        if observed_source != request.source_graph_id {
+            return Ok(StorageSwitchResult::SourceChanged {
+                observed_graph_id: observed_source,
+            });
+        }
+
+        // Target reservation before the source transition lock.
+        let target_url = request.target_url.expose_secret().to_owned();
+        let Some(target_lease) =
+            TransitionLockLease::acquire(&target_url, advisory_locks::TARGET_MIGRATION_RESERVATION)
+                .await?
+        else {
+            return Ok(StorageSwitchResult::AdmissionContended);
+        };
+        let source_url = session.config.database.url.clone();
+        let Some(source_lease) =
+            TransitionLockLease::acquire(&source_url, advisory_locks::GRAPH_TRANSITION).await?
+        else {
+            return Ok(StorageSwitchResult::AdmissionContended);
+        };
+
+        // Reinspect the target and recompute the assessment under both leases.
+        let target_receipt = target_receipt(&target_url).await;
+        match &target_receipt.state {
+            DatabaseTargetState::Ready { graph_id } if *graph_id == request.target_graph_id => {}
+            DatabaseTargetState::Ready { graph_id } => {
+                return Ok(StorageSwitchResult::TargetChanged {
+                    observed_graph_id: *graph_id,
+                });
+            }
+            _ => {
+                return Ok(StorageSwitchResult::TargetNotReady {
+                    target: target_receipt,
+                });
+            }
+        }
+        let assessment = self.assess(operation, database, None).await?.value;
+        if assessment.verdict == StorageTransitionVerdict::Blocked {
+            return Ok(StorageSwitchResult::Blocked { assessment });
+        }
+
+        // The confirmation-required stop, fenced on live lock custody.
+        let observe_window = graceful_window(&session.config) + TRANSITION_OBSERVATION_MARGIN;
+        let mut pending = PendingTransition {
+            transition_id,
+            source: source.clone(),
+            source_graph_id: request.source_graph_id,
+            target_graph_id: request.target_graph_id,
+            target_url: request.target_url,
+            observe_window,
+            source_lease,
+            target_lease,
+        };
+        let outcome = lifecycle
+            .transition_stop_for(operation, transition_id, source, observe_window)
+            .await?;
+        match outcome {
+            Some(TransitionStopOutcome::SourceQuiesced) => {
+                if !(pending.source_lease.prove().await && pending.target_lease.prove().await) {
+                    return Err(custody_lost_error());
+                }
+                Ok(StorageSwitchResult::SourceQuiesced {
+                    transition_id,
+                    target: target_receipt,
+                })
+            }
+            Some(TransitionStopOutcome::StopTimedOut { runtime }) => {
+                let mut release = release_on_return;
+                release.armed = false;
+                drop(release);
+                *pending_slot = Some(pending);
+                Ok(StorageSwitchResult::StopTimedOut {
+                    transition_id,
+                    runtime,
+                })
+            }
+            Some(TransitionStopOutcome::RuntimeChanged { observed }) => {
+                Ok(StorageSwitchResult::RuntimeChanged { observed })
+            }
+            None => Err(custody_lost_error()),
+        }
+    }
+
+    /// Continues a timed-out transition: another bounded observation of the
+    /// same already-signalled process, with no further signal.
+    pub(in crate::management) async fn continue_switch(
+        &self,
+        operation: &OperationContext,
+        lifecycle: &LifecycleController,
+        request: StorageSwitchContinueRequest,
+    ) -> Result<StorageSwitchContinueResult, DatabaseAccessError> {
+        let mut pending_slot = self.pending.lock().await;
+        let Some(pending) = pending_slot.as_mut() else {
+            return Ok(StorageSwitchContinueResult::NoPendingTransition);
+        };
+        if pending.transition_id != request.transition_id {
+            return Ok(StorageSwitchContinueResult::NoPendingTransition);
+        }
+        let outcome = lifecycle
+            .transition_observe_for(
+                operation,
+                request.expected_runtime,
+                pending.observe_window,
+                false,
+            )
+            .await?;
+        match outcome {
+            Some(TransitionObserveOutcome::Exited) => {
+                if !(pending.source_lease.prove().await && pending.target_lease.prove().await) {
+                    return Err(custody_lost_error());
+                }
+                let transition_id = pending.transition_id;
+                let target = target_receipt(pending.target_url.expose_secret()).await;
+                self.release_pending(&mut pending_slot);
+                Ok(StorageSwitchContinueResult::SourceQuiesced {
+                    transition_id,
+                    target,
+                })
+            }
+            Some(TransitionObserveOutcome::StillPresent { runtime, .. }) => {
+                Ok(StorageSwitchContinueResult::StopTimedOut {
+                    transition_id: pending.transition_id,
+                    runtime,
+                })
+            }
+            Some(
+                TransitionObserveOutcome::RuntimeChanged { .. }
+                | TransitionObserveOutcome::NotStopping,
+            ) => Ok(StorageSwitchContinueResult::RuntimeChanged),
+            None => Err(custody_lost_error()),
+        }
+    }
+
+    /// Force-stops a timed-out transition: the kill is sent under the same
+    /// identity fence and quiescence still waits for exact exit.
+    pub(in crate::management) async fn force_stop(
+        &self,
+        operation: &OperationContext,
+        lifecycle: &LifecycleController,
+        request: StorageSwitchForceStopRequest,
+    ) -> Result<StorageSwitchForceStopResult, DatabaseAccessError> {
+        let mut pending_slot = self.pending.lock().await;
+        let Some(pending) = pending_slot.as_mut() else {
+            return Ok(StorageSwitchForceStopResult::NoPendingTransition);
+        };
+        if pending.transition_id != request.transition_id {
+            return Ok(StorageSwitchForceStopResult::NoPendingTransition);
+        }
+        let outcome = lifecycle
+            .transition_observe_for(
+                operation,
+                request.expected_runtime,
+                pending.observe_window,
+                true,
+            )
+            .await?;
+        match outcome {
+            Some(TransitionObserveOutcome::Exited) => {
+                if !(pending.source_lease.prove().await && pending.target_lease.prove().await) {
+                    return Err(custody_lost_error());
+                }
+                let transition_id = pending.transition_id;
+                let target = target_receipt(pending.target_url.expose_secret()).await;
+                self.release_pending(&mut pending_slot);
+                Ok(StorageSwitchForceStopResult::SourceQuiesced {
+                    transition_id,
+                    target,
+                })
+            }
+            Some(TransitionObserveOutcome::StillPresent { failure, .. }) => {
+                Ok(StorageSwitchForceStopResult::RuntimeStillPresent { failure })
+            }
+            Some(
+                TransitionObserveOutcome::RuntimeChanged { .. }
+                | TransitionObserveOutcome::NotStopping,
+            ) => Ok(StorageSwitchForceStopResult::RuntimeChanged),
+            None => Err(custody_lost_error()),
+        }
+    }
+
+    /// Aborts the transition, restoring the source's pre-transition posture:
+    /// a clean no-runtime origin stays stopped, an attached origin restarts
+    /// only after its exact exit, and custody is retained while recovery is
+    /// not yet safe.
+    pub(in crate::management) async fn abort(
+        &self,
+        operation: &OperationContext,
+        lifecycle: &LifecycleController,
+        request: StorageSwitchAbortRequest,
+    ) -> Result<StorageSwitchAbortResult, DatabaseAccessError> {
+        let mut pending_slot = self.pending.lock().await;
+        let Some(pending) = pending_slot.as_mut() else {
+            return Ok(StorageSwitchAbortResult::NoPendingTransition);
+        };
+        if pending.transition_id != request.transition_id {
+            return Ok(StorageSwitchAbortResult::NoPendingTransition);
+        }
+        let recorded = match &pending.source {
+            TransitionSource::CleanNoRuntime => {
+                self.release_pending(&mut pending_slot);
+                return Ok(StorageSwitchAbortResult::SourceRemainedStopped);
+            }
+            TransitionSource::AttachedRuntime(runtime) => runtime.clone(),
+        };
+        let outcome = lifecycle
+            .transition_observe_for(operation, recorded, pending.observe_window, false)
+            .await?;
+        match outcome {
+            Some(TransitionObserveOutcome::Exited) => {
+                let start = lifecycle.start_for(operation).await?;
+                self.release_pending(&mut pending_slot);
+                match start {
+                    Some(tribal_wire::management::RuntimeStartResult::Started { .. }) => {
+                        Ok(StorageSwitchAbortResult::SourceRestarted)
+                    }
+                    Some(result) => Ok(StorageSwitchAbortResult::SourceStillStopped {
+                        result: Box::new(result),
+                    }),
+                    None => Err(custody_lost_error()),
+                }
+            }
+            Some(TransitionObserveOutcome::StillPresent { runtime, .. }) => {
+                Ok(StorageSwitchAbortResult::SourceRecoveryPending { runtime })
+            }
+            Some(TransitionObserveOutcome::RuntimeChanged { observed }) => {
+                Ok(StorageSwitchAbortResult::RuntimeChanged { observed })
+            }
+            Some(TransitionObserveOutcome::NotStopping) => {
+                Ok(StorageSwitchAbortResult::RuntimeChanged { observed: None })
+            }
+            None => Err(custody_lost_error()),
+        }
+    }
+
+    /// Reserves the transition slot, or names what refuses it.
+    fn admit_transition(
+        &self,
+        transition_id: StorageTransitionId,
+    ) -> Result<(), TransitionRefusal> {
+        let mut occupancy = lock(&self.occupancy);
+        if let Some(existing) = occupancy.transition {
+            return Err(TransitionRefusal::Sibling(existing));
+        }
+        if occupancy.lifecycle > 0 || occupancy.migrations > 0 {
+            return Err(TransitionRefusal::LocalActivity);
+        }
+        occupancy.transition = Some(transition_id);
+        Ok(())
+    }
+
+    /// Drops the pending record — closing both lease sessions releases their
+    /// locks — and clears the transition occupancy.
+    fn release_pending(&self, slot: &mut Option<PendingTransition>) {
+        *slot = None;
+        lock(&self.occupancy).transition = None;
     }
 
     #[cfg(test)]
@@ -325,6 +781,78 @@ mod tests {
         );
         assert_eq!(activity.status, GraphActivityStatus::Queued);
         assert_eq!(activity.resolution, BlockingResolution::WaitOrCancelReindex);
+    }
+
+    #[test]
+    fn test_the_transition_slot_refuses_and_is_refused_by_local_activity() {
+        let gate = StorageTransitionGate::new();
+
+        // Lifecycle-first: the transition is refused while lifecycle work is
+        // admitted, and admits once it releases.
+        let lifecycle = gate.admit_lifecycle().expect("admit lifecycle");
+        assert!(matches!(
+            gate.admit_transition(StorageTransitionId::new()),
+            Err(TransitionRefusal::LocalActivity)
+        ));
+        drop(lifecycle);
+
+        // Transition-first: both local kinds are refused with the pending id,
+        // and a sibling transition names it.
+        let pending = StorageTransitionId::new();
+        gate.admit_transition(pending).expect("transition admits");
+        assert_eq!(
+            gate.admit_migration().expect_err("migration refused"),
+            pending
+        );
+        assert_eq!(
+            gate.admit_lifecycle().expect_err("lifecycle refused"),
+            pending
+        );
+        assert!(matches!(
+            gate.admit_transition(StorageTransitionId::new()),
+            Err(TransitionRefusal::Sibling(existing)) if existing == pending
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_lock_leases_hold_prove_and_release_across_sessions() {
+        let ctx = TestDb::new().await;
+
+        let mut lease =
+            TransitionLockLease::acquire(ctx.database_url(), advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("acquire")
+                .expect("uncontended");
+        assert!(lease.prove().await, "a live session proves custody");
+
+        // A second acquisition of the same lock is contention.
+        assert!(
+            TransitionLockLease::acquire(ctx.database_url(), advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("attempt")
+                .is_none(),
+            "the lock is held by the first lease",
+        );
+
+        // Dropping the lease closes its session and releases the lock: the
+        // manager-custody rule — teardown strands nothing.
+        drop(lease);
+        let mut probe = ctx.raw_connection().await.expect("probe session");
+        let released = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if PgAdvisoryLockRepository
+                    .try_acquire_exclusive(&mut probe, advisory_locks::GRAPH_TRANSITION)
+                    .await
+                    .expect("probe acquire")
+                {
+                    break true;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the dropped lease releases its lock");
+        assert!(released);
     }
 
     #[tokio::test]

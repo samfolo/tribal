@@ -109,7 +109,8 @@ pub use method::{
     ProviderConnectionRemoveCall, ProviderConnectionUpsertCall, ProviderConnectionsCall,
     ProviderProbeCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall, RuntimeRestartCall,
     RuntimeStartCall, RuntimeStopCall, ServerStatusCall, SettingsResetPreviewCall,
-    StorageAssessCall, ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall,
+    StorageAbortCall, StorageAssessCall, StorageContinueCall, StorageForceStopCall,
+    StorageSwitchCall, ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall,
     TokenRevokeCall,
 };
 #[cfg(feature = "schema")]

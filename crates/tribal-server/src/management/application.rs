@@ -42,8 +42,9 @@ use tribal_wire::management::{
     ProviderProbeCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall,
     RestartOperationInProgress, Revisioned, RuntimeRestartCall, RuntimeRestartResult,
     RuntimeStartCall, RuntimeStartResult, RuntimeStopCall, RuntimeStopResult, ServerStatusCall,
-    SettingsResetPreviewCall, StartOperationInProgress, StopOperationInProgress, StorageAssessCall,
-    StorageAssessResult, ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall,
+    SettingsResetPreviewCall, StartOperationInProgress, StopOperationInProgress, StorageAbortCall,
+    StorageAssessCall, StorageAssessResult, StorageContinueCall, StorageForceStopCall,
+    StorageSwitchCall, ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall,
     TokenRevokeCall,
 };
 
@@ -333,6 +334,42 @@ impl<'a> ManagementApplication<'a> {
                         .assess(&operation, &self.database, Some(&request.expected_revision))
                         .await
                         .map(StorageAssessResult::from)
+                        .map_err(database_access_error),
+                )
+            }
+            ManagementMethod::StorageSwitch => {
+                let request = parse_call::<StorageSwitchCall>(params)?;
+                encode_call::<StorageSwitchCall>(
+                    self.storage
+                        .switch(&operation, &self.database, self.lifecycle, request)
+                        .await
+                        .map_err(database_access_error),
+                )
+            }
+            ManagementMethod::StorageContinue => {
+                let request = parse_call::<StorageContinueCall>(params)?;
+                encode_call::<StorageContinueCall>(
+                    self.storage
+                        .continue_switch(&operation, self.lifecycle, request)
+                        .await
+                        .map_err(database_access_error),
+                )
+            }
+            ManagementMethod::StorageForceStop => {
+                let request = parse_call::<StorageForceStopCall>(params)?;
+                encode_call::<StorageForceStopCall>(
+                    self.storage
+                        .force_stop(&operation, self.lifecycle, request)
+                        .await
+                        .map_err(database_access_error),
+                )
+            }
+            ManagementMethod::StorageAbort => {
+                let request = parse_call::<StorageAbortCall>(params)?;
+                encode_call::<StorageAbortCall>(
+                    self.storage
+                        .abort(&operation, self.lifecycle, request)
+                        .await
                         .map_err(database_access_error),
                 )
             }

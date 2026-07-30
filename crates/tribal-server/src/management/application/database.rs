@@ -370,7 +370,7 @@ async fn candidate_pool(url: &SecretLiteral) -> Result<PgPool, DatabaseInitialis
 /// Connects to the candidate under one bounded window and reads its schema
 /// state and identity. Every failure folds into a typed, provider-neutral
 /// state whose copy carries no URL, host, or credential.
-async fn inspect_target_state(raw: &str) -> DatabaseTargetState {
+pub(super) async fn inspect_target_state(raw: &str) -> DatabaseTargetState {
     let Ok(options) = raw.parse::<PgConnectOptions>() else {
         return unavailable(
             DatabaseTargetFailureKind::InvalidUrl,
@@ -525,7 +525,7 @@ fn unavailable(
 }
 
 /// Milliseconds since the Unix epoch, saturating on a clock before it.
-fn unix_ms_now() -> u64 {
+pub(super) fn unix_ms_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| {
