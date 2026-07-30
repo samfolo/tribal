@@ -546,3 +546,108 @@ async fn test_find_tags_missing_embeddings_excludes_quarantined_tags() {
         "the embedded tag and the quarantined tag are both excluded",
     );
 }
+
+#[tokio::test]
+async fn test_claim_admits_nothing_after_the_run_aborts() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let run_id = setup_run(&mut txn, "aborting").await;
+    PgReindexTaskRepository
+        .upsert(&mut txn, &item_task(run_id, "item:pending"))
+        .await
+        .expect("enrol task");
+
+    let before = PgReindexTaskRepository
+        .claim(&mut txn, run_id, 10, "worker")
+        .await
+        .expect("claim under a live run");
+    assert_eq!(
+        before.len(),
+        1,
+        "the task is claimable while the run is live"
+    );
+    let reopened = PgReindexTaskRepository
+        .fail(
+            &mut txn,
+            before[0].id(),
+            before[0].claim_token().expect("claimed token"),
+            chrono::Utc::now() - chrono::Duration::seconds(1),
+            EmbeddingErrorClass::Transient,
+            "requeue for the abort half",
+        )
+        .await
+        .expect("requeue the task");
+    assert_eq!(reopened, 1);
+
+    assert!(
+        PgReindexRunRepository
+            .transition(
+                &mut txn,
+                run_id,
+                ReindexRunState::Queued,
+                ReindexRunState::Aborted,
+                Some("aborted"),
+            )
+            .await
+            .expect("abort run"),
+    );
+
+    let after = PgReindexTaskRepository
+        .claim(&mut txn, run_id, 10, "worker")
+        .await
+        .expect("claim under an aborted run");
+    assert!(
+        after.is_empty(),
+        "an aborted run admits no further claims, its pending task notwithstanding"
+    );
+}
+
+#[tokio::test]
+async fn test_retry_wait_aggregates_deferred_pending_tasks() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let run_id = setup_run(&mut txn, "retry-wait").await;
+    PgReindexTaskRepository
+        .upsert(&mut txn, &item_task(run_id, "item:deferred"))
+        .await
+        .expect("enrol task");
+
+    let quiet = PgReindexTaskRepository
+        .retry_wait(&mut txn, run_id)
+        .await
+        .expect("aggregate with nothing deferred");
+    assert!(
+        quiet.is_none(),
+        "an immediately claimable task is not a retry wait"
+    );
+
+    let claimed = PgReindexTaskRepository
+        .claim(&mut txn, run_id, 10, "worker")
+        .await
+        .expect("claim");
+    let resume_at = chrono::Utc::now() + chrono::Duration::seconds(90);
+    PgReindexTaskRepository
+        .fail(
+            &mut txn,
+            claimed[0].id(),
+            claimed[0].claim_token().expect("claimed token"),
+            resume_at,
+            EmbeddingErrorClass::RateLimited,
+            "provider asked us to wait",
+        )
+        .await
+        .expect("requeue with backoff");
+
+    let wait = PgReindexTaskRepository
+        .retry_wait(&mut txn, run_id)
+        .await
+        .expect("aggregate the deferred task")
+        .expect("one task is waiting");
+    assert_eq!(wait.waiting, 1);
+    // Postgres stores microseconds; compare at that precision.
+    assert_eq!(
+        wait.resume_at.timestamp_micros(),
+        resume_at.timestamp_micros(),
+        "the earliest resume instant is reported"
+    );
+}
