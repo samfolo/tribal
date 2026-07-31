@@ -627,6 +627,9 @@ impl StorageTransitionGate {
                     runtime,
                 })
             }
+            // The one answer that claims nothing about custody: the fence
+            // refused before a pending record existed, and the admission
+            // guard frees the barrier as this returns.
             Some(TransitionStopOutcome::RuntimeChanged { observed }) => {
                 Ok(StorageSwitchResult::RuntimeChanged { observed })
             }
@@ -777,6 +780,9 @@ impl StorageTransitionGate {
             .await?;
         match outcome {
             Some(TransitionObserveOutcome::Exited) => {
+                // Recovery releases the barriers, so it may only proceed
+                // from custody this manager still holds.
+                pending.prove_custody().await?;
                 let start = lifecycle.start_for(operation).await?;
                 self.release_pending(&mut pending_slot);
                 match start {
@@ -798,6 +804,7 @@ impl StorageTransitionGate {
                 Ok(StorageSwitchAbortResult::RuntimeChanged { observed })
             }
             Some(TransitionObserveOutcome::NotStopping) => {
+                pending.prove_custody().await?;
                 Ok(StorageSwitchAbortResult::RuntimeChanged { observed: None })
             }
             None => Err(custody_lost_error()),
