@@ -9,11 +9,7 @@ mock_repository! {
         has_migrations_table(() => bool)
             () { () };
         current_head_matches(i64 => MigrationHeadStatus)
-            (expected: i64) { expected };
-        try_advisory_lock(i64 => bool)
-            (lock_id: i64) { lock_id };
-        release_advisory_lock(i64 => bool)
-            (lock_id: i64) { lock_id }
+            (expected: i64) { expected }
     }
 }
 

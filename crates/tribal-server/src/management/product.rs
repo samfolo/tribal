@@ -573,7 +573,7 @@ impl ProductSession {
     }
 }
 
-fn database_endpoint(raw: &str) -> DatabaseEndpointSummary {
+pub(in crate::management) fn database_endpoint(raw: &str) -> DatabaseEndpointSummary {
     if raw.is_empty() {
         return DatabaseEndpointSummary::Unconfigured;
     }

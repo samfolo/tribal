@@ -1,5 +1,6 @@
-//! Migration infrastructure repository: first-run detection, head-version
-//! reconciliation, and advisory lock coordination.
+//! Migration infrastructure repository: first-run detection and head-version
+//! reconciliation. Lock coordination lives with
+//! [`AdvisoryLockRepository`](super::AdvisoryLockRepository).
 
 use std::cmp::Ordering;
 
@@ -57,24 +58,6 @@ pub trait MigrationRepository {
         conn: &mut PgConnection,
         expected: i64,
     ) -> Result<MigrationHeadStatus, DbError>;
-
-    /// Attempts to acquire the Postgres advisory lock identified by
-    /// `lock_id`.  Returns `true` if the lock was acquired, `false` if
-    /// it is already held by another session.
-    async fn try_advisory_lock(
-        &self,
-        conn: &mut PgConnection,
-        lock_id: i64,
-    ) -> Result<bool, DbError>;
-
-    /// Releases the Postgres advisory lock identified by `lock_id`.
-    /// Returns `true` if the lock was held and released, `false` if it
-    /// was not held.
-    async fn release_advisory_lock(
-        &self,
-        conn: &mut PgConnection,
-        lock_id: i64,
-    ) -> Result<bool, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,40 +110,6 @@ impl MigrationRepository for PgMigrationRepository {
             Ordering::Less => MigrationHeadStatus::Behind { expected, found },
             Ordering::Greater => MigrationHeadStatus::Ahead { expected, found },
         })
-    }
-
-    async fn try_advisory_lock(
-        &self,
-        conn: &mut PgConnection,
-        lock_id: i64,
-    ) -> Result<bool, DbError> {
-        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-            .bind(lock_id)
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(|source| DbError::QueryFailed {
-                context: "acquire migration advisory lock".into(),
-                source,
-            })?;
-
-        Ok(acquired)
-    }
-
-    async fn release_advisory_lock(
-        &self,
-        conn: &mut PgConnection,
-        lock_id: i64,
-    ) -> Result<bool, DbError> {
-        let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
-            .bind(lock_id)
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(|source| DbError::QueryFailed {
-                context: "release migration advisory lock".into(),
-                source,
-            })?;
-
-        Ok(released)
     }
 }
 

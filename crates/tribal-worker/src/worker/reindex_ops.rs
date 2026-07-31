@@ -62,6 +62,8 @@ pub enum ReindexResolution {
     Unchanged,
     /// Another invocation held the single-flight lock.
     LockContended,
+    /// A storage transition holds the graph; no durable work was admitted.
+    GraphTransitionInProgress,
 }
 
 impl ReindexResolution {
@@ -74,6 +76,7 @@ impl ReindexResolution {
             Self::AlreadyLive { .. } => "already_live",
             Self::Unchanged => "unchanged",
             Self::LockContended => "lock_contended",
+            Self::GraphTransitionInProgress => "graph_transition_in_progress",
         }
     }
 
@@ -82,7 +85,10 @@ impl ReindexResolution {
     pub fn run_id(self) -> Option<ReindexRunId> {
         match self {
             Self::Created { run_id } | Self::AlreadyLive { run_id } => Some(run_id),
-            Self::Plan | Self::Unchanged | Self::LockContended => None,
+            Self::Plan
+            | Self::Unchanged
+            | Self::LockContended
+            | Self::GraphTransitionInProgress => None,
         }
     }
 }
@@ -251,7 +257,8 @@ pub async fn stage_reindex_run(
                     Some(run.target_profile_id())
                 }
                 ReindexCreationOutcome::Unchanged(profile) => Some(profile.id()),
-                ReindexCreationOutcome::LockContended => None,
+                ReindexCreationOutcome::LockContended
+                | ReindexCreationOutcome::GraphTransitionInProgress => None,
             };
             let (items, tags) = match estimate_profile {
                 Some(profile) => estimate_corpus(&mut transaction, profile).await?,
@@ -266,6 +273,9 @@ pub async fn stage_reindex_run(
                 }
                 ReindexCreationOutcome::Unchanged(_) => ReindexResolution::Unchanged,
                 ReindexCreationOutcome::LockContended => ReindexResolution::LockContended,
+                ReindexCreationOutcome::GraphTransitionInProgress => {
+                    ReindexResolution::GraphTransitionInProgress
+                }
             };
             (resolution, items, tags, Some(transaction))
         }

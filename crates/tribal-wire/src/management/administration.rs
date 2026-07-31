@@ -4,9 +4,9 @@ use std::{fmt, path::Path};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tribal_domain::{AuthTokenId, GitRemote, ProjectId, ProjectOrigin, Scope};
+use tribal_domain::{AuthTokenId, GitRemote, ProjectId, ProjectOrigin, Scope, StorageTransitionId};
 
-use super::{ConfigRevision, RuntimeIdentity};
+use super::{ConfigRevision, RuntimeIdentity, SecretLiteral};
 
 /// A database result tied to the configuration revision it observed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -16,10 +16,35 @@ pub struct Revisioned<T> {
     pub value: T,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DatabaseInitialiseRequest {
     pub expected_revision: ConfigRevision,
+    /// Which database to initialise; the configured target by default.
+    #[serde(default)]
+    pub target: DatabaseAdministrationTarget,
+}
+
+/// The database an administration request applies to.
+#[derive(Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "target", content = "data", rename_all = "snake_case")]
+pub enum DatabaseAdministrationTarget {
+    /// The database the configuration names.
+    #[default]
+    Configured,
+    /// A candidate supplied for this request alone; the secret is neither
+    /// persisted nor echoed.
+    Candidate { url: SecretLiteral },
+}
+
+impl fmt::Debug for DatabaseAdministrationTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Configured => formatter.write_str("Configured"),
+            Self::Candidate { .. } => formatter.write_str("Candidate { url: <redacted> }"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +53,13 @@ pub struct DatabaseInitialiseRequest {
 pub enum DatabaseInitialiseOutcome {
     Initialised,
     AlreadyInitialised,
+    /// A storage transition holds the database; nothing was begun. The id is
+    /// present when this manager's own pending transition refused the work,
+    /// and absent when the refusal came from another process's admission
+    /// lock, which exposes no transition identity.
+    GraphTransitionInProgress {
+        transition_id: Option<StorageTransitionId>,
+    },
 }
 
 /// Concrete schema identity for a revisioned database-initialisation receipt.
@@ -438,5 +470,26 @@ mod tests {
         let token = IssuedBearerToken::new("sentinel-secret".to_owned());
         assert!(!format!("{token:?}").contains("sentinel"));
         assert!(!token.to_string().contains("sentinel"));
+    }
+
+    #[test]
+    fn test_administration_target_debug_is_redacted() {
+        let target = DatabaseAdministrationTarget::Candidate {
+            url: SecretLiteral::try_from(
+                "postgres://user:hunter2@db.internal:5432/tribal".to_owned(),
+            )
+            .expect("a valid secret"),
+        };
+
+        let rendered = format!("{target:?}");
+        assert!(
+            !rendered.contains("hunter2"),
+            "no credential in Debug: {rendered}"
+        );
+        assert!(
+            !rendered.contains("db.internal"),
+            "no host in Debug: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"));
     }
 }

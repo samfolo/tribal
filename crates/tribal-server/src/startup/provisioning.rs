@@ -13,9 +13,9 @@ use sqlx::{PgConnection, PgPool};
 use tribal_common::{embedding_profile_fingerprint, random_duration_in_range};
 use tribal_config::TribalConfig;
 use tribal_db::{
-    EmbeddingIndexRepository, EmbeddingProfileRepository, EmbeddingTable, MigrationRepository,
-    NewEmbeddingProfile, PgEmbeddingIndexRepository, PgEmbeddingProfileRepository,
-    PgMigrationRepository, advisory_locks,
+    AdvisoryLockRepository, EmbeddingIndexRepository, EmbeddingProfileRepository, EmbeddingTable,
+    NewEmbeddingProfile, PgAdvisoryLockRepository, PgEmbeddingIndexRepository,
+    PgEmbeddingProfileRepository, advisory_locks,
 };
 use tribal_domain::{DistanceMetric, EmbeddingProfile, normalise_endpoint_url};
 use tribal_inference::resolve_dimensions;
@@ -40,13 +40,15 @@ pub(crate) async fn provision_genesis(
     pool: &PgPool,
     config: &TribalConfig,
 ) -> Result<(), AppError> {
-    let migration_repo = PgMigrationRepository;
-
     for attempt in 1..=MIGRATION_MAX_ATTEMPTS {
+        // Owned before any lock is taken: a dropped future closes the
+        // session and Postgres releases every lock with it, where a pooled
+        // handle would carry them back into the pool.
         let mut conn = pool
             .acquire()
             .await
-            .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "provisioning", e))?;
+            .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "provisioning", e))?
+            .detach();
 
         // Already provisioned, by this process on a prior attempt or another
         // process: nothing to do.
@@ -59,19 +61,19 @@ pub(crate) async fn provision_genesis(
             return Ok(());
         }
 
-        let acquired = migration_repo
-            .try_advisory_lock(&mut conn, advisory_locks::PROVISIONING)
+        let acquired = PgAdvisoryLockRepository
+            .try_acquire_exclusive(&mut conn, advisory_locks::PROVISIONING)
             .await
             .map_err(database_error)?;
 
         if acquired {
-            let profile_authority = migration_repo
-                .try_advisory_lock(&mut conn, advisory_locks::EMBEDDING_PROFILE_AUTHORITY)
+            let profile_authority = PgAdvisoryLockRepository
+                .try_acquire_exclusive(&mut conn, advisory_locks::EMBEDDING_PROFILE_AUTHORITY)
                 .await
                 .map_err(database_error)?;
             if !profile_authority {
-                if let Err(error) = migration_repo
-                    .release_advisory_lock(&mut conn, advisory_locks::PROVISIONING)
+                if let Err(error) = PgAdvisoryLockRepository
+                    .release_exclusive(&mut conn, advisory_locks::PROVISIONING)
                     .await
                 {
                     tracing::warn!(%error, "failed to release provisioning advisory lock");
@@ -87,14 +89,14 @@ pub(crate) async fn provision_genesis(
                 break;
             }
             let result = provision_under_lock(&mut conn, config).await;
-            if let Err(error) = migration_repo
-                .release_advisory_lock(&mut conn, advisory_locks::EMBEDDING_PROFILE_AUTHORITY)
+            if let Err(error) = PgAdvisoryLockRepository
+                .release_exclusive(&mut conn, advisory_locks::EMBEDDING_PROFILE_AUTHORITY)
                 .await
             {
                 tracing::warn!(%error, "failed to release embedding-profile authority");
             }
-            if let Err(e) = migration_repo
-                .release_advisory_lock(&mut conn, advisory_locks::PROVISIONING)
+            if let Err(e) = PgAdvisoryLockRepository
+                .release_exclusive(&mut conn, advisory_locks::PROVISIONING)
                 .await
             {
                 tracing::warn!(%e, "failed to release provisioning advisory lock");

@@ -3,9 +3,10 @@
 use tribal_config::TribalConfig;
 use tribal_domain::{BearerToken, ConfigFieldPath};
 use tribal_wire::management::{
-    BootstrapHandoff, BootstrapOutcome, BootstrapPublicCredential, BootstrapRequest,
-    BootstrapResult, BootstrapStorage, ConfigLiteral, ConfigPatchChange, ConfigPatchOutcome,
-    ConfigPatchRequest, ConfigRevision, CredentialOrigin, DatabaseInitialiseRequest,
+    AdministrationFailure, BootstrapHandoff, BootstrapOutcome, BootstrapPublicCredential,
+    BootstrapRequest, BootstrapResult, BootstrapStorage, ConfigLiteral, ConfigPatchChange,
+    ConfigPatchOutcome, ConfigPatchRequest, ConfigRevision, CredentialOrigin,
+    DatabaseAdministrationTarget, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
     IssuedBearerToken, ManagementError, ManagementResponseError, McpConfigEntry, McpConfigRequest,
     McpTarget, ProjectRegisterRequest, Revisioned,
 };
@@ -36,6 +37,23 @@ pub(super) struct BootstrapAdministration<'a> {
 struct BootstrapPreflight {
     changes: Vec<ConfigPatchChange>,
     token: PreparedBootstrapToken,
+}
+
+/// A transition owns the graph this bootstrap would configure: initialisation
+/// ran none of its postconditions, so none of the later effects may run.
+fn refuse_under_transition(
+    outcome: &DatabaseInitialiseOutcome,
+) -> Result<(), ManagementResponseError> {
+    if matches!(
+        outcome,
+        DatabaseInitialiseOutcome::GraphTransitionInProgress { .. }
+    ) {
+        return Err(super::administration_error(
+            "a storage transition holds this graph",
+            AdministrationFailure::GraphTransitionInProgress,
+        ));
+    }
+    Ok(())
 }
 
 impl<'a> BootstrapAdministration<'a> {
@@ -106,11 +124,13 @@ impl<'a> BootstrapAdministration<'a> {
                 &self.operation,
                 DatabaseInitialiseRequest {
                     expected_revision: revision,
+                    target: DatabaseAdministrationTarget::Configured,
                 },
             )
             .await
             .map_err(super::database_initialise_error)?;
         let database_outcome = database.value;
+        refuse_under_transition(&database_outcome)?;
         let mut revision = database.config_revision.clone();
         self.checkpoint()?;
         let system_project = self

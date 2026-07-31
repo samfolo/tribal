@@ -8,6 +8,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
+use tribal_domain::StorageTransitionId;
 use tribal_wire::{
     management::{
         CheckName, CheckResult, CheckSubject, CleanNoRuntimeLifecycleSnapshot, CleanNoRuntimePhase,
@@ -28,7 +29,7 @@ use tribal_wire::{
         ShutdownRuntimeUnresponsiveLifecycleSnapshot, ShutdownRuntimeUnresponsivePhase,
         StartBlockedReadinessReport, StartBlockedVerdict, StartClearReadinessReport,
         StartClearVerdict, StartOperationInProgress, StartSuperseder, StartVerdict,
-        StopRuntimeOperation, StopRuntimeUnresponsiveLifecycleSnapshot,
+        StopOperationInProgress, StopRuntimeOperation, StopRuntimeUnresponsiveLifecycleSnapshot,
         StopRuntimeUnresponsivePhase, StoppedProcessFailure, StoppedState,
         StoppingLifecycleSnapshot, StoppingPhase,
     },
@@ -58,6 +59,13 @@ const COMPLETION_CAPACITY: usize = 1;
 const RUNTIME_EVENT_CAPACITY: usize = 64;
 const MANAGEMENT_EVENT_CAPACITY: usize = 64;
 const STOP_DEADLINE: Duration = Duration::from_secs(10);
+/// Upper bound the owner enforces on any single transition observation, as a
+/// backstop under the caller's own budget: the gate already draws each window
+/// from one request clock, and this keeps a caller that asks for more from
+/// outliving the transport's request timeout. A configured graceful deadline
+/// larger than what one request can hold is reached across repeated
+/// observations, never inside one.
+const TRANSITION_WINDOW_CAP: Duration = Duration::from_secs(90);
 const RUNTIME_LINK_POLL: Duration = Duration::from_millis(100);
 const RUNTIME_RECONNECT_DEADLINE: Duration = Duration::from_secs(1);
 const RUNTIME_RECONNECT_ATTEMPTS: usize = 3;
@@ -89,6 +97,18 @@ enum LifecycleCommand {
     RuntimeLogsTail {
         lines: u32,
         response: oneshot::Sender<RuntimeLogsTailResult>,
+    },
+    TransitionStop {
+        transition_id: StorageTransitionId,
+        expected: TransitionSource,
+        deadline: Duration,
+        response: oneshot::Sender<TransitionStopOutcome>,
+    },
+    TransitionObserve {
+        expected: RuntimeIdentity,
+        window: Duration,
+        send_kill: bool,
+        response: oneshot::Sender<TransitionObserveOutcome>,
     },
     Refresh,
     ConfigChanged,
@@ -168,6 +188,7 @@ enum LifecycleState {
         snapshot: RuntimeUnresponsiveLifecycleSnapshot,
         child: ManagedChild,
     },
+    TransitionStopPending(TransitionStopState),
     TerminatingOperation {
         snapshot: ManagerTerminatingLifecycleSnapshot,
         operation: LifecycleOperation,
@@ -268,6 +289,64 @@ enum StopIntent {
     },
 }
 
+/// The source posture a transition stop expects, checked under the owner.
+#[derive(Debug, Clone)]
+pub(in crate::management) enum TransitionSource {
+    AttachedRuntime(RuntimeIdentity),
+    CleanNoRuntime,
+}
+
+/// How a transition-owned stop settled its bounded window.
+#[derive(Debug)]
+pub(in crate::management) enum TransitionStopOutcome {
+    /// The exact expected process has exited (or a clean no-runtime source
+    /// was already quiescent); no drain remains.
+    SourceQuiesced,
+    /// The window expired with the process present; the machine parks
+    /// without a kill and the transition retains custody.
+    StopTimedOut { runtime: RuntimeIdentity },
+    /// The live state is not the expected posture; nothing was begun.
+    RuntimeChanged { observed: Option<RuntimeIdentity> },
+}
+
+/// How one bounded observation of a parked transition stop settled.
+#[derive(Debug)]
+pub(in crate::management) enum TransitionObserveOutcome {
+    /// Exact exit of the expected process has been observed.
+    Exited,
+    /// The window expired with the expected process still present.
+    StillPresent {
+        runtime: RuntimeIdentity,
+        failure: RuntimeStopTimedOutFailure,
+    },
+    /// A different runtime is attached; custody is retained.
+    RuntimeChanged { observed: Option<RuntimeIdentity> },
+    /// No transition stop is parked or settled here.
+    NotStopping,
+}
+
+/// A transition stop parked past its graceful window: the child is retained,
+/// exit observation keeps running, and no kill is ever sent implicitly.
+struct TransitionStopState {
+    token: u64,
+    transition_id: StorageTransitionId,
+    snapshot: StoppingLifecycleSnapshot,
+    child: ManagedChild,
+    wait: Option<TransitionWait>,
+    finishing: bool,
+}
+
+/// One caller's bounded observation window over the parked stop.
+struct TransitionWait {
+    deadline: tokio::time::Instant,
+    responder: TransitionResponder,
+}
+
+enum TransitionResponder {
+    Stop(oneshot::Sender<TransitionStopOutcome>),
+    Observe(oneshot::Sender<TransitionObserveOutcome>),
+}
+
 enum LifecycleCompletion {
     CustodyCommitted {
         token: u64,
@@ -286,6 +365,10 @@ enum LifecycleCompletion {
         result: StopCompletion,
     },
     Document {
+        token: u64,
+        document: Option<ConfigDocument>,
+    },
+    TransitionStopped {
         token: u64,
         document: Option<ConfigDocument>,
     },
@@ -433,6 +516,7 @@ impl LifecycleState {
             Self::Running { snapshot, .. } => snapshot.clone().into(),
             Self::Operating(operation) => operation.snapshot(),
             Self::Unresponsive { snapshot, .. } => snapshot.clone().into(),
+            Self::TransitionStopPending(pending) => pending.snapshot.clone().into(),
             Self::TerminatingOperation { snapshot, .. }
             | Self::TerminatingManaged { snapshot, .. }
             | Self::Terminating(snapshot) => snapshot.clone().into(),
@@ -572,6 +656,54 @@ impl LifecycleController {
         request_terminal(operation, &self.sender, LifecycleCommand::Stop).await
     }
 
+    /// The runtime attached right now, read from the published snapshot.
+    /// A switch uses it to order its fence ahead of the database work; the
+    /// owner still re-checks authoritatively before any signal is sent.
+    pub(in crate::management) fn attached_runtime(&self) -> Option<RuntimeIdentity> {
+        match &self.snapshots.borrow().phase {
+            LifecyclePhase::Healthy { runtime, .. }
+            | LifecyclePhase::Degraded { runtime, .. }
+            | LifecyclePhase::VersionMismatch { runtime, .. } => Some(runtime.clone()),
+            _ => None,
+        }
+    }
+
+    pub(in crate::management) async fn transition_stop_for(
+        &self,
+        operation: &OperationContext,
+        transition_id: StorageTransitionId,
+        expected: TransitionSource,
+        deadline: Duration,
+    ) -> Result<Option<TransitionStopOutcome>, OperationError> {
+        request_terminal(operation, &self.sender, |response| {
+            LifecycleCommand::TransitionStop {
+                transition_id,
+                expected,
+                deadline,
+                response,
+            }
+        })
+        .await
+    }
+
+    pub(in crate::management) async fn transition_observe_for(
+        &self,
+        operation: &OperationContext,
+        expected: RuntimeIdentity,
+        window: Duration,
+        send_kill: bool,
+    ) -> Result<Option<TransitionObserveOutcome>, OperationError> {
+        request_terminal(operation, &self.sender, |response| {
+            LifecycleCommand::TransitionObserve {
+                expected,
+                window,
+                send_kill,
+                response,
+            }
+        })
+        .await
+    }
+
     pub(in crate::management) async fn restart_for(
         &self,
         operation: &OperationContext,
@@ -668,6 +800,78 @@ async fn request_terminal<T>(
 }
 
 /// One scripted outcome for a test controller's credential-target read.
+/// A controller whose transition commands answer from a script, and whose
+/// published snapshot reports the given attached runtime. It exists so the
+/// gate's composition — admission, custody, release — can be driven through
+/// every transition outcome without a live managed process; the owner's own
+/// behaviour is proven by its own tests.
+#[cfg(test)]
+pub(in crate::management) fn controller_answering_transitions(
+    attached: Option<RuntimeIdentity>,
+    stop: TransitionStopOutcome,
+    observations: Vec<TransitionObserveOutcome>,
+) -> LifecycleController {
+    let (sender, mut receiver) = mpsc::channel(COMMAND_CAPACITY);
+    let phase = attached.map_or(
+        LifecyclePhase::Stopped {
+            state: scripted_stopped_state(),
+        },
+        |runtime| LifecyclePhase::Healthy {
+            runtime,
+            restart_pending: false,
+        },
+    );
+    let snapshot = LifecycleSnapshot {
+        header: LifecycleSnapshotHeader {
+            manager_instance_id: "scripted".to_owned(),
+            revision: 1,
+            manager_version: env!("CARGO_PKG_VERSION").to_owned(),
+        },
+        phase,
+    };
+    let (_publisher, snapshots) = watch::channel(snapshot);
+    let (events, _) = broadcast::channel(MANAGEMENT_EVENT_CAPACITY);
+    tokio::spawn(async move {
+        let mut stop = Some(stop);
+        let mut observations = observations.into_iter();
+        while let Some(command) = receiver.recv().await {
+            match command {
+                LifecycleCommand::TransitionStop { response, .. } => {
+                    if let Some(outcome) = stop.take() {
+                        let _ = response.send(outcome);
+                    }
+                }
+                LifecycleCommand::TransitionObserve { response, .. } => {
+                    if let Some(outcome) = observations.next() {
+                        let _ = response.send(outcome);
+                    }
+                }
+                LifecycleCommand::Start(response) => {
+                    // A scripted owner cannot launch; the gate must treat
+                    // that as a restart failure, not a recovery.
+                    let _ = response.send(RuntimeStartResult::Superseded {
+                        by: StartSuperseder::Stop,
+                    });
+                }
+                _ => {}
+            }
+        }
+    });
+    LifecycleController {
+        sender,
+        snapshots,
+        events,
+    }
+}
+
+#[cfg(test)]
+fn scripted_stopped_state() -> StoppedState {
+    StoppedState::Ready {
+        readiness: start_clear(),
+        failure: None,
+    }
+}
+
 #[cfg(test)]
 pub(in crate::management) enum ScriptedCredentialAnswer {
     Answer(Option<RuntimeCredentialTarget>),
@@ -1029,6 +1233,18 @@ impl LifecycleOwner {
             LifecycleCommand::RuntimeLogsTail { lines, response } => {
                 self.runtime_logs_read(lines, response);
             }
+            LifecycleCommand::TransitionStop {
+                transition_id,
+                expected,
+                deadline,
+                response,
+            } => self.admit_transition_stop(transition_id, expected, deadline, response),
+            LifecycleCommand::TransitionObserve {
+                expected,
+                window,
+                send_kill,
+                response,
+            } => self.admit_transition_observe(&expected, window, send_kill, response),
             LifecycleCommand::Refresh => self.request_document_refresh(),
             LifecycleCommand::ConfigChanged => self.apply_config_change(),
             LifecycleCommand::Readiness(report) => self.apply_readiness(report),
@@ -1057,6 +1273,7 @@ impl LifecycleOwner {
             }
             LifecycleState::NoRuntime(_)
             | LifecycleState::Operating(_)
+            | LifecycleState::TransitionStopPending(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
@@ -1180,6 +1397,7 @@ impl LifecycleOwner {
             }
             LifecycleState::NoRuntime(_)
             | LifecycleState::Operating(_)
+            | LifecycleState::TransitionStopPending(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
@@ -1197,6 +1415,7 @@ impl LifecycleOwner {
             LifecycleState::Running { child, .. } => child.control.compatible(),
             LifecycleState::NoRuntime(_)
             | LifecycleState::Operating(_)
+            | LifecycleState::TransitionStopPending(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
@@ -1229,6 +1448,7 @@ impl LifecycleOwner {
             },
             LifecycleState::NoRuntime(_)
             | LifecycleState::Operating(_)
+            | LifecycleState::TransitionStopPending(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
@@ -1319,6 +1539,7 @@ impl LifecycleOwner {
             },
             LifecycleState::NoRuntime(_)
             | LifecycleState::Operating(_)
+            | LifecycleState::TransitionStopPending(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
@@ -1351,7 +1572,9 @@ impl LifecycleOwner {
                     .ok_or(RuntimeReadUnavailable::VersionMismatch)
             }
             LifecycleState::NoRuntime(_) => Err(RuntimeReadUnavailable::NoRuntime),
-            LifecycleState::Operating(_) => Err(RuntimeReadUnavailable::OperationInProgress),
+            LifecycleState::Operating(_) | LifecycleState::TransitionStopPending(_) => {
+                Err(RuntimeReadUnavailable::OperationInProgress)
+            }
             LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
             | LifecycleState::Terminating(_) => Err(RuntimeReadUnavailable::ManagerTerminating),
@@ -1426,6 +1649,13 @@ impl LifecycleOwner {
                     },
                 };
                 let _ = response.send(result);
+            }
+            LifecycleState::TransitionStopPending(pending) => {
+                let _ = response.send(RuntimeStartResult::OperationInProgress {
+                    state: StartOperationInProgress::GraphTransition {
+                        transition_id: pending.transition_id,
+                    },
+                });
             }
             LifecycleState::Unresponsive { snapshot, .. } => {
                 let _ = response.send(RuntimeStartResult::RuntimeUnresponsive {
@@ -1511,6 +1741,14 @@ impl LifecycleOwner {
                     }
                 }
                 LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation))
+            }
+            LifecycleState::TransitionStopPending(pending) => {
+                let _ = response.send(RuntimeStopResult::OperationInProgress {
+                    state: StopOperationInProgress::GraphTransition {
+                        transition_id: pending.transition_id,
+                    },
+                });
+                LifecycleState::TransitionStopPending(pending)
             }
             LifecycleState::Unresponsive { snapshot, child } => self.begin_stop_state(
                 child,
@@ -1615,6 +1853,14 @@ impl LifecycleOwner {
                 let _ = response.send(result);
                 LifecycleState::Operating(LifecycleOperation::CancellingLaunch(operation))
             }
+            LifecycleState::TransitionStopPending(pending) => {
+                let _ = response.send(RuntimeRestartResult::OperationInProgress {
+                    state: RestartOperationInProgress::GraphTransition {
+                        transition_id: pending.transition_id,
+                    },
+                });
+                LifecycleState::TransitionStopPending(pending)
+            }
             LifecycleState::Unresponsive { snapshot, child } => self.begin_stop_state(
                 child,
                 StopIntent::Restart {
@@ -1669,6 +1915,23 @@ impl LifecycleOwner {
                 },
                 &snapshot,
             ),
+            LifecycleState::TransitionStopPending(pending) => {
+                // Manager shutdown supersedes a parked transition: the
+                // caller's window is abandoned and ordinary escalation owns
+                // the child from here.
+                drop(pending.wait);
+                let running = RunningLifecycleSnapshot {
+                    header: next_header(&pending.snapshot.header),
+                    phase: running_phase(&pending.child.identity, &pending.child.control, false),
+                };
+                self.begin_stop_state(
+                    pending.child,
+                    StopIntent::Shutdown {
+                        waiters: vec![response],
+                    },
+                    &running,
+                )
+            }
             LifecycleState::Operating(LifecycleOperation::Launching(mut operation)) => {
                 supersede_launch(&mut operation.intent, StartSuperseder::ManagerShutdown);
                 LifecycleState::Operating(LifecycleOperation::CancellingLaunch(
@@ -1810,6 +2073,223 @@ impl LifecycleOwner {
         }
     }
 
+    fn admit_transition_stop(
+        &mut self,
+        transition_id: StorageTransitionId,
+        expected: TransitionSource,
+        deadline: Duration,
+        response: oneshot::Sender<TransitionStopOutcome>,
+    ) {
+        let state = std::mem::replace(&mut self.state, placeholder_state());
+        self.state = match (state, expected) {
+            (
+                LifecycleState::Running { snapshot, child },
+                TransitionSource::AttachedRuntime(runtime),
+            ) => {
+                // Only an owned child's exit is exactly observable; a
+                // recovered attachment can prove nothing and fails the fence.
+                if child.identity == runtime && matches!(child.process, ManagedProcess::Owned(_)) {
+                    self.begin_transition_stop(transition_id, child, &snapshot, deadline, response)
+                } else {
+                    let _ = response.send(TransitionStopOutcome::RuntimeChanged {
+                        observed: Some(child.identity.clone()),
+                    });
+                    LifecycleState::Running { snapshot, child }
+                }
+            }
+            (LifecycleState::Running { snapshot, child }, TransitionSource::CleanNoRuntime) => {
+                let _ = response.send(TransitionStopOutcome::RuntimeChanged {
+                    observed: Some(child.identity.clone()),
+                });
+                LifecycleState::Running { snapshot, child }
+            }
+            (LifecycleState::NoRuntime(snapshot), TransitionSource::CleanNoRuntime) => {
+                let outcome = if is_clean_ready_no_runtime(&snapshot) {
+                    TransitionStopOutcome::SourceQuiesced
+                } else {
+                    TransitionStopOutcome::RuntimeChanged { observed: None }
+                };
+                let _ = response.send(outcome);
+                LifecycleState::NoRuntime(snapshot)
+            }
+            (LifecycleState::NoRuntime(snapshot), TransitionSource::AttachedRuntime(_)) => {
+                let _ = response.send(TransitionStopOutcome::RuntimeChanged { observed: None });
+                LifecycleState::NoRuntime(snapshot)
+            }
+            (other, _) => {
+                let _ = response.send(TransitionStopOutcome::RuntimeChanged {
+                    observed: attached_identity(&other),
+                });
+                other
+            }
+        };
+        self.publish_current();
+    }
+
+    /// Sends the one graceful stop signal and parks under the caller's
+    /// bounded window; expiry answers with the typed timeout and never kills.
+    fn begin_transition_stop(
+        &mut self,
+        transition_id: StorageTransitionId,
+        mut child: ManagedChild,
+        running: &RunningLifecycleSnapshot,
+        deadline: Duration,
+        response: oneshot::Sender<TransitionStopOutcome>,
+    ) -> LifecycleState {
+        if let Some(link) = child.link.take() {
+            link.cancel();
+        }
+        let token = self.take_token();
+        let snapshot = StoppingLifecycleSnapshot {
+            header: next_header(&running.header),
+            phase: StoppingPhase::Stopping {
+                runtime: child.identity.clone(),
+            },
+        };
+        let control = child.control.clone();
+        let runtime = child.identity.clone();
+        self.observations.spawn(async move {
+            match tokio::time::timeout(STOP_DEADLINE, control.stop(&runtime)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, pid = runtime.pid, "managed runtime stop was refused");
+                }
+                Err(_) => {
+                    tracing::warn!(pid = runtime.pid, "managed runtime stop request timed out");
+                }
+            }
+        });
+        LifecycleState::TransitionStopPending(TransitionStopState {
+            token,
+            transition_id,
+            snapshot,
+            child,
+            wait: Some(TransitionWait {
+                deadline: tokio::time::Instant::now() + deadline.min(TRANSITION_WINDOW_CAP),
+                responder: TransitionResponder::Stop(response),
+            }),
+            finishing: false,
+        })
+    }
+
+    fn admit_transition_observe(
+        &mut self,
+        expected: &RuntimeIdentity,
+        window: Duration,
+        send_kill: bool,
+        response: oneshot::Sender<TransitionObserveOutcome>,
+    ) {
+        match &mut self.state {
+            LifecycleState::TransitionStopPending(pending) => {
+                if &pending.child.identity != expected {
+                    let _ = response.send(TransitionObserveOutcome::RuntimeChanged {
+                        observed: Some(pending.child.identity.clone()),
+                    });
+                    return;
+                }
+                if pending.wait.is_some() {
+                    let _ = response.send(TransitionObserveOutcome::NotStopping);
+                    return;
+                }
+                if send_kill && let ManagedProcess::Owned(process) = &mut pending.child.process {
+                    let _ = process.start_kill();
+                }
+                pending.wait = Some(TransitionWait {
+                    deadline: tokio::time::Instant::now() + window.min(TRANSITION_WINDOW_CAP),
+                    responder: TransitionResponder::Observe(response),
+                });
+            }
+            LifecycleState::NoRuntime(_) => {
+                // Under the transition's barrier no start can interleave, so
+                // a no-runtime state after a parked stop is the exact exit.
+                let _ = response.send(TransitionObserveOutcome::Exited);
+            }
+            _ => {
+                let _ = response.send(TransitionObserveOutcome::NotStopping);
+            }
+        }
+    }
+
+    /// Drives the parked transition stop: custody loss terminates, exact exit
+    /// resolves the waiter and finishes into a no-runtime state, and an
+    /// expired window answers with its typed timeout — never a kill.
+    fn observe_transition_pending(&mut self) {
+        let LifecycleState::TransitionStopPending(pending) = &mut self.state else {
+            return;
+        };
+        let exact_exit = match managed_child_exit_detail(&mut pending.child) {
+            Ok(detail) => detail.is_some(),
+            Err(error) => {
+                tracing::warn!(%error, "managed runtime status unavailable");
+                false
+            }
+        };
+        if pending.child.custody.is_closed() {
+            let runtime = custody_loss_runtime(&pending.child.identity, exact_exit);
+            let snapshot = custody_loss_snapshot(&pending.snapshot.header, runtime);
+            let state = std::mem::replace(&mut self.state, placeholder_state());
+            let LifecycleState::TransitionStopPending(pending) = state else {
+                self.state = state;
+                return;
+            };
+            drop(pending.wait);
+            self.state = LifecycleState::TerminatingManaged {
+                snapshot,
+                child: pending.child,
+            };
+            self.publish_current();
+            self.shutdown_seen = true;
+            self.shutdown.cancel();
+            return;
+        }
+        if exact_exit {
+            // The quiescence answer waits for the machine to settle into its
+            // no-runtime state: an observer that hears the exit must find a
+            // lifecycle owner that can already admit the recovery start.
+            if !pending.finishing {
+                pending.finishing = true;
+                let token = pending.token;
+                let sender = self.completion_sender.clone();
+                let config = self.config.clone();
+                self.observations.spawn(async move {
+                    let document = config.document().await.ok();
+                    let _ = sender
+                        .send(LifecycleCompletion::TransitionStopped { token, document })
+                        .await;
+                });
+            }
+            return;
+        }
+        let Some(wait) = &pending.wait else {
+            return;
+        };
+        if tokio::time::Instant::now() < wait.deadline {
+            return;
+        }
+        let Some(wait) = pending.wait.take() else {
+            return;
+        };
+        match wait.responder {
+            TransitionResponder::Stop(response) => {
+                let _ = response.send(TransitionStopOutcome::StopTimedOut {
+                    runtime: pending.child.identity.clone(),
+                });
+            }
+            TransitionResponder::Observe(response) => {
+                let failure = RuntimeStopTimedOutFailure {
+                    presentation: failure_presentation(
+                        "managed runtime did not stop before the deadline",
+                        &format!("runtime pid {} remains active", pending.child.identity.pid),
+                    ),
+                };
+                let _ = response.send(TransitionObserveOutcome::StillPresent {
+                    runtime: pending.child.identity.clone(),
+                    failure,
+                });
+            }
+        }
+    }
+
     fn begin_stop_state(
         &mut self,
         mut child: ManagedChild,
@@ -1873,6 +2353,44 @@ impl LifecycleOwner {
                 let holds = self.credential_gate_holds(&expected)
                     && self.state.snapshot().header.revision == epoch;
                 let _ = response.send(if holds { target } else { None });
+            }
+            LifecycleCompletion::TransitionStopped { token, document } => {
+                let settled = matches!(
+                    &self.state,
+                    LifecycleState::TransitionStopPending(pending) if pending.token == token
+                );
+                if settled {
+                    let state = std::mem::replace(&mut self.state, placeholder_state());
+                    let LifecycleState::TransitionStopPending(mut pending) = state else {
+                        self.state = state;
+                        return;
+                    };
+                    let document = document.unwrap_or_else(|| {
+                        self.latest_readiness.mark_unavailable();
+                        ConfigDocument::Unreadable {
+                            phase:
+                                tribal_wire::management::ConfigPersistencePhase::DurabilityUncertain,
+                        }
+                    });
+                    let no_runtime = no_runtime_snapshot(
+                        next_header(&pending.snapshot.header),
+                        &document,
+                        None,
+                        &self.latest_readiness,
+                    );
+                    self.state = LifecycleState::NoRuntime(no_runtime);
+                    if let Some(wait) = pending.wait.take() {
+                        match wait.responder {
+                            TransitionResponder::Stop(response) => {
+                                let _ = response.send(TransitionStopOutcome::SourceQuiesced);
+                            }
+                            TransitionResponder::Observe(response) => {
+                                let _ = response.send(TransitionObserveOutcome::Exited);
+                            }
+                        }
+                    }
+                    self.publish_current();
+                }
             }
             LifecycleCompletion::Document { token, document } => {
                 if token == self.next_token.wrapping_sub(1)
@@ -2445,6 +2963,10 @@ impl LifecycleOwner {
             self.observe_stopping();
             return;
         }
+        if matches!(self.state, LifecycleState::TransitionStopPending(_)) {
+            self.observe_transition_pending();
+            return;
+        }
         if matches!(
             self.state,
             LifecycleState::Operating(LifecycleOperation::CancellingLaunch(_))
@@ -2824,6 +3346,7 @@ impl LifecycleOwner {
                 true
             }
             LifecycleState::Operating(_)
+            | LifecycleState::TransitionStopPending(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
@@ -2878,6 +3401,7 @@ impl LifecycleOwner {
                 }
             }
             LifecycleState::Operating(_)
+            | LifecycleState::TransitionStopPending(_)
             | LifecycleState::Unresponsive { .. }
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
@@ -2931,6 +3455,7 @@ impl LifecycleOwner {
                 LifecycleState::NoRuntime(_)
                 | LifecycleState::Running { .. }
                 | LifecycleState::Operating(LifecycleOperation::Stopping(_))
+                | LifecycleState::TransitionStopPending(_)
                 | LifecycleState::Unresponsive { .. }
                 | LifecycleState::TerminatingOperation { .. }
                 | LifecycleState::TerminatingManaged { .. }
@@ -3029,7 +3554,9 @@ impl LifecycleOwner {
                     completed_task = take_graceful_stop_task(&mut operation.termination);
                 }
             }
-            LifecycleCompletion::Stopped { .. } | LifecycleCompletion::Document { .. } => {}
+            LifecycleCompletion::Stopped { .. }
+            | LifecycleCompletion::Document { .. }
+            | LifecycleCompletion::TransitionStopped { .. } => {}
         }
         self.track_task(completed_task, "terminal lifecycle completion");
     }
@@ -3068,6 +3595,9 @@ impl LifecycleOwner {
             LifecycleState::Operating(LifecycleOperation::Stopping(operation)) => {
                 operation.child.as_mut().is_some_and(managed_child_exited)
             }
+            LifecycleState::TransitionStopPending(pending) => {
+                managed_child_exited(&mut pending.child)
+            }
             LifecycleState::NoRuntime(_)
             | LifecycleState::TerminatingOperation { .. }
             | LifecycleState::TerminatingManaged { .. }
@@ -3101,6 +3631,7 @@ impl LifecycleOwner {
                 .child
                 .as_ref()
                 .is_some_and(|child| child.custody.is_closed()),
+            LifecycleState::TransitionStopPending(pending) => pending.child.custody.is_closed(),
             LifecycleState::NoRuntime(_)
             | LifecycleState::Running { .. }
             | LifecycleState::Operating(_)
@@ -3133,6 +3664,11 @@ impl LifecycleOwner {
                             runtime: child.identity.clone(),
                         }
                     }),
+                LifecycleState::TransitionStopPending(pending) => {
+                    ManagerTerminationRuntime::Recoverable {
+                        runtime: pending.child.identity.clone(),
+                    }
+                }
                 LifecycleState::NoRuntime(_)
                 | LifecycleState::TerminatingOperation { .. }
                 | LifecycleState::TerminatingManaged { .. }
@@ -3150,43 +3686,7 @@ impl LifecycleOwner {
         };
         resolve_all_waiters_for_termination(&mut self.state, &snapshot);
         let state = std::mem::replace(&mut self.state, placeholder_state());
-        self.state = match state {
-            LifecycleState::Operating(LifecycleOperation::Stopping(mut operation)) => {
-                if exact_exit && !retain_exact_child {
-                    drop(operation.child.take());
-                    LifecycleState::Terminating(snapshot)
-                } else if let Some(child) = operation.child.take() {
-                    LifecycleState::TerminatingManaged { snapshot, child }
-                } else {
-                    LifecycleState::Terminating(snapshot)
-                }
-            }
-            LifecycleState::Operating(operation) => LifecycleState::TerminatingOperation {
-                snapshot,
-                operation,
-            },
-            LifecycleState::TerminatingOperation {
-                snapshot,
-                operation,
-            } => LifecycleState::TerminatingOperation {
-                snapshot,
-                operation,
-            },
-            LifecycleState::Running { child, .. } | LifecycleState::Unresponsive { child, .. } => {
-                if exact_exit && !retain_exact_child {
-                    drop(child);
-                    LifecycleState::Terminating(snapshot)
-                } else {
-                    LifecycleState::TerminatingManaged { snapshot, child }
-                }
-            }
-            LifecycleState::TerminatingManaged { snapshot, child } => {
-                LifecycleState::TerminatingManaged { snapshot, child }
-            }
-            LifecycleState::NoRuntime(_) | LifecycleState::Terminating(_) => {
-                LifecycleState::Terminating(snapshot)
-            }
-        };
+        self.state = fold_termination_state(state, snapshot, exact_exit, retain_exact_child);
         self.publish_current();
         self.shutdown_seen = true;
         self.shutdown.cancel();
@@ -3197,6 +3697,7 @@ impl LifecycleOwner {
             LifecycleState::Running { child, .. } | LifecycleState::Unresponsive { child, .. } => {
                 Some(child)
             }
+            LifecycleState::TransitionStopPending(pending) => Some(&mut pending.child),
             LifecycleState::Operating(LifecycleOperation::Stopping(operation)) => {
                 operation.child.as_mut()
             }
@@ -3356,6 +3857,64 @@ fn early_child_exited(child: &mut EarlyChild) -> bool {
     matches!(child.child.try_wait(), Ok(Some(_)))
 }
 
+/// Folds any state into its manager-terminating successor, retaining the
+/// child wherever it may still be alive or its commit outcome unknown.
+fn fold_termination_state(
+    state: LifecycleState,
+    snapshot: ManagerTerminatingLifecycleSnapshot,
+    exact_exit: bool,
+    retain_exact_child: bool,
+) -> LifecycleState {
+    match state {
+        LifecycleState::Operating(LifecycleOperation::Stopping(mut operation)) => {
+            if exact_exit && !retain_exact_child {
+                drop(operation.child.take());
+                LifecycleState::Terminating(snapshot)
+            } else if let Some(child) = operation.child.take() {
+                LifecycleState::TerminatingManaged { snapshot, child }
+            } else {
+                LifecycleState::Terminating(snapshot)
+            }
+        }
+        LifecycleState::Operating(operation) => LifecycleState::TerminatingOperation {
+            snapshot,
+            operation,
+        },
+        LifecycleState::TerminatingOperation {
+            snapshot,
+            operation,
+        } => LifecycleState::TerminatingOperation {
+            snapshot,
+            operation,
+        },
+        LifecycleState::Running { child, .. } | LifecycleState::Unresponsive { child, .. } => {
+            if exact_exit && !retain_exact_child {
+                drop(child);
+                LifecycleState::Terminating(snapshot)
+            } else {
+                LifecycleState::TerminatingManaged { snapshot, child }
+            }
+        }
+        LifecycleState::TransitionStopPending(pending) => {
+            if exact_exit && !retain_exact_child {
+                drop(pending.child);
+                LifecycleState::Terminating(snapshot)
+            } else {
+                LifecycleState::TerminatingManaged {
+                    snapshot,
+                    child: pending.child,
+                }
+            }
+        }
+        LifecycleState::TerminatingManaged { snapshot, child } => {
+            LifecycleState::TerminatingManaged { snapshot, child }
+        }
+        LifecycleState::NoRuntime(_) | LifecycleState::Terminating(_) => {
+            LifecycleState::Terminating(snapshot)
+        }
+    }
+}
+
 fn polls_process_resources(state: &LifecycleState) -> bool {
     match state {
         LifecycleState::Operating(LifecycleOperation::Launching(operation)) => {
@@ -3363,6 +3922,7 @@ fn polls_process_resources(state: &LifecycleState) -> bool {
         }
         LifecycleState::Running { .. }
         | LifecycleState::Unresponsive { .. }
+        | LifecycleState::TransitionStopPending(_)
         | LifecycleState::Operating(
             LifecycleOperation::CancellingLaunch(_) | LifecycleOperation::Stopping(_),
         ) => true,
@@ -3900,6 +4460,31 @@ fn readiness_unavailable(
     }
 }
 
+/// Whether a no-runtime state is the clean, ready posture a no-runtime
+/// transition may treat as already quiescent.
+fn is_clean_ready_no_runtime(snapshot: &NoRuntimeLifecycleSnapshot) -> bool {
+    matches!(
+        &snapshot.phase,
+        NoRuntimePhase::Stopped {
+            state: StoppedState::Ready { .. },
+        }
+    )
+}
+
+/// The identity attached in a state, for a fail-closed refusal's report.
+fn attached_identity(state: &LifecycleState) -> Option<RuntimeIdentity> {
+    match state {
+        LifecycleState::Running { child, .. }
+        | LifecycleState::Unresponsive { child, .. }
+        | LifecycleState::TerminatingManaged { child, .. } => Some(child.identity.clone()),
+        LifecycleState::TransitionStopPending(pending) => Some(pending.child.identity.clone()),
+        LifecycleState::NoRuntime(_)
+        | LifecycleState::Operating(_)
+        | LifecycleState::TerminatingOperation { .. }
+        | LifecycleState::Terminating(_) => None,
+    }
+}
+
 fn clean_no_runtime_from_no_runtime(
     snapshot: &NoRuntimeLifecycleSnapshot,
 ) -> CleanNoRuntimeLifecycleSnapshot {
@@ -4318,6 +4903,54 @@ fn custody_loss_termination(runtime: CustodyLossTerminationRuntime) -> ManagerTe
         ),
         runtime,
     }
+}
+
+/// A spawned controller over a fresh config for cross-module tests.
+#[cfg(test)]
+pub(in crate::management) async fn controller_for_test(
+    database_url: &str,
+) -> (
+    tempfile::TempDir,
+    LifecycleController,
+    JoinHandle<LifecycleExit>,
+    crate::management::worker::ConfigWorkerRuntime,
+) {
+    let temp = tempfile::tempdir().expect("temporary authority root");
+    let config_path = temp.path().join("tribal.yaml");
+    let config = tribal_config::TribalConfig::minimum_valid(database_url);
+    std::fs::write(
+        &config_path,
+        serde_yaml::to_string(&config).expect("configuration serialises"),
+    )
+    .expect("configuration writes");
+    let authority = crate::management::authority::AuthorityLease::acquire_with_roots(
+        &config_path,
+        &temp.path().join("state"),
+        &temp.path().join("run"),
+    )
+    .expect("authority acquisition succeeds");
+    let crate::management::authority::AuthorityAcquire::Acquired(authority) = authority else {
+        panic!("temporary config path has one authority");
+    };
+    let (config, mut worker_runtime) = crate::management::worker::spawn(
+        crate::management::configuration::ConfigAuthority::new(config_path.clone()),
+    )
+    .expect("configuration worker starts");
+    let terminal = worker_runtime
+        .take_terminal()
+        .expect("worker terminal has one owner");
+    let (lifecycle, task) = LifecycleController::spawn(
+        "manager".to_owned(),
+        config_path,
+        config,
+        Arc::new(authority),
+        CancellationToken::new(),
+        terminal,
+        None,
+    )
+    .await
+    .expect("lifecycle owner starts");
+    (temp, lifecycle, task, worker_runtime)
 }
 
 #[cfg(test)]
@@ -6485,5 +7118,297 @@ mod tests {
         assert_eq!(receiver.await.expect("credential target resolves"), None);
         drop(owner);
         worker_runtime.join().expect("worker thread joins");
+    }
+
+    fn a_ready_no_runtime() -> NoRuntimeLifecycleSnapshot {
+        NoRuntimeLifecycleSnapshot {
+            header: header(),
+            phase: NoRuntimePhase::Stopped {
+                state: StoppedState::Ready {
+                    readiness: start_clear(),
+                    failure: None,
+                },
+            },
+        }
+    }
+
+    fn running_state_for(child: &ManagedChild) -> RunningLifecycleSnapshot {
+        RunningLifecycleSnapshot {
+            header: header(),
+            phase: running_phase(&child.identity, &child.control, false),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_transition_stop_timeout_parks_without_a_kill() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, _runtime_control) = a_managed_child();
+        let runtime = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: running_state_for(&child),
+            child,
+        };
+
+        let (stop, stop_outcome) = oneshot::channel();
+        owner.admit_transition_stop(
+            StorageTransitionId::new(),
+            TransitionSource::AttachedRuntime(runtime.clone()),
+            Duration::ZERO,
+            stop,
+        );
+        owner.observe_transition_pending();
+        let outcome = stop_outcome.await.expect("stop outcome");
+        assert!(
+            matches!(outcome, TransitionStopOutcome::StopTimedOut { runtime: observed } if observed == runtime),
+        );
+        let LifecycleState::TransitionStopPending(pending) = &mut owner.state else {
+            panic!("the machine parks on a transition stop timeout");
+        };
+        let ManagedProcess::Owned(process) = &mut pending.child.process else {
+            panic!("the parked child stays owned");
+        };
+        assert!(
+            matches!(process.try_wait(), Ok(None)),
+            "no kill is sent when the graceful window expires",
+        );
+
+        // A continue window re-observes without a further signal and times
+        // out bounded again, with the process still alive.
+        let (observe, observe_outcome) = oneshot::channel();
+        owner.admit_transition_observe(&runtime, Duration::ZERO, false, observe);
+        owner.observe_transition_pending();
+        let outcome = observe_outcome.await.expect("observe outcome");
+        assert!(matches!(
+            outcome,
+            TransitionObserveOutcome::StillPresent { .. }
+        ));
+        let LifecycleState::TransitionStopPending(pending) = &mut owner.state else {
+            panic!("still parked");
+        };
+        let ManagedProcess::Owned(process) = &mut pending.child.process else {
+            panic!("still owned");
+        };
+        assert!(matches!(process.try_wait(), Ok(None)));
+
+        reap_parked_child(&mut owner).await;
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_transition_force_reports_exited_only_after_exact_exit() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, _runtime_control) = a_managed_child();
+        let runtime = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: running_state_for(&child),
+            child,
+        };
+        let (stop, stop_outcome) = oneshot::channel();
+        owner.admit_transition_stop(
+            StorageTransitionId::new(),
+            TransitionSource::AttachedRuntime(runtime.clone()),
+            Duration::ZERO,
+            stop,
+        );
+        owner.observe_transition_pending();
+        assert!(matches!(
+            stop_outcome.await,
+            Ok(TransitionStopOutcome::StopTimedOut { .. })
+        ));
+
+        let (observe, mut observe_outcome) = oneshot::channel();
+        owner.admit_transition_observe(&runtime, TEST_OBSERVATION_DEADLINE, true, observe);
+        let outcome = drive_to_transition_answer(&mut owner, &mut observe_outcome).await;
+        assert!(matches!(outcome, TransitionObserveOutcome::Exited));
+        assert!(
+            matches!(owner.state, LifecycleState::NoRuntime(_)),
+            "the exit answer arrives only once the machine has settled",
+        );
+
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_transition_observe_sends_nothing_and_sees_a_manual_exit() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, _runtime_custody, _runtime_control) = a_managed_child();
+        let runtime = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: running_state_for(&child),
+            child,
+        };
+        let (stop, stop_outcome) = oneshot::channel();
+        owner.admit_transition_stop(
+            StorageTransitionId::new(),
+            TransitionSource::AttachedRuntime(runtime.clone()),
+            Duration::ZERO,
+            stop,
+        );
+        owner.observe_transition_pending();
+        assert!(matches!(
+            stop_outcome.await,
+            Ok(TransitionStopOutcome::StopTimedOut { .. })
+        ));
+
+        // The abort-shaped observation: the process exits on its own (the
+        // earlier stop signal finally draining), and a no-kill observation
+        // reports it.
+        {
+            let LifecycleState::TransitionStopPending(pending) = &mut owner.state else {
+                panic!("parked");
+            };
+            make_managed_exact_exit(&mut pending.child).await;
+        }
+        let (observe, mut observe_outcome) = oneshot::channel();
+        owner.admit_transition_observe(&runtime, TEST_OBSERVATION_DEADLINE, false, observe);
+        let outcome = drive_to_transition_answer(&mut owner, &mut observe_outcome).await;
+        assert!(matches!(outcome, TransitionObserveOutcome::Exited));
+        assert!(matches!(owner.state, LifecycleState::NoRuntime(_)));
+
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_transition_stop_fails_closed_on_identity_and_custody_mismatches() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+
+        // A different attached identity is refused with the observed one.
+        let (mut child, _runtime_custody, _runtime_control) = a_managed_child();
+        let actual = child.identity.clone();
+        let mut expected = actual.clone();
+        expected.instance_id = "someone-else".to_owned();
+        owner.state = LifecycleState::Running {
+            snapshot: running_state_for(&child),
+            child,
+        };
+        let (stop, stop_outcome) = oneshot::channel();
+        owner.admit_transition_stop(
+            StorageTransitionId::new(),
+            TransitionSource::AttachedRuntime(expected),
+            Duration::ZERO,
+            stop,
+        );
+        assert!(matches!(
+            stop_outcome.await,
+            Ok(TransitionStopOutcome::RuntimeChanged { observed: Some(observed) }) if observed == actual
+        ));
+
+        // A recovered attachment can prove no exact exit and is refused even
+        // under a matching identity.
+        let state = std::mem::replace(&mut owner.state, placeholder_state());
+        let LifecycleState::Running {
+            snapshot,
+            child: taken,
+        } = state
+        else {
+            panic!("running state retained");
+        };
+        child = taken;
+        make_managed_exact_exit(&mut child).await;
+        child.process = ManagedProcess::Recovered;
+        let identity = child.identity.clone();
+        owner.state = LifecycleState::Running { snapshot, child };
+        let (stop, stop_outcome) = oneshot::channel();
+        owner.admit_transition_stop(
+            StorageTransitionId::new(),
+            TransitionSource::AttachedRuntime(identity.clone()),
+            Duration::ZERO,
+            stop,
+        );
+        assert!(matches!(
+            stop_outcome.await,
+            Ok(TransitionStopOutcome::RuntimeChanged { observed: Some(observed) }) if observed == identity
+        ));
+
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
+    async fn test_transition_stop_clean_no_runtime_origin_is_already_quiesced() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        owner.state = LifecycleState::NoRuntime(a_ready_no_runtime());
+
+        let (stop, stop_outcome) = oneshot::channel();
+        owner.admit_transition_stop(
+            StorageTransitionId::new(),
+            TransitionSource::CleanNoRuntime,
+            Duration::ZERO,
+            stop,
+        );
+        assert!(
+            matches!(
+                stop_outcome.await,
+                Ok(TransitionStopOutcome::SourceQuiesced)
+            ),
+            "a clean no-runtime source is already quiescent, with no signal sent",
+        );
+
+        // Expecting an attached runtime against a no-runtime state fails closed.
+        let (stop, stop_outcome) = oneshot::channel();
+        let (child, _custody, _control) = a_managed_child();
+        let expected = child.identity.clone();
+        drop(child);
+        owner.admit_transition_stop(
+            StorageTransitionId::new(),
+            TransitionSource::AttachedRuntime(expected),
+            Duration::ZERO,
+            stop,
+        );
+        assert!(matches!(
+            stop_outcome.await,
+            Ok(TransitionStopOutcome::RuntimeChanged { observed: None })
+        ));
+
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    /// The owner's backstop leaves room for the work a gate operation does
+    /// around its observation — the leases, the reinspection, the custody
+    /// proofs — inside the transport's request budget.
+    #[test]
+    fn test_transition_window_cap_clears_the_transport_budget() {
+        const SURROUNDING_WORK_ALLOWANCE: u64 = 30;
+        assert!(
+            TRANSITION_WINDOW_CAP.as_secs() + SURROUNDING_WORK_ALLOWANCE
+                < tribal_wire::management::MANAGEMENT_REQUEST_TIMEOUT_SECONDS,
+            "one observation plus its surrounding work must answer inside the request budget",
+        );
+    }
+
+    /// Drives the owner until a parked transition's observer is answered:
+    /// the exit answer rides the settling completion, so both the exit
+    /// observation and the completion must be pumped.
+    async fn drive_to_transition_answer(
+        owner: &mut LifecycleOwner,
+        outcome: &mut oneshot::Receiver<TransitionObserveOutcome>,
+    ) -> TransitionObserveOutcome {
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
+            loop {
+                owner.observe_transition_pending();
+                while let Ok(completion) = owner.completions.try_recv() {
+                    owner.handle_completion(completion).await;
+                }
+                if let Ok(answer) = outcome.try_recv() {
+                    break answer;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the parked transition answers inside the window")
+    }
+
+    /// Kills and reaps a parked transition child so the test leaves no
+    /// process behind.
+    async fn reap_parked_child(owner: &mut LifecycleOwner) {
+        let LifecycleState::TransitionStopPending(pending) = &mut owner.state else {
+            return;
+        };
+        make_managed_exact_exit(&mut pending.child).await;
     }
 }

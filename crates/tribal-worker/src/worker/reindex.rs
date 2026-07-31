@@ -121,18 +121,23 @@ pub enum ReindexCreationOutcome {
     AlreadyLive(ReindexRun),
     /// Another creation holds the single-flight lock; the caller should retry.
     LockContended,
+    /// A storage transition holds the graph, refusing new durable work.
+    GraphTransitionInProgress,
 }
 
 // ---------------------------------------------------------------------------
 // Creation
 // ---------------------------------------------------------------------------
 
-/// Creates a reindex run under the single-flight lock.
+/// Creates a reindex run under shared graph admission and the single-flight
+/// lock.
 ///
-/// Must be called inside a transaction: the single-flight advisory lock is
-/// xact-scoped, so it is held until the surrounding transaction commits the new
-/// profile-plus-run (or rolls back). When the lock is contended or a run is
-/// already live, no rows are written.
+/// Must be called inside a transaction: both advisory locks are xact-scoped,
+/// so they are held until the surrounding transaction commits the new
+/// profile-plus-run (or rolls back) — the durable row is visible before the
+/// shared admission releases, which is what lets a storage transition trust
+/// its assessment. When admission is refused, the lock is contended, or a run
+/// is already live, no rows are written.
 ///
 /// # Errors
 ///
@@ -144,6 +149,13 @@ pub async fn create_reindex_run(
     target: &ReindexTarget,
     initiated_by: PrincipalId,
 ) -> Result<ReindexCreationOutcome, DbError> {
+    if !PgAdvisoryLockRepository
+        .try_acquire_shared_xact(conn, advisory_locks::GRAPH_TRANSITION)
+        .await?
+    {
+        return Ok(ReindexCreationOutcome::GraphTransitionInProgress);
+    }
+
     if !PgAdvisoryLockRepository
         .try_acquire_exclusive_xact(conn, advisory_locks::REINDEX_SINGLE_FLIGHT)
         .await?
@@ -826,22 +838,41 @@ async fn process_one(
 
 /// Drains the run's claimable tasks, embedding each batch or tag into the
 /// building profile, until none remain claimable this cycle.
+/// Why a task drain ended: a drained run goes on to indexes and cutover,
+/// an aborted one goes no further at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskDrain {
+    Drained,
+    RunAborted,
+}
+
 async fn process_tasks(
     conn: &mut PgConnection,
     ctx: &ReindexCtx<'_>,
     claimed_by: &str,
-) -> Result<(), DbError> {
+) -> Result<TaskDrain, DbError> {
     loop {
         let tasks = PgReindexTaskRepository
             .claim(conn, ctx.run.id(), REINDEX_TASK_CLAIM_LIMIT, claimed_by)
             .await?;
         if tasks.is_empty() {
-            return Ok(());
+            return Ok(TaskDrain::Drained);
         }
         for task in tasks {
+            // An abort observed after the claim stops the batch: a provider
+            // call already in flight settles, but no further task starts.
+            if !run_still_live(conn, ctx.run.id()).await? {
+                return Ok(TaskDrain::RunAborted);
+            }
             process_one(conn, ctx, &task).await?;
         }
     }
+}
+
+/// Reports whether the run still admits new task work.
+async fn run_still_live(conn: &mut PgConnection, run_id: ReindexRunId) -> Result<bool, DbError> {
+    let run = PgReindexRunRepository.find_by_id(conn, run_id).await?;
+    Ok(run.is_some_and(|run| !run.state().is_terminal()))
 }
 
 /// Drives one cycle of the single live reindex run: promotes and enrols
@@ -886,7 +917,14 @@ pub async fn drive_reindex_cycle(
                 ..UsageAttribution::default()
             },
         };
-        process_tasks(conn, &ctx, claimed_by).await?;
+        // A cancelled run stops here, whether the abort landed mid-batch or
+        // before the claim that found nothing left: the index build and the
+        // cutover below would issue fresh provider calls and DDL against a
+        // graph the operator has already abandoned.
+        let drain = process_tasks(conn, &ctx, claimed_by).await?;
+        if drain == TaskDrain::RunAborted || !run_still_live(conn, run.id()).await? {
+            return Ok(());
+        }
         if run_dead_lettered(conn, run.id()).await? {
             fail_run(
                 conn,
@@ -913,6 +951,11 @@ pub async fn drive_reindex_cycle(
             return Ok(());
         }
         build_partial_indexes(conn, &building).await?;
+        // Index construction is long; a cancellation landing inside it must
+        // not be followed by the catch-up's fresh provider work.
+        if !run_still_live(conn, run.id()).await? {
+            return Ok(());
+        }
         if catch_up_and_cutover(conn, &ctx).await? {
             tracing::info!("reindex complete; the new profile is now active");
         }
@@ -2645,6 +2688,156 @@ mod tests {
                 .expect("find_live")
                 .is_none(),
             "the run is completed",
+        );
+    }
+
+    /// A held storage-transition lock refuses reindex admission before any
+    /// durable work, and release restores it. A two-session interleaving.
+    #[tokio::test]
+    async fn test_create_reindex_run_refused_while_a_graph_transition_holds_admission() {
+        let ctx_db = TestDb::new().await;
+
+        let mut setup = ctx_db.raw_connection().await.expect("setup connection");
+        let principal = insert_principal(&mut setup, "user:reindex-transition").await;
+
+        let mut transition = ctx_db.raw_connection().await.expect("transition session");
+        assert!(
+            PgAdvisoryLockRepository
+                .try_acquire_exclusive(&mut transition, advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("hold the transition lock"),
+        );
+
+        let mut conn = ctx_db.raw_connection().await.expect("worker session");
+        let mut tx = sqlx::Connection::begin(&mut conn).await.expect("begin");
+        assert!(
+            matches!(
+                create_reindex_run(&mut tx, &a_target(), principal)
+                    .await
+                    .expect("attempt admission"),
+                ReindexCreationOutcome::GraphTransitionInProgress
+            ),
+            "admission is refused while the transition holds the graph",
+        );
+        drop(tx);
+
+        assert!(
+            PgAdvisoryLockRepository
+                .release_exclusive(&mut transition, advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("release the transition lock"),
+        );
+        let mut tx = sqlx::Connection::begin(&mut conn)
+            .await
+            .expect("begin again");
+        assert!(
+            matches!(
+                create_reindex_run(&mut tx, &a_target(), principal)
+                    .await
+                    .expect("create after release"),
+                ReindexCreationOutcome::Created(_)
+            ),
+            "admission resumes once the transition releases",
+        );
+    }
+
+    /// A cancelled run stops the whole cycle, not just its task drain: the
+    /// index build and cutover that follow would issue fresh provider calls
+    /// and DDL against a graph the operator has already abandoned.
+    #[tokio::test]
+    async fn test_a_cancelled_run_reports_the_abort_rather_than_a_clean_drain() {
+        let ctx_db = TestDb::new().await;
+        let mut txn = ctx_db.begin().await.expect("begin");
+        let (run, building, _task) = a_claimed_tag_task(&mut txn, "user:cycle-abort").await;
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_exhaust(ExhaustBehaviour::RepeatLast)
+                .build(),
+        );
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
+
+        PgEmbeddingProfileRepository
+            .mark_failed(&mut txn, run.target_profile_id())
+            .await
+            .expect("fail the building profile");
+        let live = PgReindexRunRepository
+            .find_by_id(&mut txn, run.id())
+            .await
+            .expect("read the run")
+            .expect("the run exists");
+        assert!(
+            PgReindexRunRepository
+                .transition(
+                    &mut txn,
+                    run.id(),
+                    live.state(),
+                    ReindexRunState::Aborted,
+                    Some("cancelled by operator"),
+                )
+                .await
+                .expect("abort the run"),
+        );
+
+        // The claim admits nothing under a cancelled run, so the drain ends
+        // clean — and the cycle's own liveness guard is what stops it before
+        // the index build and cutover.
+        let drain = process_tasks(&mut txn, &ctx, "worker")
+            .await
+            .expect("drain a cancelled run");
+        assert_eq!(drain, TaskDrain::Drained);
+        assert!(
+            !run_still_live(&mut txn, run.id())
+                .await
+                .expect("read the run's liveness"),
+            "a cancelled run stops the cycle before indexes and cutover",
+        );
+    }
+
+    /// The batch guard: a run observed aborted stops further task work.
+    #[tokio::test]
+    async fn test_run_still_live_is_false_once_the_run_aborts() {
+        let ctx_db = TestDb::new().await;
+        let ctx = ctx_db.begin().await.expect("begin");
+        let mut txn = ctx;
+        let principal = insert_principal(&mut txn, "user:reindex-live-check").await;
+        let ReindexCreationOutcome::Created(run) =
+            create_reindex_run(&mut txn, &a_target(), principal)
+                .await
+                .expect("create run")
+        else {
+            panic!("expected a created run");
+        };
+
+        assert!(
+            run_still_live(&mut txn, run.id())
+                .await
+                .expect("live check"),
+            "a queued run still admits work",
+        );
+
+        PgEmbeddingProfileRepository
+            .mark_failed(&mut txn, run.target_profile_id())
+            .await
+            .expect("fail the building profile");
+        assert!(
+            PgReindexRunRepository
+                .transition(
+                    &mut txn,
+                    run.id(),
+                    ReindexRunState::Queued,
+                    ReindexRunState::Aborted,
+                    Some("cancelled by operator"),
+                )
+                .await
+                .expect("abort run"),
+        );
+
+        assert!(
+            !run_still_live(&mut txn, run.id())
+                .await
+                .expect("live check"),
+            "an aborted run admits no further task work",
         );
     }
 

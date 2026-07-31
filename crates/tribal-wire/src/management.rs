@@ -16,18 +16,19 @@ mod method;
 mod readiness;
 mod runtime;
 mod settings;
+mod storage;
 mod wire_id;
 
 pub use administration::{
     AbsoluteDirectoryPath, AbsoluteDirectoryPathError, CredentialPersistenceResult,
-    DatabaseInitialiseOutcome, DatabaseInitialiseRequest, DatabaseInitialiseResult,
-    IssuedBearerToken, PageCursor, PageCursorError, PageRequest, PageSize, PageSizeError,
-    ProjectList, ProjectListRequest, ProjectPage, ProjectRegisterInput, ProjectRegisterOutcome,
-    ProjectRegisterRequest, ProjectRegisterResult, ProjectRegistrationSource, ProjectSummary,
-    Revisioned, TokenCreateOutcome, TokenCreateRequest, TokenCreateResult, TokenInventory,
-    TokenListRequest, TokenPage, TokenRevokeAllOutcome, TokenRevokeAllRequest,
-    TokenRevokeAllResult, TokenRevokeOutcome, TokenRevokeRequest, TokenRevokeResult, TokenState,
-    TokenSummary,
+    DatabaseAdministrationTarget, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
+    DatabaseInitialiseResult, IssuedBearerToken, PageCursor, PageCursorError, PageRequest,
+    PageSize, PageSizeError, ProjectList, ProjectListRequest, ProjectPage, ProjectRegisterInput,
+    ProjectRegisterOutcome, ProjectRegisterRequest, ProjectRegisterResult,
+    ProjectRegistrationSource, ProjectSummary, Revisioned, TokenCreateOutcome, TokenCreateRequest,
+    TokenCreateResult, TokenInventory, TokenListRequest, TokenPage, TokenRevokeAllOutcome,
+    TokenRevokeAllRequest, TokenRevokeAllResult, TokenRevokeOutcome, TokenRevokeRequest,
+    TokenRevokeResult, TokenState, TokenSummary,
 };
 pub use bootstrap::{
     BootstrapGenesisInput, BootstrapHandoff, BootstrapOutcome, BootstrapProviderConnectionInput,
@@ -86,9 +87,9 @@ pub use lifecycle::{
     ShutdownRuntimeUnresponsiveLifecycleSnapshot, ShutdownRuntimeUnresponsivePhase,
     StartOperationInProgress, StartSuperseder, StartingLifecycleSnapshot, StartingPhase,
     StopEarlyChildCancellationLifecycleSnapshot, StopEarlyChildCancellationPhase,
-    StopRuntimeOperation, StopRuntimeUnresponsiveLifecycleSnapshot, StopRuntimeUnresponsivePhase,
-    StoppedProcessFailure, StoppedState, StoppingLifecycleSnapshot, StoppingPhase,
-    UnconfiguredLifecycleSnapshot, UnconfiguredPhase,
+    StopOperationInProgress, StopRuntimeOperation, StopRuntimeUnresponsiveLifecycleSnapshot,
+    StopRuntimeUnresponsivePhase, StoppedProcessFailure, StoppedState, StoppingLifecycleSnapshot,
+    StoppingPhase, UnconfiguredLifecycleSnapshot, UnconfiguredPhase,
 };
 pub use maintenance::{
     MutationMode, ReindexApplyResolution, ReindexCancelOutcome, ReindexCancelRequest,
@@ -100,15 +101,17 @@ pub use maintenance::{
 pub use method::{
     AuthenticationSettingsCall, BootstrapRunCall, CheckReportCall, ConfigGetAllCall, ConfigGetCall,
     ConfigPatchCall, ConfigPathCall, ConfigSchemaCall, ConfigSetCall, ConfigValidatePatchCall,
-    DatabaseConnectionCall, DatabaseInitialiseCall, DatabaseProbeCall, GraphConfigureGenesisCall,
-    GraphConvergeGenesisCall, GraphEmbeddingProfileCall, GraphGenesisOptionsCall,
-    IntegrationMcpConfigCall, LogsTailCall, ManagementCall, ManagementMethod, ManagerShutdownCall,
-    ManagerSnapshotCall, ModelsCatalogueCall, ProcessingProfileCall, ProcessingProfileSetCall,
-    ProjectListCall, ProjectRegisterCall, ProviderConnectionRemoveCall,
-    ProviderConnectionUpsertCall, ProviderConnectionsCall, ProviderProbeCall, ReindexCancelCall,
-    ReindexPruneCall, ReindexRunCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall,
-    ServerStatusCall, SettingsResetPreviewCall, ThreadsPruneCall, TokenCreateCall, TokenListCall,
-    TokenRevokeAllCall, TokenRevokeCall,
+    DatabaseConnectionCall, DatabaseInitialiseCall, DatabaseInspectCall, DatabaseProbeCall,
+    GraphConfigureGenesisCall, GraphConvergeGenesisCall, GraphEmbeddingProfileCall,
+    GraphGenesisOptionsCall, IntegrationMcpConfigCall, LogsTailCall, ManagementCall,
+    ManagementMethod, ManagerShutdownCall, ManagerSnapshotCall, ModelsCatalogueCall,
+    ProcessingProfileCall, ProcessingProfileSetCall, ProjectListCall, ProjectRegisterCall,
+    ProviderConnectionRemoveCall, ProviderConnectionUpsertCall, ProviderConnectionsCall,
+    ProviderProbeCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall, RuntimeRestartCall,
+    RuntimeStartCall, RuntimeStopCall, ServerStatusCall, SettingsResetPreviewCall,
+    StorageAbortCall, StorageAssessCall, StorageContinueCall, StorageForceStopCall,
+    StorageSwitchCall, ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall,
+    TokenRevokeCall,
 };
 #[cfg(feature = "schema")]
 pub use method::{ManagementCallSchema, management_call_schemas};
@@ -142,6 +145,15 @@ pub use settings::{
     SettingsResetScope, SettingsSetupFocus, SettingsSetupReason, SettingsSetupSnapshot,
     SettingsSetupStep, SettingsSetupStepKind, SettingsSetupStepState, StageExecutionSettings,
     StageModelSettings, VerifiedStageExecutionSettings, VerifiedStageSettings,
+};
+pub use storage::{
+    BlockingResolution, DatabaseTargetFailure, DatabaseTargetFailureKind,
+    DatabaseTargetInspectRequest, DatabaseTargetInspectResult, DatabaseTargetReceipt,
+    DatabaseTargetState, GraphActivity, GraphActivityKind, GraphActivityStatus,
+    StorageAssessRequest, StorageAssessResult, StorageSwitchAbortRequest, StorageSwitchAbortResult,
+    StorageSwitchContinueRequest, StorageSwitchContinueResult, StorageSwitchForceStopRequest,
+    StorageSwitchForceStopResult, StorageSwitchRequest, StorageSwitchResult,
+    StorageTransitionAssessment, StorageTransitionVerdict,
 };
 pub use tribal_domain::{ConfigFieldPath, ProviderConnectionName, ProviderKind, TransportKind};
 pub use wire_id::{

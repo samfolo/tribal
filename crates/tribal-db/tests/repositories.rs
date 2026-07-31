@@ -29,6 +29,9 @@ mod embedding_index;
 #[path = "repositories/extraction_result.rs"]
 mod extraction_result;
 
+#[path = "repositories/graph_identity.rs"]
+mod graph_identity;
+
 #[path = "repositories/item_observation.rs"]
 mod item_observation;
 

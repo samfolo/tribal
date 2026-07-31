@@ -19,6 +19,7 @@ pub const APPLICATION_TABLES: &[&str] = &[
     "embedding_profiles",
     "embeddings",
     "extraction_results",
+    "graph_identity",
     "item_external_references",
     "item_observations",
     "jobs",

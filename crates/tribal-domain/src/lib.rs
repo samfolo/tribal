@@ -145,10 +145,10 @@ pub use git::{GitRemote, GitRemoteParseError};
 pub use ids::{
     AgentBindingVersionId, AgentDriverTaskId, AgentThreadId, AgentThreadRecordId, AuthTokenId,
     CredentialGenerationId, EmbeddingId, EmbeddingProfileId, EpisodeId, ExtractionResultId,
-    IdParseError, ItemObservationId, JobId, KnowledgeItemId, PrincipalId, ProjectId,
+    GraphId, IdParseError, ItemObservationId, JobId, KnowledgeItemId, PrincipalId, ProjectId,
     PromptVersionId, ReferenceId, ReindexRunId, ReindexTaskId, RelationBatchId, RelationId,
-    RetrievalFeedbackId, RunJobId, SessionId, SystemFingerprintId, TaskId, TokenUsageId,
-    TriageResultId, TriageSimilarItemDecisionId,
+    RetrievalFeedbackId, RunJobId, SessionId, StorageTransitionId, SystemFingerprintId, TaskId,
+    TokenUsageId, TriageResultId, TriageSimilarItemDecisionId,
 };
 pub use inference_event::InferenceEvent;
 pub use inference_parameters::{PipelineParameters, StageParameters};

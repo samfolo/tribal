@@ -284,6 +284,9 @@ fn run_outcome(
                 }
                 ReindexResolution::Unchanged => ReindexApplyResolution::Unchanged,
                 ReindexResolution::LockContended => ReindexApplyResolution::LockContended,
+                ReindexResolution::GraphTransitionInProgress => {
+                    ReindexApplyResolution::GraphTransitionInProgress
+                }
                 ReindexResolution::Plan => return Err(ReindexAdministrationError::Target),
             },
         }),

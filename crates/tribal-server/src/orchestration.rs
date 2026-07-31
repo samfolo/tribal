@@ -28,7 +28,7 @@ use crate::{
     commands::serve::ServeProjectMode,
     error::AppError,
     startup::{
-        POOL_NAME_MCP, POOL_NAME_WORKER, ProviderConnectionCredentialResolver,
+        MigrationRunOutcome, POOL_NAME_MCP, POOL_NAME_WORKER, ProviderConnectionCredentialResolver,
         build_provider_registry, check_first_run, completion_stage_specs, create_pool_with_retry,
         ensure_prompt_files, generate_instance_id, init_prompt_watcher, load_prompts,
         load_prompts_embedded, probe_startup_providers, provision_genesis, read_active_profile,
@@ -378,7 +378,9 @@ async fn bootstrap(
     // -- Migrations ----------------------------------------------------------
 
     check_first_run(&pool_mcp).await?;
-    run_migrations(&pool_mcp).await?;
+    if run_migrations(&pool_mcp).await? == MigrationRunOutcome::GraphTransitionInProgress {
+        return Err(AppError::MigrationRefusedByGraphTransition);
+    }
 
     // -- First-boot provisioning ---------------------------------------------
 

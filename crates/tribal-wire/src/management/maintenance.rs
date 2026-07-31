@@ -40,6 +40,7 @@ pub enum ReindexApplyResolution {
     AlreadyLive { run_id: ReindexRunId },
     Unchanged,
     LockContended,
+    GraphTransitionInProgress,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

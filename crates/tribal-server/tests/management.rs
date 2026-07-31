@@ -23,15 +23,16 @@ use tribal_test_utils::{TestDb, duration::POLL_INTERVAL};
 use tribal_wire::management::{
     BootstrapRequest, BootstrapResult, BootstrapStorage, BootstrapTokenPolicy, ConfigDigest,
     ConfigDocument, ConfigFieldPath, ConfigLiteral, ConfigRevision, ConfigSetRequest,
-    ConfigWriteOutcome, ConfiguredMcpTarget, DatabaseInitialiseOutcome, DatabaseInitialiseRequest,
-    DatabaseInitialiseResult, LifecycleSnapshot, MANAGEMENT_CONTRACT_VERSION,
-    ManagedRuntimeStatusResult, ManagementBootstrapRequest, ManagementBootstrapResponse,
-    ManagementClientHello, ManagementError, ManagementResponseError, ManagementServerHello,
-    ManagerAnnouncement, ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord,
-    ManagerShutdownCall, ManagerSnapshot, McpTargetSelection, NetworkTransport, PageCursor,
-    PageRequest, PageSize, ProjectList, ProjectListRequest, ProjectRegisterInput,
-    ProjectRegisterOutcome, ProjectRegisterRequest, ProjectRegistrationSource, RuntimeIdentity,
-    RuntimeStartResult, StdioProjectContext, TokenCreateRequest, TokenCreateResult,
+    ConfigWriteOutcome, ConfiguredMcpTarget, DatabaseAdministrationTarget,
+    DatabaseInitialiseOutcome, DatabaseInitialiseRequest, DatabaseInitialiseResult,
+    LifecycleSnapshot, MANAGEMENT_CONTRACT_VERSION, ManagedRuntimeStatusResult,
+    ManagementBootstrapRequest, ManagementBootstrapResponse, ManagementClientHello,
+    ManagementError, ManagementResponseError, ManagementServerHello, ManagerAnnouncement,
+    ManagerLaunchDisposition, ManagerLaunchFailure, ManagerLaunchRecord, ManagerShutdownCall,
+    ManagerSnapshot, McpTargetSelection, NetworkTransport, PageCursor, PageRequest, PageSize,
+    ProjectList, ProjectListRequest, ProjectRegisterInput, ProjectRegisterOutcome,
+    ProjectRegisterRequest, ProjectRegistrationSource, RuntimeIdentity, RuntimeStartResult,
+    StdioProjectContext, TokenCreateRequest, TokenCreateResult,
 };
 
 /// Upper bound for manager replacement and child-process observations.
@@ -738,6 +739,7 @@ async fn test_database_initialise_negotiates_v3_and_migrates_once_after_revision
     let stale = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"stale"));
     let stale_request = DatabaseInitialiseRequest {
         expected_revision: stale.clone(),
+        target: DatabaseAdministrationTarget::Configured,
     };
     let stale_error = call_error(
         &mut client,
@@ -762,6 +764,7 @@ async fn test_database_initialise_negotiates_v3_and_migrates_once_after_revision
 
     let request = DatabaseInitialiseRequest {
         expected_revision: revision.clone(),
+        target: DatabaseAdministrationTarget::Configured,
     };
     let first: DatabaseInitialiseResult = call(
         &mut client,

@@ -110,7 +110,9 @@ pub trait ReindexTaskRepository {
 
     /// Atomically claims up to `limit` available `pending` tasks for the owner,
     /// scoped to `reindex_run_id` so a later run never claims a prior aborted
-    /// run's leftover pending tasks.
+    /// run's leftover pending tasks, and admitted only while the parent run is
+    /// live. The claim shares the run row, so a cancellation in flight settles
+    /// first and is seen: no task is claimed after an abort commits.
     ///
     /// # Errors
     ///
@@ -162,6 +164,18 @@ pub trait ReindexTaskRepository {
         conn: &mut PgConnection,
         reindex_run_id: ReindexRunId,
     ) -> Result<Vec<ReindexTaskStateCount>, DbError>;
+
+    /// The earliest instant a pending task waiting out a retry backoff
+    /// becomes claimable, or `None` when nothing is deferred.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn retry_wait(
+        &self,
+        conn: &mut PgConnection,
+        reindex_run_id: ReindexRunId,
+    ) -> Result<Option<DateTime<Utc>>, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,12 +234,14 @@ impl ReindexTaskRepository for PgReindexTaskRepository {
     ) -> Result<Vec<ReindexTask>, DbError> {
         let sql = format!(
             "WITH claimable AS ( \
-                 SELECT id FROM reindex_tasks \
-                 WHERE reindex_run_id = $3 \
-                   AND state = 'pending' AND available_at <= now() \
-                 ORDER BY available_at, created_at \
+                 SELECT t.id FROM reindex_tasks t \
+                 JOIN reindex_runs r ON r.id = t.reindex_run_id \
+                 WHERE t.reindex_run_id = $3 \
+                   AND r.state IN ('queued', 'running') \
+                   AND t.state = 'pending' AND t.available_at <= now() \
+                 ORDER BY t.available_at, t.created_at \
                  LIMIT $1 \
-                 FOR UPDATE SKIP LOCKED \
+                 FOR UPDATE OF t SKIP LOCKED FOR SHARE OF r SKIP LOCKED \
              ) \
              UPDATE reindex_tasks t \
              SET state = 'claimed', \
@@ -348,6 +364,28 @@ impl ReindexTaskRepository for PgReindexTaskRepository {
                 count: r.get::<i64, _>("count"),
             })
             .collect())
+    }
+
+    async fn retry_wait(
+        &self,
+        conn: &mut PgConnection,
+        reindex_run_id: ReindexRunId,
+    ) -> Result<Option<DateTime<Utc>>, DbError> {
+        let row = sqlx::query(
+            "SELECT MIN(available_at) AS resume_at \
+             FROM reindex_tasks \
+             WHERE reindex_run_id = $1 \
+               AND state = 'pending' AND available_at > now()",
+        )
+        .bind(reindex_run_id.inner())
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("aggregating reindex retry waits for run {reindex_run_id}"),
+            source: e,
+        })?;
+
+        Ok(row.get::<Option<DateTime<Utc>>, _>("resume_at"))
     }
 }
 

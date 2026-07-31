@@ -10,6 +10,7 @@ pub(in crate::management) mod operation;
 mod pagination;
 mod project;
 mod reindex;
+pub(in crate::management) mod storage_transition;
 mod thread;
 mod token;
 
@@ -19,26 +20,32 @@ pub(crate) use database::{
     COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DATABASE_COMMAND_DEFAULTS,
     DatabaseSession,
 };
-use database::{DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
+use database::{DATABASE_URL_KEY, DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
 use integration::IntegrationAdministration;
 use operation::OperationContext;
 use project::ProjectAdministration;
 use reindex::ReindexAdministration;
+pub(in crate::management) use storage_transition::{LocalAdmissionGuard, StorageTransitionGate};
 use thread::ThreadAdministration;
 use token::TokenAdministration;
+use tribal_domain::StorageTransitionId;
 use tribal_wire::management::{
     AdministrationFailure, AuthenticationSettingsCall, BootstrapRunCall, CheckReportCall,
     ConfigGetAllCall, ConfigGetCall, ConfigPatchCall, ConfigPatchValidation, ConfigPathCall,
     ConfigSchemaCall, ConfigSetCall, ConfigValidatePatchCall, DatabaseConnectionCall,
-    DatabaseInitialiseCall, DatabaseProbeCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall,
-    GraphEmbeddingProfileCall, GraphGenesisOptionsCall, IntegrationMcpConfigCall, LogsTailCall,
-    ManagementCall, ManagementError, ManagementMethod, ManagementResponseError,
-    ManagerShutdownCall, ManagerSnapshot, ManagerSnapshotCall, ModelsCatalogueCall,
-    PatchConfigViolation, ProcessingProfileCall, ProcessingProfileSetCall, ProjectListCall,
-    ProjectRegisterCall, ProviderConnectionRemoveCall, ProviderConnectionUpsertCall,
-    ProviderConnectionsCall, ProviderProbeCall, ReindexCancelCall, ReindexPruneCall,
-    ReindexRunCall, RuntimeRestartCall, RuntimeStartCall, RuntimeStopCall, ServerStatusCall,
-    SettingsResetPreviewCall, ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall,
+    DatabaseInitialiseCall, DatabaseInitialiseOutcome, DatabaseInspectCall, DatabaseProbeCall,
+    GraphConfigureGenesisCall, GraphConvergeGenesisCall, GraphEmbeddingProfileCall,
+    GraphGenesisOptionsCall, IntegrationMcpConfigCall, LogsTailCall, ManagementCall,
+    ManagementError, ManagementMethod, ManagementResponseError, ManagerShutdownCall,
+    ManagerSnapshot, ManagerSnapshotCall, ModelsCatalogueCall, PatchConfigViolation,
+    ProcessingProfileCall, ProcessingProfileSetCall, ProjectListCall, ProjectRegisterCall,
+    ProviderConnectionRemoveCall, ProviderConnectionUpsertCall, ProviderConnectionsCall,
+    ProviderProbeCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall,
+    RestartOperationInProgress, Revisioned, RuntimeRestartCall, RuntimeRestartResult,
+    RuntimeStartCall, RuntimeStartResult, RuntimeStopCall, RuntimeStopResult, ServerStatusCall,
+    SettingsResetPreviewCall, StartOperationInProgress, StopOperationInProgress, StorageAbortCall,
+    StorageAssessCall, StorageAssessResult, StorageContinueCall, StorageForceStopCall,
+    StorageSwitchCall, ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall,
     TokenRevokeCall,
 };
 
@@ -64,16 +71,18 @@ pub(crate) struct ManagementApplication<'a> {
     integration: IntegrationAdministration,
     reindex: ReindexAdministration,
     threads: ThreadAdministration,
+    storage: StorageTransitionGate,
     shutdown: tokio_util::sync::CancellationToken,
 }
 
 impl<'a> ManagementApplication<'a> {
-    pub(crate) fn new(
+    pub(in crate::management) fn new(
         config: &'a ConfigWorkerClient,
         product: &'a ProductSession,
         probe: &'a ProbeService,
         lifecycle: &'a LifecycleController,
         credentials: CredentialCoordinator,
+        storage: StorageTransitionGate,
         shutdown: tokio_util::sync::CancellationToken,
     ) -> Self {
         let database = DatabaseAccess::new(config.clone());
@@ -91,6 +100,7 @@ impl<'a> ManagementApplication<'a> {
             ),
             reindex: ReindexAdministration::new(database.clone()),
             threads: ThreadAdministration::new(database.clone()),
+            storage,
             database,
             shutdown,
         }
@@ -121,15 +131,30 @@ impl<'a> ManagementApplication<'a> {
                     settings,
                 }))
             }
-            ManagementMethod::RuntimeStart => {
-                encode_lifecycle::<RuntimeStartCall>(self.lifecycle.start_for(&operation).await)
-            }
-            ManagementMethod::RuntimeStop => {
-                encode_lifecycle::<RuntimeStopCall>(self.lifecycle.stop_for(&operation).await)
-            }
-            ManagementMethod::RuntimeRestart => {
-                encode_lifecycle::<RuntimeRestartCall>(self.lifecycle.restart_for(&operation).await)
-            }
+            ManagementMethod::RuntimeStart => match self.storage.admit_lifecycle() {
+                Err(transition_id) => {
+                    encode_lifecycle::<RuntimeStartCall>(Ok(Some(start_refused_by(transition_id))))
+                }
+                Ok(_admission) => {
+                    encode_lifecycle::<RuntimeStartCall>(self.lifecycle.start_for(&operation).await)
+                }
+            },
+            ManagementMethod::RuntimeStop => match self.storage.admit_lifecycle() {
+                Err(transition_id) => {
+                    encode_lifecycle::<RuntimeStopCall>(Ok(Some(stop_refused_by(transition_id))))
+                }
+                Ok(_admission) => {
+                    encode_lifecycle::<RuntimeStopCall>(self.lifecycle.stop_for(&operation).await)
+                }
+            },
+            ManagementMethod::RuntimeRestart => match self.storage.admit_lifecycle() {
+                Err(transition_id) => encode_lifecycle::<RuntimeRestartCall>(Ok(Some(
+                    restart_refused_by(transition_id),
+                ))),
+                Ok(_admission) => encode_lifecycle::<RuntimeRestartCall>(
+                    self.lifecycle.restart_for(&operation).await,
+                ),
+            },
             ManagementMethod::ManagerShutdown => encode_lifecycle::<ManagerShutdownCall>(
                 self.lifecycle.shutdown_for(&operation).await,
             ),
@@ -192,12 +217,19 @@ impl<'a> ManagementApplication<'a> {
             }
             ManagementMethod::DatabaseInitialise => {
                 let request = parse_call::<DatabaseInitialiseCall>(params)?;
-                encode_call::<DatabaseInitialiseCall>(
-                    self.database
-                        .initialise(&operation, request)
-                        .await
-                        .map_err(database_initialise_error),
-                )
+                match self.storage.admit_migration() {
+                    Err(transition_id) => encode_call::<DatabaseInitialiseCall>(Ok(Revisioned {
+                        config_revision: request.expected_revision.clone(),
+                        value: initialise_refused_by(transition_id),
+                    }
+                    .into())),
+                    Ok(_admission) => encode_call::<DatabaseInitialiseCall>(
+                        self.database
+                            .initialise(&operation, request)
+                            .await
+                            .map_err(database_initialise_error),
+                    ),
+                }
             }
             ManagementMethod::ProjectRegister => {
                 let request = parse_call::<ProjectRegisterCall>(params)?;
@@ -273,7 +305,15 @@ impl<'a> ManagementApplication<'a> {
                     self.integration.clone(),
                     operation,
                 );
-                encode_call::<BootstrapRunCall>(bootstrap.run(self.product, request).await)
+                match self.storage.admit_migration() {
+                    Err(_) => encode_call::<BootstrapRunCall>(Err(administration_error(
+                        "a storage transition holds this graph",
+                        AdministrationFailure::GraphTransitionInProgress,
+                    ))),
+                    Ok(_admission) => {
+                        encode_call::<BootstrapRunCall>(bootstrap.run(self.product, request).await)
+                    }
+                }
             }
             ManagementMethod::DatabaseProbe => {
                 let request = parse_call::<DatabaseProbeCall>(params)?;
@@ -288,6 +328,61 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::DatabaseConnection => encode_call::<DatabaseConnectionCall>(
                 self.product.database_connection(&operation).await,
             ),
+            ManagementMethod::StorageAssess => {
+                let request = parse_call::<StorageAssessCall>(params)?;
+                encode_call::<StorageAssessCall>(
+                    self.storage
+                        .assess(&operation, &self.database, Some(&request.expected_revision))
+                        .await
+                        .map(StorageAssessResult::from)
+                        .map_err(database_access_error),
+                )
+            }
+            ManagementMethod::StorageSwitch => {
+                let request = parse_call::<StorageSwitchCall>(params)?;
+                encode_call::<StorageSwitchCall>(
+                    self.storage
+                        .switch(&operation, &self.database, self.lifecycle, request)
+                        .await
+                        .map_err(database_access_error),
+                )
+            }
+            ManagementMethod::StorageContinue => {
+                let request = parse_call::<StorageContinueCall>(params)?;
+                encode_call::<StorageContinueCall>(
+                    self.storage
+                        .continue_switch(&operation, self.lifecycle, request)
+                        .await
+                        .map_err(database_access_error),
+                )
+            }
+            ManagementMethod::StorageForceStop => {
+                let request = parse_call::<StorageForceStopCall>(params)?;
+                encode_call::<StorageForceStopCall>(
+                    self.storage
+                        .force_stop(&operation, self.lifecycle, request)
+                        .await
+                        .map_err(database_access_error),
+                )
+            }
+            ManagementMethod::StorageAbort => {
+                let request = parse_call::<StorageAbortCall>(params)?;
+                encode_call::<StorageAbortCall>(
+                    self.storage
+                        .abort(&operation, self.lifecycle, request)
+                        .await
+                        .map_err(database_access_error),
+                )
+            }
+            ManagementMethod::DatabaseInspect => {
+                let request = parse_call::<DatabaseInspectCall>(params)?;
+                encode_call::<DatabaseInspectCall>(
+                    self.database
+                        .inspect(&operation, request)
+                        .await
+                        .map_err(database_access_error),
+                )
+            }
             ManagementMethod::AuthenticationSettings => encode_call::<AuthenticationSettingsCall>(
                 self.product.authentication_settings(&operation).await,
             ),
@@ -394,6 +489,7 @@ impl<'a> ManagementApplication<'a> {
             }
             ManagementMethod::ConfigSet => {
                 let request = parse_call::<ConfigSetCall>(params)?;
+                let _admission = admit_config_write(&self.storage, &[&request.key])?;
                 let runtime_changes = vec![tribal_wire::runtime_control::RuntimeConfigChange {
                     key: request.key.clone(),
                     value: tribal_wire::management::ConfigLiteral::new(
@@ -424,6 +520,8 @@ impl<'a> ManagementApplication<'a> {
             }
             ManagementMethod::ConfigPatch => {
                 let request = parse_call::<ConfigPatchCall>(params)?;
+                let keys: Vec<_> = request.changes.iter().map(|change| &change.key).collect();
+                let _admission = admit_config_write(&self.storage, &keys)?;
                 let runtime_changes = request
                     .changes
                     .iter()
@@ -747,7 +845,55 @@ fn database_access_error(error: DatabaseAccessError) -> ManagementResponseError 
     }
 }
 
-fn administration_error(message: &str, failure: AdministrationFailure) -> ManagementResponseError {
+/// The typed answers each barrier-admitted surface gives while a transition
+/// owns the graph. The dispatch arms and their tests share these, so a test
+/// cannot assert a shape the dispatch does not actually send.
+fn start_refused_by(transition_id: StorageTransitionId) -> RuntimeStartResult {
+    RuntimeStartResult::OperationInProgress {
+        state: StartOperationInProgress::GraphTransition { transition_id },
+    }
+}
+
+fn stop_refused_by(transition_id: StorageTransitionId) -> RuntimeStopResult {
+    RuntimeStopResult::OperationInProgress {
+        state: StopOperationInProgress::GraphTransition { transition_id },
+    }
+}
+
+fn restart_refused_by(transition_id: StorageTransitionId) -> RuntimeRestartResult {
+    RuntimeRestartResult::OperationInProgress {
+        state: RestartOperationInProgress::GraphTransition { transition_id },
+    }
+}
+
+fn initialise_refused_by(transition_id: StorageTransitionId) -> DatabaseInitialiseOutcome {
+    DatabaseInitialiseOutcome::GraphTransitionInProgress {
+        transition_id: Some(transition_id),
+    }
+}
+
+/// A transition owns the graph and its recovery is bound to the target the
+/// configuration named when it admitted, so a write that moves that target is
+/// refused until the transition settles.
+fn admit_config_write(
+    storage: &StorageTransitionGate,
+    keys: &[&tribal_domain::ConfigFieldPath],
+) -> Result<Option<LocalAdmissionGuard>, ManagementResponseError> {
+    if !keys.iter().any(|key| key.as_str() == DATABASE_URL_KEY) {
+        return Ok(None);
+    }
+    storage.admit_migration().map(Some).map_err(|_| {
+        administration_error(
+            "a storage transition holds this graph",
+            AdministrationFailure::GraphTransitionInProgress,
+        )
+    })
+}
+
+pub(super) fn administration_error(
+    message: &str,
+    failure: AdministrationFailure,
+) -> ManagementResponseError {
     ManagementResponseError {
         message: message.to_owned(),
         error: ManagementError::Administration { failure },
@@ -886,6 +1032,107 @@ fn thread_error(error: thread::ThreadAdministrationError) -> ManagementResponseE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The refusal each barrier-admitted surface delivers, asserted against
+    /// the very mapping its dispatch arm calls.
+    #[test]
+    fn test_a_pending_transition_refuses_every_admitted_surface() {
+        let gate = StorageTransitionGate::new();
+        let pending = StorageTransitionId::new();
+        gate.occupy_for_test(pending);
+
+        let refused_lifecycle = gate.admit_lifecycle().expect_err("lifecycle is refused");
+        assert_eq!(refused_lifecycle, pending);
+        assert!(matches!(
+            start_refused_by(refused_lifecycle),
+            RuntimeStartResult::OperationInProgress {
+                state: StartOperationInProgress::GraphTransition { transition_id }
+            } if transition_id == pending
+        ));
+        assert!(matches!(
+            stop_refused_by(refused_lifecycle),
+            RuntimeStopResult::OperationInProgress {
+                state: StopOperationInProgress::GraphTransition { transition_id }
+            } if transition_id == pending
+        ));
+        assert!(matches!(
+            restart_refused_by(refused_lifecycle),
+            RuntimeRestartResult::OperationInProgress {
+                state: RestartOperationInProgress::GraphTransition { transition_id }
+            } if transition_id == pending
+        ));
+
+        let refused_migration = gate.admit_migration().expect_err("migration is refused");
+        assert_eq!(refused_migration, pending);
+        assert!(matches!(
+            initialise_refused_by(refused_migration),
+            DatabaseInitialiseOutcome::GraphTransitionInProgress {
+                transition_id: Some(transition_id)
+            } if transition_id == pending
+        ));
+
+        // Bootstrap shares the migration slot and answers the typed
+        // administration failure.
+        let error = administration_error(
+            "a storage transition holds this graph",
+            AdministrationFailure::GraphTransitionInProgress,
+        );
+        assert!(matches!(
+            error.error,
+            ManagementError::Administration {
+                failure: AdministrationFailure::GraphTransitionInProgress
+            }
+        ));
+
+        gate.release_for_test();
+        drop(
+            gate.admit_lifecycle()
+                .expect("admission resumes on release"),
+        );
+        drop(
+            gate.admit_migration()
+                .expect("admission resumes on release"),
+        );
+    }
+
+    #[test]
+    fn test_a_pending_transition_refuses_a_database_target_write() {
+        let gate = StorageTransitionGate::new();
+        let database_url =
+            tribal_domain::ConfigFieldPath::parse(DATABASE_URL_KEY).expect("a valid config key");
+        let unrelated =
+            tribal_domain::ConfigFieldPath::parse("server.host").expect("a valid config key");
+
+        let admission =
+            admit_config_write(&gate, &[&database_url]).expect("no transition, no refusal");
+        assert!(
+            admission.is_some(),
+            "a database-target write holds its admission for the write's duration",
+        );
+        drop(admission);
+
+        gate.occupy_for_test(StorageTransitionId::new());
+        let refused = admit_config_write(&gate, &[&database_url])
+            .expect_err("a pending transition refuses the write");
+        assert!(matches!(
+            refused.error,
+            ManagementError::Administration {
+                failure: AdministrationFailure::GraphTransitionInProgress
+            }
+        ));
+        assert!(
+            admit_config_write(&gate, &[&unrelated])
+                .expect("an unrelated key is untouched by the transition")
+                .is_none(),
+            "only a database-target write takes the barrier",
+        );
+
+        gate.release_for_test();
+        drop(
+            admit_config_write(&gate, &[&database_url])
+                .expect("the write resumes once the transition settles"),
+        );
+    }
 
     #[test]
     fn test_malformed_call_parameters_are_refused() {

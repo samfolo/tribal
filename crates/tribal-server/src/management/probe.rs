@@ -23,6 +23,7 @@ use tribal_wire::management::{
 
 use super::{
     configuration::{ConfigAuthorityError, ConfigProbeSnapshot},
+    observed_at_unix_ms,
     worker::ConfigWorkerClient,
 };
 
@@ -129,7 +130,7 @@ impl ProbeService {
                 .ok_or(ProbeError::MissingObservation);
         }
         Ok(ProbeReceipt {
-            observed_at_unix_ms: observed_at_unix_ms()?,
+            observed_at_unix_ms: observed_at_unix_ms(),
             revision: request.expected_revision,
             subject,
             result: outcome,
@@ -186,7 +187,7 @@ impl ProbeService {
             let receipt = ProviderConnectionProbeReceipt {
                 connection: name.clone(),
                 provider,
-                observed_at_unix_ms: observed_at_unix_ms()?,
+                observed_at_unix_ms: observed_at_unix_ms(),
                 revision: request.expected_revision,
                 result: outcome,
                 freshness: ProbeReceiptFreshness::Current,
@@ -202,7 +203,7 @@ impl ProbeService {
         } else {
             Ok(ProviderProbeResponse::Candidate {
                 observation: CandidateProviderProbeObservation {
-                    observed_at_unix_ms: observed_at_unix_ms()?,
+                    observed_at_unix_ms: observed_at_unix_ms(),
                     validated_against_revision: request.expected_revision,
                     result: outcome,
                 },
@@ -347,14 +348,6 @@ fn ensure_revision(expected: &ConfigRevision, actual: &ConfigRevision) -> Result
             actual: actual.clone(),
         })
     }
-}
-
-fn observed_at_unix_ms() -> Result<u64, ProbeError> {
-    Ok(u64::try_from(
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_millis(),
-    )?)
 }
 
 fn provider_connection_digest(

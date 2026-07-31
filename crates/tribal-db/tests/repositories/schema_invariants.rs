@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use sqlx::migrate::Migrator;
-use tribal_db::MIGRATOR;
+use tribal_db::{DbError, GraphIdentityRepository, MIGRATOR, PgGraphIdentityRepository};
 use tribal_test_utils::TestDb;
 
 const INSERT_FLAT_REMOTE_PROJECT: &str = include_str!("sql/insert_flat_remote_project.sql");
@@ -24,21 +24,29 @@ const SELECT_EXTERNAL_REFERENCE_PROJECT_BY_ID: &str =
     include_str!("sql/select_external_reference_project_by_id.sql");
 const SELECT_JOB_PROJECT_BY_ID: &str = include_str!("sql/select_job_project_by_id.sql");
 const SELECT_SYSTEM_PROJECT_COUNT: &str = include_str!("sql/select_system_project_count.sql");
+const INSERT_GRAPH_IDENTITY_ROW: &str = include_str!("sql/insert_graph_identity_row.sql");
+const DELETE_GRAPH_IDENTITY_ROW: &str = include_str!("sql/delete_graph_identity_row.sql");
+const SELECT_GRAPH_IDENTITY_COUNT: &str = include_str!("sql/select_graph_identity_count.sql");
 
 const PRIOR_PROJECT_HEAD: i64 = 20_260_718_224_843;
+const PRIOR_GRAPH_IDENTITY_HEAD: i64 = 20_260_721_102_914;
 
-async fn migrate_to_prior_project_head(ctx: &TestDb) {
+async fn migrate_to_head(ctx: &TestDb, head: i64) {
     let prior = Migrator {
         migrations: Cow::Owned(
             MIGRATOR
                 .iter()
-                .filter(|migration| migration.version <= PRIOR_PROJECT_HEAD)
+                .filter(|migration| migration.version <= head)
                 .cloned()
                 .collect(),
         ),
         ..Migrator::DEFAULT
     };
     prior.run(ctx.pool()).await.expect("migrate to prior head");
+}
+
+async fn migrate_to_prior_project_head(ctx: &TestDb) {
+    migrate_to_head(ctx, PRIOR_PROJECT_HEAD).await;
 }
 
 async fn seed_flat_remote_project(
@@ -264,4 +272,79 @@ async fn test_project_origin_migration_preserves_canonical_identity_and_referenc
         .await
         .expect("count System projects");
     assert_eq!(system_count, 1);
+}
+
+#[tokio::test]
+async fn test_graph_identity_refuses_a_second_row() {
+    let ctx = TestDb::new().await;
+
+    let duplicate = sqlx::query(INSERT_GRAPH_IDENTITY_ROW)
+        .bind(true)
+        .execute(ctx.pool())
+        .await;
+    assert!(
+        duplicate.is_err(),
+        "a second only_row=TRUE row must violate the primary key"
+    );
+
+    let escaped = sqlx::query(INSERT_GRAPH_IDENTITY_ROW)
+        .bind(false)
+        .execute(ctx.pool())
+        .await;
+    assert!(
+        escaped.is_err(),
+        "an only_row=FALSE row must violate the check constraint"
+    );
+
+    let count: i64 = sqlx::query_scalar(SELECT_GRAPH_IDENTITY_COUNT)
+        .fetch_one(ctx.pool())
+        .await
+        .expect("count graph identity rows");
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn test_graph_identity_upgrade_seeds_exactly_one_row() {
+    let ctx = TestDb::new_unmigrated().await;
+    migrate_to_head(&ctx, PRIOR_GRAPH_IDENTITY_HEAD).await;
+
+    let table_exists: bool = sqlx::query_scalar("SELECT to_regclass('graph_identity') IS NOT NULL")
+        .fetch_one(ctx.pool())
+        .await
+        .expect("probe for graph_identity before the migration");
+    assert!(!table_exists, "the prior head must predate graph_identity");
+
+    MIGRATOR
+        .run(ctx.pool())
+        .await
+        .expect("migrate to current head");
+
+    let count: i64 = sqlx::query_scalar(SELECT_GRAPH_IDENTITY_COUNT)
+        .fetch_one(ctx.pool())
+        .await
+        .expect("count graph identity rows");
+    assert_eq!(count, 1, "the upgrade seeds exactly one identity");
+
+    let mut conn = ctx.pool().acquire().await.expect("acquire");
+    PgGraphIdentityRepository
+        .get(&mut conn)
+        .await
+        .expect("the seeded identity is readable through the repository");
+}
+
+#[tokio::test]
+async fn test_graph_identity_missing_row_reports_invalid_state() {
+    let ctx = TestDb::new().await;
+
+    sqlx::query(DELETE_GRAPH_IDENTITY_ROW)
+        .execute(ctx.pool())
+        .await
+        .expect("remove the seeded identity");
+
+    let mut conn = ctx.pool().acquire().await.expect("acquire");
+    let err = PgGraphIdentityRepository
+        .get(&mut conn)
+        .await
+        .expect_err("a missing row is invalid graph state, not a default");
+    assert!(matches!(err, DbError::GraphIdentityMissing));
 }

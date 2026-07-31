@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT graph_id FROM graph_identity",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "graph_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0adb3343185f461d205f2909bbba1658af5e4f13340e2e839ef646ea3bf5e359"
+}

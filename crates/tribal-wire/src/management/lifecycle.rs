@@ -1,7 +1,7 @@
 //! Lifecycle snapshots and method-specific operation results.
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::ConfigFieldPath;
+use tribal_domain::{ConfigFieldPath, StorageTransitionId};
 
 use super::{
     PanicCorrelationId,
@@ -604,6 +604,10 @@ fn absurd(value: NoStoppedProcessFailure) -> StoppedProcessFailure {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "operation", content = "data", rename_all = "snake_case")]
 pub enum StartOperationInProgress {
+    /// A graph transition owns the local barrier; no command was sent.
+    GraphTransition {
+        transition_id: StorageTransitionId,
+    },
     StoppingForStop {
         snapshot: StoppingLifecycleSnapshot,
     },
@@ -620,6 +624,10 @@ pub enum StartOperationInProgress {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "operation", content = "data", rename_all = "snake_case")]
 pub enum RestartOperationInProgress {
+    /// A graph transition owns the local barrier; no command was sent.
+    GraphTransition {
+        transition_id: StorageTransitionId,
+    },
     CheckingStart {
         snapshot: NoRuntimeLifecycleSnapshot,
     },
@@ -638,6 +646,15 @@ pub enum RestartOperationInProgress {
     CancellingEarlyChildForStop {
         snapshot: StopEarlyChildCancellationLifecycleSnapshot,
     },
+}
+
+/// Operation occupying the lifecycle when stop is requested.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "operation", content = "data", rename_all = "snake_case")]
+pub enum StopOperationInProgress {
+    /// A graph transition owns the local barrier; no command was sent.
+    GraphTransition { transition_id: StorageTransitionId },
 }
 
 /// Intent that can supersede a start request.
@@ -702,6 +719,10 @@ pub enum RuntimeStartResult {
 pub enum RuntimeStopResult {
     Stopped {
         snapshot: CleanNoRuntimeLifecycleSnapshot,
+    },
+    /// A graph transition owns the local barrier; no stop was begun.
+    OperationInProgress {
+        state: StopOperationInProgress,
     },
     AlreadyStopped {
         snapshot: NoRuntimeLifecycleSnapshot,

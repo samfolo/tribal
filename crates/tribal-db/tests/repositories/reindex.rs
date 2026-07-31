@@ -546,3 +546,197 @@ async fn test_find_tags_missing_embeddings_excludes_quarantined_tags() {
         "the embedded tag and the quarantined tag are both excluded",
     );
 }
+
+#[tokio::test]
+async fn test_claim_admits_nothing_after_the_run_aborts() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let run_id = setup_run(&mut txn, "aborting").await;
+    PgReindexTaskRepository
+        .upsert(&mut txn, &item_task(run_id, "item:pending"))
+        .await
+        .expect("enrol task");
+
+    let before = PgReindexTaskRepository
+        .claim(&mut txn, run_id, 10, "worker")
+        .await
+        .expect("claim under a live run");
+    assert_eq!(
+        before.len(),
+        1,
+        "the task is claimable while the run is live"
+    );
+    let reopened = PgReindexTaskRepository
+        .fail(
+            &mut txn,
+            before[0].id(),
+            before[0].claim_token().expect("claimed token"),
+            chrono::Utc::now() - chrono::Duration::seconds(1),
+            EmbeddingErrorClass::Transient,
+            "requeue for the abort half",
+        )
+        .await
+        .expect("requeue the task");
+    assert_eq!(reopened, 1);
+
+    assert!(
+        PgReindexRunRepository
+            .transition(
+                &mut txn,
+                run_id,
+                ReindexRunState::Queued,
+                ReindexRunState::Aborted,
+                Some("aborted"),
+            )
+            .await
+            .expect("abort run"),
+    );
+
+    let after = PgReindexTaskRepository
+        .claim(&mut txn, run_id, 10, "worker")
+        .await
+        .expect("claim under an aborted run");
+    assert!(
+        after.is_empty(),
+        "an aborted run admits no further claims, its pending task notwithstanding"
+    );
+}
+
+#[tokio::test]
+async fn test_retry_wait_aggregates_deferred_pending_tasks() {
+    let ctx = TestDb::new().await;
+    let mut txn = ctx.begin().await.expect("begin");
+    let run_id = setup_run(&mut txn, "retry-wait").await;
+    PgReindexTaskRepository
+        .upsert(&mut txn, &item_task(run_id, "item:deferred"))
+        .await
+        .expect("enrol task");
+
+    let quiet = PgReindexTaskRepository
+        .retry_wait(&mut txn, run_id)
+        .await
+        .expect("aggregate with nothing deferred");
+    assert!(
+        quiet.is_none(),
+        "an immediately claimable task is not a retry wait"
+    );
+
+    let claimed = PgReindexTaskRepository
+        .claim(&mut txn, run_id, 10, "worker")
+        .await
+        .expect("claim");
+    let resume_at = chrono::Utc::now() + chrono::Duration::seconds(90);
+    PgReindexTaskRepository
+        .fail(
+            &mut txn,
+            claimed[0].id(),
+            claimed[0].claim_token().expect("claimed token"),
+            resume_at,
+            EmbeddingErrorClass::RateLimited,
+            "provider asked us to wait",
+        )
+        .await
+        .expect("requeue with backoff");
+
+    let wait = PgReindexTaskRepository
+        .retry_wait(&mut txn, run_id)
+        .await
+        .expect("aggregate the deferred task")
+        .expect("one task is waiting");
+    // Postgres stores microseconds; compare at that precision.
+    assert_eq!(
+        wait.timestamp_micros(),
+        resume_at.timestamp_micros(),
+        "the earliest resume instant is reported"
+    );
+}
+
+/// The claim takes the parent run row's shared lock and skips it when a
+/// cancellation holds it, so a claim racing an in-flight abort yields
+/// nothing rather than claiming against a run that is about to be aborted.
+#[tokio::test]
+async fn test_claim_yields_nothing_while_a_cancellation_holds_the_run() {
+    let ctx = TestDb::new().await;
+    let mut setup = ctx.raw_connection().await.expect("setup session");
+    let run_id = setup_run(&mut setup, "cancel-race").await;
+    PgReindexTaskRepository
+        .upsert(&mut setup, &item_task(run_id, "item:contended"))
+        .await
+        .expect("enrol task");
+
+    // The canceller holds an uncommitted abort on the run row.
+    let mut canceller = ctx.raw_connection().await.expect("cancel session");
+    let mut cancel_txn = sqlx::Connection::begin(&mut canceller)
+        .await
+        .expect("begin cancel");
+    assert!(
+        PgReindexRunRepository
+            .transition(
+                &mut cancel_txn,
+                run_id,
+                ReindexRunState::Queued,
+                ReindexRunState::Aborted,
+                Some("cancelled by operator"),
+            )
+            .await
+            .expect("abort the run"),
+    );
+
+    let mut claim_session = ctx.raw_connection().await.expect("claim session");
+    let during_cancellation = PgReindexTaskRepository
+        .claim(&mut claim_session, run_id, 10, "worker")
+        .await
+        .expect("claim");
+    assert!(
+        during_cancellation.is_empty(),
+        "a claim racing an in-flight cancellation yields nothing",
+    );
+
+    // Once the abort commits, the run is terminal and still admits nothing.
+    cancel_txn.commit().await.expect("commit the abort");
+    let after_commit = PgReindexTaskRepository
+        .claim(&mut claim_session, run_id, 10, "worker")
+        .await
+        .expect("claim after the abort");
+    assert!(after_commit.is_empty());
+}
+
+/// Two workers claiming the same live run never block each other: each task
+/// row is skipped when locked, so a second claimer proceeds immediately
+/// rather than waiting on the first claimer's transaction.
+#[tokio::test]
+async fn test_concurrent_claims_skip_locked_rows_rather_than_waiting() {
+    let ctx = TestDb::new().await;
+    let mut setup = ctx.raw_connection().await.expect("setup session");
+    let run_id = setup_run(&mut setup, "concurrent-claims").await;
+    for index in 0..2 {
+        PgReindexTaskRepository
+            .upsert(&mut setup, &item_task(run_id, &format!("item:{index}")))
+            .await
+            .expect("enrol task");
+    }
+
+    // The first claimer holds its claim open in an uncommitted transaction.
+    let mut first = ctx.raw_connection().await.expect("first session");
+    let mut first_txn = sqlx::Connection::begin(&mut first).await.expect("begin");
+    let held = PgReindexTaskRepository
+        .claim(&mut first_txn, run_id, 1, "worker-one")
+        .await
+        .expect("first claim");
+    assert_eq!(held.len(), 1);
+
+    // The second claimer must not wait on it: it skips the locked row and
+    // takes the other task while the first transaction is still open.
+    let mut second = ctx.raw_connection().await.expect("second session");
+    let taken = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        PgReindexTaskRepository.claim(&mut second, run_id, 1, "worker-two"),
+    )
+    .await
+    .expect("a concurrent claim never blocks on another claimer")
+    .expect("second claim");
+    assert_eq!(taken.len(), 1, "the second claimer takes the free task");
+    assert_ne!(taken[0].id(), held[0].id());
+
+    first_txn.commit().await.expect("commit the first claim");
+}
