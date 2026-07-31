@@ -31,8 +31,10 @@ use crate::{
 
 const POOL_NAME: &str = "management";
 const DEFAULT_DATABASE_URL: &str = "postgresql://tribal:tribal@localhost:5432/tribal";
+/// The configuration key naming the database a transition is bound to.
+pub(in crate::management) const DATABASE_URL_KEY: &str = "database.url";
 pub(crate) const DATABASE_COMMAND_DEFAULTS: [(&str, &str); 1] =
-    [("database.url", DEFAULT_DATABASE_URL)];
+    [(DATABASE_URL_KEY, DEFAULT_DATABASE_URL)];
 pub(crate) const COMMAND_POOL_MAX_CONNECTIONS: u32 = 1;
 pub(crate) const COMMAND_STATEMENT_TIMEOUT_MS: u64 = 30_000;
 pub(super) const MIGRATION_TERMINAL_WINDOW: std::time::Duration =
@@ -393,10 +395,9 @@ const RECOGNISED_CANDIDATE_PARAMETERS: &[&str] = &[
     "options",
 ];
 
-/// Parses a candidate URL without letting any part of it reach a log: the
-/// shape is proven with a silent parser and every query key is checked
-/// against the recognised set first, naming only the offending key on
-/// refusal.
+/// Parses a candidate URL without letting any part of it reach a log or a
+/// receipt: the shape is proven with a silent parser, and a query key outside
+/// the recognised set is refused with copy that renders no part of the URL.
 pub(super) fn parse_candidate_url(raw: &str) -> Result<PgConnectOptions, DatabaseTargetFailure> {
     let parsed = url::Url::parse(raw).map_err(|_| {
         target_failure(

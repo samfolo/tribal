@@ -593,6 +593,7 @@ pub enum AdministrationFailure {
     IntegrationUnavailable,
     ReindexUnavailable,
     ThreadRetentionRefused,
+    GraphTransitionInProgress,
 }
 
 /// Structural reason an atomic patch is refused.

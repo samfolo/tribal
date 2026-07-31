@@ -6739,6 +6739,20 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "graph_transition_in_progress"
+                ]
+              }
+            }
           }
         ]
       },

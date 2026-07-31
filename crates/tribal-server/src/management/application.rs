@@ -20,7 +20,7 @@ pub(crate) use database::{
     COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DATABASE_COMMAND_DEFAULTS,
     DatabaseSession,
 };
-use database::{DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
+use database::{DATABASE_URL_KEY, DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
 use integration::IntegrationAdministration;
 use operation::OperationContext;
 use project::ProjectAdministration;
@@ -312,7 +312,15 @@ impl<'a> ManagementApplication<'a> {
                     self.integration.clone(),
                     operation,
                 );
-                encode_call::<BootstrapRunCall>(bootstrap.run(self.product, request).await)
+                match self.storage.admit_migration() {
+                    Err(_) => encode_call::<BootstrapRunCall>(Err(administration_error(
+                        "a storage transition holds this graph",
+                        AdministrationFailure::GraphTransitionInProgress,
+                    ))),
+                    Ok(_admission) => {
+                        encode_call::<BootstrapRunCall>(bootstrap.run(self.product, request).await)
+                    }
+                }
             }
             ManagementMethod::DatabaseProbe => {
                 let request = parse_call::<DatabaseProbeCall>(params)?;
@@ -488,6 +496,7 @@ impl<'a> ManagementApplication<'a> {
             }
             ManagementMethod::ConfigSet => {
                 let request = parse_call::<ConfigSetCall>(params)?;
+                refuse_config_write_under_transition(&self.storage, &[&request.key])?;
                 let runtime_changes = vec![tribal_wire::runtime_control::RuntimeConfigChange {
                     key: request.key.clone(),
                     value: tribal_wire::management::ConfigLiteral::new(
@@ -518,6 +527,8 @@ impl<'a> ManagementApplication<'a> {
             }
             ManagementMethod::ConfigPatch => {
                 let request = parse_call::<ConfigPatchCall>(params)?;
+                let keys: Vec<_> = request.changes.iter().map(|change| &change.key).collect();
+                refuse_config_write_under_transition(&self.storage, &keys)?;
                 let runtime_changes = request
                     .changes
                     .iter()
@@ -841,7 +852,29 @@ fn database_access_error(error: DatabaseAccessError) -> ManagementResponseError 
     }
 }
 
-fn administration_error(message: &str, failure: AdministrationFailure) -> ManagementResponseError {
+/// A transition owns the graph and its recovery is bound to the target the
+/// configuration named when it admitted, so a write that moves that target is
+/// refused until the transition settles.
+fn refuse_config_write_under_transition(
+    storage: &StorageTransitionGate,
+    keys: &[&tribal_domain::ConfigFieldPath],
+) -> Result<(), ManagementResponseError> {
+    if !keys.iter().any(|key| key.as_str() == DATABASE_URL_KEY) {
+        return Ok(());
+    }
+    match storage.admit_migration() {
+        Ok(_admission) => Ok(()),
+        Err(_) => Err(administration_error(
+            "a storage transition holds this graph",
+            AdministrationFailure::GraphTransitionInProgress,
+        )),
+    }
+}
+
+pub(super) fn administration_error(
+    message: &str,
+    failure: AdministrationFailure,
+) -> ManagementResponseError {
     ManagementResponseError {
         message: message.to_owned(),
         error: ManagementError::Administration { failure },
@@ -980,6 +1013,116 @@ fn thread_error(error: thread::ThreadAdministrationError) -> ManagementResponseE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The barrier's refusals, at the surfaces that deliver them: each
+    /// dispatch arm answers from the gate's admission, and none reaches the
+    /// effect behind it.
+    #[test]
+    fn test_a_pending_transition_refuses_every_admitted_surface() {
+        let gate = StorageTransitionGate::new();
+        let pending = tribal_domain::StorageTransitionId::new();
+        gate.occupy_for_test(pending);
+
+        // Runtime lifecycle: each arm's typed in-progress state names the
+        // pending transition rather than sending a command.
+        let start = RuntimeStartResult::OperationInProgress {
+            state: StartOperationInProgress::GraphTransition {
+                transition_id: gate.admit_lifecycle().expect_err("start refused"),
+            },
+        };
+        assert!(matches!(
+            start,
+            RuntimeStartResult::OperationInProgress {
+                state: StartOperationInProgress::GraphTransition { transition_id }
+            } if transition_id == pending
+        ));
+        let stop = RuntimeStopResult::OperationInProgress {
+            state: StopOperationInProgress::GraphTransition {
+                transition_id: gate.admit_lifecycle().expect_err("stop refused"),
+            },
+        };
+        assert!(matches!(
+            stop,
+            RuntimeStopResult::OperationInProgress {
+                state: StopOperationInProgress::GraphTransition { transition_id }
+            } if transition_id == pending
+        ));
+        let restart = RuntimeRestartResult::OperationInProgress {
+            state: RestartOperationInProgress::GraphTransition {
+                transition_id: gate.admit_lifecycle().expect_err("restart refused"),
+            },
+        };
+        assert!(matches!(
+            restart,
+            RuntimeRestartResult::OperationInProgress {
+                state: RestartOperationInProgress::GraphTransition { transition_id }
+            } if transition_id == pending
+        ));
+
+        // Database initialisation carries the pending id it knows.
+        let initialise = DatabaseInitialiseOutcome::GraphTransitionInProgress {
+            transition_id: Some(gate.admit_migration().expect_err("initialise refused")),
+        };
+        assert!(matches!(
+            initialise,
+            DatabaseInitialiseOutcome::GraphTransitionInProgress {
+                transition_id: Some(transition_id)
+            } if transition_id == pending
+        ));
+
+        // Bootstrap admits through the same migration slot, and its refusal
+        // is the typed administration failure.
+        let refused = gate.admit_migration().expect_err("bootstrap refused");
+        assert_eq!(refused, pending);
+        let error = administration_error(
+            "a storage transition holds this graph",
+            AdministrationFailure::GraphTransitionInProgress,
+        );
+        assert!(matches!(
+            error.error,
+            ManagementError::Administration {
+                failure: AdministrationFailure::GraphTransitionInProgress
+            }
+        ));
+
+        gate.release_for_test();
+        drop(
+            gate.admit_lifecycle()
+                .expect("admission resumes on release"),
+        );
+        drop(
+            gate.admit_migration()
+                .expect("admission resumes on release"),
+        );
+    }
+
+    #[test]
+    fn test_a_pending_transition_refuses_a_database_target_write() {
+        let gate = StorageTransitionGate::new();
+        let database_url =
+            tribal_domain::ConfigFieldPath::parse(DATABASE_URL_KEY).expect("a valid config key");
+        let unrelated =
+            tribal_domain::ConfigFieldPath::parse("server.host").expect("a valid config key");
+
+        refuse_config_write_under_transition(&gate, &[&database_url])
+            .expect("no transition, no refusal");
+
+        gate.occupy_for_test(tribal_domain::StorageTransitionId::new());
+        let refused = refuse_config_write_under_transition(&gate, &[&database_url])
+            .expect_err("a pending transition refuses the write");
+        assert!(matches!(
+            refused.error,
+            ManagementError::Administration {
+                failure: AdministrationFailure::GraphTransitionInProgress
+            }
+        ));
+        refuse_config_write_under_transition(&gate, &[&unrelated])
+            .expect("an unrelated key is untouched by the transition");
+
+        gate.release_for_test();
+        refuse_config_write_under_transition(&gate, &[&database_url])
+            .expect("the write resumes once the transition settles");
+    }
 
     #[test]
     fn test_malformed_call_parameters_are_refused() {

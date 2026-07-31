@@ -44,6 +44,10 @@ use super::{
 
 /// The manager's observation margin past the runtime's graceful deadline.
 const TRANSITION_OBSERVATION_MARGIN: Duration = Duration::from_secs(5);
+/// One bound for every lease operation — connect, lock acquisition, and the
+/// custody proof. A stalled peer must settle as a typed refusal or a custody
+/// loss well inside the management request budget, never hang the call.
+const LEASE_IO_WINDOW: Duration = Duration::from_secs(10);
 
 // ---------------------------------------------------------------------------
 // Gate
@@ -100,40 +104,44 @@ impl TransitionLockLease {
                 "the lock session URL was refused".into(),
             ))
         })?;
-        let mut connection = PgConnection::connect_with(&options)
-            .await
-            .map_err(lease_connection_error)?;
-        let granted = match PgAdvisoryLockRepository
-            .try_acquire_exclusive(&mut connection, lock_id)
-            .await
-        {
-            Ok(granted) => granted,
-            Err(source) => {
+        tokio::time::timeout(LEASE_IO_WINDOW, async {
+            let mut connection = PgConnection::connect_with(&options)
+                .await
+                .map_err(lease_connection_error)?;
+            let granted = match PgAdvisoryLockRepository
+                .try_acquire_exclusive(&mut connection, lock_id)
+                .await
+            {
+                Ok(granted) => granted,
+                Err(source) => {
+                    let _ = connection.close().await;
+                    return Err(DatabaseAccessError::Connection { source });
+                }
+            };
+            if granted {
+                Ok(Some(Self { connection }))
+            } else {
                 let _ = connection.close().await;
-                return Err(DatabaseAccessError::Connection { source });
+                Ok(None)
             }
-        };
-        if granted {
-            Ok(Some(Self { connection }))
-        } else {
-            let _ = connection.close().await;
-            Ok(None)
-        }
+        })
+        .await
+        .unwrap_or_else(|_elapsed| Err(lease_stalled_error()))
     }
 
     /// Proves the session still holds custody: the lock is session-bound, so
     /// a live round-trip is the evidence no quiescence answer may skip.
     async fn prove(&mut self) -> bool {
-        sqlx::query("SELECT 1")
-            .execute(&mut self.connection)
-            .await
-            .is_ok()
+        // A stalled session is not a live one: an unanswered probe fails
+        // custody rather than holding the caller past its budget.
+        tokio::time::timeout(
+            LEASE_IO_WINDOW,
+            sqlx::query("SELECT 1").execute(&mut self.connection),
+        )
+        .await
+        .is_ok_and(|result| result.is_ok())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// Why a switch attempt could not take the transition slot.
 #[derive(Debug)]
@@ -145,6 +153,10 @@ enum TransitionRefusal {
     /// contradict the refusal.
     LocalActivity { migration: bool, lifecycle: bool },
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /// Forces the activities that refused admission into the assessment, so a
 /// refusal observed under the barrier is never reported alongside a `Ready`
@@ -221,6 +233,12 @@ fn custody_lost_error() -> DatabaseAccessError {
     }
 }
 
+/// A lease operation that did not settle inside its window; the caller maps
+/// it to the same typed answer a refused connection produces.
+fn lease_stalled_error() -> DatabaseAccessError {
+    lease_connection_error(sqlx::Error::PoolTimedOut)
+}
+
 fn lease_connection_error(source: sqlx::Error) -> DatabaseAccessError {
     DatabaseAccessError::Connection {
         source: tribal_db::DbError::QueryFailed {
@@ -266,6 +284,10 @@ impl Drop for LocalAdmissionGuard {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The barrier and the transition protocol
+// ---------------------------------------------------------------------------
 
 impl StorageTransitionGate {
     pub(in crate::management) fn new() -> Self {
@@ -516,7 +538,12 @@ impl StorageTransitionGate {
             }
         }
         let assessment = self
-            .assess_excluding(operation, database, None, Some(transition_id))
+            .assess_excluding(
+                operation,
+                database,
+                Some(&request.expected_revision),
+                Some(transition_id),
+            )
             .await?
             .value;
         if assessment.verdict == StorageTransitionVerdict::Blocked {
@@ -1361,6 +1388,23 @@ mod tests {
                 .iter()
                 .any(|activity| activity.kind == GraphActivityKind::RuntimeLifecycle),
             "the blocked answer names the refusing activity",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_stalled_lease_peer_settles_rather_than_hanging() {
+        // A target that accepts no connection settles inside the lease
+        // window as a typed error, never an unbounded wait.
+        let started = tokio::time::Instant::now();
+        let outcome =
+            TransitionLockLease::acquire("postgres://tribal:tribal@127.0.0.1:1/absent", 1).await;
+        assert!(
+            matches!(outcome, Err(DatabaseAccessError::Connection { .. })),
+            "an unreachable peer is refused rather than awaited",
+        );
+        assert!(
+            started.elapsed() < LEASE_IO_WINDOW * 2,
+            "the lease settles inside its own bound",
         );
     }
 
