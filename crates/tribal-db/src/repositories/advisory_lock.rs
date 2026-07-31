@@ -102,6 +102,11 @@ pub trait AdvisoryLockRepository {
     /// Returns `false` if this session did not hold it.
     async fn release_shared(&self, conn: &mut PgConnection, lock_id: i64) -> Result<bool, DbError>;
 
+    /// Round-trips the session. A session-scoped lock lives and dies with
+    /// its connection, so a holder proves it still holds by proving the
+    /// session still answers.
+    async fn ping(&self, conn: &mut PgConnection) -> Result<(), DbError>;
+
     /// Acquires the exclusive credential-replacement lock for one namespace.
     async fn acquire_credential_replacement_xact(
         &self,
@@ -241,6 +246,17 @@ impl AdvisoryLockRepository for PgAdvisoryLockRepository {
                 source,
             })?;
         Ok(released)
+    }
+
+    async fn ping(&self, conn: &mut PgConnection) -> Result<(), DbError> {
+        sqlx::query("SELECT 1")
+            .execute(&mut *conn)
+            .await
+            .map_err(|source| DbError::QueryFailed {
+                context: "probing an advisory-lock session".into(),
+                source,
+            })?;
+        Ok(())
     }
 
     async fn acquire_credential_replacement_xact(

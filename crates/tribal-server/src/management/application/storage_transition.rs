@@ -20,7 +20,7 @@ use tribal_db::{
     PgGraphIdentityRepository, PgReindexRunRepository, PgReindexTaskRepository,
     ReindexRunRepository, ReindexTaskRepository, advisory_locks,
 };
-use tribal_domain::{GraphId, ReindexRunState, StorageTransitionId};
+use tribal_domain::{ReindexRunState, StorageTransitionId};
 use tribal_wire::management::{
     BlockingResolution, ConfigRevision, DatabaseTargetReceipt, DatabaseTargetState, GraphActivity,
     GraphActivityKind, GraphActivityStatus, Revisioned, RuntimeIdentity, SecretLiteral,
@@ -75,8 +75,6 @@ pub(in crate::management) struct StorageTransitionGate {
 struct PendingTransition {
     transition_id: StorageTransitionId,
     source: TransitionSource,
-    source_graph_id: GraphId,
-    target_graph_id: GraphId,
     target_url: SecretLiteral,
     observe_window: Duration,
     source_lease: TransitionLockLease,
@@ -95,8 +93,6 @@ impl std::fmt::Debug for PendingTransition {
         formatter
             .debug_struct("PendingTransition")
             .field("transition_id", &self.transition_id)
-            .field("source_graph_id", &self.source_graph_id)
-            .field("target_graph_id", &self.target_graph_id)
             .finish_non_exhaustive()
     }
 }
@@ -154,7 +150,7 @@ impl TransitionLockLease {
         // custody rather than holding the caller past its budget.
         tokio::time::timeout(
             LEASE_IO_WINDOW,
-            sqlx::query("SELECT 1").execute(&mut self.connection),
+            PgAdvisoryLockRepository.ping(&mut self.connection),
         )
         .await
         .is_ok_and(|result| result.is_ok())
@@ -234,6 +230,8 @@ fn lease_failure(context: &str, source: sqlx::Error) -> DatabaseAccessError {
     }
 }
 
+/// The lease no longer holds what it promised; no quiescence may be reported
+/// past this point.
 fn custody_lost_error() -> DatabaseAccessError {
     lease_failure("transition lock custody was lost", sqlx::Error::PoolClosed)
 }
@@ -565,8 +563,6 @@ impl StorageTransitionGate {
         let mut pending = PendingTransition {
             transition_id,
             source: source.clone(),
-            source_graph_id: request.source_graph_id,
-            target_graph_id: request.target_graph_id,
             target_url: request.target_url,
             observe_window,
             source_lease,
@@ -765,7 +761,6 @@ impl StorageTransitionGate {
         }
     }
 
-    /// Reserves the transition slot, or names what refuses it.
     /// Reserves the transition slot, or names what refuses it. The guard
     /// frees the slot on every return path until the transition parks.
     fn admit_transition(
@@ -821,8 +816,6 @@ impl StorageTransitionGate {
         *self.pending.lock().await = Some(PendingTransition {
             transition_id,
             source,
-            source_graph_id: GraphId::new(),
-            target_graph_id: GraphId::new(),
             target_url: SecretLiteral::try_from(target_url.to_owned()).expect("target url"),
             observe_window: Duration::from_secs(1),
             source_lease,
@@ -862,7 +855,7 @@ fn assessment_connection_error(source: sqlx::Error) -> DatabaseAccessError {
 mod tests {
     use tribal_config::TribalConfig;
     use tribal_db::{NewReindexRun, PgPrincipalRepository, PrincipalRepository};
-    use tribal_domain::StorageTransitionId;
+    use tribal_domain::{GraphId, StorageTransitionId};
     use tribal_test_utils::{TestDb, a_new_principal, ensure_genesis_profile};
     use tribal_wire::management::ConfigDigest;
 
