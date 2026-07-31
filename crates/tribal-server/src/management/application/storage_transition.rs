@@ -1371,6 +1371,131 @@ mod tests {
         );
     }
 
+    /// The whole operator journey through the gate: a switch that parks on a
+    /// timeout, a continue that observes again, and an abort that recovers —
+    /// each step's custody and release asserted, with the owner's answers
+    /// scripted so the gate's own composition is what is under test.
+    #[tokio::test]
+    async fn test_a_parked_switch_continues_and_then_aborts_to_recovery() {
+        let source = TestDb::new().await;
+        let ready_target = TestDb::new().await;
+        let (_config_temp, database, worker, _worker_runtime) =
+            database_access(source.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let runtime = a_runtime_identity();
+        let lifecycle = crate::management::lifecycle::controller_answering_transitions(
+            Some(runtime.clone()),
+            crate::management::lifecycle::TransitionStopOutcome::StopTimedOut {
+                runtime: runtime.clone(),
+            },
+            vec![
+                crate::management::lifecycle::TransitionObserveOutcome::StillPresent {
+                    runtime: runtime.clone(),
+                    failure: tribal_wire::management::RuntimeStopTimedOutFailure {
+                        presentation: tribal_wire::management::FailurePresentation {
+                            message: "the runtime is still draining".to_owned(),
+                            remediation: None,
+                        },
+                    },
+                },
+                crate::management::lifecycle::TransitionObserveOutcome::Exited,
+            ],
+        );
+        let gate = StorageTransitionGate::new();
+
+        let mut conn = source.raw_connection().await.expect("source identity");
+        let source_id = PgGraphIdentityRepository
+            .get(&mut conn)
+            .await
+            .expect("source id");
+        let mut conn = ready_target
+            .raw_connection()
+            .await
+            .expect("target identity");
+        let target_id = PgGraphIdentityRepository
+            .get(&mut conn)
+            .await
+            .expect("target id");
+
+        // The switch parks: the source did not exit inside its window.
+        let parked = gate
+            .switch(
+                &operation(),
+                &database,
+                &lifecycle,
+                StorageSwitchRequest {
+                    expected_revision: revision,
+                    expected_runtime: Some(runtime.clone()),
+                    source_graph_id: source_id,
+                    target_graph_id: target_id,
+                    target_url: SecretLiteral::try_from(ready_target.database_url().to_owned())
+                        .expect("target url"),
+                },
+            )
+            .await
+            .expect("switch runs");
+        let StorageSwitchResult::StopTimedOut { transition_id, .. } = parked else {
+            panic!("the scripted timeout parks the transition, got {parked:?}");
+        };
+
+        // Parked means custody retained and every sibling surface refused.
+        let mut probe = source.raw_connection().await.expect("probe");
+        assert!(
+            !PgAdvisoryLockRepository
+                .try_acquire_exclusive(&mut probe, advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("probe the source lock"),
+            "a parked transition keeps its source lock",
+        );
+        assert_eq!(
+            gate.admit_lifecycle().expect_err("lifecycle refused"),
+            transition_id,
+        );
+
+        // Continuing observes again and finds the source still present.
+        let continued = gate
+            .continue_switch(
+                &operation(),
+                &lifecycle,
+                StorageSwitchContinueRequest {
+                    transition_id,
+                    expected_runtime: runtime.clone(),
+                },
+            )
+            .await
+            .expect("continue runs");
+        assert!(matches!(
+            continued,
+            StorageSwitchContinueResult::StopTimedOut { .. }
+        ));
+        assert!(
+            !PgAdvisoryLockRepository
+                .try_acquire_exclusive(&mut probe, advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("probe the source lock"),
+            "a repeated timeout still keeps custody",
+        );
+
+        // Aborting sees the exit and attempts recovery; this scripted owner
+        // cannot restart, so the abort completes on that failure and
+        // releases its barriers for ordinary lifecycle recovery.
+        let aborted = gate
+            .abort(
+                &operation(),
+                &lifecycle,
+                StorageSwitchAbortRequest { transition_id },
+            )
+            .await
+            .expect("abort runs");
+        assert!(
+            matches!(aborted, StorageSwitchAbortResult::SourceStillStopped { .. }),
+            "a failed restart after exact exit completes the abort, got {aborted:?}",
+        );
+        await_lock_released(&source, advisory_locks::GRAPH_TRANSITION).await;
+        await_lock_released(&ready_target, advisory_locks::TARGET_MIGRATION_RESERVATION).await;
+        drop(gate.admit_lifecycle().expect("the barrier is free again"));
+    }
+
     #[tokio::test]
     async fn test_the_runtime_fence_answers_before_any_database_work() {
         let h = a_switch_harness().await;

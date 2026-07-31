@@ -798,6 +798,78 @@ async fn request_terminal<T>(
 }
 
 /// One scripted outcome for a test controller's credential-target read.
+/// A controller whose transition commands answer from a script, and whose
+/// published snapshot reports the given attached runtime. It exists so the
+/// gate's composition — admission, custody, release — can be driven through
+/// every transition outcome without a live managed process; the owner's own
+/// behaviour is proven by its own tests.
+#[cfg(test)]
+pub(in crate::management) fn controller_answering_transitions(
+    attached: Option<RuntimeIdentity>,
+    stop: TransitionStopOutcome,
+    observations: Vec<TransitionObserveOutcome>,
+) -> LifecycleController {
+    let (sender, mut receiver) = mpsc::channel(COMMAND_CAPACITY);
+    let phase = attached.map_or(
+        LifecyclePhase::Stopped {
+            state: scripted_stopped_state(),
+        },
+        |runtime| LifecyclePhase::Healthy {
+            runtime,
+            restart_pending: false,
+        },
+    );
+    let snapshot = LifecycleSnapshot {
+        header: LifecycleSnapshotHeader {
+            manager_instance_id: "scripted".to_owned(),
+            revision: 1,
+            manager_version: env!("CARGO_PKG_VERSION").to_owned(),
+        },
+        phase,
+    };
+    let (_publisher, snapshots) = watch::channel(snapshot);
+    let (events, _) = broadcast::channel(MANAGEMENT_EVENT_CAPACITY);
+    tokio::spawn(async move {
+        let mut stop = Some(stop);
+        let mut observations = observations.into_iter();
+        while let Some(command) = receiver.recv().await {
+            match command {
+                LifecycleCommand::TransitionStop { response, .. } => {
+                    if let Some(outcome) = stop.take() {
+                        let _ = response.send(outcome);
+                    }
+                }
+                LifecycleCommand::TransitionObserve { response, .. } => {
+                    if let Some(outcome) = observations.next() {
+                        let _ = response.send(outcome);
+                    }
+                }
+                LifecycleCommand::Start(response) => {
+                    // A scripted owner cannot launch; the gate must treat
+                    // that as a restart failure, not a recovery.
+                    let _ = response.send(RuntimeStartResult::Superseded {
+                        by: StartSuperseder::Stop,
+                    });
+                }
+                _ => {}
+            }
+        }
+    });
+    LifecycleController {
+        sender,
+        snapshots,
+        events,
+    }
+}
+
+#[cfg(test)]
+fn scripted_stopped_state() -> StoppedState {
+    StoppedState::Ready {
+        readiness: start_clear(),
+        failure: None,
+    }
+}
+
 #[cfg(test)]
 pub(in crate::management) enum ScriptedCredentialAnswer {
     Answer(Option<RuntimeCredentialTarget>),
