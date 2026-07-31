@@ -262,10 +262,9 @@ async fn run_async(
     let probe = ProbeService::new(config.clone());
     observe_readiness_once(&config, &probe, &lifecycle).await;
     let product = ProductService::new(config.clone());
-    // The identity reaches a terminal state before the socket admits a
-    // handshake, so no client can read a start-up pending state.
+    // Identity proof is per-session: each admission re-proves before serving
+    // its first snapshot.
     let identity = GraphIdentityResolver::new(config.clone(), shutdown.clone());
-    identity.reprove().await;
     let (credentials, credential_runtime) =
         CredentialCoordinator::spawn(lease.paths().namespace.clone(), shutdown.clone());
     let mut credential_terminal = credential_runtime.terminal();
