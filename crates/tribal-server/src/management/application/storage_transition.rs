@@ -468,12 +468,20 @@ impl StorageTransitionGate {
             .session(operation, Some(&request.expected_revision))
             .await?;
 
-        // The runtime fence, pre-checked here for ordering; the lifecycle
-        // owner re-checks it authoritatively before any signal is sent.
-        let source = match &request.expected_runtime {
-            Some(expected) => TransitionSource::AttachedRuntime(expected.clone()),
-            None => TransitionSource::CleanNoRuntime,
-        };
+        // The runtime fence comes before any database work, so a changed or
+        // absent runtime answers `RuntimeChanged` rather than surfacing as
+        // contention or an unready target. The owner re-checks it
+        // authoritatively before it sends any signal.
+        let attached = lifecycle.attached_runtime();
+        if attached != request.expected_runtime {
+            return Ok(StorageSwitchResult::RuntimeChanged { observed: attached });
+        }
+        let source = request
+            .expected_runtime
+            .clone()
+            .map_or(TransitionSource::CleanNoRuntime, |expected| {
+                TransitionSource::AttachedRuntime(expected)
+            });
 
         // The source identity, before any dedicated connection opens.
         let mut conn =
@@ -1368,6 +1376,100 @@ mod tests {
                 .iter()
                 .any(|activity| activity.kind == GraphActivityKind::DatabaseMigration),
         );
+    }
+
+    #[tokio::test]
+    async fn test_the_runtime_fence_answers_before_any_database_work() {
+        let h = a_switch_harness().await;
+        let expected = a_runtime_identity();
+
+        // This manager has no runtime attached, so an attached expectation
+        // is refused — and refused ahead of the reservation, proven by
+        // holding that lock exclusively: contention would otherwise be the
+        // answer.
+        let mut reservation_holder = h.ready_target.raw_connection().await.expect("holder");
+        assert!(
+            PgAdvisoryLockRepository
+                .try_acquire_exclusive(
+                    &mut reservation_holder,
+                    advisory_locks::TARGET_MIGRATION_RESERVATION
+                )
+                .await
+                .expect("hold the reservation"),
+        );
+        let result = h
+            .switch(StorageSwitchRequest {
+                expected_revision: h.revision.clone(),
+                expected_runtime: Some(expected),
+                source_graph_id: h.source_id,
+                target_graph_id: h.target_id,
+                target_url: SecretLiteral::try_from(h.ready_target.database_url().to_owned())
+                    .expect("target url"),
+            })
+            .await;
+        assert!(
+            matches!(
+                result,
+                StorageSwitchResult::RuntimeChanged { observed: None }
+            ),
+            "an absent runtime is refused before the reservation, got {result:?}",
+        );
+        assert!(
+            PgAdvisoryLockRepository
+                .release_exclusive(
+                    &mut reservation_holder,
+                    advisory_locks::TARGET_MIGRATION_RESERVATION
+                )
+                .await
+                .expect("release the reservation"),
+        );
+
+        // The fence also refuses the reverse expectation: a clean-no-runtime
+        // switch is only for a source with nothing attached, which this one
+        // is — so it proceeds past the fence.
+        let proceeded = h
+            .switch(h.request(h.source_id, h.target_id, h.ready_target.database_url()))
+            .await;
+        assert!(
+            !matches!(proceeded, StorageSwitchResult::RuntimeChanged { .. }),
+            "a matching no-runtime expectation passes the fence, got {proceeded:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_abort_reports_a_restart_failure_only_after_exact_exit() {
+        let h = a_switch_harness().await;
+        let transition_id = StorageTransitionId::new();
+        h.gate
+            .install_pending_for_test(
+                transition_id,
+                TransitionSource::AttachedRuntime(a_runtime_identity()),
+                h.source.database_url(),
+                h.ready_target.database_url(),
+            )
+            .await;
+
+        // The source has exited (the harness's manager holds no runtime), so
+        // abort attempts the restart. This manager cannot launch a runtime,
+        // so the attempt fails — and the abort completes on that failure
+        // rather than reporting a recovery it did not achieve.
+        let result = h
+            .gate
+            .abort(
+                &operation(),
+                &h.lifecycle,
+                StorageSwitchAbortRequest { transition_id },
+            )
+            .await
+            .expect("abort runs");
+        assert!(
+            matches!(result, StorageSwitchAbortResult::SourceStillStopped { .. }),
+            "a failed restart after exact exit completes the abort, got {result:?}",
+        );
+
+        // The abort completed, so its barriers released for ordinary
+        // lifecycle recovery.
+        await_lock_released(&h.source, advisory_locks::GRAPH_TRANSITION).await;
     }
 
     #[tokio::test]

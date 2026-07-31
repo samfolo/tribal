@@ -654,6 +654,18 @@ impl LifecycleController {
         request_terminal(operation, &self.sender, LifecycleCommand::Stop).await
     }
 
+    /// The runtime attached right now, read from the published snapshot.
+    /// A switch uses it to order its fence ahead of the database work; the
+    /// owner still re-checks authoritatively before any signal is sent.
+    pub(in crate::management) fn attached_runtime(&self) -> Option<RuntimeIdentity> {
+        match &self.snapshots.borrow().phase {
+            LifecyclePhase::Healthy { runtime, .. }
+            | LifecyclePhase::Degraded { runtime, .. }
+            | LifecyclePhase::VersionMismatch { runtime, .. } => Some(runtime.clone()),
+            _ => None,
+        }
+    }
+
     pub(in crate::management) async fn transition_stop_for(
         &self,
         operation: &OperationContext,
