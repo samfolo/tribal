@@ -68,10 +68,14 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<MigrationRunOutcome,
         .version;
 
     for attempt in 1..=MIGRATION_MAX_ATTEMPTS {
+        // Owned before any lock is taken: a cancelled future drops this
+        // connection and Postgres releases every lock with the session,
+        // where a pooled handle would carry them back into the pool.
         let mut conn = pool
             .acquire()
             .await
-            .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "migration", e))?;
+            .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "migration", e))?
+            .detach();
 
         let acquired = PgAdvisoryLockRepository
             .try_acquire_exclusive(&mut conn, advisory_locks::MIGRATION)
@@ -106,15 +110,10 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<MigrationRunOutcome,
             } else {
                 MigrationRunOutcome::Applied
             };
-            // Detach the connection from the pool so the migrator can
-            // acquire a pool slot, while we retain the session that
-            // holds the advisory lock.
-            let mut lock_conn = conn.detach();
-
             let result = tribal_db::MIGRATOR.run(pool).await;
 
-            release_transition_admission(&mut lock_conn).await;
-            release_migration_lock(&mut lock_conn).await;
+            release_transition_admission(&mut conn).await;
+            release_migration_lock(&mut conn).await;
 
             result.map_err(|source| AppError::MigrationFailed { source })?;
             return Ok(outcome);

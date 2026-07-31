@@ -51,6 +51,11 @@ const TRANSITION_OBSERVATION_MARGIN: Duration = Duration::from_secs(5);
 /// custody proof. A stalled peer must settle as a typed refusal or a custody
 /// loss well inside the management request budget, never hang the call.
 const LEASE_IO_WINDOW: Duration = CANDIDATE_IO_WINDOW;
+/// The whole request's budget: every bounded step a transition operation
+/// takes — the leases, the reinspection, the custody proofs, and the
+/// observation window itself — is drawn from this one clock, so the typed
+/// answer always reaches the caller inside the transport's request timeout.
+const TRANSITION_REQUEST_BUDGET: Duration = Duration::from_secs(90);
 /// What a lease's failures name in the error chain.
 const LEASE_SESSION_CONTEXT: &str = "a dedicated transition lock session";
 
@@ -76,7 +81,7 @@ struct PendingTransition {
     transition_id: StorageTransitionId,
     source: TransitionSource,
     target_url: SecretLiteral,
-    observe_window: Duration,
+    graceful: Duration,
     source_lease: TransitionLockLease,
     target_lease: TransitionLockLease,
 }
@@ -85,6 +90,18 @@ impl PendingTransition {
     /// Whether this transition was admitted against exactly this runtime.
     fn records_runtime(&self, runtime: &RuntimeIdentity) -> bool {
         matches!(&self.source, TransitionSource::AttachedRuntime(recorded) if recorded == runtime)
+    }
+
+    /// Proves both leases still hold. Every answer that asserts custody —
+    /// the parked ones that claim it is retained as much as the quiescent
+    /// ones that claim it may now be released — passes through here, so no
+    /// outcome can describe a barrier that Postgres has already dropped.
+    async fn prove_custody(&mut self) -> Result<(), DatabaseAccessError> {
+        if self.source_lease.prove().await && self.target_lease.prove().await {
+            Ok(())
+        } else {
+            Err(custody_lost_error())
+        }
     }
 }
 
@@ -205,6 +222,18 @@ fn force_refusing_activities(
         });
     }
     assessment.verdict = StorageTransitionVerdict::Blocked;
+}
+
+/// What is left of the request's budget for one observation, after the work
+/// already done and with room kept for the custody proofs and reinspection
+/// that follow it. Never longer than the source's own graceful deadline.
+fn observation_window(started: tokio::time::Instant, graceful: Duration) -> Duration {
+    let spent = started.elapsed();
+    let reserved = LEASE_IO_WINDOW * 3;
+    TRANSITION_REQUEST_BUDGET
+        .saturating_sub(spent)
+        .saturating_sub(reserved)
+        .min(graceful)
 }
 
 /// The reinspection receipt for one target, at this instant.
@@ -445,6 +474,7 @@ impl StorageTransitionGate {
         lifecycle: &LifecycleController,
         request: StorageSwitchRequest,
     ) -> Result<StorageSwitchResult, DatabaseAccessError> {
+        let started = tokio::time::Instant::now();
         let transition_id = StorageTransitionId::new();
         let admission = match self.admit_transition(transition_id) {
             Ok(admission) => admission,
@@ -558,30 +588,37 @@ impl StorageTransitionGate {
         }
 
         // The confirmation-required stop, fenced on live lock custody.
-        let observe_window = Duration::from_millis(session.config.server.shutdown_deadline_ms)
+        // The source's own drain contract, margin included; each request
+        // derives its observation from this and from what its budget allows.
+        let graceful = Duration::from_millis(session.config.server.shutdown_deadline_ms)
             + TRANSITION_OBSERVATION_MARGIN;
         let mut pending = PendingTransition {
             transition_id,
             source: source.clone(),
             target_url: request.target_url,
-            observe_window,
+            graceful,
             source_lease,
             target_lease,
         };
         let outcome = lifecycle
-            .transition_stop_for(operation, transition_id, source, observe_window)
+            .transition_stop_for(
+                operation,
+                transition_id,
+                source,
+                observation_window(started, graceful),
+            )
             .await?;
         match outcome {
             Some(TransitionStopOutcome::SourceQuiesced) => {
-                if !(pending.source_lease.prove().await && pending.target_lease.prove().await) {
-                    return Err(custody_lost_error());
-                }
+                pending.prove_custody().await?;
                 Ok(StorageSwitchResult::SourceQuiesced {
                     transition_id,
                     target: target_receipt,
                 })
             }
             Some(TransitionStopOutcome::StopTimedOut { runtime }) => {
+                // Parking claims the barrier is retained, so prove it is.
+                pending.prove_custody().await?;
                 // The parked transition owns the barrier from here.
                 admission.retain();
                 *pending_slot = Some(pending);
@@ -605,6 +642,7 @@ impl StorageTransitionGate {
         lifecycle: &LifecycleController,
         request: StorageSwitchContinueRequest,
     ) -> Result<StorageSwitchContinueResult, DatabaseAccessError> {
+        let started = tokio::time::Instant::now();
         let mut pending_slot = self.pending.lock().await;
         let Some(pending) = pending_slot.as_mut() else {
             return Ok(StorageSwitchContinueResult::NoPendingTransition);
@@ -621,7 +659,7 @@ impl StorageTransitionGate {
             .transition_observe_for(
                 operation,
                 request.expected_runtime,
-                pending.observe_window,
+                observation_window(started, pending.graceful),
                 false,
             )
             .await?;
@@ -629,9 +667,7 @@ impl StorageTransitionGate {
             Some(TransitionObserveOutcome::Exited) => {
                 let transition_id = pending.transition_id;
                 let target = target_receipt(pending.target_url.expose_secret()).await;
-                if !(pending.source_lease.prove().await && pending.target_lease.prove().await) {
-                    return Err(custody_lost_error());
-                }
+                pending.prove_custody().await?;
                 self.release_pending(&mut pending_slot);
                 Ok(StorageSwitchContinueResult::SourceQuiesced {
                     transition_id,
@@ -639,6 +675,7 @@ impl StorageTransitionGate {
                 })
             }
             Some(TransitionObserveOutcome::StillPresent { runtime, .. }) => {
+                pending.prove_custody().await?;
                 Ok(StorageSwitchContinueResult::StopTimedOut {
                     transition_id: pending.transition_id,
                     runtime,
@@ -660,6 +697,7 @@ impl StorageTransitionGate {
         lifecycle: &LifecycleController,
         request: StorageSwitchForceStopRequest,
     ) -> Result<StorageSwitchForceStopResult, DatabaseAccessError> {
+        let started = tokio::time::Instant::now();
         let mut pending_slot = self.pending.lock().await;
         let Some(pending) = pending_slot.as_mut() else {
             return Ok(StorageSwitchForceStopResult::NoPendingTransition);
@@ -672,14 +710,12 @@ impl StorageTransitionGate {
         }
         // The kill is irreversible: prove both barriers still hold before
         // sending it.
-        if !(pending.source_lease.prove().await && pending.target_lease.prove().await) {
-            return Err(custody_lost_error());
-        }
+        pending.prove_custody().await?;
         let outcome = lifecycle
             .transition_observe_for(
                 operation,
                 request.expected_runtime,
-                pending.observe_window,
+                observation_window(started, pending.graceful),
                 true,
             )
             .await?;
@@ -687,9 +723,7 @@ impl StorageTransitionGate {
             Some(TransitionObserveOutcome::Exited) => {
                 let transition_id = pending.transition_id;
                 let target = target_receipt(pending.target_url.expose_secret()).await;
-                if !(pending.source_lease.prove().await && pending.target_lease.prove().await) {
-                    return Err(custody_lost_error());
-                }
+                pending.prove_custody().await?;
                 self.release_pending(&mut pending_slot);
                 Ok(StorageSwitchForceStopResult::SourceQuiesced {
                     transition_id,
@@ -697,6 +731,7 @@ impl StorageTransitionGate {
                 })
             }
             Some(TransitionObserveOutcome::StillPresent { failure, .. }) => {
+                pending.prove_custody().await?;
                 Ok(StorageSwitchForceStopResult::RuntimeStillPresent { failure })
             }
             Some(
@@ -717,6 +752,7 @@ impl StorageTransitionGate {
         lifecycle: &LifecycleController,
         request: StorageSwitchAbortRequest,
     ) -> Result<StorageSwitchAbortResult, DatabaseAccessError> {
+        let started = tokio::time::Instant::now();
         let mut pending_slot = self.pending.lock().await;
         let Some(pending) = pending_slot.as_mut() else {
             return Ok(StorageSwitchAbortResult::NoPendingTransition);
@@ -732,7 +768,12 @@ impl StorageTransitionGate {
             TransitionSource::AttachedRuntime(runtime) => runtime.clone(),
         };
         let outcome = lifecycle
-            .transition_observe_for(operation, recorded, pending.observe_window, false)
+            .transition_observe_for(
+                operation,
+                recorded,
+                observation_window(started, pending.graceful),
+                false,
+            )
             .await?;
         match outcome {
             Some(TransitionObserveOutcome::Exited) => {
@@ -749,9 +790,11 @@ impl StorageTransitionGate {
                 }
             }
             Some(TransitionObserveOutcome::StillPresent { runtime, .. }) => {
+                pending.prove_custody().await?;
                 Ok(StorageSwitchAbortResult::SourceRecoveryPending { runtime })
             }
             Some(TransitionObserveOutcome::RuntimeChanged { observed }) => {
+                pending.prove_custody().await?;
                 Ok(StorageSwitchAbortResult::RuntimeChanged { observed })
             }
             Some(TransitionObserveOutcome::NotStopping) => {
@@ -817,7 +860,7 @@ impl StorageTransitionGate {
             transition_id,
             source,
             target_url: SecretLiteral::try_from(target_url.to_owned()).expect("target url"),
-            observe_window: Duration::from_secs(1),
+            graceful: Duration::from_secs(1),
             source_lease,
             target_lease,
         });

@@ -41,10 +41,14 @@ pub(crate) async fn provision_genesis(
     config: &TribalConfig,
 ) -> Result<(), AppError> {
     for attempt in 1..=MIGRATION_MAX_ATTEMPTS {
+        // Owned before any lock is taken: a dropped future closes the
+        // session and Postgres releases every lock with it, where a pooled
+        // handle would carry them back into the pool.
         let mut conn = pool
             .acquire()
             .await
-            .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "provisioning", e))?;
+            .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "provisioning", e))?
+            .detach();
 
         // Already provisioned, by this process on a prior attempt or another
         // process: nothing to do.

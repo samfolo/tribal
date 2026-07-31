@@ -59,11 +59,13 @@ const COMPLETION_CAPACITY: usize = 1;
 const RUNTIME_EVENT_CAPACITY: usize = 64;
 const MANAGEMENT_EVENT_CAPACITY: usize = 64;
 const STOP_DEADLINE: Duration = Duration::from_secs(10);
-/// Upper bound on any single transition observation window, so the typed
-/// timeout answer always beats the management transport's request budget;
-/// the configured graceful deadline governs the total across repeated
-/// windows, never one request's wait.
-const TRANSITION_WINDOW_CAP: Duration = Duration::from_secs(100);
+/// Upper bound the owner enforces on any single transition observation, as a
+/// backstop under the caller's own budget: the gate already draws each window
+/// from one request clock, and this keeps a caller that asks for more from
+/// outliving the transport's request timeout. A configured graceful deadline
+/// larger than what one request can hold is reached across repeated
+/// observations, never inside one.
+const TRANSITION_WINDOW_CAP: Duration = Duration::from_secs(90);
 const RUNTIME_LINK_POLL: Duration = Duration::from_millis(100);
 const RUNTIME_RECONNECT_DEADLINE: Duration = Duration::from_secs(1);
 const RUNTIME_RECONNECT_ATTEMPTS: usize = 3;
@@ -7365,13 +7367,16 @@ mod tests {
         worker_runtime.join().expect("worker thread joins");
     }
 
-    /// The largest single observation window plus scheduling slack always
-    /// answers inside the management transport's request budget.
+    /// The owner's backstop leaves room for the work a gate operation does
+    /// around its observation — the leases, the reinspection, the custody
+    /// proofs — inside the transport's request budget.
     #[test]
     fn test_transition_window_cap_clears_the_transport_budget() {
+        const SURROUNDING_WORK_ALLOWANCE: u64 = 30;
         assert!(
-            TRANSITION_WINDOW_CAP.as_secs() + 20
+            TRANSITION_WINDOW_CAP.as_secs() + SURROUNDING_WORK_ALLOWANCE
                 < tribal_wire::management::MANAGEMENT_REQUEST_TIMEOUT_SECONDS,
+            "one observation plus its surrounding work must answer inside the request budget",
         );
     }
 

@@ -838,23 +838,31 @@ async fn process_one(
 
 /// Drains the run's claimable tasks, embedding each batch or tag into the
 /// building profile, until none remain claimable this cycle.
+/// Why a task drain ended: a drained run goes on to indexes and cutover,
+/// an aborted one goes no further at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskDrain {
+    Drained,
+    RunAborted,
+}
+
 async fn process_tasks(
     conn: &mut PgConnection,
     ctx: &ReindexCtx<'_>,
     claimed_by: &str,
-) -> Result<(), DbError> {
+) -> Result<TaskDrain, DbError> {
     loop {
         let tasks = PgReindexTaskRepository
             .claim(conn, ctx.run.id(), REINDEX_TASK_CLAIM_LIMIT, claimed_by)
             .await?;
         if tasks.is_empty() {
-            return Ok(());
+            return Ok(TaskDrain::Drained);
         }
         for task in tasks {
             // An abort observed after the claim stops the batch: a provider
             // call already in flight settles, but no further task starts.
             if !run_still_live(conn, ctx.run.id()).await? {
-                return Ok(());
+                return Ok(TaskDrain::RunAborted);
             }
             process_one(conn, ctx, &task).await?;
         }
@@ -909,7 +917,14 @@ pub async fn drive_reindex_cycle(
                 ..UsageAttribution::default()
             },
         };
-        process_tasks(conn, &ctx, claimed_by).await?;
+        // A cancelled run stops here, whether the abort landed mid-batch or
+        // before the claim that found nothing left: the index build and the
+        // cutover below would issue fresh provider calls and DDL against a
+        // graph the operator has already abandoned.
+        let drain = process_tasks(conn, &ctx, claimed_by).await?;
+        if drain == TaskDrain::RunAborted || !run_still_live(conn, run.id()).await? {
+            return Ok(());
+        }
         if run_dead_lettered(conn, run.id()).await? {
             fail_run(
                 conn,
@@ -2718,6 +2733,59 @@ mod tests {
                 ReindexCreationOutcome::Created(_)
             ),
             "admission resumes once the transition releases",
+        );
+    }
+
+    /// A cancelled run stops the whole cycle, not just its task drain: the
+    /// index build and cutover that follow would issue fresh provider calls
+    /// and DDL against a graph the operator has already abandoned.
+    #[tokio::test]
+    async fn test_a_cancelled_run_reports_the_abort_rather_than_a_clean_drain() {
+        let ctx_db = TestDb::new().await;
+        let mut txn = ctx_db.begin().await.expect("begin");
+        let (run, building, _task) = a_claimed_tag_task(&mut txn, "user:cycle-abort").await;
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_exhaust(ExhaustBehaviour::RepeatLast)
+                .build(),
+        );
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
+
+        PgEmbeddingProfileRepository
+            .mark_failed(&mut txn, run.target_profile_id())
+            .await
+            .expect("fail the building profile");
+        let live = PgReindexRunRepository
+            .find_by_id(&mut txn, run.id())
+            .await
+            .expect("read the run")
+            .expect("the run exists");
+        assert!(
+            PgReindexRunRepository
+                .transition(
+                    &mut txn,
+                    run.id(),
+                    live.state(),
+                    ReindexRunState::Aborted,
+                    Some("cancelled by operator"),
+                )
+                .await
+                .expect("abort the run"),
+        );
+
+        // The claim admits nothing under a cancelled run, so the drain ends
+        // clean — and the cycle's own liveness guard is what stops it before
+        // the index build and cutover.
+        let drain = process_tasks(&mut txn, &ctx, "worker")
+            .await
+            .expect("drain a cancelled run");
+        assert_eq!(drain, TaskDrain::Drained);
+        assert!(
+            !run_still_live(&mut txn, run.id())
+                .await
+                .expect("read the run's liveness"),
+            "a cancelled run stops the cycle before indexes and cutover",
         );
     }
 
