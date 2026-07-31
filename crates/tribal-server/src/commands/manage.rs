@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 
+use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 use tribal_config::{LoggingConfig, TelemetryConfig};
 use tribal_wire::management::{
@@ -531,8 +532,8 @@ async fn watch_config_file(
             changed = managed_changes.recv() => {
                 match changed {
                     Ok(change) => last_revision = Some(change.revision),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => return,
                 }
             }
             _ = interval.tick() => {
@@ -562,10 +563,10 @@ async fn refresh_identity(
         tokio::select! {
             () = shutdown.cancelled() => return,
             event = config_events.recv() => match event {
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                Ok(_) | Err(RecvError::Lagged(_)) => {
                     identity.refresh().await;
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                Err(RecvError::Closed) => return,
             }
         }
     }
@@ -585,8 +586,8 @@ async fn refresh_readiness(
             () = shutdown.cancelled() => return,
             _ = interval.tick() => {}
             event = config_events.recv() => match event {
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                Ok(_) | Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => return,
             }
         }
         observe_readiness_once(&config, &probe, &lifecycle).await;

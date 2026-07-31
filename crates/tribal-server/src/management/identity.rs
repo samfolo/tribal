@@ -180,11 +180,13 @@ fn identity_of(state: &DatabaseTargetState) -> Option<GraphId> {
 
 #[cfg(test)]
 mod tests {
+    use tribal_config::TribalConfig;
     use tribal_wire::management::{
-        DatabaseTargetFailure, DatabaseTargetFailureKind, FailurePresentation,
+        ConfigDigest, DatabaseTargetFailure, DatabaseTargetFailureKind, FailurePresentation,
     };
 
     use super::*;
+    use crate::management::{configuration::ConfigAuthority, worker};
 
     fn failure() -> DatabaseTargetFailure {
         DatabaseTargetFailure {
@@ -197,7 +199,7 @@ mod tests {
     }
 
     fn revision(seed: &[u8]) -> ConfigRevision {
-        ConfigRevision::from_digest(&tribal_wire::management::ConfigDigest::from_bytes(seed))
+        ConfigRevision::from_digest(&ConfigDigest::from_bytes(seed))
     }
 
     #[test]
@@ -228,17 +230,14 @@ mod tests {
     async fn test_reprove_settles_terminal_for_an_unreachable_target() {
         let temp = tempfile::tempdir().expect("temporary config root");
         let config_path = temp.path().join("tribal.yaml");
-        let config =
-            tribal_config::TribalConfig::minimum_valid("postgres://user:pass@127.0.0.1:1/tribal");
+        let config = TribalConfig::minimum_valid("postgres://user:pass@127.0.0.1:1/tribal");
         std::fs::write(
             &config_path,
             serde_yaml::to_string(&config).expect("config serialises"),
         )
         .expect("config writes");
-        let (config, _worker_runtime) = crate::management::worker::spawn(
-            crate::management::configuration::ConfigAuthority::new(config_path),
-        )
-        .expect("config worker starts");
+        let (config, _worker_runtime) =
+            worker::spawn(ConfigAuthority::new(config_path)).expect("config worker starts");
         let shutdown = CancellationToken::new();
         let resolver = GraphIdentityResolver::new(config.clone(), shutdown.clone());
         let operation = OperationContext::new(shutdown);
