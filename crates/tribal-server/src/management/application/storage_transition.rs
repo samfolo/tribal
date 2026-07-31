@@ -36,7 +36,9 @@ use super::{
         },
         product::database_endpoint,
     },
-    database::{DatabaseAccess, DatabaseAccessError, inspect_target_state, unix_ms_now},
+    database::{
+        DatabaseAccess, DatabaseAccessError, inspect_target_state, parse_candidate_url, unix_ms_now,
+    },
     operation::OperationContext,
 };
 
@@ -93,7 +95,12 @@ impl TransitionLockLease {
     /// Connects a dedicated session and try-acquires the exclusive lock.
     /// `Ok(None)` is contention; the session closes with the lease.
     async fn acquire(url: &str, lock_id: i64) -> Result<Option<Self>, DatabaseAccessError> {
-        let mut connection = PgConnection::connect(url)
+        let options = parse_candidate_url(url).map_err(|_| {
+            lease_connection_error(sqlx::Error::Configuration(
+                "the lock session URL was refused".into(),
+            ))
+        })?;
+        let mut connection = PgConnection::connect_with(&options)
             .await
             .map_err(lease_connection_error)?;
         let granted = match PgAdvisoryLockRepository
@@ -133,18 +140,55 @@ impl TransitionLockLease {
 enum TransitionRefusal {
     /// A sibling transition already holds it.
     Sibling(StorageTransitionId),
-    /// Admitted migration or lifecycle work holds the local barrier.
-    LocalActivity,
+    /// Admitted migration or lifecycle work holds the local barrier; the
+    /// kinds are captured under the same lock so the blocked answer cannot
+    /// contradict the refusal.
+    LocalActivity { migration: bool, lifecycle: bool },
+}
+
+/// Forces the activities that refused admission into the assessment, so a
+/// refusal observed under the barrier is never reported alongside a `Ready`
+/// verdict computed after the blocker settled.
+fn force_refusing_activities(
+    assessment: &mut StorageTransitionAssessment,
+    migration: bool,
+    lifecycle: bool,
+) {
+    if migration
+        && !assessment
+            .activities
+            .iter()
+            .any(|activity| activity.kind == GraphActivityKind::DatabaseMigration)
+    {
+        assessment.activities.push(GraphActivity {
+            kind: GraphActivityKind::DatabaseMigration,
+            status: GraphActivityStatus::Running,
+            resolution: BlockingResolution::Wait,
+        });
+    }
+    if lifecycle
+        && !assessment
+            .activities
+            .iter()
+            .any(|activity| activity.kind == GraphActivityKind::RuntimeLifecycle)
+    {
+        assessment.activities.push(GraphActivity {
+            kind: GraphActivityKind::RuntimeLifecycle,
+            status: GraphActivityStatus::Running,
+            resolution: BlockingResolution::WaitForLifecycle,
+        });
+    }
+    assessment.verdict = StorageTransitionVerdict::Blocked;
 }
 
 /// Clears the transition occupancy on drop unless disarmed — the disarmed
 /// path is the parked timeout, whose custody the pending record keeps.
-struct TransitionOccupancyRelease {
+struct TransitionOccupancyGuard {
     occupancy: Arc<Mutex<Occupancy>>,
     armed: bool,
 }
 
-impl Drop for TransitionOccupancyRelease {
+impl Drop for TransitionOccupancyGuard {
     fn drop(&mut self) {
         if self.armed {
             lock(&self.occupancy).transition = None;
@@ -190,8 +234,8 @@ fn lease_connection_error(source: sqlx::Error) -> DatabaseAccessError {
 #[derive(Debug, Default)]
 struct Occupancy {
     transition: Option<StorageTransitionId>,
-    lifecycle: usize,
-    migrations: usize,
+    lifecycle_count: usize,
+    migration_count: usize,
 }
 
 /// The kinds a released guard decrements.
@@ -213,9 +257,11 @@ impl Drop for LocalAdmissionGuard {
     fn drop(&mut self) {
         let mut occupancy = lock(&self.occupancy);
         match self.kind {
-            AdmittedKind::Lifecycle => occupancy.lifecycle = occupancy.lifecycle.saturating_sub(1),
+            AdmittedKind::Lifecycle => {
+                occupancy.lifecycle_count = occupancy.lifecycle_count.saturating_sub(1);
+            }
             AdmittedKind::Migration => {
-                occupancy.migrations = occupancy.migrations.saturating_sub(1);
+                occupancy.migration_count = occupancy.migration_count.saturating_sub(1);
             }
         }
     }
@@ -238,7 +284,7 @@ impl StorageTransitionGate {
         if let Some(transition_id) = occupancy.transition {
             return Err(transition_id);
         }
-        occupancy.migrations += 1;
+        occupancy.migration_count += 1;
         Ok(LocalAdmissionGuard {
             occupancy: Arc::clone(&self.occupancy),
             kind: AdmittedKind::Migration,
@@ -255,7 +301,7 @@ impl StorageTransitionGate {
         if let Some(transition_id) = occupancy.transition {
             return Err(transition_id);
         }
-        occupancy.lifecycle += 1;
+        occupancy.lifecycle_count += 1;
         Ok(LocalAdmissionGuard {
             occupancy: Arc::clone(&self.occupancy),
             kind: AdmittedKind::Lifecycle,
@@ -270,6 +316,20 @@ impl StorageTransitionGate {
         operation: &OperationContext,
         database: &DatabaseAccess,
         expected_revision: Option<&ConfigRevision>,
+    ) -> Result<Revisioned<StorageTransitionAssessment>, DatabaseAccessError> {
+        self.assess_excluding(operation, database, expected_revision, None)
+            .await
+    }
+
+    /// The assessment, with the caller's own pending transition excluded —
+    /// the switch's under-barrier recompute must not block on itself, while
+    /// every other reader sees a pending transition as lifecycle occupancy.
+    async fn assess_excluding(
+        &self,
+        operation: &OperationContext,
+        database: &DatabaseAccess,
+        expected_revision: Option<&ConfigRevision>,
+        exclude: Option<StorageTransitionId>,
     ) -> Result<Revisioned<StorageTransitionAssessment>, DatabaseAccessError> {
         let session = database.session(operation, expected_revision).await?;
         let mut conn = session
@@ -296,8 +356,8 @@ impl StorageTransitionGate {
                     .await
                     .map_err(|source| DatabaseAccessError::Connection { source })?
                 {
-                    Some(wait) => GraphActivityStatus::WaitingForRetry {
-                        resume_at_unix_ms: u64::try_from(wait.resume_at.timestamp_millis()).ok(),
+                    Some(resume_at) => GraphActivityStatus::WaitingForRetry {
+                        resume_at_unix_ms: u64::try_from(resume_at.timestamp_millis()).ok(),
                     },
                     None => GraphActivityStatus::Running,
                 }
@@ -309,9 +369,16 @@ impl StorageTransitionGate {
             });
         }
 
-        let (migrations, lifecycle) = {
+        let (migrations, lifecycle, pending_transition) = {
             let occupancy = lock(&self.occupancy);
-            (occupancy.migrations, occupancy.lifecycle)
+            let pending = occupancy
+                .transition
+                .filter(|id| exclude.is_none_or(|own| own != *id));
+            (
+                occupancy.migration_count,
+                occupancy.lifecycle_count,
+                pending,
+            )
         };
         if migrations > 0 {
             activities.push(GraphActivity {
@@ -320,7 +387,7 @@ impl StorageTransitionGate {
                 resolution: BlockingResolution::Wait,
             });
         }
-        if lifecycle > 0 {
+        if lifecycle > 0 || pending_transition.is_some() {
             activities.push(GraphActivity {
                 kind: GraphActivityKind::RuntimeLifecycle,
                 status: GraphActivityStatus::Running,
@@ -351,23 +418,27 @@ impl StorageTransitionGate {
         lifecycle: &LifecycleController,
         request: StorageSwitchRequest,
     ) -> Result<StorageSwitchResult, DatabaseAccessError> {
-        let mut pending_slot = self.pending.lock().await;
-        let session = database
-            .session(operation, Some(&request.expected_revision))
-            .await?;
-
         let transition_id = StorageTransitionId::new();
         if let Err(refusal) = self.admit_transition(transition_id) {
             return Ok(match refusal {
                 TransitionRefusal::Sibling(transition_id) => {
                     StorageSwitchResult::TransitionInProgress { transition_id }
                 }
-                TransitionRefusal::LocalActivity => StorageSwitchResult::Blocked {
-                    assessment: self.assess(operation, database, None).await?.value,
-                },
+                TransitionRefusal::LocalActivity {
+                    migration,
+                    lifecycle,
+                } => {
+                    let mut assessment = self.assess(operation, database, None).await?.value;
+                    force_refusing_activities(&mut assessment, migration, lifecycle);
+                    StorageSwitchResult::Blocked { assessment }
+                }
             });
         }
-        let release_on_return = TransitionOccupancyRelease {
+        let mut pending_slot = self.pending.lock().await;
+        let session = database
+            .session(operation, Some(&request.expected_revision))
+            .await?;
+        let release_on_return = TransitionOccupancyGuard {
             occupancy: Arc::clone(&self.occupancy),
             armed: true,
         };
@@ -404,11 +475,21 @@ impl StorageTransitionGate {
 
         // Target reservation before the source transition lock.
         let target_url = request.target_url.expose_secret().to_owned();
-        let Some(target_lease) =
-            TransitionLockLease::acquire(&target_url, advisory_locks::TARGET_MIGRATION_RESERVATION)
-                .await?
-        else {
-            return Ok(StorageSwitchResult::AdmissionContended);
+        let target_lease = match TransitionLockLease::acquire(
+            &target_url,
+            advisory_locks::TARGET_MIGRATION_RESERVATION,
+        )
+        .await
+        {
+            Ok(Some(lease)) => lease,
+            Ok(None) => return Ok(StorageSwitchResult::AdmissionContended),
+            // A candidate that admits no session is an unready target, not a
+            // management error; the receipt classifies it.
+            Err(_) => {
+                return Ok(StorageSwitchResult::TargetNotReady {
+                    target: target_receipt(&target_url).await,
+                });
+            }
         };
         let source_url = session.config.database.url.clone();
         let Some(source_lease) =
@@ -432,7 +513,10 @@ impl StorageTransitionGate {
                 });
             }
         }
-        let assessment = self.assess(operation, database, None).await?.value;
+        let assessment = self
+            .assess_excluding(operation, database, None, Some(transition_id))
+            .await?
+            .value;
         if assessment.verdict == StorageTransitionVerdict::Blocked {
             return Ok(StorageSwitchResult::Blocked { assessment });
         }
@@ -504,11 +588,11 @@ impl StorageTransitionGate {
             .await?;
         match outcome {
             Some(TransitionObserveOutcome::Exited) => {
+                let transition_id = pending.transition_id;
+                let target = target_receipt(pending.target_url.expose_secret()).await;
                 if !(pending.source_lease.prove().await && pending.target_lease.prove().await) {
                     return Err(custody_lost_error());
                 }
-                let transition_id = pending.transition_id;
-                let target = target_receipt(pending.target_url.expose_secret()).await;
                 self.release_pending(&mut pending_slot);
                 Ok(StorageSwitchContinueResult::SourceQuiesced {
                     transition_id,
@@ -544,6 +628,11 @@ impl StorageTransitionGate {
         if pending.transition_id != request.transition_id {
             return Ok(StorageSwitchForceStopResult::NoPendingTransition);
         }
+        // The kill is irreversible: prove both barriers still hold before
+        // sending it.
+        if !(pending.source_lease.prove().await && pending.target_lease.prove().await) {
+            return Err(custody_lost_error());
+        }
         let outcome = lifecycle
             .transition_observe_for(
                 operation,
@@ -554,11 +643,11 @@ impl StorageTransitionGate {
             .await?;
         match outcome {
             Some(TransitionObserveOutcome::Exited) => {
+                let transition_id = pending.transition_id;
+                let target = target_receipt(pending.target_url.expose_secret()).await;
                 if !(pending.source_lease.prove().await && pending.target_lease.prove().await) {
                     return Err(custody_lost_error());
                 }
-                let transition_id = pending.transition_id;
-                let target = target_receipt(pending.target_url.expose_secret()).await;
                 self.release_pending(&mut pending_slot);
                 Ok(StorageSwitchForceStopResult::SourceQuiesced {
                     transition_id,
@@ -639,8 +728,11 @@ impl StorageTransitionGate {
         if let Some(existing) = occupancy.transition {
             return Err(TransitionRefusal::Sibling(existing));
         }
-        if occupancy.lifecycle > 0 || occupancy.migrations > 0 {
-            return Err(TransitionRefusal::LocalActivity);
+        if occupancy.lifecycle_count > 0 || occupancy.migration_count > 0 {
+            return Err(TransitionRefusal::LocalActivity {
+                migration: occupancy.migration_count > 0,
+                lifecycle: occupancy.lifecycle_count > 0,
+            });
         }
         occupancy.transition = Some(transition_id);
         Ok(())
@@ -651,6 +743,39 @@ impl StorageTransitionGate {
     fn release_pending(&self, slot: &mut Option<PendingTransition>) {
         *slot = None;
         lock(&self.occupancy).transition = None;
+    }
+
+    /// Installs a pending record over real lock leases, so the follow-up
+    /// operations can be exercised without driving a full switch.
+    #[cfg(test)]
+    async fn install_pending_for_test(
+        &self,
+        transition_id: StorageTransitionId,
+        source: TransitionSource,
+        source_url: &str,
+        target_url: &str,
+    ) {
+        let source_lease =
+            TransitionLockLease::acquire(source_url, advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("source lease connects")
+                .expect("source lock uncontended");
+        let target_lease =
+            TransitionLockLease::acquire(target_url, advisory_locks::TARGET_MIGRATION_RESERVATION)
+                .await
+                .expect("target lease connects")
+                .expect("target lock uncontended");
+        lock(&self.occupancy).transition = Some(transition_id);
+        *self.pending.lock().await = Some(PendingTransition {
+            transition_id,
+            source,
+            source_graph_id: GraphId::new(),
+            target_graph_id: GraphId::new(),
+            target_url: SecretLiteral::try_from(target_url.to_owned()).expect("target url"),
+            observe_window: Duration::from_secs(1),
+            source_lease,
+            target_lease,
+        });
     }
 
     #[cfg(test)]
@@ -805,7 +930,7 @@ mod tests {
         let lifecycle = gate.admit_lifecycle().expect("admit lifecycle");
         assert!(matches!(
             gate.admit_transition(StorageTransitionId::new()),
-            Err(TransitionRefusal::LocalActivity)
+            Err(TransitionRefusal::LocalActivity { .. })
         ));
         drop(lifecycle);
 
@@ -1065,6 +1190,167 @@ mod tests {
             aborted,
             StorageSwitchAbortResult::NoPendingTransition
         ));
+    }
+
+    #[tokio::test]
+    async fn test_switch_contends_on_the_source_lock_and_frees_the_reservation() {
+        let h = a_switch_harness().await;
+
+        // Another manager's transition holds the source; the reservation was
+        // taken first and must be released with the refusal.
+        let mut source_holder = h.source.raw_connection().await.expect("holder");
+        assert!(
+            PgAdvisoryLockRepository
+                .try_acquire_exclusive(&mut source_holder, advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("hold the source lock"),
+        );
+        let result = h
+            .switch(h.request(h.source_id, h.target_id, h.ready_target.database_url()))
+            .await;
+        assert!(matches!(result, StorageSwitchResult::AdmissionContended));
+
+        let mut target_probe = h.ready_target.raw_connection().await.expect("probe");
+        assert!(
+            PgAdvisoryLockRepository
+                .try_acquire_exclusive(
+                    &mut target_probe,
+                    advisory_locks::TARGET_MIGRATION_RESERVATION
+                )
+                .await
+                .expect("probe the reservation"),
+            "a refused switch releases its partial target reservation",
+        );
+        assert!(
+            PgAdvisoryLockRepository
+                .release_exclusive(
+                    &mut target_probe,
+                    advisory_locks::TARGET_MIGRATION_RESERVATION
+                )
+                .await
+                .expect("release the probe"),
+        );
+        assert!(
+            PgAdvisoryLockRepository
+                .release_exclusive(&mut source_holder, advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("release the holder"),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_switch_types_an_unreachable_target_as_not_ready() {
+        let h = a_switch_harness().await;
+
+        let result = h
+            .switch(h.request(
+                h.source_id,
+                h.target_id,
+                "postgres://tribal:tribal@127.0.0.1:1/absent",
+            ))
+            .await;
+        assert!(
+            matches!(
+                &result,
+                StorageSwitchResult::TargetNotReady { target } if matches!(
+                    &target.state,
+                    DatabaseTargetState::Unavailable { failure }
+                        if failure.kind == tribal_wire::management::DatabaseTargetFailureKind::HostUnreachable
+                )
+            ),
+            "an unreachable candidate is a typed receipt, got {result:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_blocked_switch_names_the_refusing_activity() {
+        let h = a_switch_harness().await;
+
+        let admitted = h.gate.admit_lifecycle().expect("admit lifecycle");
+        let result = h
+            .switch(h.request(h.source_id, h.target_id, h.ready_target.database_url()))
+            .await;
+        drop(admitted);
+        let StorageSwitchResult::Blocked { assessment } = result else {
+            panic!("lifecycle-first admission blocks the switch, got {result:?}");
+        };
+        assert_eq!(assessment.verdict, StorageTransitionVerdict::Blocked);
+        assert!(
+            assessment
+                .activities
+                .iter()
+                .any(|activity| activity.kind == GraphActivityKind::RuntimeLifecycle),
+            "the blocked answer names the refusing activity",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_parked_transition_blocks_the_public_assessment() {
+        let ctx = TestDb::new().await;
+        let (_temp, database, _worker, _runtime) = database_access(ctx.database_url());
+        let gate = StorageTransitionGate::new();
+        gate.occupy_for_test(StorageTransitionId::new());
+
+        let assessment = gate
+            .assess(&operation(), &database, None)
+            .await
+            .expect("assess")
+            .value;
+        assert_eq!(assessment.verdict, StorageTransitionVerdict::Blocked);
+        assert!(
+            assessment
+                .activities
+                .iter()
+                .any(|activity| activity.kind == GraphActivityKind::RuntimeLifecycle),
+        );
+        gate.release_for_test();
+    }
+
+    #[tokio::test]
+    async fn test_abort_of_a_clean_no_runtime_origin_releases_without_a_start() {
+        let h = a_switch_harness().await;
+        let transition_id = StorageTransitionId::new();
+        h.gate
+            .install_pending_for_test(
+                transition_id,
+                TransitionSource::CleanNoRuntime,
+                h.source.database_url(),
+                h.ready_target.database_url(),
+            )
+            .await;
+
+        let result = h
+            .gate
+            .abort(
+                &operation(),
+                &h.lifecycle,
+                StorageSwitchAbortRequest { transition_id },
+            )
+            .await
+            .expect("abort runs");
+        assert!(matches!(
+            result,
+            StorageSwitchAbortResult::SourceRemainedStopped
+        ));
+
+        // The barriers released with the abort: both locks re-acquirable.
+        let mut probe = h.source.raw_connection().await.expect("probe");
+        assert!(
+            PgAdvisoryLockRepository
+                .try_acquire_exclusive(&mut probe, advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("probe the source lock"),
+        );
+        let mut target_probe = h.ready_target.raw_connection().await.expect("target probe");
+        assert!(
+            PgAdvisoryLockRepository
+                .try_acquire_exclusive(
+                    &mut target_probe,
+                    advisory_locks::TARGET_MIGRATION_RESERVATION
+                )
+                .await
+                .expect("probe the reservation"),
+        );
     }
 
     fn a_runtime_identity() -> tribal_wire::management::RuntimeIdentity {

@@ -51,7 +51,7 @@ pub enum DatabaseTargetState {
     Ready { graph_id: GraphId },
     Unavailable { failure: DatabaseTargetFailure },
     Uninitialised,
-    Behind { pending: u32 },
+    Behind { pending_count: u32 },
     Ahead,
 }
 

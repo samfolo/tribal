@@ -20,8 +20,7 @@ pub struct Revisioned<T> {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DatabaseInitialiseRequest {
     pub expected_revision: ConfigRevision,
-    /// Which database to initialise; defaults to the configured target so
-    /// existing callers keep their shape.
+    /// Which database to initialise; the configured target by default.
     #[serde(default)]
     pub target: DatabaseAdministrationTarget,
 }

@@ -6,6 +6,10 @@ use tribal_domain::GraphId;
 
 use crate::DbError;
 
+// ---------------------------------------------------------------------------
+// Trait
+// ---------------------------------------------------------------------------
+
 #[async_trait]
 pub trait GraphIdentityRepository {
     /// Reads the database's one immutable graph identity.
@@ -17,6 +21,10 @@ pub trait GraphIdentityRepository {
     /// on database errors.
     async fn get(&self, conn: &mut PgConnection) -> Result<GraphId, DbError>;
 }
+
+// ---------------------------------------------------------------------------
+// Postgres implementation
+// ---------------------------------------------------------------------------
 
 /// Postgres implementation of [`GraphIdentityRepository`].
 pub struct PgGraphIdentityRepository;

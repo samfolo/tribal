@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 use sqlx::PgConnection;
 
-use crate::error::DbError;
+use crate::{advisory_locks::CREDENTIAL_REPLACEMENT, error::DbError};
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -255,7 +255,7 @@ impl AdvisoryLockRepository for PgAdvisoryLockRepository {
 
 fn credential_replacement_lock_id(authority_namespace: &str) -> i64 {
     let mut digest = Sha256::new();
-    digest.update(crate::advisory_locks::CREDENTIAL_REPLACEMENT.to_be_bytes());
+    digest.update(CREDENTIAL_REPLACEMENT.to_be_bytes());
     digest.update(authority_namespace.as_bytes());
     let digest = digest.finalize();
     let mut bytes = [0_u8; 8];

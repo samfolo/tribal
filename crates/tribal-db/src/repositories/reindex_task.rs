@@ -63,15 +63,6 @@ pub struct ReindexTaskStateCount {
     pub count: i64,
 }
 
-/// A run's pending tasks waiting out a retry backoff.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReindexRetryWait {
-    /// Pending tasks whose `available_at` lies in the future.
-    pub waiting: i64,
-    /// The earliest instant any of them becomes claimable.
-    pub resume_at: DateTime<Utc>,
-}
-
 // ---------------------------------------------------------------------------
 // Input types
 // ---------------------------------------------------------------------------
@@ -173,8 +164,8 @@ pub trait ReindexTaskRepository {
         reindex_run_id: ReindexRunId,
     ) -> Result<Vec<ReindexTaskStateCount>, DbError>;
 
-    /// Aggregates the run's pending tasks that are waiting out a retry
-    /// backoff. Returns `None` when nothing is deferred.
+    /// The earliest instant a pending task waiting out a retry backoff
+    /// becomes claimable, or `None` when nothing is deferred.
     ///
     /// # Errors
     ///
@@ -183,7 +174,7 @@ pub trait ReindexTaskRepository {
         &self,
         conn: &mut PgConnection,
         reindex_run_id: ReindexRunId,
-    ) -> Result<Option<ReindexRetryWait>, DbError>;
+    ) -> Result<Option<DateTime<Utc>>, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -378,9 +369,9 @@ impl ReindexTaskRepository for PgReindexTaskRepository {
         &self,
         conn: &mut PgConnection,
         reindex_run_id: ReindexRunId,
-    ) -> Result<Option<ReindexRetryWait>, DbError> {
+    ) -> Result<Option<DateTime<Utc>>, DbError> {
         let row = sqlx::query(
-            "SELECT COUNT(*) AS waiting, MIN(available_at) AS resume_at \
+            "SELECT MIN(available_at) AS resume_at \
              FROM reindex_tasks \
              WHERE reindex_run_id = $1 \
                AND state = 'pending' AND available_at > now()",
@@ -393,11 +384,7 @@ impl ReindexTaskRepository for PgReindexTaskRepository {
             source: e,
         })?;
 
-        let waiting = row.get::<i64, _>("waiting");
-        let resume_at = row.get::<Option<DateTime<Utc>>, _>("resume_at");
-        Ok(resume_at
-            .filter(|_| waiting > 0)
-            .map(|resume_at| ReindexRetryWait { waiting, resume_at }))
+        Ok(row.get::<Option<DateTime<Utc>>, _>("resume_at"))
     }
 }
 

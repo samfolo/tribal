@@ -2157,16 +2157,9 @@ impl LifecycleOwner {
             return;
         }
         if exact_exit {
-            if let Some(wait) = pending.wait.take() {
-                match wait.responder {
-                    TransitionResponder::Stop(response) => {
-                        let _ = response.send(TransitionStopOutcome::SourceQuiesced);
-                    }
-                    TransitionResponder::Observe(response) => {
-                        let _ = response.send(TransitionObserveOutcome::Exited);
-                    }
-                }
-            }
+            // The quiescence answer waits for the machine to settle into its
+            // no-runtime state: an observer that hears the exit must find a
+            // lifecycle owner that can already admit the recovery start.
             if !pending.finishing {
                 pending.finishing = true;
                 let token = pending.token;
@@ -2276,9 +2269,16 @@ impl LifecycleOwner {
                 let _ = response.send(if holds { target } else { None });
             }
             LifecycleCompletion::TransitionStopped { token, document } => {
-                if let LifecycleState::TransitionStopPending(pending) = &self.state
-                    && pending.token == token
-                {
+                let settled = matches!(
+                    &self.state,
+                    LifecycleState::TransitionStopPending(pending) if pending.token == token
+                );
+                if settled {
+                    let state = std::mem::replace(&mut self.state, placeholder_state());
+                    let LifecycleState::TransitionStopPending(mut pending) = state else {
+                        self.state = state;
+                        return;
+                    };
                     let document = document.unwrap_or_else(|| {
                         self.latest_readiness.mark_unavailable();
                         ConfigDocument::Unreadable {
@@ -2293,6 +2293,16 @@ impl LifecycleOwner {
                         &self.latest_readiness,
                     );
                     self.state = LifecycleState::NoRuntime(no_runtime);
+                    if let Some(wait) = pending.wait.take() {
+                        match wait.responder {
+                            TransitionResponder::Stop(response) => {
+                                let _ = response.send(TransitionStopOutcome::SourceQuiesced);
+                            }
+                            TransitionResponder::Observe(response) => {
+                                let _ = response.send(TransitionObserveOutcome::Exited);
+                            }
+                        }
+                    }
                     self.publish_current();
                 }
             }
@@ -7123,28 +7133,12 @@ mod tests {
 
         let (observe, mut observe_outcome) = oneshot::channel();
         owner.admit_transition_observe(&runtime, TEST_OBSERVATION_DEADLINE, true, observe);
-        let outcome = tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
-            loop {
-                owner.observe_transition_pending();
-                if let Ok(outcome) = observe_outcome.try_recv() {
-                    break outcome;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the killed process exits inside the window");
+        let outcome = drive_to_transition_answer(&mut owner, &mut observe_outcome).await;
         assert!(matches!(outcome, TransitionObserveOutcome::Exited));
-
-        // The parked machine finishes into a no-runtime state once the
-        // document completion lands; pumping it also settles the spawned
-        // task before the worker joins.
-        let completion = tokio::time::timeout(TEST_OBSERVATION_DEADLINE, owner.completions.recv())
-            .await
-            .expect("document completion arrives")
-            .expect("completion channel is live");
-        owner.handle_completion(completion).await;
-        assert!(matches!(owner.state, LifecycleState::NoRuntime(_)));
+        assert!(
+            matches!(owner.state, LifecycleState::NoRuntime(_)),
+            "the exit answer arrives only once the machine has settled",
+        );
 
         drop(owner);
         worker_runtime.join().expect("worker thread joins");
@@ -7181,18 +7175,10 @@ mod tests {
             };
             make_managed_exact_exit(&mut pending.child).await;
         }
-        let (observe, observe_outcome) = oneshot::channel();
+        let (observe, mut observe_outcome) = oneshot::channel();
         owner.admit_transition_observe(&runtime, TEST_OBSERVATION_DEADLINE, false, observe);
-        owner.observe_transition_pending();
-        assert!(matches!(
-            observe_outcome.await,
-            Ok(TransitionObserveOutcome::Exited)
-        ));
-        let completion = tokio::time::timeout(TEST_OBSERVATION_DEADLINE, owner.completions.recv())
-            .await
-            .expect("document completion arrives")
-            .expect("completion channel is live");
-        owner.handle_completion(completion).await;
+        let outcome = drive_to_transition_answer(&mut owner, &mut observe_outcome).await;
+        assert!(matches!(outcome, TransitionObserveOutcome::Exited));
         assert!(matches!(owner.state, LifecycleState::NoRuntime(_)));
 
         drop(owner);
@@ -7303,6 +7289,29 @@ mod tests {
             TRANSITION_WINDOW_CAP.as_secs() + 20
                 < tribal_wire::management::MANAGEMENT_REQUEST_TIMEOUT_SECONDS,
         );
+    }
+
+    /// Drives the owner until a parked transition's observer is answered:
+    /// the exit answer rides the settling completion, so both the exit
+    /// observation and the completion must be pumped.
+    async fn drive_to_transition_answer(
+        owner: &mut LifecycleOwner,
+        outcome: &mut oneshot::Receiver<TransitionObserveOutcome>,
+    ) -> TransitionObserveOutcome {
+        tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
+            loop {
+                owner.observe_transition_pending();
+                while let Ok(completion) = owner.completions.try_recv() {
+                    owner.handle_completion(completion).await;
+                }
+                if let Ok(answer) = outcome.try_recv() {
+                    break answer;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the parked transition answers inside the window")
     }
 
     /// Kills and reaps a parked transition child so the test leaves no

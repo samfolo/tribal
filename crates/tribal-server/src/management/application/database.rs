@@ -356,10 +356,11 @@ impl DatabaseAccess {
 /// Opens a small one-off pool against the candidate for this request's
 /// initialisation; the secret shapes the options and goes no further.
 async fn candidate_pool(url: &SecretLiteral) -> Result<PgPool, DatabaseInitialiseError> {
-    let options = url
-        .expose_secret()
-        .parse::<PgConnectOptions>()
-        .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })?;
+    let options = parse_candidate_url(url.expose_secret()).map_err(|_| {
+        DatabaseInitialiseError::MigrationConnection {
+            source: sqlx::Error::Configuration("the candidate URL was refused".into()),
+        }
+    })?;
     sqlx::pool::PoolOptions::new()
         .max_connections(COMMAND_POOL_MAX_CONNECTIONS)
         .connect_with(options)
@@ -367,37 +368,92 @@ async fn candidate_pool(url: &SecretLiteral) -> Result<PgPool, DatabaseInitialis
         .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })
 }
 
-/// Connects to the candidate under one bounded window and reads its schema
-/// state and identity. Every failure folds into a typed, provider-neutral
-/// state whose copy carries no URL, host, or credential.
-pub(super) async fn inspect_target_state(raw: &str) -> DatabaseTargetState {
-    let Ok(options) = raw.parse::<PgConnectOptions>() else {
-        return unavailable(
+/// The connection parameters the pinned sqlx parser recognises. Any other
+/// query key is refused before sqlx ever sees the URL: the parser logs an
+/// unrecognised parameter's value at warn level, and a candidate secret must
+/// never reach a log through that path.
+const RECOGNISED_CANDIDATE_PARAMETERS: &[&str] = &[
+    "sslmode",
+    "ssl-mode",
+    "sslrootcert",
+    "ssl-root-cert",
+    "ssl-ca",
+    "sslcert",
+    "ssl-cert",
+    "sslkey",
+    "ssl-key",
+    "statement-cache-capacity",
+    "host",
+    "hostaddr",
+    "port",
+    "dbname",
+    "user",
+    "password",
+    "application_name",
+    "options",
+];
+
+/// Parses a candidate URL without letting any part of it reach a log: the
+/// shape is proven with a silent parser and every query key is checked
+/// against the recognised set first, naming only the offending key on
+/// refusal.
+pub(super) fn parse_candidate_url(raw: &str) -> Result<PgConnectOptions, DatabaseTargetFailure> {
+    let parsed = url::Url::parse(raw).map_err(|_| {
+        target_failure(
             DatabaseTargetFailureKind::InvalidUrl,
             "The URL is not a valid PostgreSQL connection string.",
             Some("Check the scheme, host, and database name."),
-        );
+        )
+    })?;
+    if let Some((key, _)) = parsed
+        .query_pairs()
+        .find(|(key, _)| !RECOGNISED_CANDIDATE_PARAMETERS.contains(&key.as_ref()))
+    {
+        return Err(target_failure(
+            DatabaseTargetFailureKind::InvalidUrl,
+            &format!("The URL carries an unsupported parameter: {key}."),
+            Some("Remove the parameter and inspect again."),
+        ));
+    }
+    raw.parse::<PgConnectOptions>().map_err(|_| {
+        target_failure(
+            DatabaseTargetFailureKind::InvalidUrl,
+            "The URL is not a valid PostgreSQL connection string.",
+            Some("Check the scheme, host, and database name."),
+        )
+    })
+}
+
+/// Connects to the candidate under one bounded window covering the connect,
+/// the schema-head read, and the identity read. Every failure folds into a
+/// typed, provider-neutral state whose copy carries no URL, host, or
+/// credential.
+pub(super) async fn inspect_target_state(raw: &str) -> DatabaseTargetState {
+    let options = match parse_candidate_url(raw) {
+        Ok(options) => options,
+        Err(failure) => return DatabaseTargetState::Unavailable { failure },
     };
-    let connected =
-        tokio::time::timeout(INSPECT_WINDOW, sqlx::PgConnection::connect_with(&options)).await;
-    let mut conn = match connected {
-        Err(_elapsed) => {
-            return unavailable(
-                DatabaseTargetFailureKind::HostUnreachable,
-                "The host did not answer within the inspection window.",
-                Some("Check the host, port, and network path."),
-            );
-        }
-        Ok(Err(error)) => {
-            return DatabaseTargetState::Unavailable {
-                failure: classify_connect_error(&error),
-            };
-        }
-        Ok(Ok(conn)) => conn,
-    };
-    let state = schema_state(&mut conn).await;
-    let _ = conn.close().await;
-    state
+    let inspected = tokio::time::timeout(INSPECT_WINDOW, async {
+        let mut conn = match sqlx::PgConnection::connect_with(&options).await {
+            Ok(conn) => conn,
+            Err(error) => {
+                return DatabaseTargetState::Unavailable {
+                    failure: classify_connect_error(&error),
+                };
+            }
+        };
+        let state = schema_state(&mut conn).await;
+        let _ = conn.close().await;
+        state
+    })
+    .await;
+    inspected.unwrap_or_else(|_elapsed| {
+        unavailable(
+            DatabaseTargetFailureKind::HostUnreachable,
+            "The target did not answer within the inspection window.",
+            Some("Check the host, port, and network path."),
+        )
+    })
 }
 
 /// Maps the migration head and graph identity onto the target state space.
@@ -422,7 +478,7 @@ async fn schema_state(conn: &mut sqlx::PgConnection) -> DatabaseTargetState {
     match observed {
         MigrationHeadStatus::MissingTable => DatabaseTargetState::Uninitialised,
         MigrationHeadStatus::Behind { found, .. } => DatabaseTargetState::Behind {
-            pending: pending_after(found),
+            pending_count: pending_after(found),
         },
         MigrationHeadStatus::Ahead { .. } => DatabaseTargetState::Ahead,
         MigrationHeadStatus::Matches => match PgGraphIdentityRepository.get(conn).await {
@@ -828,6 +884,30 @@ mod tests {
     }
 
     #[test]
+    fn test_candidate_urls_with_unrecognised_parameters_are_refused_unrendered() {
+        let refused = parse_candidate_url(
+            "postgres://user:pass@localhost:5432/db?credential=super-secret-value",
+        )
+        .expect_err("an unrecognised parameter is refused");
+        assert_eq!(refused.kind, DatabaseTargetFailureKind::InvalidUrl);
+        assert!(
+            refused.presentation.message.contains("credential"),
+            "the offending key is named",
+        );
+        assert!(
+            !refused.presentation.message.contains("super-secret-value"),
+            "the value is never rendered",
+        );
+        assert!(
+            !format!("{refused:?}").contains("super-secret-value"),
+            "the value reaches no debug surface",
+        );
+
+        parse_candidate_url("postgres://user:pass@localhost:5432/db?sslmode=require")
+            .expect("recognised parameters pass");
+    }
+
+    #[test]
     fn test_pending_counts_catalogue_entries_above_the_found_head() {
         assert!(
             pending_after(0) >= 1,
@@ -931,7 +1011,7 @@ mod tests {
             .expect("migrate to the prior head");
         let behind = inspect_target_state(behind_db.database_url()).await;
         assert!(
-            matches!(behind, DatabaseTargetState::Behind { pending: 1 }),
+            matches!(behind, DatabaseTargetState::Behind { pending_count: 1 }),
             "a prior-head database is behind by one, got {behind:?}",
         );
 

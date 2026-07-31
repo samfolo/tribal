@@ -2376,7 +2376,7 @@
         "$ref": "#/definitions/ConfigRevision"
       },
       "target": {
-        "description": "Which database to initialise; defaults to the configured target so existing callers keep their shape.",
+        "description": "Which database to initialise; the configured target by default.",
         "default": {
           "target": "configured"
         },
@@ -2898,10 +2898,10 @@
               "data": {
                 "type": "object",
                 "required": [
-                  "pending"
+                  "pending_count"
                 ],
                 "properties": {
-                  "pending": {
+                  "pending_count": {
                     "type": "integer",
                     "format": "uint32",
                     "minimum": 0.0
@@ -32705,10 +32705,10 @@
               "data": {
                 "type": "object",
                 "required": [
-                  "pending"
+                  "pending_count"
                 ],
                 "properties": {
-                  "pending": {
+                  "pending_count": {
                     "type": "integer",
                     "format": "uint32",
                     "minimum": 0.0
@@ -33183,10 +33183,10 @@
               "data": {
                 "type": "object",
                 "required": [
-                  "pending"
+                  "pending_count"
                 ],
                 "properties": {
-                  "pending": {
+                  "pending_count": {
                     "type": "integer",
                     "format": "uint32",
                     "minimum": 0.0
@@ -33857,10 +33857,10 @@
               "data": {
                 "type": "object",
                 "required": [
-                  "pending"
+                  "pending_count"
                 ],
                 "properties": {
-                  "pending": {
+                  "pending_count": {
                     "type": "integer",
                     "format": "uint32",
                     "minimum": 0.0

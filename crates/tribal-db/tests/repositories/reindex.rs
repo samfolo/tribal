@@ -643,10 +643,9 @@ async fn test_retry_wait_aggregates_deferred_pending_tasks() {
         .await
         .expect("aggregate the deferred task")
         .expect("one task is waiting");
-    assert_eq!(wait.waiting, 1);
     // Postgres stores microseconds; compare at that precision.
     assert_eq!(
-        wait.resume_at.timestamp_micros(),
+        wait.timestamp_micros(),
         resume_at.timestamp_micros(),
         "the earliest resume instant is reported"
     );

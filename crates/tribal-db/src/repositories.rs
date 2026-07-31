@@ -108,8 +108,7 @@ pub use reindex_quarantine::{
 };
 pub use reindex_run::{NewReindexRun, PgReindexRunRepository, ReindexRunRepository};
 pub use reindex_task::{
-    NewReindexTask, PgReindexTaskRepository, ReindexRetryWait, ReindexTaskRepository,
-    ReindexTaskStateCount,
+    NewReindexTask, PgReindexTaskRepository, ReindexTaskRepository, ReindexTaskStateCount,
 };
 pub use relation::{
     NewKnowledgeItemRelation, PgRelationRepository, RelationRepository, TraversalDirection,
