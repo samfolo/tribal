@@ -434,14 +434,16 @@ impl StorageTransitionGate {
                 }
             });
         }
-        let mut pending_slot = self.pending.lock().await;
-        let session = database
-            .session(operation, Some(&request.expected_revision))
-            .await?;
+        // Armed the instant the slot is reserved: every early return from
+        // here — including the revision fence's — must free it again.
         let release_on_return = TransitionOccupancyGuard {
             occupancy: Arc::clone(&self.occupancy),
             armed: true,
         };
+        let mut pending_slot = self.pending.lock().await;
+        let session = database
+            .session(operation, Some(&request.expected_revision))
+            .await?;
 
         // The runtime fence, pre-checked here for ordering; the lifecycle
         // owner re-checks it authoritatively before any signal is sent.
@@ -1235,6 +1237,78 @@ mod tests {
                 .release_exclusive(&mut source_holder, advisory_locks::GRAPH_TRANSITION)
                 .await
                 .expect("release the holder"),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_failed_revision_fence_frees_the_transition_slot() {
+        let h = a_switch_harness().await;
+        let stale = ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"stale"));
+
+        let refused = h
+            .gate
+            .switch(
+                &operation(),
+                &h.database,
+                &h.lifecycle,
+                StorageSwitchRequest {
+                    expected_revision: stale,
+                    expected_runtime: None,
+                    source_graph_id: h.source_id,
+                    target_graph_id: h.target_id,
+                    target_url: SecretLiteral::try_from(h.ready_target.database_url().to_owned())
+                        .expect("target url"),
+                },
+            )
+            .await
+            .expect_err("a stale revision is refused");
+        assert!(matches!(
+            refused,
+            DatabaseAccessError::RevisionConflict { .. }
+        ));
+
+        // The slot must be free again: a refused switch cannot strand the
+        // barrier against every later admission.
+        drop(
+            h.gate
+                .admit_migration()
+                .expect("migration admits after a refused switch"),
+        );
+        drop(
+            h.gate
+                .admit_lifecycle()
+                .expect("lifecycle admits after a refused switch"),
+        );
+        let result = h
+            .switch(h.request(h.source_id, h.target_id, h.ready_target.database_url()))
+            .await;
+        assert!(
+            matches!(result, StorageSwitchResult::SourceQuiesced { .. }),
+            "a later switch still admits, got {result:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_settled_blocker_still_names_the_activity_that_refused() {
+        let h = a_switch_harness().await;
+
+        // The blocker drops between the refusal and the assessment read, so
+        // the assessment alone would report Ready; the answer must still
+        // name the activity that actually refused admission.
+        let mut assessment = h
+            .gate
+            .assess(&operation(), &h.database, None)
+            .await
+            .expect("assess")
+            .value;
+        assert_eq!(assessment.verdict, StorageTransitionVerdict::Ready);
+        force_refusing_activities(&mut assessment, true, false);
+        assert_eq!(assessment.verdict, StorageTransitionVerdict::Blocked);
+        assert!(
+            assessment
+                .activities
+                .iter()
+                .any(|activity| activity.kind == GraphActivityKind::DatabaseMigration),
         );
     }
 
