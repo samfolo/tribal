@@ -758,3 +758,17 @@ pub async fn seed_relation_job(
 
     (job_id, relation_task.id(), ki_ids)
 }
+
+/// Repoints the database's graph identity to a fresh one. Template-cloned
+/// test databases share the template's identity; a harness standing in for
+/// a *different* graph behind the same connection shape undoes that here.
+///
+/// # Panics
+///
+/// Panics if the database query fails.
+pub async fn repoint_graph_identity(conn: &mut PgConnection) {
+    sqlx::query("UPDATE graph_identity SET graph_id = gen_random_uuid()")
+        .execute(conn)
+        .await
+        .expect("setup: repoint graph identity");
+}

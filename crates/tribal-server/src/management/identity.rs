@@ -256,6 +256,65 @@ mod tests {
         assert_eq!(resolver.published(&snapshot.revision), None);
     }
 
+    #[tokio::test]
+    async fn test_admission_reproof_follows_a_repointed_target_and_fails_closed_behind() {
+        let target_a = tribal_test_utils::TestDb::new().await;
+        let target_b = tribal_test_utils::TestDb::new().await;
+        let temp = tempfile::tempdir().expect("temporary config root");
+        let config_path = temp.path().join("tribal.yaml");
+        let write_target = |url: &str| {
+            let config = TribalConfig::minimum_valid(url);
+            std::fs::write(
+                &config_path,
+                serde_yaml::to_string(&config).expect("config serialises"),
+            )
+            .expect("config writes");
+        };
+        write_target(target_a.database_url());
+        let (config, _worker_runtime) =
+            worker::spawn(ConfigAuthority::new(config_path.clone())).expect("config worker starts");
+        let shutdown = CancellationToken::new();
+        let resolver = GraphIdentityResolver::new(config.clone(), shutdown.clone());
+        let operation = OperationContext::new(shutdown);
+
+        resolver.reprove().await;
+        let revision_a = config
+            .for_operation(&operation)
+            .resolved_snapshot()
+            .await
+            .expect("configuration resolves")
+            .revision;
+        let graph_a = resolver
+            .published(&revision_a)
+            .expect("a ready target proves its identity");
+
+        // The target moves under the long-lived manager; the admission
+        // re-proof must observe the new graph, never serve the cached one.
+        let mut conn = target_b.raw_connection().await.expect("seed connection");
+        tribal_test_utils::repoint_graph_identity(&mut conn).await;
+        write_target(target_b.database_url());
+        resolver.reprove().await;
+        let revision_b = config
+            .for_operation(&operation)
+            .resolved_snapshot()
+            .await
+            .expect("configuration resolves")
+            .revision;
+        let graph_b = resolver
+            .published(&revision_b)
+            .expect("the repointed target proves its identity");
+
+        assert_ne!(
+            graph_b, graph_a,
+            "a newly admitted session never reports the old graph"
+        );
+        assert_eq!(
+            resolver.published(&revision_a),
+            None,
+            "the superseded revision fails closed"
+        );
+    }
+
     #[test]
     fn test_only_a_ready_target_proves_an_identity() {
         let graph_id = GraphId::new();
