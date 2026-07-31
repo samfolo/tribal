@@ -2,8 +2,8 @@
 //! repository path.
 //!
 //! Functions in this module either delegate to an existing repository
-//! (prompt versions) or use raw SQL for entities with no production
-//! insertion path (embeddings, committed relations).
+//! (prompt versions) or use quarantined fixture SQL for entities with no
+//! production insertion path, one query per included file.
 
 use sqlx::PgConnection;
 use tribal_db::{
@@ -20,6 +20,10 @@ use tribal_domain::{
     PrincipalId, ProjectId, PromptVersionId, ProviderKind, RelationBatchId, RelationHint,
     RelationKind, TaskId, TaskStatus, TaskType, TriageOutcome,
 };
+
+const INSERT_EMBEDDING_SQL: &str = include_str!("setup/insert_embedding.sql");
+const INSERT_COMMITTED_RELATION_SQL: &str = include_str!("setup/insert_committed_relation.sql");
+const REPOINT_GRAPH_IDENTITY_SQL: &str = include_str!("setup/repoint_graph_identity.sql");
 
 use crate::{
     a_new_extraction_result, a_new_job, a_new_knowledge_item, a_new_system_fingerprint, a_new_task,
@@ -252,17 +256,14 @@ pub async fn insert_embedding_for_profile(
     vector: Vec<f32>,
 ) {
     let pgvec = pgvector::HalfVector::from_f32_slice(&vector);
-    sqlx::query(
-        "INSERT INTO embeddings (knowledge_item_id, embedding_profile_id, model, embedding) \
-         VALUES ($1, $2, $3, $4)",
-    )
-    .bind(knowledge_item_id.inner())
-    .bind(embedding_profile_id.inner())
-    .bind(model)
-    .bind(pgvec)
-    .execute(&mut *conn)
-    .await
-    .expect("setup: insert embedding");
+    sqlx::query(INSERT_EMBEDDING_SQL)
+        .bind(knowledge_item_id.inner())
+        .bind(embedding_profile_id.inner())
+        .bind(model)
+        .bind(pgvec)
+        .execute(&mut *conn)
+        .await
+        .expect("setup: insert embedding");
 }
 
 // ---------------------------------------------------------------------------
@@ -285,20 +286,15 @@ pub async fn insert_committed_relation(
     relation_type: RelationKind,
     principal_id: PrincipalId,
 ) {
-    sqlx::query(
-        "INSERT INTO knowledge_item_relations \
-             (relation_batch_id, source_id, target_id, \
-              relation_type, principal_id) \
-         VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(batch_id.inner())
-    .bind(source_id.inner())
-    .bind(target_id.inner())
-    .bind(relation_type.as_str())
-    .bind(principal_id.inner())
-    .execute(&mut *conn)
-    .await
-    .expect("setup: insert committed relation");
+    sqlx::query(INSERT_COMMITTED_RELATION_SQL)
+        .bind(batch_id.inner())
+        .bind(source_id.inner())
+        .bind(target_id.inner())
+        .bind(relation_type.as_str())
+        .bind(principal_id.inner())
+        .execute(&mut *conn)
+        .await
+        .expect("setup: insert committed relation");
 }
 
 // ---------------------------------------------------------------------------
@@ -767,7 +763,7 @@ pub async fn seed_relation_job(
 ///
 /// Panics if the database query fails.
 pub async fn repoint_graph_identity(conn: &mut PgConnection) {
-    sqlx::query("UPDATE graph_identity SET graph_id = gen_random_uuid()")
+    sqlx::query(REPOINT_GRAPH_IDENTITY_SQL)
         .execute(conn)
         .await
         .expect("setup: repoint graph identity");
