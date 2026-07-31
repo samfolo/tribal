@@ -951,6 +951,11 @@ pub async fn drive_reindex_cycle(
             return Ok(());
         }
         build_partial_indexes(conn, &building).await?;
+        // Index construction is long; a cancellation landing inside it must
+        // not be followed by the catch-up's fresh provider work.
+        if !run_still_live(conn, run.id()).await? {
+            return Ok(());
+        }
         if catch_up_and_cutover(conn, &ctx).await? {
             tracing::info!("reindex complete; the new profile is now active");
         }
