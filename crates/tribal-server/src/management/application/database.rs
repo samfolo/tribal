@@ -405,14 +405,16 @@ pub(super) fn parse_candidate_url(raw: &str) -> Result<PgConnectOptions, Databas
             Some("Check the scheme, host, and database name."),
         )
     })?;
-    if let Some((key, _)) = parsed
+    // The offending key is not named: it is URL-derived text, and this copy
+    // reaches receipts and diagnostics.
+    if parsed
         .query_pairs()
-        .find(|(key, _)| !RECOGNISED_CANDIDATE_PARAMETERS.contains(&key.as_ref()))
+        .any(|(key, _)| !RECOGNISED_CANDIDATE_PARAMETERS.contains(&key.as_ref()))
     {
         return Err(target_failure(
             DatabaseTargetFailureKind::InvalidUrl,
-            &format!("The URL carries an unsupported parameter: {key}."),
-            Some("Remove the parameter and inspect again."),
+            "The URL carries an unsupported connection parameter.",
+            Some("Keep only the standard PostgreSQL connection parameters."),
         ));
     }
     raw.parse::<PgConnectOptions>().map_err(|_| {
@@ -890,18 +892,19 @@ mod tests {
         )
         .expect_err("an unrecognised parameter is refused");
         assert_eq!(refused.kind, DatabaseTargetFailureKind::InvalidUrl);
-        assert!(
-            refused.presentation.message.contains("credential"),
-            "the offending key is named",
-        );
-        assert!(
-            !refused.presentation.message.contains("super-secret-value"),
-            "the value is never rendered",
-        );
-        assert!(
-            !format!("{refused:?}").contains("super-secret-value"),
-            "the value reaches no debug surface",
-        );
+        let rendered = format!("{refused:?}");
+        for material in [
+            "super-secret-value",
+            "credential",
+            "user",
+            "pass",
+            "localhost",
+        ] {
+            assert!(
+                !rendered.contains(material),
+                "no URL-derived material reaches the refusal: {rendered}",
+            );
+        }
 
         parse_candidate_url("postgres://user:pass@localhost:5432/db?sslmode=require")
             .expect("recognised parameters pass");

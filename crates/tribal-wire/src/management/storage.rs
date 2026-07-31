@@ -107,33 +107,6 @@ impl std::ops::Deref for DatabaseTargetInspectResult {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_inspect_request_debug_is_redacted() {
-        let request = DatabaseTargetInspectRequest {
-            expected_revision: ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"config")),
-            candidate_url: SecretLiteral::try_from(
-                "postgres://user:hunter2@db.internal:5432/tribal".to_owned(),
-            )
-            .expect("a valid secret"),
-        };
-
-        let rendered = format!("{request:?}");
-        assert!(
-            !rendered.contains("hunter2"),
-            "no credential in Debug: {rendered}"
-        );
-        assert!(
-            !rendered.contains("db.internal"),
-            "no host in Debug: {rendered}"
-        );
-        assert!(rendered.contains("<redacted>"));
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Transition assessment
 // ---------------------------------------------------------------------------
@@ -371,4 +344,56 @@ pub enum StorageSwitchAbortResult {
         observed: Option<RuntimeIdentity>,
     },
     NoPendingTransition,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_inspect_request_debug_is_redacted() {
+        let request = DatabaseTargetInspectRequest {
+            expected_revision: ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"config")),
+            candidate_url: SecretLiteral::try_from(
+                "postgres://user:hunter2@db.internal:5432/tribal".to_owned(),
+            )
+            .expect("a valid secret"),
+        };
+
+        let rendered = format!("{request:?}");
+        assert!(
+            !rendered.contains("hunter2"),
+            "no credential in Debug: {rendered}"
+        );
+        assert!(
+            !rendered.contains("db.internal"),
+            "no host in Debug: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"));
+    }
+
+    #[test]
+    fn test_switch_request_debug_is_redacted() {
+        let request = StorageSwitchRequest {
+            expected_revision: ConfigRevision::from_digest(&ConfigDigest::from_bytes(b"config")),
+            expected_runtime: None,
+            source_graph_id: GraphId::new(),
+            target_graph_id: GraphId::new(),
+            target_url: SecretLiteral::try_from(
+                "postgres://user:hunter2@db.internal:5432/tribal".to_owned(),
+            )
+            .expect("a valid secret"),
+        };
+
+        let rendered = format!("{request:?}");
+        assert!(
+            !rendered.contains("hunter2"),
+            "no credential in Debug: {rendered}"
+        );
+        assert!(
+            !rendered.contains("db.internal"),
+            "no host in Debug: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"));
+    }
 }

@@ -650,3 +650,53 @@ async fn test_retry_wait_aggregates_deferred_pending_tasks() {
         "the earliest resume instant is reported"
     );
 }
+
+/// The claim takes the parent run row's shared lock and skips it when a
+/// cancellation holds it, so a claim racing an in-flight abort yields
+/// nothing rather than claiming against a run that is about to be aborted.
+#[tokio::test]
+async fn test_claim_yields_nothing_while_a_cancellation_holds_the_run() {
+    let ctx = TestDb::new().await;
+    let mut setup = ctx.raw_connection().await.expect("setup session");
+    let run_id = setup_run(&mut setup, "cancel-race").await;
+    PgReindexTaskRepository
+        .upsert(&mut setup, &item_task(run_id, "item:contended"))
+        .await
+        .expect("enrol task");
+
+    // The canceller holds an uncommitted abort on the run row.
+    let mut canceller = ctx.raw_connection().await.expect("cancel session");
+    let mut cancel_txn = sqlx::Connection::begin(&mut canceller)
+        .await
+        .expect("begin cancel");
+    assert!(
+        PgReindexRunRepository
+            .transition(
+                &mut cancel_txn,
+                run_id,
+                ReindexRunState::Queued,
+                ReindexRunState::Aborted,
+                Some("cancelled by operator"),
+            )
+            .await
+            .expect("abort the run"),
+    );
+
+    let mut claim_session = ctx.raw_connection().await.expect("claim session");
+    let during_cancellation = PgReindexTaskRepository
+        .claim(&mut claim_session, run_id, 10, "worker")
+        .await
+        .expect("claim");
+    assert!(
+        during_cancellation.is_empty(),
+        "a claim racing an in-flight cancellation yields nothing",
+    );
+
+    // Once the abort commits, the run is terminal and still admits nothing.
+    cancel_txn.commit().await.expect("commit the abort");
+    let after_commit = PgReindexTaskRepository
+        .claim(&mut claim_session, run_id, 10, "worker")
+        .await
+        .expect("claim after the abort");
+    assert!(after_commit.is_empty());
+}

@@ -111,7 +111,8 @@ pub trait ReindexTaskRepository {
     /// Atomically claims up to `limit` available `pending` tasks for the owner,
     /// scoped to `reindex_run_id` so a later run never claims a prior aborted
     /// run's leftover pending tasks, and admitted only while the parent run is
-    /// live — an observed abort yields nothing further to claim.
+    /// live. The claim shares the run row, so a cancellation in flight settles
+    /// first and is seen: no task is claimed after an abort commits.
     ///
     /// # Errors
     ///
@@ -240,7 +241,7 @@ impl ReindexTaskRepository for PgReindexTaskRepository {
                    AND t.state = 'pending' AND t.available_at <= now() \
                  ORDER BY t.available_at, t.created_at \
                  LIMIT $1 \
-                 FOR UPDATE OF t SKIP LOCKED \
+                 FOR UPDATE OF t FOR SHARE OF r SKIP LOCKED \
              ) \
              UPDATE reindex_tasks t \
              SET state = 'claimed', \
