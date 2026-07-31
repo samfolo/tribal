@@ -700,3 +700,43 @@ async fn test_claim_yields_nothing_while_a_cancellation_holds_the_run() {
         .expect("claim after the abort");
     assert!(after_commit.is_empty());
 }
+
+/// Two workers claiming the same live run never block each other: each task
+/// row is skipped when locked, so a second claimer proceeds immediately
+/// rather than waiting on the first claimer's transaction.
+#[tokio::test]
+async fn test_concurrent_claims_skip_locked_rows_rather_than_waiting() {
+    let ctx = TestDb::new().await;
+    let mut setup = ctx.raw_connection().await.expect("setup session");
+    let run_id = setup_run(&mut setup, "concurrent-claims").await;
+    for index in 0..2 {
+        PgReindexTaskRepository
+            .upsert(&mut setup, &item_task(run_id, &format!("item:{index}")))
+            .await
+            .expect("enrol task");
+    }
+
+    // The first claimer holds its claim open in an uncommitted transaction.
+    let mut first = ctx.raw_connection().await.expect("first session");
+    let mut first_txn = sqlx::Connection::begin(&mut first).await.expect("begin");
+    let held = PgReindexTaskRepository
+        .claim(&mut first_txn, run_id, 1, "worker-one")
+        .await
+        .expect("first claim");
+    assert_eq!(held.len(), 1);
+
+    // The second claimer must not wait on it: it skips the locked row and
+    // takes the other task while the first transaction is still open.
+    let mut second = ctx.raw_connection().await.expect("second session");
+    let taken = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        PgReindexTaskRepository.claim(&mut second, run_id, 1, "worker-two"),
+    )
+    .await
+    .expect("a concurrent claim never blocks on another claimer")
+    .expect("second claim");
+    assert_eq!(taken.len(), 1, "the second claimer takes the free task");
+    assert_ne!(taken[0].id(), held[0].id());
+
+    first_txn.commit().await.expect("commit the first claim");
+}

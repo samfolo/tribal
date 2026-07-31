@@ -25,9 +25,10 @@ use integration::IntegrationAdministration;
 use operation::OperationContext;
 use project::ProjectAdministration;
 use reindex::ReindexAdministration;
-pub(in crate::management) use storage_transition::StorageTransitionGate;
+pub(in crate::management) use storage_transition::{LocalAdmissionGuard, StorageTransitionGate};
 use thread::ThreadAdministration;
 use token::TokenAdministration;
+use tribal_domain::StorageTransitionId;
 use tribal_wire::management::{
     AdministrationFailure, AuthenticationSettingsCall, BootstrapRunCall, CheckReportCall,
     ConfigGetAllCall, ConfigGetCall, ConfigPatchCall, ConfigPatchValidation, ConfigPathCall,
@@ -131,30 +132,24 @@ impl<'a> ManagementApplication<'a> {
                 }))
             }
             ManagementMethod::RuntimeStart => match self.storage.admit_lifecycle() {
-                Err(transition_id) => encode_lifecycle::<RuntimeStartCall>(Ok(Some(
-                    RuntimeStartResult::OperationInProgress {
-                        state: StartOperationInProgress::GraphTransition { transition_id },
-                    },
-                ))),
+                Err(transition_id) => {
+                    encode_lifecycle::<RuntimeStartCall>(Ok(Some(start_refused_by(transition_id))))
+                }
                 Ok(_admission) => {
                     encode_lifecycle::<RuntimeStartCall>(self.lifecycle.start_for(&operation).await)
                 }
             },
             ManagementMethod::RuntimeStop => match self.storage.admit_lifecycle() {
-                Err(transition_id) => encode_lifecycle::<RuntimeStopCall>(Ok(Some(
-                    RuntimeStopResult::OperationInProgress {
-                        state: StopOperationInProgress::GraphTransition { transition_id },
-                    },
-                ))),
+                Err(transition_id) => {
+                    encode_lifecycle::<RuntimeStopCall>(Ok(Some(stop_refused_by(transition_id))))
+                }
                 Ok(_admission) => {
                     encode_lifecycle::<RuntimeStopCall>(self.lifecycle.stop_for(&operation).await)
                 }
             },
             ManagementMethod::RuntimeRestart => match self.storage.admit_lifecycle() {
                 Err(transition_id) => encode_lifecycle::<RuntimeRestartCall>(Ok(Some(
-                    RuntimeRestartResult::OperationInProgress {
-                        state: RestartOperationInProgress::GraphTransition { transition_id },
-                    },
+                    restart_refused_by(transition_id),
                 ))),
                 Ok(_admission) => encode_lifecycle::<RuntimeRestartCall>(
                     self.lifecycle.restart_for(&operation).await,
@@ -225,9 +220,7 @@ impl<'a> ManagementApplication<'a> {
                 match self.storage.admit_migration() {
                     Err(transition_id) => encode_call::<DatabaseInitialiseCall>(Ok(Revisioned {
                         config_revision: request.expected_revision.clone(),
-                        value: DatabaseInitialiseOutcome::GraphTransitionInProgress {
-                            transition_id: Some(transition_id),
-                        },
+                        value: initialise_refused_by(transition_id),
                     }
                     .into())),
                     Ok(_admission) => encode_call::<DatabaseInitialiseCall>(
@@ -496,7 +489,7 @@ impl<'a> ManagementApplication<'a> {
             }
             ManagementMethod::ConfigSet => {
                 let request = parse_call::<ConfigSetCall>(params)?;
-                refuse_config_write_under_transition(&self.storage, &[&request.key])?;
+                let _admission = admit_config_write(&self.storage, &[&request.key])?;
                 let runtime_changes = vec![tribal_wire::runtime_control::RuntimeConfigChange {
                     key: request.key.clone(),
                     value: tribal_wire::management::ConfigLiteral::new(
@@ -528,7 +521,7 @@ impl<'a> ManagementApplication<'a> {
             ManagementMethod::ConfigPatch => {
                 let request = parse_call::<ConfigPatchCall>(params)?;
                 let keys: Vec<_> = request.changes.iter().map(|change| &change.key).collect();
-                refuse_config_write_under_transition(&self.storage, &keys)?;
+                let _admission = admit_config_write(&self.storage, &keys)?;
                 let runtime_changes = request
                     .changes
                     .iter()
@@ -852,23 +845,49 @@ fn database_access_error(error: DatabaseAccessError) -> ManagementResponseError 
     }
 }
 
+/// The typed answers each barrier-admitted surface gives while a transition
+/// owns the graph. The dispatch arms and their tests share these, so a test
+/// cannot assert a shape the dispatch does not actually send.
+fn start_refused_by(transition_id: StorageTransitionId) -> RuntimeStartResult {
+    RuntimeStartResult::OperationInProgress {
+        state: StartOperationInProgress::GraphTransition { transition_id },
+    }
+}
+
+fn stop_refused_by(transition_id: StorageTransitionId) -> RuntimeStopResult {
+    RuntimeStopResult::OperationInProgress {
+        state: StopOperationInProgress::GraphTransition { transition_id },
+    }
+}
+
+fn restart_refused_by(transition_id: StorageTransitionId) -> RuntimeRestartResult {
+    RuntimeRestartResult::OperationInProgress {
+        state: RestartOperationInProgress::GraphTransition { transition_id },
+    }
+}
+
+fn initialise_refused_by(transition_id: StorageTransitionId) -> DatabaseInitialiseOutcome {
+    DatabaseInitialiseOutcome::GraphTransitionInProgress {
+        transition_id: Some(transition_id),
+    }
+}
+
 /// A transition owns the graph and its recovery is bound to the target the
 /// configuration named when it admitted, so a write that moves that target is
 /// refused until the transition settles.
-fn refuse_config_write_under_transition(
+fn admit_config_write(
     storage: &StorageTransitionGate,
     keys: &[&tribal_domain::ConfigFieldPath],
-) -> Result<(), ManagementResponseError> {
+) -> Result<Option<LocalAdmissionGuard>, ManagementResponseError> {
     if !keys.iter().any(|key| key.as_str() == DATABASE_URL_KEY) {
-        return Ok(());
+        return Ok(None);
     }
-    match storage.admit_migration() {
-        Ok(_admission) => Ok(()),
-        Err(_) => Err(administration_error(
+    storage.admit_migration().map(Some).map_err(|_| {
+        administration_error(
             "a storage transition holds this graph",
             AdministrationFailure::GraphTransitionInProgress,
-        )),
-    }
+        )
+    })
 }
 
 pub(super) fn administration_error(
@@ -1014,66 +1033,46 @@ fn thread_error(error: thread::ThreadAdministrationError) -> ManagementResponseE
 mod tests {
     use super::*;
 
-    /// The barrier's refusals, at the surfaces that deliver them: each
-    /// dispatch arm answers from the gate's admission, and none reaches the
-    /// effect behind it.
+    /// The refusal each barrier-admitted surface delivers, asserted against
+    /// the very mapping its dispatch arm calls.
     #[test]
     fn test_a_pending_transition_refuses_every_admitted_surface() {
         let gate = StorageTransitionGate::new();
-        let pending = tribal_domain::StorageTransitionId::new();
+        let pending = StorageTransitionId::new();
         gate.occupy_for_test(pending);
 
-        // Runtime lifecycle: each arm's typed in-progress state names the
-        // pending transition rather than sending a command.
-        let start = RuntimeStartResult::OperationInProgress {
-            state: StartOperationInProgress::GraphTransition {
-                transition_id: gate.admit_lifecycle().expect_err("start refused"),
-            },
-        };
+        let refused_lifecycle = gate.admit_lifecycle().expect_err("lifecycle is refused");
+        assert_eq!(refused_lifecycle, pending);
         assert!(matches!(
-            start,
+            start_refused_by(refused_lifecycle),
             RuntimeStartResult::OperationInProgress {
                 state: StartOperationInProgress::GraphTransition { transition_id }
             } if transition_id == pending
         ));
-        let stop = RuntimeStopResult::OperationInProgress {
-            state: StopOperationInProgress::GraphTransition {
-                transition_id: gate.admit_lifecycle().expect_err("stop refused"),
-            },
-        };
         assert!(matches!(
-            stop,
+            stop_refused_by(refused_lifecycle),
             RuntimeStopResult::OperationInProgress {
                 state: StopOperationInProgress::GraphTransition { transition_id }
             } if transition_id == pending
         ));
-        let restart = RuntimeRestartResult::OperationInProgress {
-            state: RestartOperationInProgress::GraphTransition {
-                transition_id: gate.admit_lifecycle().expect_err("restart refused"),
-            },
-        };
         assert!(matches!(
-            restart,
+            restart_refused_by(refused_lifecycle),
             RuntimeRestartResult::OperationInProgress {
                 state: RestartOperationInProgress::GraphTransition { transition_id }
             } if transition_id == pending
         ));
 
-        // Database initialisation carries the pending id it knows.
-        let initialise = DatabaseInitialiseOutcome::GraphTransitionInProgress {
-            transition_id: Some(gate.admit_migration().expect_err("initialise refused")),
-        };
+        let refused_migration = gate.admit_migration().expect_err("migration is refused");
+        assert_eq!(refused_migration, pending);
         assert!(matches!(
-            initialise,
+            initialise_refused_by(refused_migration),
             DatabaseInitialiseOutcome::GraphTransitionInProgress {
                 transition_id: Some(transition_id)
             } if transition_id == pending
         ));
 
-        // Bootstrap admits through the same migration slot, and its refusal
-        // is the typed administration failure.
-        let refused = gate.admit_migration().expect_err("bootstrap refused");
-        assert_eq!(refused, pending);
+        // Bootstrap shares the migration slot and answers the typed
+        // administration failure.
         let error = administration_error(
             "a storage transition holds this graph",
             AdministrationFailure::GraphTransitionInProgress,
@@ -1104,11 +1103,16 @@ mod tests {
         let unrelated =
             tribal_domain::ConfigFieldPath::parse("server.host").expect("a valid config key");
 
-        refuse_config_write_under_transition(&gate, &[&database_url])
-            .expect("no transition, no refusal");
+        let admission =
+            admit_config_write(&gate, &[&database_url]).expect("no transition, no refusal");
+        assert!(
+            admission.is_some(),
+            "a database-target write holds its admission for the write's duration",
+        );
+        drop(admission);
 
-        gate.occupy_for_test(tribal_domain::StorageTransitionId::new());
-        let refused = refuse_config_write_under_transition(&gate, &[&database_url])
+        gate.occupy_for_test(StorageTransitionId::new());
+        let refused = admit_config_write(&gate, &[&database_url])
             .expect_err("a pending transition refuses the write");
         assert!(matches!(
             refused.error,
@@ -1116,12 +1120,18 @@ mod tests {
                 failure: AdministrationFailure::GraphTransitionInProgress
             }
         ));
-        refuse_config_write_under_transition(&gate, &[&unrelated])
-            .expect("an unrelated key is untouched by the transition");
+        assert!(
+            admit_config_write(&gate, &[&unrelated])
+                .expect("an unrelated key is untouched by the transition")
+                .is_none(),
+            "only a database-target write takes the barrier",
+        );
 
         gate.release_for_test();
-        refuse_config_write_under_transition(&gate, &[&database_url])
-            .expect("the write resumes once the transition settles");
+        drop(
+            admit_config_write(&gate, &[&database_url])
+                .expect("the write resumes once the transition settles"),
+        );
     }
 
     #[test]

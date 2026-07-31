@@ -153,14 +153,22 @@ async fn acquire_transition_admission(conn: &mut PgConnection) -> Result<bool, D
     {
         return Ok(false);
     }
-    if !PgAdvisoryLockRepository
+    match PgAdvisoryLockRepository
         .try_acquire_shared(conn, advisory_locks::TARGET_MIGRATION_RESERVATION)
-        .await?
+        .await
     {
-        release_shared_lock(conn, advisory_locks::GRAPH_TRANSITION).await;
-        return Ok(false);
+        Ok(true) => Ok(true),
+        // Both the refusal and the failure leave the session holding
+        // nothing: a pooled connection must never be returned with a lock.
+        Ok(false) => {
+            release_shared_lock(conn, advisory_locks::GRAPH_TRANSITION).await;
+            Ok(false)
+        }
+        Err(source) => {
+            release_shared_lock(conn, advisory_locks::GRAPH_TRANSITION).await;
+            Err(source)
+        }
     }
-    Ok(true)
 }
 
 /// Releases both shared admission locks after the migration's terminal result.

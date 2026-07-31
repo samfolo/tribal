@@ -370,10 +370,11 @@ async fn candidate_pool(url: &SecretLiteral) -> Result<PgPool, DatabaseInitialis
         .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })
 }
 
-/// The connection parameters the pinned sqlx parser recognises. Any other
-/// query key is refused before sqlx ever sees the URL: the parser logs an
-/// unrecognised parameter's value at warn level, and a candidate secret must
-/// never reach a log through that path.
+/// The connection parameters the pinned sqlx parser recognises by exact name;
+/// it also accepts the `options[…]` family, which the check below admits
+/// separately. Any other query key is refused before sqlx ever sees the URL:
+/// the parser logs an unrecognised parameter's value at warn level, and a
+/// candidate secret must never reach a log through that path.
 const RECOGNISED_CANDIDATE_PARAMETERS: &[&str] = &[
     "sslmode",
     "ssl-mode",
@@ -395,6 +396,13 @@ const RECOGNISED_CANDIDATE_PARAMETERS: &[&str] = &[
     "options",
 ];
 
+/// Whether the pinned sqlx parser recognises this connection parameter: an
+/// exact name, or a member of the `options[…]` family.
+fn recognised_parameter(key: &str) -> bool {
+    RECOGNISED_CANDIDATE_PARAMETERS.contains(&key)
+        || (key.starts_with("options[") && key.ends_with(']'))
+}
+
 /// Parses a candidate URL without letting any part of it reach a log or a
 /// receipt: the shape is proven with a silent parser, and a query key outside
 /// the recognised set is refused with copy that renders no part of the URL.
@@ -410,7 +418,7 @@ pub(super) fn parse_candidate_url(raw: &str) -> Result<PgConnectOptions, Databas
     // reaches receipts and diagnostics.
     if parsed
         .query_pairs()
-        .any(|(key, _)| !RECOGNISED_CANDIDATE_PARAMETERS.contains(&key.as_ref()))
+        .any(|(key, _)| !recognised_parameter(&key))
     {
         return Err(target_failure(
             DatabaseTargetFailureKind::InvalidUrl,
@@ -909,6 +917,8 @@ mod tests {
 
         parse_candidate_url("postgres://user:pass@localhost:5432/db?sslmode=require")
             .expect("recognised parameters pass");
+        parse_candidate_url("postgres://user:pass@localhost:5432/db?options[search_path]=tribal")
+            .expect("the options family passes");
     }
 
     #[test]

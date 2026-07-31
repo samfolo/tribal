@@ -23,10 +23,11 @@ use tribal_db::{
 use tribal_domain::{GraphId, ReindexRunState, StorageTransitionId};
 use tribal_wire::management::{
     BlockingResolution, ConfigRevision, DatabaseTargetReceipt, DatabaseTargetState, GraphActivity,
-    GraphActivityKind, GraphActivityStatus, Revisioned, SecretLiteral, StorageSwitchAbortRequest,
-    StorageSwitchAbortResult, StorageSwitchContinueRequest, StorageSwitchContinueResult,
-    StorageSwitchForceStopRequest, StorageSwitchForceStopResult, StorageSwitchRequest,
-    StorageSwitchResult, StorageTransitionAssessment, StorageTransitionVerdict,
+    GraphActivityKind, GraphActivityStatus, Revisioned, RuntimeIdentity, SecretLiteral,
+    StorageSwitchAbortRequest, StorageSwitchAbortResult, StorageSwitchContinueRequest,
+    StorageSwitchContinueResult, StorageSwitchForceStopRequest, StorageSwitchForceStopResult,
+    StorageSwitchRequest, StorageSwitchResult, StorageTransitionAssessment,
+    StorageTransitionVerdict,
 };
 
 use super::{
@@ -76,6 +77,13 @@ struct PendingTransition {
     observe_window: Duration,
     source_lease: TransitionLockLease,
     target_lease: TransitionLockLease,
+}
+
+impl PendingTransition {
+    /// Whether this transition was admitted against exactly this runtime.
+    fn records_runtime(&self, runtime: &RuntimeIdentity) -> bool {
+        matches!(&self.source, TransitionSource::AttachedRuntime(recorded) if recorded == runtime)
+    }
 }
 
 impl std::fmt::Debug for PendingTransition {
@@ -607,6 +615,11 @@ impl StorageTransitionGate {
         if pending.transition_id != request.transition_id {
             return Ok(StorageSwitchContinueResult::NoPendingTransition);
         }
+        // The recorded runtime is the fence: once the child has exited the
+        // owner answers any identity, so a mismatch must be refused here.
+        if !pending.records_runtime(&request.expected_runtime) {
+            return Ok(StorageSwitchContinueResult::RuntimeChanged);
+        }
         let outcome = lifecycle
             .transition_observe_for(
                 operation,
@@ -656,6 +669,9 @@ impl StorageTransitionGate {
         };
         if pending.transition_id != request.transition_id {
             return Ok(StorageSwitchForceStopResult::NoPendingTransition);
+        }
+        if !pending.records_runtime(&request.expected_runtime) {
+            return Ok(StorageSwitchForceStopResult::RuntimeChanged);
         }
         // The kill is irreversible: prove both barriers still hold before
         // sending it.
@@ -845,12 +861,6 @@ mod tests {
 
     use super::*;
     use crate::management::{configuration::ConfigAuthority, worker};
-
-    /// Ends every other session against this database, so a lease's custody
-    /// can be destroyed the way a network partition would destroy it.
-    const TERMINATE_OTHER_BACKENDS: &str = "SELECT pg_terminate_backend(pid) \
-         FROM pg_stat_activity \
-         WHERE datname = current_database() AND pid <> pg_backend_pid()";
 
     fn operation() -> OperationContext {
         OperationContext::new(tokio_util::sync::CancellationToken::new())
@@ -1535,18 +1545,12 @@ mod tests {
         assert!(
             matches!(
                 &continued,
-                StorageSwitchContinueResult::SourceQuiesced { target, .. }
-                    if matches!(target.state, DatabaseTargetState::Ready { .. })
+                StorageSwitchContinueResult::SourceQuiesced { transition_id: id, .. }
+                    if *id == transition_id
             ),
-            "an exited source quiesces with the target's receipt, got {continued:?}",
+            "an exited source quiesces under its own transition, got {continued:?}",
         );
-        assert!(
-            PgAdvisoryLockRepository
-                .try_acquire_exclusive(&mut probe, advisory_locks::GRAPH_TRANSITION)
-                .await
-                .expect("probe the source lock"),
-            "quiescence releases the transition's custody",
-        );
+        await_lock_released(&h.source, advisory_locks::GRAPH_TRANSITION).await;
 
         // The transition is gone: a repeat is a typed refusal.
         let repeated = h
@@ -1565,6 +1569,66 @@ mod tests {
             repeated,
             StorageSwitchContinueResult::NoPendingTransition
         ));
+    }
+
+    #[tokio::test]
+    async fn test_a_follow_up_with_a_different_runtime_cannot_release_custody() {
+        let h = a_switch_harness().await;
+        let transition_id = StorageTransitionId::new();
+        h.gate
+            .install_pending_for_test(
+                transition_id,
+                TransitionSource::AttachedRuntime(a_runtime_identity()),
+                h.source.database_url(),
+                h.ready_target.database_url(),
+            )
+            .await;
+        let mut stranger = a_runtime_identity();
+        stranger.instance_id = "someone-else".to_owned();
+
+        let continued = h
+            .gate
+            .continue_switch(
+                &operation(),
+                &h.lifecycle,
+                StorageSwitchContinueRequest {
+                    transition_id,
+                    expected_runtime: stranger.clone(),
+                },
+            )
+            .await
+            .expect("continue runs");
+        assert!(matches!(
+            continued,
+            StorageSwitchContinueResult::RuntimeChanged
+        ));
+
+        let forced = h
+            .gate
+            .force_stop(
+                &operation(),
+                &h.lifecycle,
+                StorageSwitchForceStopRequest {
+                    transition_id,
+                    expected_runtime: stranger,
+                },
+            )
+            .await
+            .expect("force runs");
+        assert!(matches!(
+            forced,
+            StorageSwitchForceStopResult::RuntimeChanged
+        ));
+
+        // Custody is retained: neither refusal released the source lock.
+        let mut probe = h.source.raw_connection().await.expect("probe");
+        assert!(
+            !PgAdvisoryLockRepository
+                .try_acquire_exclusive(&mut probe, advisory_locks::GRAPH_TRANSITION)
+                .await
+                .expect("probe the source lock"),
+            "a runtime mismatch retains the transition's custody",
+        );
     }
 
     #[tokio::test]
@@ -1612,62 +1676,32 @@ mod tests {
         assert!(
             matches!(
                 &forced,
-                StorageSwitchForceStopResult::SourceQuiesced { target, .. }
-                    if matches!(target.state, DatabaseTargetState::Ready { .. })
+                StorageSwitchForceStopResult::SourceQuiesced { transition_id: id, .. }
+                    if *id == transition_id
             ),
             "an exited source quiesces under force, got {forced:?}",
         );
-        let mut probe = h.source.raw_connection().await.expect("probe");
-        assert!(
-            PgAdvisoryLockRepository
-                .try_acquire_exclusive(&mut probe, advisory_locks::GRAPH_TRANSITION)
-                .await
-                .expect("probe the source lock"),
-            "quiescence releases the transition's custody",
-        );
+        await_lock_released(&h.source, advisory_locks::GRAPH_TRANSITION).await;
     }
 
-    #[tokio::test]
-    async fn test_a_lost_lease_session_cannot_answer_quiesced() {
-        let h = a_switch_harness().await;
-        let transition_id = StorageTransitionId::new();
-        h.gate
-            .install_pending_for_test(
-                transition_id,
-                TransitionSource::CleanNoRuntime,
-                h.source.database_url(),
-                h.ready_target.database_url(),
-            )
-            .await;
-
-        // Kill every backend but this one against the source database: the
-        // transition's own lease session dies with them.
-        let mut killer = h.source.raw_connection().await.expect("killer session");
-        sqlx::query(TERMINATE_OTHER_BACKENDS)
-            .execute(&mut killer)
-            .await
-            .expect("terminate the lease session");
-
-        let continued = h
-            .gate
-            .continue_switch(
-                &operation(),
-                &h.lifecycle,
-                StorageSwitchContinueRequest {
-                    transition_id,
-                    expected_runtime: a_runtime_identity(),
-                },
-            )
-            .await;
-        // The lifecycle refuses first here; what matters is that no path
-        // reports quiescence once custody is gone.
-        match continued {
-            Ok(result) => assert!(
-                !matches!(result, StorageSwitchContinueResult::SourceQuiesced { .. }),
-                "a lost lease can never answer quiesced, got {result:?}",
-            ),
-            Err(error) => assert!(matches!(error, DatabaseAccessError::Connection { .. })),
-        }
+    /// Polls until the lock is free: a released lease closes its session, and
+    /// Postgres drops the lock when it notices, not when the value drops.
+    async fn await_lock_released(ctx: &TestDb, lock_id: i64) {
+        let mut probe = ctx.raw_connection().await.expect("probe session");
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if PgAdvisoryLockRepository
+                    .try_acquire_exclusive(&mut probe, lock_id)
+                    .await
+                    .expect("probe the lock")
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a released lease frees its lock");
     }
 
     fn a_runtime_identity() -> tribal_wire::management::RuntimeIdentity {

@@ -241,7 +241,7 @@ impl ReindexTaskRepository for PgReindexTaskRepository {
                    AND t.state = 'pending' AND t.available_at <= now() \
                  ORDER BY t.available_at, t.created_at \
                  LIMIT $1 \
-                 FOR UPDATE OF t FOR SHARE OF r SKIP LOCKED \
+                 FOR UPDATE OF t SKIP LOCKED FOR SHARE OF r SKIP LOCKED \
              ) \
              UPDATE reindex_tasks t \
              SET state = 'claimed', \
