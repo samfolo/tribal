@@ -2545,17 +2545,14 @@
   "DatabaseProbeRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "DatabaseProbeRequest",
+    "description": "Health check of the stored configured database.",
     "type": "object",
     "required": [
-      "expected_revision",
-      "target"
+      "expected_revision"
     ],
     "properties": {
       "expected_revision": {
         "$ref": "#/definitions/ConfigRevision"
-      },
-      "target": {
-        "$ref": "#/definitions/DatabaseProbeTarget"
       }
     },
     "definitions": {
@@ -2564,55 +2561,6 @@
         "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
         "x-tribal-base64url-prefix": "cfg_",
         "x-tribal-swift-type": "canonical-base64url-32"
-      },
-      "DatabaseProbeTarget": {
-        "oneOf": [
-          {
-            "type": "object",
-            "required": [
-              "target"
-            ],
-            "properties": {
-              "target": {
-                "type": "string",
-                "enum": [
-                  "stored"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "target"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "url"
-                ],
-                "properties": {
-                  "url": {
-                    "$ref": "#/definitions/SecretLiteral"
-                  }
-                }
-              },
-              "target": {
-                "type": "string",
-                "enum": [
-                  "candidate"
-                ]
-              }
-            }
-          }
-        ]
-      },
-      "SecretLiteral": {
-        "type": "string",
-        "pattern": "^\\S+$",
-        "x-tribal-swift-type": "redacted-validated-string"
       }
     }
   },

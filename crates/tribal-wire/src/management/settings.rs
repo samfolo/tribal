@@ -149,38 +149,11 @@ pub enum SecretPresence {
     Configured,
 }
 
-#[derive(PartialEq, Serialize, Deserialize)]
+/// Health check of the stored configured database.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DatabaseProbeRequest {
-    pub target: DatabaseProbeTarget,
     pub expected_revision: ConfigRevision,
-}
-
-impl std::fmt::Debug for DatabaseProbeRequest {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("DatabaseProbeRequest")
-            .field("target", &self.target)
-            .field("expected_revision", &self.expected_revision)
-            .finish()
-    }
-}
-
-#[derive(PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "target", content = "data", rename_all = "snake_case")]
-pub enum DatabaseProbeTarget {
-    Stored,
-    Candidate { url: SecretLiteral },
-}
-
-impl std::fmt::Debug for DatabaseProbeTarget {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stored => formatter.write_str("Stored"),
-            Self::Candidate { .. } => formatter.write_str("Candidate { url: <redacted> }"),
-        }
-    }
 }
 
 /// Provider connections and capabilities in canonical display order.
