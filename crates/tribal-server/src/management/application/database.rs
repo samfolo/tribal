@@ -441,7 +441,7 @@ pub(super) fn parse_candidate_url(raw: &str) -> Result<PgConnectOptions, Databas
 /// the schema-head read, and the identity read. Every failure folds into a
 /// typed, provider-neutral state whose copy carries no URL, host, or
 /// credential.
-pub(super) async fn inspect_target_state(raw: &str) -> DatabaseTargetState {
+pub(in crate::management) async fn inspect_target_state(raw: &str) -> DatabaseTargetState {
     let options = match parse_candidate_url(raw) {
         Ok(options) => options,
         Err(failure) => return DatabaseTargetState::Unavailable { failure },

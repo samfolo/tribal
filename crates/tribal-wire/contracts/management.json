@@ -9873,6 +9873,17 @@
       "settings"
     ],
     "properties": {
+      "graph_id": {
+        "description": "Identity of the configured target, when it is ready and proved at this snapshot's revision; `None` for an unconfigured, unavailable, or not-ready target.",
+        "anyOf": [
+          {
+            "$ref": "#/definitions/GraphId"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "lifecycle": {
         "$ref": "#/definitions/LifecycleSnapshot"
       },
@@ -10505,6 +10516,11 @@
             ]
           }
         }
+      },
+      "GraphId": {
+        "type": "string",
+        "pattern": "^graph_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "x-tribal-swift-type": "validated-string"
       },
       "HealthDegradedReadinessReport": {
         "description": "Readiness narrowed to a health-degraded verdict.",

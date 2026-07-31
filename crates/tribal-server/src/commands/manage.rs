@@ -29,6 +29,7 @@ use crate::{
         configuration::ConfigAuthority,
         connector::{ManagerConnector, ManagerConnectorError},
         custody::{CustodyError, PendingRecovery},
+        identity::GraphIdentityResolver,
         lifecycle::{LifecycleController, LifecycleExit, LifecycleStartError, RecoveredRuntime},
         probe::ProbeService,
         product::ProductService,
@@ -234,7 +235,7 @@ async fn run_async(
         emit_if_requested(writer, announce_json, &record)?;
         return Err(ManageError::Authority { source });
     }
-    let identity = ManagerSocketIdentity {
+    let socket_identity = ManagerSocketIdentity {
         instance_id: instance_id.clone(),
         binary_version: env!("CARGO_PKG_VERSION").to_owned(),
     };
@@ -260,6 +261,10 @@ async fn run_async(
     let probe = ProbeService::new(config.clone());
     observe_readiness_once(&config, &probe, &lifecycle).await;
     let product = ProductService::new(config.clone());
+    // The identity reaches a terminal state before the socket admits a
+    // handshake, so no client can read a start-up pending state.
+    let identity = GraphIdentityResolver::new(config.clone(), shutdown.clone());
+    identity.reprove().await;
     let (credentials, credential_runtime) =
         CredentialCoordinator::spawn(lease.paths().namespace.clone(), shutdown.clone());
     let mut credential_terminal = credential_runtime.terminal();
@@ -274,15 +279,21 @@ async fn run_async(
         lifecycle.clone(),
         shutdown.clone(),
     ));
+    let identity_task = tokio::spawn(refresh_identity(
+        identity.clone(),
+        config.clone(),
+        shutdown.clone(),
+    ));
     let lifecycle_for_socket = lifecycle.clone();
     let socket_task = tokio::spawn(socket::serve(
         listener,
-        identity,
+        socket_identity,
         ManagerSocketServices::new(
             config,
             product,
             probe,
             lifecycle_for_socket,
+            identity,
             credentials.clone(),
             shutdown.clone(),
         ),
@@ -327,6 +338,9 @@ async fn run_async(
     }
     if let Err(error) = readiness_task.await {
         tracing::error!(%error, "readiness task failed");
+    }
+    if let Err(error) = identity_task.await {
+        tracing::error!(%error, "graph identity task failed");
     }
     drop(credentials);
     credential_runtime
@@ -531,6 +545,27 @@ async fn watch_config_file(
                 last_revision = Some(revision.clone());
                 config.publish_raw_change(revision);
                 lifecycle.refresh().await;
+            }
+        }
+    }
+}
+
+/// Re-publishes the configured target's identity when the configuration
+/// changes, carrying the proof forward unless the database target moved.
+async fn refresh_identity(
+    identity: GraphIdentityResolver,
+    config: worker::ConfigWorkerClient,
+    shutdown: CancellationToken,
+) {
+    let mut config_events = config.subscribe();
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            event = config_events.recv() => match event {
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    identity.refresh().await;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
         }
     }

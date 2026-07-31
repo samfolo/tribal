@@ -25,6 +25,7 @@ use super::{
         ManagementApplication, credential::CredentialCoordinator,
         storage_transition::StorageTransitionGate,
     },
+    identity::GraphIdentityResolver,
     lifecycle::LifecycleController,
     probe::ProbeService,
     product::ProductService,
@@ -52,6 +53,7 @@ pub(crate) struct ManagerSocketServices {
     product: ProductService,
     probe: ProbeService,
     lifecycle: LifecycleController,
+    identity: GraphIdentityResolver,
     credentials: CredentialCoordinator,
     storage: StorageTransitionGate,
     shutdown: CancellationToken,
@@ -63,6 +65,7 @@ impl ManagerSocketServices {
         product: ProductService,
         probe: ProbeService,
         lifecycle: LifecycleController,
+        identity: GraphIdentityResolver,
         credentials: CredentialCoordinator,
         shutdown: CancellationToken,
     ) -> Self {
@@ -71,6 +74,7 @@ impl ManagerSocketServices {
             product,
             probe,
             lifecycle,
+            identity,
             credentials,
             storage: StorageTransitionGate::new(),
             shutdown,
@@ -221,6 +225,9 @@ async fn handle_connection(
     }
 
     if compatible {
+        // An admitted session never reads a prior identity proof: the target
+        // is reclassified before the session serves its first snapshot.
+        services.identity.reprove().await;
         let mut lifecycle_updates = services.lifecycle.subscribe();
         let mut lifecycle_events = services.lifecycle.subscribe_events();
         let mut config_updates = services.config.subscribe();
@@ -231,6 +238,7 @@ async fn handle_connection(
                 &product,
                 &services.probe,
                 &services.lifecycle,
+                &services.identity,
                 services.credentials.clone(),
                 services.storage.clone(),
                 services.shutdown.clone(),
@@ -611,8 +619,9 @@ mod tests {
                     ManagerSocketServices::new(
                         config.clone(),
                         ProductService::new(config.clone()),
-                        ProbeService::new(config),
+                        ProbeService::new(config.clone()),
                         lifecycle,
+                        GraphIdentityResolver::new(config, shutdown.clone()),
                         credentials,
                         shutdown.clone(),
                     )

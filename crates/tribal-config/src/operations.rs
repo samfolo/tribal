@@ -919,6 +919,37 @@ mod tests {
     }
 
     #[test]
+    fn test_set_database_url_shadowed_by_its_alias_env_layer() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("TRIBAL_DATABASE_URL", "postgres://env-holder/tribal");
+            let path = jail.directory().join("tribal.yaml");
+            let effect = set(
+                &base_config(),
+                &path,
+                "database.url",
+                json!("postgres://file-target/tribal"),
+                &CliShadow::default(),
+            )
+            .unwrap()
+            .effect;
+            assert_eq!(
+                effect,
+                WriteEffect::Shadowed {
+                    by: "TRIBAL_DATABASE_URL".to_owned()
+                }
+            );
+
+            // The write still persists — the shadow is a higher layer, not a refusal.
+            let document = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                document.contains("file-target"),
+                "the write must persist: {document}"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_set_shadowed_by_a_nested_env_layer() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("TRIBAL_DISCOVERY__MAX_LIMIT", "99");

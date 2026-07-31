@@ -1,7 +1,7 @@
 //! Product-level Settings projections and revisioned actions.
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::{ProviderConnectionName, ProviderKind};
+use tribal_domain::{GraphId, ProviderConnectionName, ProviderKind};
 
 use super::{
     CheckSubject, ConfigFieldPath, ConfigPatchChange, ConfigPatchOutcome, ConfigRevision,
@@ -16,6 +16,10 @@ use crate::operator_check::CheckName;
 pub struct ManagerSnapshot {
     pub lifecycle: LifecycleSnapshot,
     pub settings: SettingsSetupSnapshot,
+    /// Identity of the configured target, when it is ready and proved at
+    /// this snapshot's revision; `None` for an unconfigured, unavailable,
+    /// or not-ready target.
+    pub graph_id: Option<GraphId>,
 }
 
 /// First-run progress derived by the manager from one configuration revision.
