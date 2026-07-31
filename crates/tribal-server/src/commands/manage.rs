@@ -406,7 +406,7 @@ async fn prepare_authority(
                         emit_if_requested(writer, announce_json, &record)?;
                         return Err(ManageError::Client { source });
                     }
-                    return prepare_after_restricted_shutdown(
+                    return prepare_after_owner_exit(
                         config_path,
                         instance_id,
                         descriptor.canonical_config_path,
@@ -417,6 +417,22 @@ async fn prepare_authority(
                     .map(Some);
                 }
                 Err(_) => {
+                    // An unreachable lease owner is exiting or hung. Only a
+                    // delegated runtime warrants custody recovery; with
+                    // nothing delegated, wait for the lease to clear.
+                    let paths = AuthorityLease::paths_for(config_path)
+                        .map_err(|source| ManageError::Authority { source })?;
+                    if !paths.delegated_descriptor_path.exists() {
+                        return prepare_after_owner_exit(
+                            config_path,
+                            instance_id,
+                            descriptor.canonical_config_path,
+                            writer,
+                            announce_json,
+                        )
+                        .await
+                        .map(Some);
+                    }
                     let (lease, listener, recovered) = recover_or_report(
                         config_path,
                         instance_id,
@@ -651,7 +667,11 @@ async fn bind_or_report(
     }
 }
 
-async fn prepare_after_restricted_shutdown(
+/// Awaits a departing lease owner — a restricted manager asked to shut
+/// down, or an unreachable owner with nothing delegated — and takes over
+/// once the lease clears; a delegated runtime appearing routes into
+/// custody recovery instead.
+async fn prepare_after_owner_exit(
     config_path: &Path,
     manager_instance_id: &str,
     canonical_config_path: PathBuf,
