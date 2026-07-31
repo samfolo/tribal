@@ -92,16 +92,12 @@ impl PendingTransition {
         matches!(&self.source, TransitionSource::AttachedRuntime(recorded) if recorded == runtime)
     }
 
-    /// Proves both leases still hold. Every answer that asserts custody —
+    /// Whether both leases still hold. Every answer that asserts custody —
     /// the parked ones that claim it is retained as much as the quiescent
     /// ones that claim it may now be released — passes through here, so no
     /// outcome can describe a barrier that Postgres has already dropped.
-    async fn prove_custody(&mut self) -> Result<(), DatabaseAccessError> {
-        if self.source_lease.prove().await && self.target_lease.prove().await {
-            Ok(())
-        } else {
-            Err(custody_lost_error())
-        }
+    async fn holds_custody(&mut self) -> bool {
+        self.source_lease.prove().await && self.target_lease.prove().await
     }
 }
 
@@ -610,15 +606,22 @@ impl StorageTransitionGate {
             .await?;
         match outcome {
             Some(TransitionStopOutcome::SourceQuiesced) => {
-                pending.prove_custody().await?;
+                // Nothing is stored yet: dropping this pending on the way
+                // out closes both sessions and frees whichever lock lived.
+                if !pending.holds_custody().await {
+                    return Err(custody_lost_error());
+                }
                 Ok(StorageSwitchResult::SourceQuiesced {
                     transition_id,
                     target: target_receipt,
                 })
             }
             Some(TransitionStopOutcome::StopTimedOut { runtime }) => {
-                // Parking claims the barrier is retained, so prove it is.
-                pending.prove_custody().await?;
+                // Parking claims the barrier is retained, so prove it is;
+                // dropping this pending frees whichever lock survived.
+                if !pending.holds_custody().await {
+                    return Err(custody_lost_error());
+                }
                 // The parked transition owns the barrier from here.
                 admission.retain();
                 *pending_slot = Some(pending);
@@ -670,7 +673,10 @@ impl StorageTransitionGate {
             Some(TransitionObserveOutcome::Exited) => {
                 let transition_id = pending.transition_id;
                 let target = target_receipt(pending.target_url.expose_secret()).await;
-                pending.prove_custody().await?;
+                if !pending.holds_custody().await {
+                    self.release_pending(&mut pending_slot);
+                    return Err(custody_lost_error());
+                }
                 self.release_pending(&mut pending_slot);
                 Ok(StorageSwitchContinueResult::SourceQuiesced {
                     transition_id,
@@ -678,7 +684,10 @@ impl StorageTransitionGate {
                 })
             }
             Some(TransitionObserveOutcome::StillPresent { runtime, .. }) => {
-                pending.prove_custody().await?;
+                if !pending.holds_custody().await {
+                    self.release_pending(&mut pending_slot);
+                    return Err(custody_lost_error());
+                }
                 Ok(StorageSwitchContinueResult::StopTimedOut {
                     transition_id: pending.transition_id,
                     runtime,
@@ -712,8 +721,11 @@ impl StorageTransitionGate {
             return Ok(StorageSwitchForceStopResult::RuntimeChanged);
         }
         // The kill is irreversible: prove both barriers still hold before
-        // sending it.
-        pending.prove_custody().await?;
+        // sending it, and give up the survivor if either is gone.
+        if !pending.holds_custody().await {
+            self.release_pending(&mut pending_slot);
+            return Err(custody_lost_error());
+        }
         let outcome = lifecycle
             .transition_observe_for(
                 operation,
@@ -726,7 +738,10 @@ impl StorageTransitionGate {
             Some(TransitionObserveOutcome::Exited) => {
                 let transition_id = pending.transition_id;
                 let target = target_receipt(pending.target_url.expose_secret()).await;
-                pending.prove_custody().await?;
+                if !pending.holds_custody().await {
+                    self.release_pending(&mut pending_slot);
+                    return Err(custody_lost_error());
+                }
                 self.release_pending(&mut pending_slot);
                 Ok(StorageSwitchForceStopResult::SourceQuiesced {
                     transition_id,
@@ -734,7 +749,10 @@ impl StorageTransitionGate {
                 })
             }
             Some(TransitionObserveOutcome::StillPresent { failure, .. }) => {
-                pending.prove_custody().await?;
+                if !pending.holds_custody().await {
+                    self.release_pending(&mut pending_slot);
+                    return Err(custody_lost_error());
+                }
                 Ok(StorageSwitchForceStopResult::RuntimeStillPresent { failure })
             }
             Some(
@@ -782,7 +800,10 @@ impl StorageTransitionGate {
             Some(TransitionObserveOutcome::Exited) => {
                 // Recovery releases the barriers, so it may only proceed
                 // from custody this manager still holds.
-                pending.prove_custody().await?;
+                if !pending.holds_custody().await {
+                    self.release_pending(&mut pending_slot);
+                    return Err(custody_lost_error());
+                }
                 let start = lifecycle.start_for(operation).await?;
                 self.release_pending(&mut pending_slot);
                 match start {
@@ -796,15 +817,24 @@ impl StorageTransitionGate {
                 }
             }
             Some(TransitionObserveOutcome::StillPresent { runtime, .. }) => {
-                pending.prove_custody().await?;
+                if !pending.holds_custody().await {
+                    self.release_pending(&mut pending_slot);
+                    return Err(custody_lost_error());
+                }
                 Ok(StorageSwitchAbortResult::SourceRecoveryPending { runtime })
             }
             Some(TransitionObserveOutcome::RuntimeChanged { observed }) => {
-                pending.prove_custody().await?;
+                if !pending.holds_custody().await {
+                    self.release_pending(&mut pending_slot);
+                    return Err(custody_lost_error());
+                }
                 Ok(StorageSwitchAbortResult::RuntimeChanged { observed })
             }
             Some(TransitionObserveOutcome::NotStopping) => {
-                pending.prove_custody().await?;
+                if !pending.holds_custody().await {
+                    self.release_pending(&mut pending_slot);
+                    return Err(custody_lost_error());
+                }
                 Ok(StorageSwitchAbortResult::RuntimeChanged { observed: None })
             }
             None => Err(custody_lost_error()),
@@ -1683,6 +1713,47 @@ mod tests {
                 .iter()
                 .any(|activity| activity.kind == GraphActivityKind::RuntimeLifecycle),
             "the blocked answer names the refusing activity",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_losing_one_lease_releases_the_other_rather_than_stranding_it() {
+        let h = a_switch_harness().await;
+        let transition_id = StorageTransitionId::new();
+        h.gate
+            .install_pending_for_test(
+                transition_id,
+                TransitionSource::AttachedRuntime(a_runtime_identity()),
+                h.source.database_url(),
+                h.ready_target.database_url(),
+            )
+            .await;
+
+        // The target lease's whole database goes away, so its session dies
+        // while the source session still answers.
+        drop(h.ready_target);
+
+        let lost = h
+            .gate
+            .continue_switch(
+                &operation(),
+                &h.lifecycle,
+                StorageSwitchContinueRequest {
+                    transition_id,
+                    expected_runtime: a_runtime_identity(),
+                },
+            )
+            .await
+            .expect_err("a lost lease cannot answer");
+        assert!(matches!(lost, DatabaseAccessError::Connection { .. }));
+
+        // The surviving source lock is freed rather than held to teardown,
+        // and the local barrier admits again.
+        await_lock_released(&h.source, advisory_locks::GRAPH_TRANSITION).await;
+        drop(
+            h.gate
+                .admit_lifecycle()
+                .expect("the barrier frees with the lost transition"),
         );
     }
 
