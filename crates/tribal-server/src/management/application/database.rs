@@ -26,6 +26,7 @@ use super::{
 };
 use crate::{
     error::AppError,
+    management::observed_at_unix_ms,
     startup::{MigrationRunOutcome, run_migrations},
 };
 
@@ -39,10 +40,11 @@ pub(crate) const COMMAND_POOL_MAX_CONNECTIONS: u32 = 1;
 pub(crate) const COMMAND_STATEMENT_TIMEOUT_MS: u64 = 30_000;
 pub(super) const MIGRATION_TERMINAL_WINDOW: std::time::Duration =
     std::time::Duration::from_millis(COMMAND_STATEMENT_TIMEOUT_MS * 2);
-/// One bounded window for the whole candidate look: connect, head check,
-/// identity read. Generous against a slow LAN, small against the 45 s
-/// operation window.
-const INSPECT_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+/// One bound on any single reach for a candidate database — the inspection's
+/// whole look, and each of a transition lease's operations. Generous against
+/// a slow LAN, small against the 45 s operation window.
+pub(in crate::management) const CANDIDATE_IO_WINDOW: std::time::Duration =
+    std::time::Duration::from_secs(10);
 const MUTATION_TERMINAL_WINDOW: std::time::Duration =
     std::time::Duration::from_millis(COMMAND_STATEMENT_TIMEOUT_MS);
 
@@ -348,7 +350,7 @@ impl DatabaseAccess {
             value: DatabaseTargetReceipt {
                 endpoint,
                 state,
-                observed_at_unix_ms: unix_ms_now(),
+                observed_at_unix_ms: observed_at_unix_ms(),
             },
         }
         .into())
@@ -444,7 +446,7 @@ pub(super) async fn inspect_target_state(raw: &str) -> DatabaseTargetState {
         Ok(options) => options,
         Err(failure) => return DatabaseTargetState::Unavailable { failure },
     };
-    let inspected = tokio::time::timeout(INSPECT_WINDOW, async {
+    let inspected = tokio::time::timeout(CANDIDATE_IO_WINDOW, async {
         let mut conn = match sqlx::PgConnection::connect_with(&options).await {
             Ok(conn) => conn,
             Err(error) => {
@@ -589,15 +591,6 @@ fn unavailable(
     DatabaseTargetState::Unavailable {
         failure: target_failure(kind, message, remediation),
     }
-}
-
-/// Milliseconds since the Unix epoch, saturating on a clock before it.
-pub(super) fn unix_ms_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 fn config_worker_error(error: ConfigWorkerRequestError) -> DatabaseAccessError {

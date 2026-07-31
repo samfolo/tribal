@@ -38,17 +38,21 @@ use super::{
         product::database_endpoint,
     },
     database::{
-        DatabaseAccess, DatabaseAccessError, inspect_target_state, parse_candidate_url, unix_ms_now,
+        CANDIDATE_IO_WINDOW, DatabaseAccess, DatabaseAccessError, inspect_target_state,
+        parse_candidate_url,
     },
     operation::OperationContext,
 };
+use crate::management::observed_at_unix_ms;
 
 /// The manager's observation margin past the runtime's graceful deadline.
 const TRANSITION_OBSERVATION_MARGIN: Duration = Duration::from_secs(5);
 /// One bound for every lease operation — connect, lock acquisition, and the
 /// custody proof. A stalled peer must settle as a typed refusal or a custody
 /// loss well inside the management request budget, never hang the call.
-const LEASE_IO_WINDOW: Duration = Duration::from_secs(10);
+const LEASE_IO_WINDOW: Duration = CANDIDATE_IO_WINDOW;
+/// What a lease's failures name in the error chain.
+const LEASE_SESSION_CONTEXT: &str = "a dedicated transition lock session";
 
 // ---------------------------------------------------------------------------
 // Gate
@@ -108,14 +112,15 @@ impl TransitionLockLease {
     /// `Ok(None)` is contention; the session closes with the lease.
     async fn acquire(url: &str, lock_id: i64) -> Result<Option<Self>, DatabaseAccessError> {
         let options = parse_candidate_url(url).map_err(|_| {
-            lease_connection_error(sqlx::Error::Configuration(
-                "the lock session URL was refused".into(),
-            ))
+            lease_failure(
+                LEASE_SESSION_CONTEXT,
+                sqlx::Error::Configuration("the lock session URL was refused".into()),
+            )
         })?;
         tokio::time::timeout(LEASE_IO_WINDOW, async {
             let mut connection = PgConnection::connect_with(&options)
                 .await
-                .map_err(lease_connection_error)?;
+                .map_err(|source| lease_failure(LEASE_SESSION_CONTEXT, source))?;
             let granted = match PgAdvisoryLockRepository
                 .try_acquire_exclusive(&mut connection, lock_id)
                 .await
@@ -134,7 +139,12 @@ impl TransitionLockLease {
             }
         })
         .await
-        .unwrap_or_else(|_elapsed| Err(lease_stalled_error()))
+        .unwrap_or_else(|_elapsed| {
+            Err(lease_failure(
+                "the transition lock session did not settle",
+                sqlx::Error::PoolTimedOut,
+            ))
+        })
     }
 
     /// Proves the session still holds custody: the lock is session-bound, so
@@ -201,59 +211,31 @@ fn force_refusing_activities(
     assessment.verdict = StorageTransitionVerdict::Blocked;
 }
 
-/// Clears the transition occupancy on drop unless disarmed — the disarmed
-/// path is the parked timeout, whose custody the pending record keeps.
-struct TransitionOccupancyGuard {
-    occupancy: Arc<Mutex<Occupancy>>,
-    armed: bool,
-}
-
-impl Drop for TransitionOccupancyGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            lock(&self.occupancy).transition = None;
-        }
-    }
-}
-
 /// The reinspection receipt for one target, at this instant.
 async fn target_receipt(raw: &str) -> DatabaseTargetReceipt {
     DatabaseTargetReceipt {
         endpoint: database_endpoint(raw),
         state: inspect_target_state(raw).await,
-        observed_at_unix_ms: unix_ms_now(),
+        observed_at_unix_ms: observed_at_unix_ms(),
     }
-}
-
-/// The source runtime's effective graceful deadline, from the fenced config.
-fn graceful_window(config: &tribal_config::TribalConfig) -> Duration {
-    Duration::from_millis(config.server.shutdown_deadline_ms)
 }
 
 /// Lost custody of a transition lock session mid-operation; the answer is an
 /// error, never a quiescence result.
-fn custody_lost_error() -> DatabaseAccessError {
+/// Every way a lock lease can fail its caller: the session would not open,
+/// did not settle in its window, or no longer holds what it promised. All
+/// three are the same answer — this manager cannot act on that lock.
+fn lease_failure(context: &str, source: sqlx::Error) -> DatabaseAccessError {
     DatabaseAccessError::Connection {
         source: tribal_db::DbError::QueryFailed {
-            context: "transition lock custody was lost".to_owned(),
-            source: sqlx::Error::PoolClosed,
-        },
-    }
-}
-
-/// A lease operation that did not settle inside its window; the caller maps
-/// it to the same typed answer a refused connection produces.
-fn lease_stalled_error() -> DatabaseAccessError {
-    lease_connection_error(sqlx::Error::PoolTimedOut)
-}
-
-fn lease_connection_error(source: sqlx::Error) -> DatabaseAccessError {
-    DatabaseAccessError::Connection {
-        source: tribal_db::DbError::QueryFailed {
-            context: "opening a dedicated transition lock session".to_owned(),
+            context: context.to_owned(),
             source,
         },
     }
+}
+
+fn custody_lost_error() -> DatabaseAccessError {
+    lease_failure("transition lock custody was lost", sqlx::Error::PoolClosed)
 }
 
 /// What currently occupies the local barrier.
@@ -264,23 +246,37 @@ struct Occupancy {
     migration_count: usize,
 }
 
-/// The kinds a released guard decrements.
+/// What a released guard gives back.
 #[derive(Debug, Clone, Copy)]
 enum AdmittedKind {
     Lifecycle,
     Migration,
+    Transition,
 }
 
-/// An admitted migration or lifecycle occupancy, held until the operation's
-/// terminal reply; dropping it releases the slot.
+/// One admitted occupancy, held until its operation's terminal reply;
+/// dropping it frees the slot. A transition that parks past its graceful
+/// window keeps the barrier instead, through [`LocalAdmissionGuard::retain`].
 #[derive(Debug)]
 pub(in crate::management) struct LocalAdmissionGuard {
     occupancy: Arc<Mutex<Occupancy>>,
     kind: AdmittedKind,
+    release: bool,
+}
+
+impl LocalAdmissionGuard {
+    /// Keeps the occupancy past this guard's life: the pending transition
+    /// owns the barrier now, and only its own settlement frees it.
+    fn retain(mut self) {
+        self.release = false;
+    }
 }
 
 impl Drop for LocalAdmissionGuard {
     fn drop(&mut self) {
+        if !self.release {
+            return;
+        }
         let mut occupancy = lock(&self.occupancy);
         match self.kind {
             AdmittedKind::Lifecycle => {
@@ -289,6 +285,7 @@ impl Drop for LocalAdmissionGuard {
             AdmittedKind::Migration => {
                 occupancy.migration_count = occupancy.migration_count.saturating_sub(1);
             }
+            AdmittedKind::Transition => occupancy.transition = None,
         }
     }
 }
@@ -318,6 +315,7 @@ impl StorageTransitionGate {
         Ok(LocalAdmissionGuard {
             occupancy: Arc::clone(&self.occupancy),
             kind: AdmittedKind::Migration,
+            release: true,
         })
     }
 
@@ -335,6 +333,7 @@ impl StorageTransitionGate {
         Ok(LocalAdmissionGuard {
             occupancy: Arc::clone(&self.occupancy),
             kind: AdmittedKind::Lifecycle,
+            release: true,
         })
     }
 
@@ -449,27 +448,21 @@ impl StorageTransitionGate {
         request: StorageSwitchRequest,
     ) -> Result<StorageSwitchResult, DatabaseAccessError> {
         let transition_id = StorageTransitionId::new();
-        if let Err(refusal) = self.admit_transition(transition_id) {
-            return Ok(match refusal {
-                TransitionRefusal::Sibling(transition_id) => {
-                    StorageSwitchResult::TransitionInProgress { transition_id }
-                }
-                TransitionRefusal::LocalActivity {
-                    migration,
-                    lifecycle,
-                } => {
-                    let mut assessment = self.assess(operation, database, None).await?.value;
-                    force_refusing_activities(&mut assessment, migration, lifecycle);
-                    StorageSwitchResult::Blocked { assessment }
-                }
-            });
-        }
-        // Armed the instant the slot is reserved: every early return from
-        // here — including the revision fence's — must free it again.
-        let release_on_return = TransitionOccupancyGuard {
-            occupancy: Arc::clone(&self.occupancy),
-            armed: true,
+        let admission = match self.admit_transition(transition_id) {
+            Ok(admission) => admission,
+            Err(TransitionRefusal::Sibling(transition_id)) => {
+                return Ok(StorageSwitchResult::TransitionInProgress { transition_id });
+            }
+            Err(TransitionRefusal::LocalActivity {
+                migration,
+                lifecycle,
+            }) => {
+                let mut assessment = self.assess(operation, database, None).await?.value;
+                force_refusing_activities(&mut assessment, migration, lifecycle);
+                return Ok(StorageSwitchResult::Blocked { assessment });
+            }
         };
+
         let mut pending_slot = self.pending.lock().await;
         let session = database
             .session(operation, Some(&request.expected_revision))
@@ -559,7 +552,8 @@ impl StorageTransitionGate {
         }
 
         // The confirmation-required stop, fenced on live lock custody.
-        let observe_window = graceful_window(&session.config) + TRANSITION_OBSERVATION_MARGIN;
+        let observe_window = Duration::from_millis(session.config.server.shutdown_deadline_ms)
+            + TRANSITION_OBSERVATION_MARGIN;
         let mut pending = PendingTransition {
             transition_id,
             source: source.clone(),
@@ -584,9 +578,8 @@ impl StorageTransitionGate {
                 })
             }
             Some(TransitionStopOutcome::StopTimedOut { runtime }) => {
-                let mut release = release_on_return;
-                release.armed = false;
-                drop(release);
+                // The parked transition owns the barrier from here.
+                admission.retain();
                 *pending_slot = Some(pending);
                 Ok(StorageSwitchResult::StopTimedOut {
                     transition_id,
@@ -765,10 +758,12 @@ impl StorageTransitionGate {
     }
 
     /// Reserves the transition slot, or names what refuses it.
+    /// Reserves the transition slot, or names what refuses it. The guard
+    /// frees the slot on every return path until the transition parks.
     fn admit_transition(
         &self,
         transition_id: StorageTransitionId,
-    ) -> Result<(), TransitionRefusal> {
+    ) -> Result<LocalAdmissionGuard, TransitionRefusal> {
         let mut occupancy = lock(&self.occupancy);
         if let Some(existing) = occupancy.transition {
             return Err(TransitionRefusal::Sibling(existing));
@@ -780,7 +775,11 @@ impl StorageTransitionGate {
             });
         }
         occupancy.transition = Some(transition_id);
-        Ok(())
+        Ok(LocalAdmissionGuard {
+            occupancy: Arc::clone(&self.occupancy),
+            kind: AdmittedKind::Transition,
+            release: true,
+        })
     }
 
     /// Drops the pending record — closing both lease sessions releases their
@@ -982,7 +981,7 @@ mod tests {
         // Transition-first: both local kinds are refused with the pending id,
         // and a sibling transition names it.
         let pending = StorageTransitionId::new();
-        gate.admit_transition(pending).expect("transition admits");
+        let held = gate.admit_transition(pending).expect("transition admits");
         assert_eq!(
             gate.admit_migration().expect_err("migration refused"),
             pending
@@ -995,6 +994,22 @@ mod tests {
             gate.admit_transition(StorageTransitionId::new()),
             Err(TransitionRefusal::Sibling(existing)) if existing == pending
         ));
+
+        // Dropping the admission frees the slot; retaining it is what a
+        // parked transition does instead.
+        drop(held);
+        drop(
+            gate.admit_migration()
+                .expect("a dropped admission frees the slot"),
+        );
+        gate.admit_transition(StorageTransitionId::new())
+            .expect("the slot is free")
+            .retain();
+        assert!(matches!(
+            gate.admit_transition(StorageTransitionId::new()),
+            Err(TransitionRefusal::Sibling(_))
+        ));
+        gate.release_for_test();
     }
 
     /// Everything two switch tests share: a ready source and target, the
