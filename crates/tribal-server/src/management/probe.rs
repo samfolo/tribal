@@ -14,8 +14,8 @@ use tribal_inference::{
 };
 use tribal_wire::management::{
     CandidateProviderProbeObservation, CheckName, CheckResult, ConfigDigest, ConfigDocument,
-    ConfigRevision, DatabaseProbeRequest, DatabaseProbeTarget, ProbeOutcome, ProbeReceipt,
-    ProbeReceiptFreshness, ProbeSubject, ProviderConnectionFailure, ProviderConnectionFailureKind,
+    ConfigRevision, DatabaseProbeRequest, ProbeOutcome, ProbeReceipt, ProbeReceiptFreshness,
+    ProbeSubject, ProviderConnectionFailure, ProviderConnectionFailureKind,
     ProviderConnectionProbeReceipt, ProviderConnectionProbeResult,
     ProviderConnectionProbeSkipReason, ProviderProbeCapability, ProviderProbeRequest,
     ProviderProbeResponse, ProviderProbeTarget,
@@ -96,19 +96,13 @@ impl ProbeService {
         }
     }
 
-    /// Runs a stored or candidate database probe under a before/after revision fence.
+    /// Runs the stored database probe under a before/after revision fence.
     pub(crate) async fn database(
         &self,
         request: DatabaseProbeRequest,
     ) -> Result<ProbeReceipt, ProbeError> {
-        let stored = self.config.probe_snapshot().await?;
-        ensure_revision(&request.expected_revision, &stored.revision)?;
-        let mut snapshot = stored;
-        let retain = matches!(request.target, DatabaseProbeTarget::Stored);
-        if let DatabaseProbeTarget::Candidate { url } = request.target {
-            url.expose_secret()
-                .clone_into(&mut snapshot.config.database.url);
-        }
+        let snapshot = self.config.probe_snapshot().await?;
+        ensure_revision(&request.expected_revision, &snapshot.revision)?;
         let result = run_report(&snapshot)
             .await?
             .into_iter()
@@ -120,22 +114,12 @@ impl ProbeService {
             &request.expected_revision,
             &self.config.probe_snapshot().await?.revision,
         )?;
-        if retain {
-            self.retain(&snapshot, subject.clone(), outcome).await?;
-            return self
-                .receipts()
-                .await?
-                .into_iter()
-                .find(|receipt| receipt.subject == subject)
-                .ok_or(ProbeError::MissingObservation);
-        }
-        Ok(ProbeReceipt {
-            observed_at_unix_ms: observed_at_unix_ms(),
-            revision: request.expected_revision,
-            subject,
-            result: outcome,
-            freshness: ProbeReceiptFreshness::Current,
-        })
+        self.retain(&snapshot, subject.clone(), outcome).await?;
+        self.receipts()
+            .await?
+            .into_iter()
+            .find(|receipt| receipt.subject == subject)
+            .ok_or(ProbeError::MissingObservation)
     }
 
     /// Probes one stored or candidate provider connection without persisting candidates.

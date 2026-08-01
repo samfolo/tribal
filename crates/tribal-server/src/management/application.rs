@@ -16,6 +16,7 @@ mod token;
 
 use bootstrap::BootstrapAdministration;
 use credential::CredentialCoordinator;
+pub(in crate::management) use database::inspect_target_state;
 pub(crate) use database::{
     COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DATABASE_COMMAND_DEFAULTS,
     DatabaseSession,
@@ -52,6 +53,7 @@ use tribal_wire::management::{
 use super::{
     config_schema,
     configuration::management_error,
+    identity::GraphIdentityResolver,
     lifecycle::LifecycleController,
     probe::{ProbeError, ProbeService},
     product::ProductSession,
@@ -65,6 +67,7 @@ pub(crate) struct ManagementApplication<'a> {
     product: &'a ProductSession,
     probe: &'a ProbeService,
     lifecycle: &'a LifecycleController,
+    identity: &'a GraphIdentityResolver,
     database: DatabaseAccess,
     projects: ProjectAdministration,
     tokens: TokenAdministration,
@@ -76,11 +79,16 @@ pub(crate) struct ManagementApplication<'a> {
 }
 
 impl<'a> ManagementApplication<'a> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the connection façade names each shared manager service it borrows"
+    )]
     pub(in crate::management) fn new(
         config: &'a ConfigWorkerClient,
         product: &'a ProductSession,
         probe: &'a ProbeService,
         lifecycle: &'a LifecycleController,
+        identity: &'a GraphIdentityResolver,
         credentials: CredentialCoordinator,
         storage: StorageTransitionGate,
         shutdown: tokio_util::sync::CancellationToken,
@@ -91,6 +99,7 @@ impl<'a> ManagementApplication<'a> {
             product,
             probe,
             lifecycle,
+            identity,
             projects: ProjectAdministration::new(database.clone()),
             tokens: TokenAdministration::new(database.clone(), credentials.clone()),
             integration: IntegrationAdministration::new(
@@ -126,9 +135,11 @@ impl<'a> ManagementApplication<'a> {
                     .map_err(operation::public_error)?
                     .ok_or_else(|| internal_error("lifecycle owner is unavailable"))?;
                 let settings = self.product.setup_snapshot(&operation, &lifecycle).await?;
+                let graph_id = self.identity.published(&settings.revision);
                 encode_call::<ManagerSnapshotCall>(Ok(ManagerSnapshot {
                     lifecycle,
                     settings,
+                    graph_id,
                 }))
             }
             ManagementMethod::RuntimeStart => match self.storage.admit_lifecycle() {
@@ -223,12 +234,17 @@ impl<'a> ManagementApplication<'a> {
                         value: initialise_refused_by(transition_id),
                     }
                     .into())),
-                    Ok(_admission) => encode_call::<DatabaseInitialiseCall>(
-                        self.database
+                    Ok(_admission) => {
+                        let result = self
+                            .database
                             .initialise(&operation, request)
                             .await
-                            .map_err(database_initialise_error),
-                    ),
+                            .map_err(database_initialise_error);
+                        if result.is_ok() {
+                            self.identity.reprove().await;
+                        }
+                        encode_call::<DatabaseInitialiseCall>(result)
+                    }
                 }
             }
             ManagementMethod::ProjectRegister => {
@@ -311,7 +327,11 @@ impl<'a> ManagementApplication<'a> {
                         AdministrationFailure::GraphTransitionInProgress,
                     ))),
                     Ok(_admission) => {
-                        encode_call::<BootstrapRunCall>(bootstrap.run(self.product, request).await)
+                        let result = bootstrap.run(self.product, request).await;
+                        if result.is_ok() {
+                            self.identity.reprove().await;
+                        }
+                        encode_call::<BootstrapRunCall>(result)
                     }
                 }
             }

@@ -65,6 +65,12 @@ impl CheckOutcome {
         }
     }
 
+    pub(in crate::management::operator_check) fn token_foreign_loopback_oauth() -> Self {
+        Self::Skip {
+            detail: CheckDetail::TokenForeignLoopbackOauth,
+        }
+    }
+
     pub(in crate::management::operator_check) fn token_missing_routable() -> Self {
         Self::Fail {
             detail: CheckDetail::TokenMissingRoutable,
@@ -151,15 +157,16 @@ async fn network_path(
         return verify_against(pool, token.trim(), TokenTransport::Http, expected_audience).await;
     }
     match read_persisted_bearer(config_path) {
-        Ok(resolved) => {
+        Ok(resolved) => resolved_credential_outcome(
             verify_against(
                 pool,
                 resolved.token.as_str(),
                 TokenTransport::Http,
                 expected_audience,
             )
-            .await
-        }
+            .await,
+            onboarding_url_only,
+        ),
         // No static token resolves. Under URL-only onboarding that is
         // fine: a fresh client registers and authenticates via OAuth. On
         // every other surface (routable, or DCR disabled) there is no
@@ -190,6 +197,26 @@ async fn network_path(
             error.to_string(),
             CheckRemediation::ConsultUnderlyingError,
         ),
+    }
+}
+
+/// A persisted credential the active database does not recognise — the
+/// unknown-token or wrong-audience shape, as a switched storage target
+/// presents it — is no credential for this database: under URL-only
+/// onboarding it resolves exactly as if none had persisted. A known but
+/// dead token, an unreachable database, and every routable surface keep
+/// their verification outcome.
+fn resolved_credential_outcome(outcome: CheckOutcome, onboarding_url_only: bool) -> CheckOutcome {
+    match &outcome {
+        CheckOutcome::Fail {
+            detail:
+                CheckDetail::TokenVerificationFailed {
+                    reason: TokenFailureReason::Invalid,
+                    ..
+                },
+            ..
+        } if onboarding_url_only => CheckOutcome::token_foreign_loopback_oauth(),
+        _ => outcome,
     }
 }
 
@@ -344,6 +371,53 @@ mod tests {
                 remediation: CheckRemediation::RunTribalTokenCreate,
             },
         ));
+    }
+
+    #[test]
+    fn test_a_foreign_persisted_credential_skips_only_under_url_only_onboarding() {
+        let foreign = || {
+            CheckOutcome::token_verification_failed(
+                TokenTransport::Http,
+                TokenFailureReason::Invalid,
+            )
+        };
+        assert!(matches!(
+            resolved_credential_outcome(foreign(), true),
+            CheckOutcome::Skip {
+                detail: CheckDetail::TokenForeignLoopbackOauth,
+            },
+        ));
+        assert!(matches!(
+            resolved_credential_outcome(foreign(), false),
+            CheckOutcome::Fail {
+                detail: CheckDetail::TokenVerificationFailed {
+                    reason: TokenFailureReason::Invalid,
+                    ..
+                },
+                ..
+            },
+        ));
+    }
+
+    #[test]
+    fn test_a_dead_known_token_keeps_its_verification_failure_even_on_loopback() {
+        for reason in [
+            TokenFailureReason::Revoked,
+            TokenFailureReason::Expired,
+            TokenFailureReason::PrincipalMissing,
+            TokenFailureReason::DatabaseUnavailable {
+                context: "pool exhausted".into(),
+            },
+        ] {
+            let outcome = resolved_credential_outcome(
+                CheckOutcome::token_verification_failed(TokenTransport::Http, reason.clone()),
+                true,
+            );
+            assert!(
+                matches!(&outcome, CheckOutcome::Fail { .. }),
+                "reason {reason:?} must keep failing, got {outcome:?}",
+            );
+        }
     }
 
     #[test]

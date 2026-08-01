@@ -120,6 +120,11 @@ pub(in crate::management::operator_check) enum CheckDetail {
     /// Network clients authenticate via OAuth, so a static token is
     /// optional and its absence is not a finding.
     TokenSkippedLoopbackOauth,
+    /// Network transport on a loopback surface whose persisted credential
+    /// the active database does not recognise — a credential minted for
+    /// another graph is no credential here, and OAuth still registers
+    /// clients.
+    TokenForeignLoopbackOauth,
     /// Network transport on a routable surface with no static token.
     /// Open registration is refused there, so an absent static token
     /// leaves clients with no authentication path.
@@ -273,6 +278,7 @@ impl CheckDetail {
             | Self::ProjectQueryFailed { .. } => CheckName::ProjectResolution,
             Self::TokenSkippedStdio
             | Self::TokenSkippedLoopbackOauth
+            | Self::TokenForeignLoopbackOauth
             | Self::TokenMissingRoutable
             | Self::TokenVerified { .. }
             | Self::TokenVerificationFailed { .. }
@@ -357,10 +363,9 @@ impl CheckDetail {
                     TokenTransport::Http => base,
                 }
             }
-            Self::TokenSkippedLoopbackOauth => {
-                "no static token configured; network clients authenticate via OAuth on this \
-                 loopback deployment, so a static token is not required"
-                    .into()
+            Self::TokenSkippedLoopbackOauth => loopback_oauth_detail("no static token configured"),
+            Self::TokenForeignLoopbackOauth => {
+                loopback_oauth_detail("the persisted credential does not match this database")
             }
             Self::TokenMissingRoutable => {
                 "no static token configured and automatic client registration is unavailable \
@@ -448,6 +453,15 @@ impl CheckDetail {
             }
         }
     }
+}
+
+/// Renders a loopback-OAuth token skip: the cause differs, the covering
+/// registration path does not.
+fn loopback_oauth_detail(cause: &str) -> String {
+    format!(
+        "{cause}; network clients authenticate via OAuth on this loopback deployment, \
+         so a static token is not required"
+    )
 }
 
 /// Renders an active-profile detail, appending the genesis divergence note as

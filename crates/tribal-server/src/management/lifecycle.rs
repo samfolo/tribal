@@ -2224,6 +2224,26 @@ impl LifecycleOwner {
                 false
             }
         };
+        if exact_exit {
+            // A proven exit is the quiescence the stop asked for — its
+            // custody stream closing with it is expected, never a loss.
+            // The quiescence answer waits for the machine to settle into its
+            // no-runtime state: an observer that hears the exit must find a
+            // lifecycle owner that can already admit the recovery start.
+            if !pending.finishing {
+                pending.finishing = true;
+                let token = pending.token;
+                let sender = self.completion_sender.clone();
+                let config = self.config.clone();
+                self.observations.spawn(async move {
+                    let document = config.document().await.ok();
+                    let _ = sender
+                        .send(LifecycleCompletion::TransitionStopped { token, document })
+                        .await;
+                });
+            }
+            return;
+        }
         if pending.child.custody.is_closed() {
             let runtime = custody_loss_runtime(&pending.child.identity, exact_exit);
             let snapshot = custody_loss_snapshot(&pending.snapshot.header, runtime);
@@ -2240,24 +2260,6 @@ impl LifecycleOwner {
             self.publish_current();
             self.shutdown_seen = true;
             self.shutdown.cancel();
-            return;
-        }
-        if exact_exit {
-            // The quiescence answer waits for the machine to settle into its
-            // no-runtime state: an observer that hears the exit must find a
-            // lifecycle owner that can already admit the recovery start.
-            if !pending.finishing {
-                pending.finishing = true;
-                let token = pending.token;
-                let sender = self.completion_sender.clone();
-                let config = self.config.clone();
-                self.observations.spawn(async move {
-                    let document = config.document().await.ok();
-                    let _ = sender
-                        .send(LifecycleCompletion::TransitionStopped { token, document })
-                        .await;
-                });
-            }
             return;
         }
         let Some(wait) = &pending.wait else {
@@ -7272,6 +7274,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_transition_stop_resolves_an_exit_that_also_closed_custody() {
+        let (_temp, mut owner, worker_runtime) = test_owner();
+        let (child, runtime_custody, _runtime_control) = a_managed_child();
+        let runtime = child.identity.clone();
+        owner.state = LifecycleState::Running {
+            snapshot: running_state_for(&child),
+            child,
+        };
+        let (stop, mut stop_outcome) = oneshot::channel();
+        owner.admit_transition_stop(
+            StorageTransitionId::new(),
+            TransitionSource::AttachedRuntime(runtime),
+            TEST_OBSERVATION_DEADLINE,
+            stop,
+        );
+
+        // The child honours the stop: it exits, and the exit closes its
+        // lifetime custody stream — two signals of the one clean quiescence.
+        {
+            let LifecycleState::TransitionStopPending(pending) = &mut owner.state else {
+                panic!("parked");
+            };
+            drop(runtime_custody);
+            await_custody_closed(&pending.child.custody).await;
+            make_managed_exact_exit(&mut pending.child).await;
+        }
+
+        let outcome = drive_to_transition_answer(&mut owner, &mut stop_outcome).await;
+        assert!(matches!(outcome, TransitionStopOutcome::SourceQuiesced));
+        assert!(matches!(owner.state, LifecycleState::NoRuntime(_)));
+        assert!(
+            !owner.shutdown_seen,
+            "a proven exit is quiescence, never custody loss",
+        );
+
+        drop(owner);
+        worker_runtime.join().expect("worker thread joins");
+    }
+
+    #[tokio::test]
     async fn test_transition_stop_fails_closed_on_identity_and_custody_mismatches() {
         let (_temp, mut owner, worker_runtime) = test_owner();
 
@@ -7383,10 +7425,10 @@ mod tests {
     /// Drives the owner until a parked transition's observer is answered:
     /// the exit answer rides the settling completion, so both the exit
     /// observation and the completion must be pumped.
-    async fn drive_to_transition_answer(
+    async fn drive_to_transition_answer<T>(
         owner: &mut LifecycleOwner,
-        outcome: &mut oneshot::Receiver<TransitionObserveOutcome>,
-    ) -> TransitionObserveOutcome {
+        outcome: &mut oneshot::Receiver<T>,
+    ) -> T {
         tokio::time::timeout(TEST_OBSERVATION_DEADLINE, async {
             loop {
                 owner.observe_transition_pending();

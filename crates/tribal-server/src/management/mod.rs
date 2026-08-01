@@ -9,6 +9,7 @@ pub(crate) mod config_schema;
 pub(crate) mod configuration;
 pub(crate) mod connector;
 pub(crate) mod custody;
+pub(crate) mod identity;
 pub(crate) mod lifecycle;
 pub(crate) mod operator_check;
 pub(crate) mod probe;

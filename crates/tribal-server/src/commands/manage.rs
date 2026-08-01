@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 
+use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 use tribal_config::{LoggingConfig, TelemetryConfig};
 use tribal_wire::management::{
@@ -29,6 +30,7 @@ use crate::{
         configuration::ConfigAuthority,
         connector::{ManagerConnector, ManagerConnectorError},
         custody::{CustodyError, PendingRecovery},
+        identity::GraphIdentityResolver,
         lifecycle::{LifecycleController, LifecycleExit, LifecycleStartError, RecoveredRuntime},
         probe::ProbeService,
         product::ProductService,
@@ -234,7 +236,7 @@ async fn run_async(
         emit_if_requested(writer, announce_json, &record)?;
         return Err(ManageError::Authority { source });
     }
-    let identity = ManagerSocketIdentity {
+    let socket_identity = ManagerSocketIdentity {
         instance_id: instance_id.clone(),
         binary_version: env!("CARGO_PKG_VERSION").to_owned(),
     };
@@ -260,6 +262,9 @@ async fn run_async(
     let probe = ProbeService::new(config.clone());
     observe_readiness_once(&config, &probe, &lifecycle).await;
     let product = ProductService::new(config.clone());
+    // Identity proof is per-session: each admission re-proves before serving
+    // its first snapshot.
+    let identity = GraphIdentityResolver::new(config.clone(), shutdown.clone());
     let (credentials, credential_runtime) =
         CredentialCoordinator::spawn(lease.paths().namespace.clone(), shutdown.clone());
     let mut credential_terminal = credential_runtime.terminal();
@@ -274,15 +279,21 @@ async fn run_async(
         lifecycle.clone(),
         shutdown.clone(),
     ));
+    let identity_task = tokio::spawn(refresh_identity(
+        identity.clone(),
+        config.clone(),
+        shutdown.clone(),
+    ));
     let lifecycle_for_socket = lifecycle.clone();
     let socket_task = tokio::spawn(socket::serve(
         listener,
-        identity,
+        socket_identity,
         ManagerSocketServices::new(
             config,
             product,
             probe,
             lifecycle_for_socket,
+            identity,
             credentials.clone(),
             shutdown.clone(),
         ),
@@ -327,6 +338,9 @@ async fn run_async(
     }
     if let Err(error) = readiness_task.await {
         tracing::error!(%error, "readiness task failed");
+    }
+    if let Err(error) = identity_task.await {
+        tracing::error!(%error, "graph identity task failed");
     }
     drop(credentials);
     credential_runtime
@@ -391,7 +405,7 @@ async fn prepare_authority(
                         emit_if_requested(writer, announce_json, &record)?;
                         return Err(ManageError::Client { source });
                     }
-                    return prepare_after_restricted_shutdown(
+                    return prepare_after_owner_exit(
                         config_path,
                         instance_id,
                         descriptor.canonical_config_path,
@@ -402,6 +416,22 @@ async fn prepare_authority(
                     .map(Some);
                 }
                 Err(_) => {
+                    // An unreachable lease owner is exiting or hung. Only a
+                    // delegated runtime warrants custody recovery; with
+                    // nothing delegated, wait for the lease to clear.
+                    let paths = AuthorityLease::paths_for(config_path)
+                        .map_err(|source| ManageError::Authority { source })?;
+                    if !paths.delegated_descriptor_path.exists() {
+                        return prepare_after_owner_exit(
+                            config_path,
+                            instance_id,
+                            descriptor.canonical_config_path,
+                            writer,
+                            announce_json,
+                        )
+                        .await
+                        .map(Some);
+                    }
                     let (lease, listener, recovered) = recover_or_report(
                         config_path,
                         instance_id,
@@ -517,8 +547,8 @@ async fn watch_config_file(
             changed = managed_changes.recv() => {
                 match changed {
                     Ok(change) => last_revision = Some(change.revision),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => return,
                 }
             }
             _ = interval.tick() => {
@@ -531,6 +561,27 @@ async fn watch_config_file(
                 last_revision = Some(revision.clone());
                 config.publish_raw_change(revision);
                 lifecycle.refresh().await;
+            }
+        }
+    }
+}
+
+/// Re-publishes the configured target's identity when the configuration
+/// changes, carrying the proof forward unless the database target moved.
+async fn refresh_identity(
+    identity: GraphIdentityResolver,
+    config: worker::ConfigWorkerClient,
+    shutdown: CancellationToken,
+) {
+    let mut config_events = config.subscribe();
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            event = config_events.recv() => match event {
+                Ok(_) | Err(RecvError::Lagged(_)) => {
+                    identity.refresh().await;
+                }
+                Err(RecvError::Closed) => return,
             }
         }
     }
@@ -550,8 +601,8 @@ async fn refresh_readiness(
             () = shutdown.cancelled() => return,
             _ = interval.tick() => {}
             event = config_events.recv() => match event {
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                Ok(_) | Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => return,
             }
         }
         observe_readiness_once(&config, &probe, &lifecycle).await;
@@ -615,7 +666,11 @@ async fn bind_or_report(
     }
 }
 
-async fn prepare_after_restricted_shutdown(
+/// Awaits a departing lease owner — a restricted manager asked to shut
+/// down, or an unreachable owner with nothing delegated — and takes over
+/// once the lease clears; a delegated runtime appearing routes into
+/// custody recovery instead.
+async fn prepare_after_owner_exit(
     config_path: &Path,
     manager_instance_id: &str,
     canonical_config_path: PathBuf,
