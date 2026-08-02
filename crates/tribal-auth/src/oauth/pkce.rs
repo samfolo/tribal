@@ -3,7 +3,7 @@
 //! Provides [`CodeVerifier`] and [`CodeChallenge`] newtypes validated
 //! at construction time, plus an S256 verification operation that
 //! uses constant-time byte comparison so the timing side-channel
-//! warned against in RFC 7636 the launch matrix.5 is closed.
+//! warned against in RFC 7636 §8.5 is closed.
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
@@ -105,7 +105,7 @@ impl CodeChallenge {
 
     /// Verifies a presented verifier against this challenge using S256.
     ///
-    /// The byte comparison is constant-time per RFC 7636 the launch matrix.5.
+    /// The byte comparison is constant-time per RFC 7636 §8.5.
     #[must_use]
     pub fn verify_s256(&self, verifier: &CodeVerifier) -> bool {
         let digest = Sha256::digest(verifier.0.as_bytes());

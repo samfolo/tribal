@@ -49,7 +49,7 @@ use crate::{
 /// validation.
 ///
 /// Every required parameter is modelled as `Option` so an absent value
-/// surfaces as an RFC 6749 the custody contract.2 `invalid_request` (via
+/// surfaces as an RFC 6749 §5.2 `invalid_request` (via
 /// [`TokenRequest::validate`]) rather than a bare form-deserialisation
 /// rejection from the framework.
 #[derive(Debug, Deserialize)]
@@ -107,7 +107,7 @@ impl TokenRequest {
     }
 }
 
-/// RFC 6749 the custody contract.1 token-endpoint success response.
+/// RFC 6749 §5.1 token-endpoint success response.
 #[derive(Debug, Serialize)]
 pub struct TokenResponse {
     /// Issued bearer access token.
@@ -181,7 +181,7 @@ pub async fn handle_token(
             (StatusCode::OK, headers, Json(response)).into_response()
         }
         Err(err) => {
-            // RFC 6749 the custody contract.2: a client-authentication failure carries a
+            // RFC 6749 §5.2: a client-authentication failure carries a
             // `WWW-Authenticate` challenge advertising the supported HTTP
             // auth scheme (required when the client used the Authorization
             // header; permitted otherwise). Only the token endpoint

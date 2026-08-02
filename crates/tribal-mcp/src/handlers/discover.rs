@@ -1363,7 +1363,7 @@ mod tests {
         assert!(!result.exact);
     }
 
-    // -- Adapter: live-identity seam across a cutover (the custody contract.7) ------------------
+    // -- Adapter: live-identity seam across a cutover (§5.7) ------------------
 
     /// Builds a mock embedding provider tagged with `model` that returns
     /// `vector` once, for inserting into the per-profile provider cache.
@@ -1397,7 +1397,7 @@ mod tests {
     /// on every call, so a live cutover embeds the query against the
     /// newly-active profile's geometry rather than the boot-time provider.
     ///
-    /// This is the regression guard for the the custody contract.7 read-path gap: the per-area
+    /// This is the regression guard for the §5.7 read-path gap: the per-area
     /// suites all passed while discover still embedded against the static
     /// boot-time provider, because the discrepancy surfaces only once the active
     /// profile changes under a running server. The test flips the active profile
