@@ -80,6 +80,11 @@ impl DatabaseProvisionRepository for PgDatabaseProvisionRepository {
 
 /// Checks for the database and creates it when absent, mapping the
 /// duplicate-name race to [`DatabaseCreation::AlreadyPresent`].
+///
+/// The existence check is not the outcome's authority — the `42P04` mapping
+/// is, and decides alone when the check loses a race. It runs because
+/// `CREATE DATABASE` has no `IF NOT EXISTS`: without it every repeated
+/// provision writes an error to the server log.
 async fn create_when_absent(
     conn: &mut PgConnection,
     database: &str,

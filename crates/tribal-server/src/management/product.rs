@@ -594,11 +594,15 @@ pub(in crate::management) fn database_endpoint(raw: &str) -> DatabaseEndpointSum
     if socket_query_selector && authority_host.is_some() {
         return DatabaseEndpointSummary::OpaqueConfigured;
     }
-    let socket = match authority_host {
-        Some(host) => is_percent_encoded_socket_host(host),
-        None if socket_query_selector => true,
+    // The authority host, when this is not a socket route: carrying it
+    // here keeps the parsed arm from re-deriving what was already proved.
+    let parsed_host = match authority_host {
+        Some(host) if is_percent_encoded_socket_host(host) => None,
+        Some(host) => Some(host.to_owned()),
+        None if socket_query_selector => None,
         None => return DatabaseEndpointSummary::OpaqueConfigured,
     };
+    let socket = parsed_host.is_none();
     let safe = [
         "application_name",
         "connect_timeout",
@@ -649,12 +653,13 @@ pub(in crate::management) fn database_endpoint(raw: &str) -> DatabaseEndpointSum
             has_additional_options,
         };
     }
+    let Some(host) = parsed_host else {
+        return DatabaseEndpointSummary::OpaqueConfigured;
+    };
     DatabaseEndpointSummary::Parsed {
         scheme,
         username,
-        host: authority_host
-            .expect("a non-socket summary always has an authority host")
-            .to_owned(),
+        host,
         port: url.port(),
         database,
         password,

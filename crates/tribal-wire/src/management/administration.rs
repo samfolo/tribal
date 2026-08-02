@@ -239,11 +239,23 @@ impl schemars::JsonSchema for DatabaseName {
     }
 
     fn json_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-        super::wire_id::marked_string_schema(
+        // The pattern carries the identifier shape; the reserved names are
+        // an enumerated exclusion, so a projection generated from this
+        // schema refuses exactly what `TryFrom<String>` refuses.
+        let mut schema = super::wire_id::marked_string_schema(
             Some(r"^[a-z][a-z0-9_]{0,62}$"),
             "validated-string",
             None,
-        )
+        );
+        if let schemars::schema::Schema::Object(object) = &mut schema {
+            object.extensions.insert(
+                "not".to_owned(),
+                serde_json::json!({
+                    "enum": RESERVED_DATABASE_NAMES,
+                }),
+            );
+        }
+        schema
     }
 }
 
