@@ -12,9 +12,14 @@ use sqlx::{Executor, PgConnection};
 use super::advisory_lock::PgAdvisoryLockRepository;
 use crate::{DbError, advisory_locks, repositories::advisory_lock::AdvisoryLockRepository as _};
 
-/// SQLSTATE for `duplicate_database`: the name was taken between the
-/// existence check and the create — or by a racer that beat the lock.
+/// SQLSTATE for `duplicate_database`: the name already existed when the
+/// create ran.
 const DUPLICATE_DATABASE: &str = "42P04";
+/// SQLSTATE for `unique_violation`: two creates raced past the existence
+/// check together and one lost on `pg_database`'s own name index. Postgres
+/// reports the loser this way, not as `duplicate_database`, so the backstop
+/// the lock exists to make unnecessary must recognise both.
+const UNIQUE_VIOLATION: &str = "23505";
 
 /// What creating a database found. An earlier creation and a lost race are
 /// indistinguishable by design: either way the database exists.
@@ -120,5 +125,5 @@ fn is_duplicate_database(error: &sqlx::Error) -> bool {
     error
         .as_database_error()
         .and_then(sqlx::error::DatabaseError::code)
-        .is_some_and(|code| code == DUPLICATE_DATABASE)
+        .is_some_and(|code| code == DUPLICATE_DATABASE || code == UNIQUE_VIOLATION)
 }

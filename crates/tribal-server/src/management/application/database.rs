@@ -47,6 +47,10 @@ pub(super) const MIGRATION_TERMINAL_WINDOW: std::time::Duration =
 /// a slow LAN, small against the 45 s operation window.
 pub(in crate::management) const CANDIDATE_IO_WINDOW: std::time::Duration =
     std::time::Duration::from_secs(10);
+/// Provisioning's lock wait is cancelled by the session statement timeout,
+/// so that timeout must expire inside the outer window rather than racing
+/// it; the outer window remains the backstop for a wedged connection.
+const PROVISION_STATEMENT_TIMEOUT_MS: u64 = 5_000;
 const MUTATION_TERMINAL_WINDOW: std::time::Duration =
     std::time::Duration::from_millis(COMMAND_STATEMENT_TIMEOUT_MS);
 
@@ -433,7 +437,7 @@ async fn provision_database(
             .await
             .map_err(|source| DatabaseProvisionError::Connection { source })?;
         let creation = PgDatabaseProvisionRepository
-            .create_database_if_absent(&mut conn, database, COMMAND_STATEMENT_TIMEOUT_MS)
+            .create_database_if_absent(&mut conn, database, PROVISION_STATEMENT_TIMEOUT_MS)
             .await
             .map_err(|source| DatabaseProvisionError::Creation { source })?;
         let _ = conn.close().await;

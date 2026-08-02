@@ -97,6 +97,62 @@ async fn test_a_held_lock_fails_bounded_instead_of_hanging() {
     let _ = holder.close().await;
 }
 
+#[tokio::test]
+async fn test_the_duplicate_backstop_decides_a_race_the_lock_never_saw() {
+    // The lock is the arbiter; this proves the backstop that decides when a
+    // racer beats it — two bare creates, no lock between them.
+    let ctx = TestDb::new().await;
+    let name = format!("p_{}", uuid::Uuid::new_v4().simple());
+    let mut first = ctx.raw_connection().await.expect("connect first");
+    let mut second = ctx.raw_connection().await.expect("connect second");
+
+    let (a, b) = tokio::join!(
+        bare_create(&mut first, &name),
+        bare_create(&mut second, &name)
+    );
+    let outcomes = [a, b];
+
+    assert_eq!(
+        outcomes.iter().filter(|created| **created).count(),
+        1,
+        "exactly one bare create wins the race"
+    );
+    assert_eq!(
+        outcomes.iter().filter(|created| !**created).count(),
+        1,
+        "the loser reports the duplicate-database SQLSTATE, not an error"
+    );
+
+    let mut conn = ctx.raw_connection().await.expect("connect");
+    drop_database(&mut conn, &name).await;
+}
+
+/// Creates without the provisioning lock; `false` means the duplicate
+/// SQLSTATE claimed it.
+async fn bare_create(conn: &mut sqlx::PgConnection, name: &str) -> bool {
+    use sqlx::Executor as _;
+    match conn
+        .execute(format!("CREATE DATABASE \"{name}\"").as_str())
+        .await
+    {
+        Ok(_) => true,
+        Err(error) => {
+            let code = error
+                .as_database_error()
+                .and_then(sqlx::error::DatabaseError::code)
+                .map(|code| code.to_string());
+            // A racing create loses on pg_database's name index, so the
+            // loser is a unique violation rather than duplicate_database.
+            assert_eq!(
+                code.as_deref(),
+                Some("23505"),
+                "a genuine race reports the unique violation the backstop must accept"
+            );
+            false
+        }
+    }
+}
+
 async fn drop_database(conn: &mut sqlx::PgConnection, name: &str) {
     use sqlx::Executor as _;
     let _ = conn
