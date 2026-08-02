@@ -72,6 +72,13 @@ pub trait AdvisoryLockRepository {
         lock_id: i64,
     ) -> Result<bool, DbError>;
 
+    /// Acquires the session-level exclusive advisory lock `lock_id`,
+    /// blocking until granted. The lock binds to the connection and is held
+    /// across transactions until released or the session dies; the caller
+    /// bounds the wait through its connection's statement timeout.
+    async fn acquire_exclusive(&self, conn: &mut PgConnection, lock_id: i64)
+    -> Result<(), DbError>;
+
     /// Attempts to acquire the session-level exclusive advisory lock
     /// `lock_id` without blocking. The lock binds to the connection and is
     /// held across transactions until released or the session dies.
@@ -186,6 +193,22 @@ impl AdvisoryLockRepository for PgAdvisoryLockRepository {
                 source,
             })?;
         Ok(acquired)
+    }
+
+    async fn acquire_exclusive(
+        &self,
+        conn: &mut PgConnection,
+        lock_id: i64,
+    ) -> Result<(), DbError> {
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(lock_id)
+            .execute(&mut *conn)
+            .await
+            .map_err(|source| DbError::QueryFailed {
+                context: "acquire exclusive session advisory lock".into(),
+                source,
+            })?;
+        Ok(())
     }
 
     async fn try_acquire_exclusive(

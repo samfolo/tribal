@@ -138,6 +138,16 @@ pub enum DatabaseEndpointSummary {
         safe_option_keys: Vec<String>,
         has_additional_options: bool,
     },
+    /// A Unix-socket route. Deliberately carries no host or path field: the
+    /// socket path is private filesystem detail no summary may project.
+    LocalSocket {
+        scheme: String,
+        username: Option<String>,
+        database: Option<String>,
+        password: SecretPresence,
+        safe_option_keys: Vec<String>,
+        has_additional_options: bool,
+    },
     OpaqueConfigured,
 }
 

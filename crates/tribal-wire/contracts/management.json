@@ -2340,6 +2340,60 @@
             }
           },
           {
+            "description": "A Unix-socket route. Deliberately carries no host or path field: the socket path is private filesystem detail no summary may project.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "has_additional_options",
+                  "password",
+                  "safe_option_keys",
+                  "scheme"
+                ],
+                "properties": {
+                  "database": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "has_additional_options": {
+                    "type": "boolean"
+                  },
+                  "password": {
+                    "$ref": "#/definitions/SecretPresence"
+                  },
+                  "safe_option_keys": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "scheme": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "local_socket"
+                ]
+              }
+            }
+          },
+          {
             "type": "object",
             "required": [
               "state"
@@ -2564,6 +2618,105 @@
       }
     }
   },
+  "DatabaseProvisionRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DatabaseProvisionRequest",
+    "description": "Creates one named database on an explicitly supplied administration target. Management-only — never an MCP tool — and independent of the configured database: the connection opens from the request's URL alone. The secret lives only for the request.",
+    "type": "object",
+    "required": [
+      "administrative_url",
+      "database",
+      "expected_revision"
+    ],
+    "properties": {
+      "administrative_url": {
+        "$ref": "#/definitions/SecretLiteral"
+      },
+      "database": {
+        "$ref": "#/definitions/DatabaseName"
+      },
+      "expected_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
+      },
+      "DatabaseName": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{0,62}$",
+        "x-tribal-swift-type": "validated-string"
+      },
+      "SecretLiteral": {
+        "type": "string",
+        "pattern": "^\\S+$",
+        "x-tribal-swift-type": "redacted-validated-string"
+      }
+    }
+  },
+  "DatabaseProvisionResult": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DatabaseProvisionResult",
+    "description": "A database result tied to the configuration revision it observed.",
+    "type": "object",
+    "required": [
+      "config_revision",
+      "value"
+    ],
+    "properties": {
+      "config_revision": {
+        "$ref": "#/definitions/ConfigRevision"
+      },
+      "value": {
+        "$ref": "#/definitions/DatabaseProvisionOutcome"
+      }
+    },
+    "definitions": {
+      "ConfigRevision": {
+        "type": "string",
+        "pattern": "^cfg_[A-Za-z0-9_-]{43}$",
+        "x-tribal-base64url-prefix": "cfg_",
+        "x-tribal-swift-type": "canonical-base64url-32"
+      },
+      "DatabaseProvisionOutcome": {
+        "description": "What provisioning found. An earlier run and a lost creation race are deliberately indistinguishable: either way the database exists, and a fresh inspection remains the authority for its state.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "created"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "already_present"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
   "DatabaseTargetInspectRequest": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "DatabaseTargetInspectRequest",
@@ -2696,6 +2849,60 @@
                 "type": "string",
                 "enum": [
                   "parsed"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A Unix-socket route. Deliberately carries no host or path field: the socket path is private filesystem detail no summary may project.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "has_additional_options",
+                  "password",
+                  "safe_option_keys",
+                  "scheme"
+                ],
+                "properties": {
+                  "database": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "has_additional_options": {
+                    "type": "boolean"
+                  },
+                  "password": {
+                    "$ref": "#/definitions/SecretPresence"
+                  },
+                  "safe_option_keys": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "scheme": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "local_socket"
                 ]
               }
             }
@@ -3864,6 +4071,12 @@
         "method": "database.inspect",
         "request": "DatabaseTargetInspectRequest",
         "response": "DatabaseTargetInspectResult"
+      },
+      {
+        "call": "DatabaseProvisionCall",
+        "method": "database.provision",
+        "request": "DatabaseProvisionRequest",
+        "response": "DatabaseProvisionResult"
       },
       {
         "call": "StorageAssessCall",
@@ -6406,6 +6619,7 @@
       "database.probe",
       "database.connection",
       "database.inspect",
+      "database.provision",
       "storage.assess",
       "storage.switch",
       "storage.continue",
@@ -32538,6 +32752,60 @@
             }
           },
           {
+            "description": "A Unix-socket route. Deliberately carries no host or path field: the socket path is private filesystem detail no summary may project.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "has_additional_options",
+                  "password",
+                  "safe_option_keys",
+                  "scheme"
+                ],
+                "properties": {
+                  "database": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "has_additional_options": {
+                    "type": "boolean"
+                  },
+                  "password": {
+                    "$ref": "#/definitions/SecretPresence"
+                  },
+                  "safe_option_keys": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "scheme": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "local_socket"
+                ]
+              }
+            }
+          },
+          {
             "type": "object",
             "required": [
               "state"
@@ -33011,6 +33279,60 @@
                 "type": "string",
                 "enum": [
                   "parsed"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A Unix-socket route. Deliberately carries no host or path field: the socket path is private filesystem detail no summary may project.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "has_additional_options",
+                  "password",
+                  "safe_option_keys",
+                  "scheme"
+                ],
+                "properties": {
+                  "database": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "has_additional_options": {
+                    "type": "boolean"
+                  },
+                  "password": {
+                    "$ref": "#/definitions/SecretPresence"
+                  },
+                  "safe_option_keys": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "scheme": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "local_socket"
                 ]
               }
             }
@@ -33685,6 +34007,60 @@
                 "type": "string",
                 "enum": [
                   "parsed"
+                ]
+              }
+            }
+          },
+          {
+            "description": "A Unix-socket route. Deliberately carries no host or path field: the socket path is private filesystem detail no summary may project.",
+            "type": "object",
+            "required": [
+              "data",
+              "state"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "has_additional_options",
+                  "password",
+                  "safe_option_keys",
+                  "scheme"
+                ],
+                "properties": {
+                  "database": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "has_additional_options": {
+                    "type": "boolean"
+                  },
+                  "password": {
+                    "$ref": "#/definitions/SecretPresence"
+                  },
+                  "safe_option_keys": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "scheme": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "local_socket"
                 ]
               }
             }

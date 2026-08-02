@@ -4,14 +4,16 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use sqlx::{Connection as _, PgPool, postgres::PgConnectOptions};
 use tribal_config::TribalConfig;
 use tribal_db::{
-    DbError, EnsurePrincipalOutcome, EnsureSystemOutcome, GraphIdentityRepository,
-    MigrationHeadStatus, MigrationRepository, PgGraphIdentityRepository, PgMigrationRepository,
+    DatabaseCreation, DatabaseProvisionRepository, DbError, EnsurePrincipalOutcome,
+    EnsureSystemOutcome, GraphIdentityRepository, MigrationHeadStatus, MigrationRepository,
+    PgDatabaseProvisionRepository, PgGraphIdentityRepository, PgMigrationRepository,
     PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
 };
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, Principal};
 use tribal_wire::management::{
     ConfigRevision, DatabaseAdministrationTarget, DatabaseInitialiseOutcome,
-    DatabaseInitialiseRequest, DatabaseInitialiseResult, DatabaseTargetFailure,
+    DatabaseInitialiseRequest, DatabaseInitialiseResult, DatabaseProvisionOutcome,
+    DatabaseProvisionRequest, DatabaseProvisionResult, DatabaseTargetFailure,
     DatabaseTargetFailureKind, DatabaseTargetInspectRequest, DatabaseTargetInspectResult,
     DatabaseTargetReceipt, DatabaseTargetState, FailurePresentation, Revisioned, SecretLiteral,
 };
@@ -140,6 +142,22 @@ pub(crate) enum DatabaseAccessError {
     Connection {
         #[source]
         source: tribal_db::DbError,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DatabaseProvisionError {
+    #[error(transparent)]
+    Session(#[from] DatabaseAccessError),
+    #[error("administrative connection is unavailable: {source}")]
+    Connection {
+        #[source]
+        source: sqlx::Error,
+    },
+    #[error("database creation failed: {source}")]
+    Creation {
+        #[source]
+        source: DbError,
     },
 }
 
@@ -355,6 +373,35 @@ impl DatabaseAccess {
         }
         .into())
     }
+
+    /// Creates the requested database over the request's administrative URL,
+    /// touching neither the configured database nor any role; the secret
+    /// lives only for the call.
+    pub(crate) async fn provision(
+        &self,
+        operation: &OperationContext,
+        request: DatabaseProvisionRequest,
+    ) -> Result<DatabaseProvisionResult, DatabaseProvisionError> {
+        let snapshot = self
+            .config_snapshot(operation, Some(&request.expected_revision))
+            .await?;
+        let creation = operation
+            .cancel_safe(provision_database(
+                request.administrative_url.expose_secret(),
+                request.database.as_str(),
+            ))
+            .await
+            .map_err(DatabaseAccessError::from)??;
+        let outcome = match creation {
+            DatabaseCreation::Created => DatabaseProvisionOutcome::Created,
+            DatabaseCreation::AlreadyPresent => DatabaseProvisionOutcome::AlreadyPresent,
+        };
+        Ok(Revisioned {
+            config_revision: snapshot.revision,
+            value: outcome,
+        }
+        .into())
+    }
 }
 
 /// Opens a small one-off pool against the candidate for this request's
@@ -370,6 +417,37 @@ async fn candidate_pool(url: &SecretLiteral) -> Result<PgPool, DatabaseInitialis
         .connect_with(options)
         .await
         .map_err(|source| DatabaseInitialiseError::MigrationConnection { source })
+}
+
+/// Opens one bounded administrative connection and creates the database
+/// when absent; the secret shapes the connection and goes no further.
+async fn provision_database(
+    raw: &str,
+    database: &str,
+) -> Result<DatabaseCreation, DatabaseProvisionError> {
+    let options = parse_candidate_url(raw).map_err(|_| DatabaseProvisionError::Connection {
+        source: sqlx::Error::Configuration("the administrative URL was refused".into()),
+    })?;
+    let provisioned = tokio::time::timeout(CANDIDATE_IO_WINDOW, async {
+        let mut conn = sqlx::PgConnection::connect_with(&options)
+            .await
+            .map_err(|source| DatabaseProvisionError::Connection { source })?;
+        let creation = PgDatabaseProvisionRepository
+            .create_database_if_absent(&mut conn, database, COMMAND_STATEMENT_TIMEOUT_MS)
+            .await
+            .map_err(|source| DatabaseProvisionError::Creation { source })?;
+        let _ = conn.close().await;
+        Ok(creation)
+    })
+    .await;
+    provisioned.unwrap_or_else(|_elapsed| {
+        Err(DatabaseProvisionError::Connection {
+            source: sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the administrative target did not answer within the provisioning window",
+            )),
+        })
+    })
 }
 
 /// The connection parameters the pinned sqlx parser recognises by exact name;
@@ -618,6 +696,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tribal_test_utils::{TestDb, truncate_all_tables};
+    use tribal_wire::management::DatabaseName;
 
     use super::*;
     use crate::management::{configuration::ConfigAuthority, worker};
@@ -1089,6 +1168,104 @@ mod tests {
             DatabaseInitialiseOutcome::AlreadyInitialised,
             "candidate initialisation converges under repeats",
         );
+    }
+
+    #[tokio::test]
+    async fn test_provision_refuses_a_stale_revision_before_any_connection() {
+        let configured = TestDb::new().await;
+        let (_temp, _path, worker, _runtime) = config_worker(configured.database_url());
+        let access = DatabaseAccess::new(worker);
+        let stale = ConfigRevision::from_digest(
+            &tribal_wire::management::ConfigDigest::from_bytes(b"stale"),
+        );
+
+        let refused = access
+            .provision(
+                &operation(),
+                DatabaseProvisionRequest {
+                    expected_revision: stale,
+                    // Unroutable on purpose: the fence must refuse first.
+                    administrative_url: SecretLiteral::try_from(
+                        "postgresql://user:pw@192.0.2.1:5432/postgres".to_owned(),
+                    )
+                    .expect("a valid administrative url"),
+                    database: DatabaseName::try_from("p_never".to_owned())
+                        .expect("a valid database name"),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            refused,
+            DatabaseProvisionError::Session(DatabaseAccessError::RevisionConflict { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_provision_creates_once_then_reports_already_present() {
+        use sqlx::Executor as _;
+
+        let admin = TestDb::new().await;
+        let (_temp, _path, worker, _runtime) = config_worker(admin.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let access = DatabaseAccess::new(worker);
+        let name = format!("p_{}", uuid::Uuid::new_v4().simple());
+        let request = |revision| DatabaseProvisionRequest {
+            expected_revision: revision,
+            administrative_url: SecretLiteral::try_from(admin.database_url().to_owned())
+                .expect("a valid administrative url"),
+            database: DatabaseName::try_from(name.clone()).expect("a valid database name"),
+        };
+
+        let first = access
+            .provision(&operation(), request(revision.clone()))
+            .await
+            .unwrap();
+        let repeated = access
+            .provision(&operation(), request(revision.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(first.config_revision, revision);
+        assert_eq!(first.value, DatabaseProvisionOutcome::Created);
+        assert_eq!(repeated.value, DatabaseProvisionOutcome::AlreadyPresent);
+
+        let mut conn = admin.raw_connection().await.expect("connect for cleanup");
+        let _ = conn
+            .execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_provision_connection_failure_renders_no_credential() {
+        let configured = TestDb::new().await;
+        let (_temp, _path, worker, _runtime) = config_worker(configured.database_url());
+        let revision = worker.resolved_snapshot().await.unwrap().revision;
+        let access = DatabaseAccess::new(worker);
+
+        let error = access
+            .provision(
+                &operation(),
+                DatabaseProvisionRequest {
+                    expected_revision: revision,
+                    // Nothing listens on port 1: an instant refusal whose
+                    // rendered chain must carry neither credential.
+                    administrative_url: SecretLiteral::try_from(
+                        "postgresql://leakuser:leakpw@127.0.0.1:1/postgres".to_owned(),
+                    )
+                    .expect("a valid administrative url"),
+                    database: DatabaseName::try_from("p_never".to_owned())
+                        .expect("a valid database name"),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, DatabaseProvisionError::Connection { .. }));
+        let rendered = format!("{error} / {error:?}");
+        assert!(!rendered.contains("leakpw"), "no password: {rendered}");
+        assert!(!rendered.contains("leakuser"), "no username: {rendered}");
     }
 
     fn swap_password(url: &str) -> String {
