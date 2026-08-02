@@ -187,7 +187,7 @@ impl TagEmbeddingRepository for PgTagEmbeddingRepository {
                AND 1.0 - ({distance}) >= $2 \
              ORDER BY {distance} ASC, \
                       tr.usage_count DESC, \
-                      te.tag ASC \
+                      te.tag COLLATE \"C\" ASC \
              LIMIT $3"
         );
 
@@ -221,7 +221,7 @@ impl TagEmbeddingRepository for PgTagEmbeddingRepository {
                  WHERE q.target_profile_id = $1 AND q.kind = 'tag' \
                    AND q.entity_ref = tr.tag \
              ) \
-             ORDER BY tr.tag",
+             ORDER BY tr.tag COLLATE \"C\"",
         )
         .bind(embedding_profile_id.inner())
         .fetch_all(&mut *conn)

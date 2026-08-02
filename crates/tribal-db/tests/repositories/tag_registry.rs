@@ -1,5 +1,5 @@
 use tribal_db::{PgTagRegistryRepository, TagRegistryRepository};
-use tribal_test_utils::{TestDb, shift_tag_registry_timestamp};
+use tribal_test_utils::{LOCALE_SENSITIVE_TAGS, TestDb, shift_tag_registry_timestamp};
 
 // ---------------------------------------------------------------------------
 // upsert
@@ -218,4 +218,66 @@ async fn test_increment_usage_count_ignores_unknown_tags() {
     repo.increment_usage_count(&mut txn, &["nonexistent".to_owned()])
         .await
         .expect("increment should not fail for unknown tags");
+}
+
+// ---------------------------------------------------------------------------
+// Cross-locale ordering parity
+// ---------------------------------------------------------------------------
+
+/// Runs `batch_upsert` over the locale-sensitive tag set and returns the
+/// order the repository answered with.
+async fn batch_upsert_order(ctx: &TestDb) -> Vec<String> {
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgTagRegistryRepository;
+    let tags: Vec<String> = LOCALE_SENSITIVE_TAGS
+        .iter()
+        .map(|&t| t.to_owned())
+        .collect();
+    repo.batch_upsert(&mut txn, &tags)
+        .await
+        .expect("batch_upsert")
+        .iter()
+        .map(|entry| entry.tag().to_owned())
+        .collect()
+}
+
+/// Seeds the locale-sensitive tag set and returns `find_all`'s order.
+async fn find_all_order(ctx: &TestDb) -> Vec<String> {
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgTagRegistryRepository;
+    let tags: Vec<String> = LOCALE_SENSITIVE_TAGS
+        .iter()
+        .map(|&t| t.to_owned())
+        .collect();
+    repo.batch_upsert(&mut txn, &tags).await.expect("seed");
+    repo.find_all(&mut txn)
+        .await
+        .expect("find_all")
+        .iter()
+        .map(|entry| entry.tag().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn test_batch_upsert_ordering_agrees_across_cluster_locales() {
+    let c = TestDb::with_c_locale().await;
+    let comparison = TestDb::with_comparison_locale().await;
+
+    assert_eq!(
+        batch_upsert_order(&c).await,
+        batch_upsert_order(&comparison).await,
+        "batch_upsert order must not depend on the cluster's default collation",
+    );
+}
+
+#[tokio::test]
+async fn test_find_all_ordering_agrees_across_cluster_locales() {
+    let c = TestDb::with_c_locale().await;
+    let comparison = TestDb::with_comparison_locale().await;
+
+    assert_eq!(
+        find_all_order(&c).await,
+        find_all_order(&comparison).await,
+        "find_all order must not depend on the cluster's default collation",
+    );
 }
