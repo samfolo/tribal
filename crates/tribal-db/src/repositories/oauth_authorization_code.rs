@@ -76,7 +76,7 @@ pub trait OauthAuthorizationCodeRepository {
     /// `Ok(None)` when the code does not exist, is expired, or was
     /// already consumed; the same `None` value covers replay attempts
     /// and missing codes so the application response is uniform per
-    /// RFC 6749 §5.2 (`invalid_grant`).
+    /// RFC 6749 the custody contract.2 (`invalid_grant`).
     ///
     /// # Errors
     ///

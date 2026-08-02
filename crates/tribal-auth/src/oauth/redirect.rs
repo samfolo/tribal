@@ -1,4 +1,4 @@
-//! Redirect URI matching per RFC 8252 §7.3.
+//! Redirect URI matching per RFC 8252 the cluster contract.3.
 //!
 //! Exact match on scheme, host, path, and query for all redirect URIs
 //! except loopback HTTP, which allows any port. The widening to

@@ -1,7 +1,7 @@
 //! Builders for the `WWW-Authenticate: Bearer ...` header.
 //!
 //! The MCP 2025-11-25 spec extends RFC 6750 with the
-//! `resource_metadata` parameter (RFC 9728 §5.1) on 401 and 403
+//! `resource_metadata` parameter (RFC 9728 the custody contract.1) on 401 and 403
 //! responses. This module produces the exact byte string the spec
 //! mandates from a typed input.
 

@@ -57,7 +57,7 @@ const CONSENT_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; base-u
 /// validation.
 ///
 /// Every required parameter is modelled as `Option` so an absent value
-/// surfaces as an RFC 6749 §5.2 `invalid_request` (via
+/// surfaces as an RFC 6749 the custody contract.2 `invalid_request` (via
 /// [`AuthorizeQuery::validate`]) rather than a bare query-deserialisation
 /// rejection from the framework.
 #[derive(Debug, Deserialize)]

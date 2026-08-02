@@ -11,7 +11,7 @@ pub(crate) const GRANT_TYPE_AUTHORIZATION_CODE: &str = "authorization_code";
 
 /// Loopback host literals.
 ///
-/// `127.0.0.1` and `::1` are the RFC 8252 §7.3 loopback IP literals;
+/// `127.0.0.1` and `::1` are the RFC 8252 the cluster contract.3 loopback IP literals;
 /// `localhost` is included for ecosystem interoperability (many native
 /// MCP clients send it). The redirect-URI matcher, the DCR redirect-URI
 /// validator, and the consent-page loopback warning all resolve against

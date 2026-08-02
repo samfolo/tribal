@@ -32,7 +32,7 @@ const SSE_CONTENT_TYPE_PREFIX: &str = "text/event-stream";
 /// SSE data field prefix.  Lines starting with this carry event payload.
 ///
 /// SSE field names are case-sensitive per the W3C `EventSource`
-/// specification (§9.2 "Interpreting an event stream").  No
+/// specification (the power lifecycle.2 "Interpreting an event stream").  No
 /// case-insensitive comparison is needed.
 const SSE_DATA_PREFIX: &[u8] = b"data:";
 
@@ -506,7 +506,7 @@ fn saturating_deadline(base: Instant, duration: Duration) -> Instant {
 ///
 /// Splits the frame into lines and checks whether any line starts with
 /// `data:` or `event:`.  SSE field names are case-sensitive per the W3C
-/// `EventSource` specification (§9.2), so byte-level prefix matching is
+/// `EventSource` specification (the power lifecycle.2), so byte-level prefix matching is
 /// the correct approach — no case folding is needed.
 ///
 /// Comment lines (starting with `:`) and empty lines are not real events.

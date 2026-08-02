@@ -5,7 +5,7 @@
 //! resource-server plane's type, because the two serve different
 //! protocol boundaries with different wire renderings: `AuthError`
 //! renders a `WWW-Authenticate` bearer challenge with a 401/403 status,
-//! whereas [`OAuthError`] renders either an RFC 6749 §5.2 JSON body
+//! whereas [`OAuthError`] renders either an RFC 6749 the custody contract.2 JSON body
 //! (before the redirect URI is validated) or an RFC 6749 §4.1.2.1 302
 //! redirect carrying the error code (after it is validated). Neither
 //! type maps through the MCP `IntoMcpError` boundary, and nothing
@@ -37,16 +37,16 @@ use url::Url;
 // Error codes
 // ---------------------------------------------------------------------------
 
-/// Generic invalid-request error code per RFC 6749 §5.2.
+/// Generic invalid-request error code per RFC 6749 the custody contract.2.
 pub const ERROR_INVALID_REQUEST: &str = "invalid_request";
 
 /// Unsupported response type per RFC 6749 §4.1.2.1.
 pub const ERROR_UNSUPPORTED_RESPONSE_TYPE: &str = "unsupported_response_type";
 
-/// Invalid grant per RFC 6749 §5.2.
+/// Invalid grant per RFC 6749 the custody contract.2.
 pub const ERROR_INVALID_GRANT: &str = "invalid_grant";
 
-/// Invalid client per RFC 6749 §5.2.
+/// Invalid client per RFC 6749 the custody contract.2.
 pub const ERROR_INVALID_CLIENT: &str = "invalid_client";
 
 /// Invalid scope per RFC 6749 §4.1.2.1.
@@ -453,7 +453,7 @@ impl OAuthError {
         }
     }
 
-    /// Builds a JSON response shaped per RFC 6749 §5.2 for use before
+    /// Builds a JSON response shaped per RFC 6749 the custody contract.2 for use before
     /// the redirect URI has been validated.
     ///
     /// Logs the full structured detail to the trace span first so
@@ -499,7 +499,7 @@ impl OAuthError {
 /// parameter is unusable, and surfacing it as `invalid_request` reads
 /// better than letting it fail an opaque downstream check. Modelling
 /// required parameters as `Option` and mapping them here keeps a missing
-/// value on the RFC 6749 §5.2 error path rather than the framework's
+/// value on the RFC 6749 the custody contract.2 error path rather than the framework's
 /// extractor rejection.
 pub(crate) fn require_param(
     value: Option<String>,
