@@ -47,9 +47,9 @@ pub(super) const MIGRATION_TERMINAL_WINDOW: std::time::Duration =
 /// a slow LAN, small against the 45 s operation window.
 pub(in crate::management) const CANDIDATE_IO_WINDOW: std::time::Duration =
     std::time::Duration::from_secs(10);
-/// Provisioning's lock wait is cancelled by the session statement timeout,
-/// so that timeout must expire inside the outer window rather than racing
-/// it; the outer window remains the backstop for a wedged connection.
+/// Each provisioning statement is bounded independently; the outer window
+/// remains the whole-session backstop. A retry converges if cancellation
+/// races a database creation that the server completes.
 const PROVISION_STATEMENT_TIMEOUT_MS: u64 = 5_000;
 const MUTATION_TERMINAL_WINDOW: std::time::Duration =
     std::time::Duration::from_millis(COMMAND_STATEMENT_TIMEOUT_MS);

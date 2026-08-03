@@ -584,14 +584,29 @@ pub(in crate::management) fn database_endpoint(raw: &str) -> DatabaseEndpointSum
         return DatabaseEndpointSummary::OpaqueConfigured;
     }
     // Socket classification precedes the absent-host guard: the query-only
-    // socket form carries no authority host at all. A URL naming both an
-    // authority and a socket-selecting `host` query has no single effective
-    // route one safe summary can represent.
+    // socket form carries no authority host at all. Query parameters can
+    // override every authority component, so a mixed route has no single
+    // safe summary to project.
     let authority_host = url.host_str().filter(|host| !host.is_empty());
-    let socket_query_selector = url
-        .query_pairs()
-        .any(|(key, value)| key == "host" && value.starts_with('/'));
-    if socket_query_selector && authority_host.is_some() {
+    let query_pairs = url.query_pairs().collect::<Vec<_>>();
+    let host_selectors = query_pairs
+        .iter()
+        .filter(|(key, _)| key == "host")
+        .map(|(_, value)| value.as_ref())
+        .collect::<Vec<_>>();
+    let route_override_keys = ["hostaddr", "port", "dbname", "user", "password"];
+    if query_pairs
+        .iter()
+        .any(|(key, _)| route_override_keys.contains(&key.as_ref()))
+    {
+        return DatabaseEndpointSummary::OpaqueConfigured;
+    }
+    let socket_query_selector = match host_selectors.as_slice() {
+        [host] if host.starts_with('/') => true,
+        [] => false,
+        _ => return DatabaseEndpointSummary::OpaqueConfigured,
+    };
+    if authority_host.is_some() && !host_selectors.is_empty() {
         return DatabaseEndpointSummary::OpaqueConfigured;
     }
     // The authority host, when this is not a socket route: carrying it
@@ -613,7 +628,7 @@ pub(in crate::management) fn database_endpoint(raw: &str) -> DatabaseEndpointSum
     ];
     let mut safe_option_keys = Vec::new();
     let mut has_additional_options = false;
-    for (key, value) in url.query_pairs() {
+    for (key, value) in query_pairs {
         // The query-only socket form's `host` key is the route itself, not an
         // option; it is neither projected nor counted.
         if socket && key == "host" && value.starts_with('/') {
@@ -1807,12 +1822,36 @@ mod tests {
 
     #[test]
     fn test_mixed_authority_and_socket_query_becomes_opaque() {
-        // A live behaviour change: this form parsed — and was externally
-        // persistable — before socket classification landed.
         assert!(matches!(
             database_endpoint("postgres://db.example/tribal?host=/var/run"),
             DatabaseEndpointSummary::OpaqueConfigured,
         ));
+    }
+
+    #[test]
+    fn test_authority_overrides_become_opaque() {
+        for query in [
+            "host=other.example",
+            "hostaddr=192.0.2.1",
+            "port=6432",
+            "dbname=other",
+            "user=other",
+            "password=secret",
+        ] {
+            assert_eq!(
+                database_endpoint(&format!("postgres://db.example/tribal?{query}")),
+                DatabaseEndpointSummary::OpaqueConfigured,
+                "{query} changes the effective connection and cannot be projected from authority",
+            );
+        }
+    }
+
+    #[test]
+    fn test_socket_route_with_query_credentials_becomes_opaque() {
+        assert_eq!(
+            database_endpoint("postgresql:///tribal?host=/private/tmp/tribal.pg&password=secret"),
+            DatabaseEndpointSummary::OpaqueConfigured,
+        );
     }
 
     #[test]
