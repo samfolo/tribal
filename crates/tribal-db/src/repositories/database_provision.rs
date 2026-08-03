@@ -124,24 +124,33 @@ async fn create_when_absent(
 }
 
 fn is_duplicate_database(error: &sqlx::Error) -> bool {
-    error
-        .as_database_error()
-        .and_then(sqlx::error::DatabaseError::code)
-        .is_some_and(|code| is_duplicate_code(code.as_ref()))
+    let Some(database) = error.as_database_error() else {
+        return false;
+    };
+    let Some(code) = database.code() else {
+        return false;
+    };
+    is_duplicate_receipt(code.as_ref(), database.constraint())
 }
 
-fn is_duplicate_code(code: &str) -> bool {
-    matches!(code, DUPLICATE_DATABASE | UNIQUE_VIOLATION)
+fn is_duplicate_receipt(code: &str, constraint: Option<&str>) -> bool {
+    code == DUPLICATE_DATABASE
+        || (code == UNIQUE_VIOLATION && constraint == Some("pg_database_datname_index"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_duplicate_code;
+    use super::is_duplicate_receipt;
 
     #[test]
-    fn both_postgres_duplicate_codes_are_idempotent_outcomes() {
-        assert!(is_duplicate_code("42P04"));
-        assert!(is_duplicate_code("23505"));
-        assert!(!is_duplicate_code("42501"));
+    fn only_duplicate_name_receipts_are_idempotent_outcomes() {
+        assert!(is_duplicate_receipt("42P04", None));
+        assert!(is_duplicate_receipt(
+            "23505",
+            Some("pg_database_datname_index")
+        ));
+        assert!(!is_duplicate_receipt("23505", Some("other_unique")));
+        assert!(!is_duplicate_receipt("23505", None));
+        assert!(!is_duplicate_receipt("42501", None));
     }
 }

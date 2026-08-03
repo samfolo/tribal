@@ -139,13 +139,16 @@ async fn bare_create(conn: &mut sqlx::PgConnection, name: &str) -> bool {
     {
         Ok(_) => true,
         Err(error) => {
-            let code = error
-                .as_database_error()
+            let database = error.as_database_error();
+            let code = database
                 .and_then(sqlx::error::DatabaseError::code)
                 .map(|code| code.to_string());
+            let constraint = database.and_then(sqlx::error::DatabaseError::constraint);
             assert!(
-                matches!(code.as_deref(), Some("23505" | "42P04")),
-                "a genuine race reports one of PostgreSQL's duplicate-name codes, got {code:?}"
+                matches!(code.as_deref(), Some("42P04"))
+                    || (matches!(code.as_deref(), Some("23505"))
+                        && constraint == Some("pg_database_datname_index")),
+                "a genuine race reports a duplicate-name receipt, got {code:?}/{constraint:?}"
             );
             false
         }
