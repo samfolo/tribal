@@ -583,9 +583,41 @@ pub(in crate::management) fn database_endpoint(raw: &str) -> DatabaseEndpointSum
     if !matches!(url.scheme(), "postgres" | "postgresql") {
         return DatabaseEndpointSummary::OpaqueConfigured;
     }
-    let Some(host) = url.host_str() else {
+    // Socket classification precedes the absent-host guard: the query-only
+    // socket form carries no authority host at all. Query parameters can
+    // override every authority component, so a mixed route has no single
+    // safe summary to project.
+    let authority_host = url.host_str().filter(|host| !host.is_empty());
+    let query_pairs = url.query_pairs().collect::<Vec<_>>();
+    let host_selectors = query_pairs
+        .iter()
+        .filter(|(key, _)| key == "host")
+        .map(|(_, value)| value.as_ref())
+        .collect::<Vec<_>>();
+    let route_override_keys = ["hostaddr", "port", "dbname", "user", "password"];
+    if query_pairs
+        .iter()
+        .any(|(key, _)| route_override_keys.contains(&key.as_ref()))
+    {
         return DatabaseEndpointSummary::OpaqueConfigured;
+    }
+    let socket_query_selector = match host_selectors.as_slice() {
+        [host] if host.starts_with('/') => true,
+        [] => false,
+        _ => return DatabaseEndpointSummary::OpaqueConfigured,
     };
+    if authority_host.is_some() && !host_selectors.is_empty() {
+        return DatabaseEndpointSummary::OpaqueConfigured;
+    }
+    // The authority host, when this is not a socket route: carrying it
+    // here keeps the parsed arm from re-deriving what was already proved.
+    let parsed_host = match authority_host {
+        Some(host) if is_percent_encoded_socket_host(host) => None,
+        Some(host) => Some(host.to_owned()),
+        None if socket_query_selector => None,
+        None => return DatabaseEndpointSummary::OpaqueConfigured,
+    };
+    let socket = parsed_host.is_none();
     let safe = [
         "application_name",
         "connect_timeout",
@@ -596,7 +628,12 @@ pub(in crate::management) fn database_endpoint(raw: &str) -> DatabaseEndpointSum
     ];
     let mut safe_option_keys = Vec::new();
     let mut has_additional_options = false;
-    for (key, _) in url.query_pairs() {
+    for (key, value) in query_pairs {
+        // The query-only socket form's `host` key is the route itself, not an
+        // option; it is neither projected nor counted.
+        if socket && key == "host" && value.starts_with('/') {
+            continue;
+        }
         if safe.contains(&key.as_ref()) {
             if !safe_option_keys
                 .iter()
@@ -609,24 +646,48 @@ pub(in crate::management) fn database_endpoint(raw: &str) -> DatabaseEndpointSum
         }
     }
     safe_option_keys.sort();
+    let scheme = url.scheme().to_owned();
+    let username = (!url.username().is_empty()).then(|| url.username().to_owned());
+    let database = url
+        .path_segments()
+        .and_then(|mut segments| segments.next())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let password = if url.password().is_some() {
+        SecretPresence::Configured
+    } else {
+        SecretPresence::Absent
+    };
+    if socket {
+        return DatabaseEndpointSummary::LocalSocket {
+            scheme,
+            username,
+            database,
+            password,
+            safe_option_keys,
+            has_additional_options,
+        };
+    }
+    let Some(host) = parsed_host else {
+        return DatabaseEndpointSummary::OpaqueConfigured;
+    };
     DatabaseEndpointSummary::Parsed {
-        scheme: url.scheme().to_owned(),
-        username: (!url.username().is_empty()).then(|| url.username().to_owned()),
-        host: host.to_owned(),
+        scheme,
+        username,
+        host,
         port: url.port(),
-        database: url
-            .path_segments()
-            .and_then(|mut segments| segments.next())
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned),
-        password: if url.password().is_some() {
-            SecretPresence::Configured
-        } else {
-            SecretPresence::Absent
-        },
+        database,
+        password,
         safe_option_keys,
         has_additional_options,
     }
+}
+
+/// True when a non-special-scheme authority host percent-decodes to a leading
+/// `/` — the percent-encoded Unix-socket host form, which `url` deliberately
+/// leaves un-decoded.
+fn is_percent_encoded_socket_host(host: &str) -> bool {
+    host.len() >= 3 && host[..3].eq_ignore_ascii_case("%2f")
 }
 
 fn provider_summary(
@@ -1687,6 +1748,110 @@ mod tests {
         assert!(!encoded.contains("private"));
         assert!(encoded.contains("sslmode"));
         assert!(encoded.contains("application_name"));
+    }
+
+    #[test]
+    fn test_percent_encoded_socket_url_projects_local_socket_without_path() {
+        let summary = database_endpoint(
+            "postgresql://owner:pw@%2Fprivate%2Ftmp%2Ftribal.pg/tribal?application_name=x",
+        );
+        let DatabaseEndpointSummary::LocalSocket {
+            scheme,
+            username,
+            database,
+            password,
+            safe_option_keys,
+            has_additional_options,
+        } = &summary
+        else {
+            panic!("expected LocalSocket, got {summary:?}");
+        };
+        assert_eq!(scheme, "postgresql");
+        assert_eq!(username.as_deref(), Some("owner"));
+        assert_eq!(database.as_deref(), Some("tribal"));
+        assert_eq!(*password, SecretPresence::Configured);
+        assert_eq!(safe_option_keys, &["application_name"]);
+        assert!(!has_additional_options);
+
+        let encoded = serde_json::to_string(&summary).expect("summary serialises");
+        assert!(!encoded.contains("%2F") && !encoded.contains("%2f"));
+        assert!(!encoded.to_lowercase().contains("tmp"));
+        assert!(!encoded.contains("pw"));
+    }
+
+    #[test]
+    fn test_query_only_socket_url_projects_local_socket_with_uncounted_selector() {
+        let summary =
+            database_endpoint("postgresql:///tribal?host=/private/tmp/tribal.pg&sslmode=disable");
+        let DatabaseEndpointSummary::LocalSocket {
+            username,
+            database,
+            password,
+            safe_option_keys,
+            has_additional_options,
+            ..
+        } = &summary
+        else {
+            panic!("expected LocalSocket, got {summary:?}");
+        };
+        assert_eq!(*username, None);
+        assert_eq!(database.as_deref(), Some("tribal"));
+        assert_eq!(*password, SecretPresence::Absent);
+        assert_eq!(safe_option_keys, &["sslmode"]);
+        assert!(
+            !has_additional_options,
+            "the intrinsic socket selector must not count as an additional option",
+        );
+
+        let encoded = serde_json::to_string(&summary).expect("summary serialises");
+        assert!(!encoded.contains("/private"));
+    }
+
+    #[test]
+    fn test_socket_url_with_unrecognised_option_flags_additional() {
+        let summary = database_endpoint("postgresql:///tribal?host=/x/y&statement_timeout=5000");
+        let DatabaseEndpointSummary::LocalSocket {
+            has_additional_options,
+            ..
+        } = summary
+        else {
+            panic!("expected LocalSocket, got {summary:?}");
+        };
+        assert!(has_additional_options);
+    }
+
+    #[test]
+    fn test_mixed_authority_and_socket_query_becomes_opaque() {
+        assert!(matches!(
+            database_endpoint("postgres://db.example/tribal?host=/var/run"),
+            DatabaseEndpointSummary::OpaqueConfigured,
+        ));
+    }
+
+    #[test]
+    fn test_authority_overrides_become_opaque() {
+        for query in [
+            "host=other.example",
+            "hostaddr=192.0.2.1",
+            "port=6432",
+            "dbname=other",
+            "user=other",
+            "password=secret",
+        ] {
+            assert_eq!(
+                database_endpoint(&format!("postgres://db.example/tribal?{query}")),
+                DatabaseEndpointSummary::OpaqueConfigured,
+                "{query} changes the effective connection and cannot be projected from authority",
+            );
+        }
+    }
+
+    #[test]
+    fn test_socket_route_with_query_credentials_becomes_opaque() {
+        assert_eq!(
+            database_endpoint("postgresql:///tribal?host=/private/tmp/tribal.pg&password=secret"),
+            DatabaseEndpointSummary::OpaqueConfigured,
+        );
     }
 
     #[test]

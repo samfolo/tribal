@@ -21,7 +21,10 @@ pub(crate) use database::{
     COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DATABASE_COMMAND_DEFAULTS,
     DatabaseSession,
 };
-use database::{DATABASE_URL_KEY, DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError};
+use database::{
+    DATABASE_URL_KEY, DatabaseAccess, DatabaseAccessError, DatabaseInitialiseError,
+    DatabaseProvisionError,
+};
 use integration::IntegrationAdministration;
 use operation::OperationContext;
 use project::ProjectAdministration;
@@ -35,19 +38,19 @@ use tribal_wire::management::{
     ConfigGetAllCall, ConfigGetCall, ConfigPatchCall, ConfigPatchValidation, ConfigPathCall,
     ConfigSchemaCall, ConfigSetCall, ConfigValidatePatchCall, DatabaseConnectionCall,
     DatabaseInitialiseCall, DatabaseInitialiseOutcome, DatabaseInspectCall, DatabaseProbeCall,
-    GraphConfigureGenesisCall, GraphConvergeGenesisCall, GraphEmbeddingProfileCall,
-    GraphGenesisOptionsCall, IntegrationMcpConfigCall, LogsTailCall, ManagementCall,
-    ManagementError, ManagementMethod, ManagementResponseError, ManagerShutdownCall,
-    ManagerSnapshot, ManagerSnapshotCall, ModelsCatalogueCall, PatchConfigViolation,
-    ProcessingProfileCall, ProcessingProfileSetCall, ProjectListCall, ProjectRegisterCall,
-    ProviderConnectionRemoveCall, ProviderConnectionUpsertCall, ProviderConnectionsCall,
-    ProviderProbeCall, ReindexCancelCall, ReindexPruneCall, ReindexRunCall,
-    RestartOperationInProgress, Revisioned, RuntimeRestartCall, RuntimeRestartResult,
-    RuntimeStartCall, RuntimeStartResult, RuntimeStopCall, RuntimeStopResult, ServerStatusCall,
-    SettingsResetPreviewCall, StartOperationInProgress, StopOperationInProgress, StorageAbortCall,
-    StorageAssessCall, StorageAssessResult, StorageContinueCall, StorageForceStopCall,
-    StorageSwitchCall, ThreadsPruneCall, TokenCreateCall, TokenListCall, TokenRevokeAllCall,
-    TokenRevokeCall,
+    DatabaseProvisionCall, GraphConfigureGenesisCall, GraphConvergeGenesisCall,
+    GraphEmbeddingProfileCall, GraphGenesisOptionsCall, IntegrationMcpConfigCall, LogsTailCall,
+    ManagementCall, ManagementError, ManagementMethod, ManagementResponseError,
+    ManagerShutdownCall, ManagerSnapshot, ManagerSnapshotCall, ModelsCatalogueCall,
+    PatchConfigViolation, ProcessingProfileCall, ProcessingProfileSetCall, ProjectListCall,
+    ProjectRegisterCall, ProviderConnectionRemoveCall, ProviderConnectionUpsertCall,
+    ProviderConnectionsCall, ProviderProbeCall, ReindexCancelCall, ReindexPruneCall,
+    ReindexRunCall, RestartOperationInProgress, Revisioned, RuntimeRestartCall,
+    RuntimeRestartResult, RuntimeStartCall, RuntimeStartResult, RuntimeStopCall, RuntimeStopResult,
+    ServerStatusCall, SettingsResetPreviewCall, StartOperationInProgress, StopOperationInProgress,
+    StorageAbortCall, StorageAssessCall, StorageAssessResult, StorageContinueCall,
+    StorageForceStopCall, StorageSwitchCall, ThreadsPruneCall, TokenCreateCall, TokenListCall,
+    TokenRevokeAllCall, TokenRevokeCall,
 };
 
 use super::{
@@ -401,6 +404,15 @@ impl<'a> ManagementApplication<'a> {
                         .inspect(&operation, request)
                         .await
                         .map_err(database_access_error),
+                )
+            }
+            ManagementMethod::DatabaseProvision => {
+                let request = parse_call::<DatabaseProvisionCall>(params)?;
+                encode_call::<DatabaseProvisionCall>(
+                    self.database
+                        .provision(&operation, request)
+                        .await
+                        .map_err(database_provision_error),
                 )
             }
             ManagementMethod::AuthenticationSettings => encode_call::<AuthenticationSettingsCall>(
@@ -844,6 +856,31 @@ fn database_initialise_error(error: DatabaseInitialiseError) -> ManagementRespon
         | DatabaseInitialiseError::Project { .. }) => private_administration_error(
             &error,
             "database is unavailable",
+            AdministrationFailure::DatabaseUnavailable,
+        ),
+    }
+}
+
+fn database_provision_error(error: DatabaseProvisionError) -> ManagementResponseError {
+    match error {
+        DatabaseProvisionError::Session(DatabaseAccessError::Operation(failure)) => {
+            operation::public_error(failure)
+        }
+        DatabaseProvisionError::Session(DatabaseAccessError::Configuration(error)) => {
+            management_error(error)
+        }
+        DatabaseProvisionError::Session(DatabaseAccessError::RevisionConflict {
+            expected,
+            actual,
+        }) => ManagementResponseError {
+            message: "configuration changed before database provisioning".to_owned(),
+            error: ManagementError::ConfigConflict { expected, actual },
+        },
+        error @ (DatabaseProvisionError::Session(DatabaseAccessError::Connection { .. })
+        | DatabaseProvisionError::Connection { .. }
+        | DatabaseProvisionError::Creation { .. }) => private_administration_error(
+            &error,
+            "administrative database is unavailable",
             AdministrationFailure::DatabaseUnavailable,
         ),
     }

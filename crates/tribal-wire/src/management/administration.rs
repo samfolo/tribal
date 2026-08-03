@@ -92,6 +92,70 @@ impl std::ops::Deref for DatabaseInitialiseResult {
     }
 }
 
+/// Creates one named database on an explicitly supplied administration
+/// target. Management-only — never an MCP tool — and independent of the
+/// configured database: the connection opens from the request's URL alone.
+/// The secret lives only for the request.
+#[derive(PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct DatabaseProvisionRequest {
+    pub expected_revision: ConfigRevision,
+    pub administrative_url: SecretLiteral,
+    pub database: DatabaseName,
+}
+
+impl fmt::Debug for DatabaseProvisionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DatabaseProvisionRequest")
+            .field("expected_revision", &self.expected_revision)
+            .field("administrative_url", &"<redacted>")
+            .field("database", &self.database)
+            .finish()
+    }
+}
+
+/// What provisioning found. An earlier run and a lost creation race are
+/// deliberately indistinguishable: either way the database exists, and a
+/// fresh inspection remains the authority for its state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "outcome", content = "data", rename_all = "snake_case")]
+pub enum DatabaseProvisionOutcome {
+    Created,
+    AlreadyPresent,
+}
+
+/// Concrete schema identity for a revisioned database-provision receipt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DatabaseProvisionResult(Revisioned<DatabaseProvisionOutcome>);
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for DatabaseProvisionResult {
+    fn schema_name() -> String {
+        "DatabaseProvisionResult".to_owned()
+    }
+
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        <Revisioned<DatabaseProvisionOutcome> as schemars::JsonSchema>::json_schema(generator)
+    }
+}
+
+impl From<Revisioned<DatabaseProvisionOutcome>> for DatabaseProvisionResult {
+    fn from(value: Revisioned<DatabaseProvisionOutcome>) -> Self {
+        Self(value)
+    }
+}
+
+impl std::ops::Deref for DatabaseProvisionResult {
+    type Target = Revisioned<DatabaseProvisionOutcome>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "source", content = "data", rename_all = "snake_case")]
@@ -151,6 +215,99 @@ impl From<AbsoluteDirectoryPath> for String {
 }
 
 impl AbsoluteDirectoryPath {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Maintenance and template databases provisioning must never target.
+const RESERVED_DATABASE_NAMES: [&str; 3] = ["postgres", "template0", "template1"];
+
+/// A database name the management plane may create: a lowercase ASCII
+/// identifier of at most 63 bytes, never a reserved maintenance or template
+/// database. The 63-byte ceiling is the server's own identifier limit, so a
+/// valid name is never silently truncated server-side.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct DatabaseName(String);
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for DatabaseName {
+    fn schema_name() -> String {
+        "DatabaseName".to_owned()
+    }
+
+    fn json_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        // The pattern carries the identifier shape; the reserved names are
+        // an enumerated exclusion, so a projection generated from this
+        // schema refuses exactly what `TryFrom<String>` refuses.
+        let mut schema = super::wire_id::marked_string_schema(
+            Some(r"^[a-z][a-z0-9_]{0,62}$"),
+            "validated-string",
+            None,
+        );
+        if let schemars::schema::Schema::Object(object) = &mut schema {
+            object.extensions.insert(
+                "not".to_owned(),
+                serde_json::json!({
+                    "enum": RESERVED_DATABASE_NAMES,
+                }),
+            );
+        }
+        schema
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DatabaseNameError {
+    #[error("database name is empty")]
+    Empty,
+    #[error("database name exceeds 63 bytes")]
+    TooLong,
+    #[error("database name must be lowercase ASCII, starting with a letter")]
+    InvalidCharacters,
+    #[error("database name is reserved")]
+    Reserved,
+}
+
+impl TryFrom<String> for DatabaseName {
+    type Error = DatabaseNameError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            return Err(DatabaseNameError::Empty);
+        }
+        if value.len() > 63 {
+            return Err(DatabaseNameError::TooLong);
+        }
+        let mut characters = value.chars();
+        let leads_with_letter = characters.next().is_some_and(|c| c.is_ascii_lowercase());
+        let rest_is_identifier =
+            characters.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !leads_with_letter || !rest_is_identifier {
+            return Err(DatabaseNameError::InvalidCharacters);
+        }
+        if RESERVED_DATABASE_NAMES.contains(&value.as_str()) {
+            return Err(DatabaseNameError::Reserved);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl From<DatabaseName> for String {
+    fn from(value: DatabaseName) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for DatabaseName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl DatabaseName {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -491,5 +648,75 @@ mod tests {
             "no host in Debug: {rendered}"
         );
         assert!(rendered.contains("<redacted>"));
+    }
+
+    #[test]
+    fn test_database_name_admits_a_plain_identifier() {
+        let name = DatabaseName::try_from("tribal".to_owned()).expect("valid name");
+        assert_eq!(name.as_str(), "tribal");
+    }
+
+    #[test]
+    fn test_database_name_admits_the_63_byte_boundary_and_refuses_64() {
+        let at_limit = format!("a{}", "b".repeat(62));
+        assert!(DatabaseName::try_from(at_limit).is_ok());
+        let over = format!("a{}", "b".repeat(63));
+        assert_eq!(
+            DatabaseName::try_from(over),
+            Err(DatabaseNameError::TooLong)
+        );
+    }
+
+    #[test]
+    fn test_database_name_refuses_bad_shapes() {
+        for (candidate, expected) in [
+            ("", DatabaseNameError::Empty),
+            ("1tribal", DatabaseNameError::InvalidCharacters),
+            ("_tribal", DatabaseNameError::InvalidCharacters),
+            ("Tribal", DatabaseNameError::InvalidCharacters),
+            ("tri-bal", DatabaseNameError::InvalidCharacters),
+            ("tri bal", DatabaseNameError::InvalidCharacters),
+            ("tribal;drop", DatabaseNameError::InvalidCharacters),
+            ("tribál", DatabaseNameError::InvalidCharacters),
+        ] {
+            assert_eq!(
+                DatabaseName::try_from(candidate.to_owned()),
+                Err(expected.clone()),
+                "candidate {candidate:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_database_name_refuses_every_reserved_database() {
+        for reserved in ["postgres", "template0", "template1"] {
+            assert_eq!(
+                DatabaseName::try_from(reserved.to_owned()),
+                Err(DatabaseNameError::Reserved),
+                "reserved {reserved:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_provision_request_debug_redacts_the_administrative_url() {
+        let request = DatabaseProvisionRequest {
+            expected_revision: ConfigRevision::from_digest(
+                &super::super::ConfigDigest::from_bytes(b"config"),
+            ),
+            administrative_url: SecretLiteral::try_from(
+                "postgresql://owner:secret@%2Ftmp%2Fsock/postgres".to_owned(),
+            )
+            .expect("valid secret"),
+            database: DatabaseName::try_from("tribal".to_owned()).expect("valid name"),
+        };
+        let rendered = format!("{request:?}");
+        assert!(
+            !rendered.contains("secret"),
+            "no secret in Debug: {rendered}"
+        );
+        assert!(!rendered.contains("sock"), "no route in Debug: {rendered}");
+        assert!(rendered.contains("<redacted>"));
+        assert!(rendered.contains("tribal"));
     }
 }

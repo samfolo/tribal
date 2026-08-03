@@ -143,7 +143,10 @@ impl TagRegistryRepository for PgTagRegistryRepository {
             source: e,
         })?;
 
-        let sql = format!("SELECT {COLUMNS} FROM tag_registry WHERE tag = ANY($1) ORDER BY tag");
+        let sql = format!(
+            "SELECT {COLUMNS} FROM tag_registry WHERE tag = ANY($1) \
+             ORDER BY tag COLLATE \"C\""
+        );
 
         let rows = sqlx::query(&sql)
             .bind(tags)
@@ -158,7 +161,7 @@ impl TagRegistryRepository for PgTagRegistryRepository {
     }
 
     async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<TagRegistryEntry>, DbError> {
-        let sql = format!("SELECT {COLUMNS} FROM tag_registry ORDER BY tag");
+        let sql = format!("SELECT {COLUMNS} FROM tag_registry ORDER BY tag COLLATE \"C\"");
 
         let rows =
             sqlx::query(&sql)

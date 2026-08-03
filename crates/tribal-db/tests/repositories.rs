@@ -8,6 +8,9 @@
 #[path = "repositories/advisory_lock.rs"]
 mod advisory_lock;
 
+#[path = "repositories/database_provision.rs"]
+mod database_provision;
+
 #[path = "repositories/agent_binding_version.rs"]
 mod agent_binding_version;
 

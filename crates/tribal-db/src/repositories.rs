@@ -12,6 +12,7 @@ mod agent_thread;
 mod agent_thread_record;
 mod auth_token;
 mod common;
+mod database_provision;
 mod embedding;
 mod embedding_index;
 mod embedding_profile;
@@ -62,6 +63,9 @@ pub use auth_token::{
     PgAuthTokenRepository,
 };
 pub use common::cursor::encode_cursor;
+pub use database_provision::{
+    DatabaseCreation, DatabaseProvisionRepository, PgDatabaseProvisionRepository,
+};
 pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};
 pub use embedding_index::{
     EmbeddingIndexRepository, EmbeddingTable, IndexState, PgEmbeddingIndexRepository,

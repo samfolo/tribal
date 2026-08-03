@@ -3,8 +3,11 @@
 use std::borrow::Cow;
 
 use sqlx::migrate::Migrator;
-use tribal_db::{DbError, GraphIdentityRepository, MIGRATOR, PgGraphIdentityRepository};
-use tribal_test_utils::TestDb;
+use tribal_db::{
+    DbError, GraphIdentityRepository, MIGRATOR, PgGraphIdentityRepository, PgTagRegistryRepository,
+    TagRegistryRepository,
+};
+use tribal_test_utils::{LOCALE_SENSITIVE_TAGS, TestDb};
 
 const INSERT_FLAT_REMOTE_PROJECT: &str = include_str!("sql/insert_flat_remote_project.sql");
 const INSERT_OWNING_PRINCIPAL: &str = include_str!("sql/insert_owning_principal.sql");
@@ -27,6 +30,8 @@ const SELECT_SYSTEM_PROJECT_COUNT: &str = include_str!("sql/select_system_projec
 const INSERT_GRAPH_IDENTITY_ROW: &str = include_str!("sql/insert_graph_identity_row.sql");
 const DELETE_GRAPH_IDENTITY_ROW: &str = include_str!("sql/delete_graph_identity_row.sql");
 const SELECT_GRAPH_IDENTITY_COUNT: &str = include_str!("sql/select_graph_identity_count.sql");
+const SELECT_TAGS_IN_DEFAULT_ORDER: &str = include_str!("sql/select_tags_in_default_order.sql");
+const SELECT_TAGS_IN_C_ORDER: &str = include_str!("sql/select_tags_in_c_order.sql");
 
 const PRIOR_PROJECT_HEAD: i64 = 20_260_718_224_843;
 const PRIOR_GRAPH_IDENTITY_HEAD: i64 = 20_260_721_102_914;
@@ -347,4 +352,52 @@ async fn test_graph_identity_missing_row_reports_invalid_state() {
         .await
         .expect_err("a missing row is invalid graph state, not a default");
     assert!(matches!(err, DbError::GraphIdentityMissing));
+}
+
+// ---------------------------------------------------------------------------
+// Collation-parity self-guard
+// ---------------------------------------------------------------------------
+
+/// Seeds the locale-sensitive tags through the repository and returns the raw
+/// default-collation and `C`-collation orderings.
+async fn raw_tag_orderings(ctx: &TestDb) -> (Vec<String>, Vec<String>) {
+    let mut conn = ctx.raw_connection().await.expect("connect");
+    let repo = PgTagRegistryRepository;
+    for tag in LOCALE_SENSITIVE_TAGS {
+        repo.upsert(&mut conn, tag).await.expect("seed tag");
+    }
+    let default_order: Vec<String> = sqlx::query_scalar(SELECT_TAGS_IN_DEFAULT_ORDER)
+        .fetch_all(&mut conn)
+        .await
+        .expect("default-collation probe");
+    let c_order: Vec<String> = sqlx::query_scalar(SELECT_TAGS_IN_C_ORDER)
+        .fetch_all(&mut conn)
+        .await
+        .expect("C-collation probe");
+    (default_order, c_order)
+}
+
+#[tokio::test]
+async fn test_comparison_locale_default_order_disagrees_with_c() {
+    let ctx = TestDb::with_comparison_locale().await;
+
+    let (default_order, c_order) = raw_tag_orderings(&ctx).await;
+
+    assert_ne!(
+        default_order, c_order,
+        "the comparison locale must disagree with C on the fixture tags, \
+         or the parity fixtures pass vacuously",
+    );
+}
+
+#[tokio::test]
+async fn test_c_locale_default_order_agrees_with_c() {
+    let ctx = TestDb::with_c_locale().await;
+
+    let (default_order, c_order) = raw_tag_orderings(&ctx).await;
+
+    assert_eq!(
+        default_order, c_order,
+        "the C-locale database's default collation must be bytewise C",
+    );
 }

@@ -2,7 +2,9 @@ use tribal_db::{
     PgTagEmbeddingRepository, PgTagRegistryRepository, TagEmbeddingRepository,
     TagRegistryRepository,
 };
-use tribal_test_utils::{TestDb, a_new_tag_embedding, create_complete_profile};
+use tribal_test_utils::{
+    LOCALE_SENSITIVE_TAGS, TestDb, a_new_tag_embedding, create_complete_profile,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -396,4 +398,81 @@ async fn test_find_tags_missing_embeddings_returns_empty_when_all_embedded() {
         .expect("find_tags_missing_embeddings");
 
     assert!(missing.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Cross-locale ordering parity
+// ---------------------------------------------------------------------------
+
+/// Two tags from the locale-sensitive set whose `C` and ICU orders flip.
+const TIE_BREAK_TAGS: [&str; 2] = ["zebra", "Ápple"];
+
+/// Seeds two tags with byte-identical embeddings and equal usage counts, so
+/// distance and usage tie and `te.tag` is the sole discriminator, then
+/// returns the similarity order.
+async fn tie_break_order(ctx: &TestDb) -> Vec<String> {
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgTagEmbeddingRepository;
+
+    seed_tags(&mut txn, &TIE_BREAK_TAGS).await;
+    let profile = create_complete_profile(&mut txn, "test-model", DIM).await;
+    let shared = make_test_embedding(0);
+    let embeddings: Vec<_> = TIE_BREAK_TAGS
+        .iter()
+        .map(|&tag| {
+            a_new_tag_embedding()
+                .tag(tag.to_owned())
+                .embedding_profile_id(profile)
+                .embedding(shared.clone())
+                .build()
+        })
+        .collect();
+    repo.batch_upsert(&mut txn, &embeddings)
+        .await
+        .expect("seed");
+
+    repo.similarity_search(&mut txn, &shared, profile, DIM, 0.5, 10)
+        .await
+        .expect("similarity_search")
+        .iter()
+        .map(|result| result.tag().to_owned())
+        .collect()
+}
+
+/// Seeds the locale-sensitive tags with no embeddings and returns the order
+/// `find_tags_missing_embeddings` answers with.
+async fn missing_embeddings_order(ctx: &TestDb) -> Vec<String> {
+    let mut txn = ctx.begin().await.expect("begin");
+    let repo = PgTagEmbeddingRepository;
+
+    seed_tags(&mut txn, &LOCALE_SENSITIVE_TAGS).await;
+    let profile = create_complete_profile(&mut txn, "test-model", DIM).await;
+
+    repo.find_tags_missing_embeddings(&mut txn, profile)
+        .await
+        .expect("find_tags_missing_embeddings")
+}
+
+#[tokio::test]
+async fn test_similarity_tie_break_agrees_across_cluster_locales() {
+    let c = TestDb::with_c_locale().await;
+    let comparison = TestDb::with_comparison_locale().await;
+
+    assert_eq!(
+        tie_break_order(&c).await,
+        tie_break_order(&comparison).await,
+        "the tag tie-break must not depend on the cluster's default collation",
+    );
+}
+
+#[tokio::test]
+async fn test_missing_embeddings_ordering_agrees_across_cluster_locales() {
+    let c = TestDb::with_c_locale().await;
+    let comparison = TestDb::with_comparison_locale().await;
+
+    assert_eq!(
+        missing_embeddings_order(&c).await,
+        missing_embeddings_order(&comparison).await,
+        "reindex selection order must not depend on the cluster's default collation",
+    );
 }

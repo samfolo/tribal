@@ -3,6 +3,12 @@
 use tribal_domain::{ProviderKind, StageParameters};
 use tribal_inference::CompletionStageSpec;
 
+/// Tags whose bytewise (`C`) and linguistic (ICU `en-US`) orders disagree:
+/// `C` sorts `Zebra` before every lowercase letter and both accented tags
+/// last, while a linguistic collation interleaves them. Shared by the
+/// collation-parity fixtures and their raw-ordering self-guard.
+pub const LOCALE_SENSITIVE_TAGS: [&str; 5] = ["zebra", "Zebra", "apple", "Ápple", "émigré"];
+
 /// A completion stage spec on the workspace's Ollama defaults, shared so tests
 /// do not re-derive the shape. Override a field by struct update:
 /// `CompletionStageSpec { model, ..a_completion_stage_spec() }`.

@@ -85,6 +85,23 @@ fn replace_database(url: &str, database: &str) -> String {
     parsed.into()
 }
 
+/// Best-effort cleanup for a database whose constructor did not reach a
+/// value with a `Drop` implementation.
+async fn cleanup_created_database(admin_url: &str, db_name: &str) {
+    let Ok(Ok(mut admin)) =
+        tokio::time::timeout(Duration::from_secs(5), PgConnection::connect(admin_url)).await
+    else {
+        return;
+    };
+    let sql = format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)");
+    if let Ok(Err(error)) =
+        tokio::time::timeout(Duration::from_secs(5), admin.execute(sql.as_str())).await
+    {
+        tracing::debug!(%error, db = %db_name, "test database drop failed");
+    }
+    let _ = admin.close().await;
+}
+
 // ---------------------------------------------------------------------------
 // Base server resolution (external DATABASE_URL or embedded container)
 // ---------------------------------------------------------------------------
@@ -438,6 +455,93 @@ impl TestDb {
         Self::try_new_from_base(&base, None).await
     }
 
+    /// Provisions a migrated database whose default collation is bytewise `C`.
+    ///
+    /// One half of a collation-parity pair: a repository ordering pinned with
+    /// an explicit collation must agree between this database and
+    /// [`Self::with_comparison_locale`]'s.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the database cannot be provisioned or migrated.
+    pub async fn with_c_locale() -> Self {
+        Self::try_new_with_locale("LOCALE 'C'")
+            .await
+            .expect("failed to provision C-locale test database")
+    }
+
+    /// Provisions a migrated database whose default collation is deliberately
+    /// locale-aware (ICU `en-US`), disagreeing with `C` on non-ASCII text.
+    ///
+    /// The other half of the collation-parity pair beside
+    /// [`Self::with_c_locale`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the database cannot be provisioned or migrated.
+    pub async fn with_comparison_locale() -> Self {
+        Self::try_new_with_locale("LOCALE_PROVIDER icu ICU_LOCALE 'en-US' LOCALE 'C.utf8'")
+            .await
+            .expect("failed to provision comparison-locale test database")
+    }
+
+    /// Provisions a fresh database from `template0` with an explicit locale
+    /// clause and migrates it to head. `template0` is the only template a
+    /// database with a different collation may clone, so this path migrates
+    /// from scratch instead of cloning the shared migrated template.
+    async fn try_new_with_locale(locale_clause: &str) -> Result<Self, TestDbError> {
+        let base = base_url().await?;
+        let admin_url = replace_database(&base, MAINTENANCE_DB_NAME);
+        let db_name = format!("t_{}", Uuid::new_v4().simple());
+
+        let mut admin = PgConnection::connect(&admin_url)
+            .await
+            .map_err(|source| TestDbError::ConnectionFailed { source })?;
+        admin
+            .execute(
+                format!(
+                    "CREATE DATABASE \"{db_name}\" TEMPLATE template0 \
+                     ENCODING 'UTF8' {locale_clause}"
+                )
+                .as_str(),
+            )
+            .await
+            .map_err(|source| TestDbError::Provision {
+                context: format!("creating {locale_clause} test database {db_name}"),
+                source,
+            })?;
+        let _ = admin.close().await;
+
+        let database_url = replace_database(&base, &db_name);
+        let pool = match PgPoolOptions::new()
+            .max_connections(5)
+            .acquire_timeout(Duration::from_secs(10))
+            .connect(&database_url)
+            .await
+        {
+            Ok(pool) => pool,
+            Err(source) => {
+                cleanup_created_database(&admin_url, &db_name).await;
+                return Err(TestDbError::PoolCreation {
+                    context: format!("connecting to locale test database {db_name}"),
+                    source,
+                });
+            }
+        };
+        if let Err(source) = tribal_db::MIGRATOR.run(&pool).await {
+            pool.close().await;
+            cleanup_created_database(&admin_url, &db_name).await;
+            return Err(source.into());
+        }
+
+        Ok(Self {
+            pool,
+            database_url,
+            admin_url,
+            db_name,
+        })
+    }
+
     async fn try_new_from_base(base: &str, template: Option<&str>) -> Result<Self, TestDbError> {
         let admin_url = replace_database(base, MAINTENANCE_DB_NAME);
         let db_name = format!("t_{}", Uuid::new_v4().simple());
@@ -568,19 +672,7 @@ impl Drop for TestDb {
             };
             rt.block_on(async {
                 let _ = tokio::time::timeout(Duration::from_secs(5), pool.close()).await;
-                let Ok(Ok(mut admin)) =
-                    tokio::time::timeout(Duration::from_secs(5), PgConnection::connect(&admin_url))
-                        .await
-                else {
-                    return;
-                };
-                let sql = format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)");
-                if let Ok(Err(error)) =
-                    tokio::time::timeout(Duration::from_secs(5), admin.execute(sql.as_str())).await
-                {
-                    tracing::debug!(%error, db = %db_name, "test database drop failed");
-                }
-                let _ = admin.close().await;
+                cleanup_created_database(&admin_url, &db_name).await;
             });
         })
         .join();

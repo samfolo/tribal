@@ -36,8 +36,13 @@ pub const GRAPH_TRANSITION: i64 = 0x7472_6962_616C_6774;
 /// the migration runner for its schema work (`"tribaltr"`).
 pub const TARGET_MIGRATION_RESERVATION: i64 = 0x7472_6962_616C_7472;
 
+/// Serialises management database provisioning on an administrative
+/// connection, so two racing `CREATE DATABASE` calls decide one winner before
+/// the duplicate-name backstop fires (`"tribaldp"`).
+pub const DATABASE_PROVISION: i64 = 0x7472_6962_616C_6470;
+
 /// Every advisory-lock id, the input to the compile-time uniqueness check.
-pub const ALL: [i64; 8] = [
+pub const ALL: [i64; 9] = [
     MIGRATION,
     PROVISIONING,
     REINDEX_SINGLE_FLIGHT,
@@ -46,6 +51,7 @@ pub const ALL: [i64; 8] = [
     CREDENTIAL_REPLACEMENT,
     GRAPH_TRANSITION,
     TARGET_MIGRATION_RESERVATION,
+    DATABASE_PROVISION,
 ];
 
 const fn all_distinct(ids: &[i64]) -> bool {
@@ -71,10 +77,11 @@ mod tests {
 
     #[test]
     fn test_all_advisory_lock_ids_are_declared_once() {
-        assert_eq!(ALL.len(), 8);
+        assert_eq!(ALL.len(), 9);
         assert!(ALL.contains(&EMBEDDING_PROFILE_AUTHORITY));
         assert!(ALL.contains(&CREDENTIAL_REPLACEMENT));
         assert!(ALL.contains(&GRAPH_TRANSITION));
         assert!(ALL.contains(&TARGET_MIGRATION_RESERVATION));
+        assert!(ALL.contains(&DATABASE_PROVISION));
     }
 }
