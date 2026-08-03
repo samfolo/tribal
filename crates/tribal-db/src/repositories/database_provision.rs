@@ -6,6 +6,8 @@
 //! that beats the lock. Both statements ride the simple query protocol, which
 //! Postgres requires for `CREATE DATABASE`.
 
+use std::num::NonZeroU64;
+
 use async_trait::async_trait;
 use sqlx::{Executor, PgConnection};
 
@@ -47,7 +49,7 @@ pub trait DatabaseProvisionRepository {
         &self,
         conn: &mut PgConnection,
         database: &str,
-        statement_timeout_ms: u64,
+        statement_timeout_ms: NonZeroU64,
     ) -> Result<DatabaseCreation, DbError>;
 }
 
@@ -60,11 +62,11 @@ impl DatabaseProvisionRepository for PgDatabaseProvisionRepository {
         &self,
         conn: &mut PgConnection,
         database: &str,
-        statement_timeout_ms: u64,
+        statement_timeout_ms: NonZeroU64,
     ) -> Result<DatabaseCreation, DbError> {
         // Session-level SET: the transaction-scoped SET LOCAL has no effect
         // here, because nothing below may run inside a transaction.
-        conn.execute(format!("SET statement_timeout = {statement_timeout_ms}").as_str())
+        conn.execute(format!("SET statement_timeout = {}", statement_timeout_ms.get()).as_str())
             .await
             .map_err(|source| DbError::QueryFailed {
                 context: "bounding the provisioning session".into(),
@@ -125,5 +127,21 @@ fn is_duplicate_database(error: &sqlx::Error) -> bool {
     error
         .as_database_error()
         .and_then(sqlx::error::DatabaseError::code)
-        .is_some_and(|code| code == DUPLICATE_DATABASE || code == UNIQUE_VIOLATION)
+        .is_some_and(|code| is_duplicate_code(code.as_ref()))
+}
+
+fn is_duplicate_code(code: &str) -> bool {
+    matches!(code, DUPLICATE_DATABASE | UNIQUE_VIOLATION)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_duplicate_code;
+
+    #[test]
+    fn both_postgres_duplicate_codes_are_idempotent_outcomes() {
+        assert!(is_duplicate_code("42P04"));
+        assert!(is_duplicate_code("23505"));
+        assert!(!is_duplicate_code("42501"));
+    }
 }

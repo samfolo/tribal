@@ -1,5 +1,5 @@
 //! Revision-bound database sessions for management capabilities.
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, num::NonZeroU64, pin::Pin, sync::Arc};
 
 use sqlx::{Connection as _, PgPool, postgres::PgConnectOptions};
 use tribal_config::TribalConfig;
@@ -50,7 +50,7 @@ pub(in crate::management) const CANDIDATE_IO_WINDOW: std::time::Duration =
 /// Each provisioning statement is bounded independently; the outer window
 /// remains the whole-session backstop. A retry converges if cancellation
 /// races a database creation that the server completes.
-const PROVISION_STATEMENT_TIMEOUT_MS: u64 = 5_000;
+const PROVISION_STATEMENT_TIMEOUT_MS: NonZeroU64 = NonZeroU64::new(5_000).unwrap();
 const MUTATION_TERMINAL_WINDOW: std::time::Duration =
     std::time::Duration::from_millis(COMMAND_STATEMENT_TIMEOUT_MS);
 

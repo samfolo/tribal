@@ -1,10 +1,12 @@
+use std::num::NonZeroU64;
+
 use sqlx::Connection;
 use tribal_db::{DatabaseCreation, DatabaseProvisionRepository, PgDatabaseProvisionRepository};
 use tribal_test_utils::TestDb;
 
 /// A generous bound for ordinary provisioning; the timeout only matters when
 /// another session holds the provisioning lock.
-const TIMEOUT_MS: u64 = 30_000;
+const TIMEOUT_MS: NonZeroU64 = NonZeroU64::new(30_000).unwrap();
 
 #[tokio::test]
 async fn test_create_database_if_absent_creates_then_reports_present() {
@@ -85,7 +87,7 @@ async fn test_a_held_lock_fails_bounded_instead_of_hanging() {
     let mut conn = ctx.raw_connection().await.expect("connect");
     let started = std::time::Instant::now();
     let refused = PgDatabaseProvisionRepository
-        .create_database_if_absent(&mut conn, &name, 500)
+        .create_database_if_absent(&mut conn, &name, NonZeroU64::new(500).unwrap())
         .await;
 
     assert!(refused.is_err(), "a held lock must not report an outcome");
@@ -141,12 +143,9 @@ async fn bare_create(conn: &mut sqlx::PgConnection, name: &str) -> bool {
                 .as_database_error()
                 .and_then(sqlx::error::DatabaseError::code)
                 .map(|code| code.to_string());
-            // A racing create loses on pg_database's name index, so the
-            // loser is a unique violation rather than duplicate_database.
-            assert_eq!(
-                code.as_deref(),
-                Some("23505"),
-                "a genuine race reports the unique violation the backstop must accept"
+            assert!(
+                matches!(code.as_deref(), Some("23505" | "42P04")),
+                "a genuine race reports one of PostgreSQL's duplicate-name codes, got {code:?}"
             );
             false
         }

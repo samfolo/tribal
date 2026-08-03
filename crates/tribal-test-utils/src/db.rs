@@ -85,6 +85,23 @@ fn replace_database(url: &str, database: &str) -> String {
     parsed.into()
 }
 
+/// Best-effort cleanup for a database whose constructor did not reach a
+/// value with a `Drop` implementation.
+async fn cleanup_created_database(admin_url: &str, db_name: &str) {
+    let Ok(Ok(mut admin)) =
+        tokio::time::timeout(Duration::from_secs(5), PgConnection::connect(admin_url)).await
+    else {
+        return;
+    };
+    let sql = format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)");
+    if let Ok(Err(error)) =
+        tokio::time::timeout(Duration::from_secs(5), admin.execute(sql.as_str())).await
+    {
+        tracing::debug!(%error, db = %db_name, "test database drop failed");
+    }
+    let _ = admin.close().await;
+}
+
 // ---------------------------------------------------------------------------
 // Base server resolution (external DATABASE_URL or embedded container)
 // ---------------------------------------------------------------------------
@@ -496,16 +513,26 @@ impl TestDb {
         let _ = admin.close().await;
 
         let database_url = replace_database(&base, &db_name);
-        let pool = PgPoolOptions::new()
+        let pool = match PgPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(10))
             .connect(&database_url)
             .await
-            .map_err(|source| TestDbError::PoolCreation {
-                context: format!("connecting to locale test database {db_name}"),
-                source,
-            })?;
-        tribal_db::MIGRATOR.run(&pool).await?;
+        {
+            Ok(pool) => pool,
+            Err(source) => {
+                cleanup_created_database(&admin_url, &db_name).await;
+                return Err(TestDbError::PoolCreation {
+                    context: format!("connecting to locale test database {db_name}"),
+                    source,
+                });
+            }
+        };
+        if let Err(source) = tribal_db::MIGRATOR.run(&pool).await {
+            pool.close().await;
+            cleanup_created_database(&admin_url, &db_name).await;
+            return Err(source.into());
+        }
 
         Ok(Self {
             pool,
@@ -645,19 +672,7 @@ impl Drop for TestDb {
             };
             rt.block_on(async {
                 let _ = tokio::time::timeout(Duration::from_secs(5), pool.close()).await;
-                let Ok(Ok(mut admin)) =
-                    tokio::time::timeout(Duration::from_secs(5), PgConnection::connect(&admin_url))
-                        .await
-                else {
-                    return;
-                };
-                let sql = format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)");
-                if let Ok(Err(error)) =
-                    tokio::time::timeout(Duration::from_secs(5), admin.execute(sql.as_str())).await
-                {
-                    tracing::debug!(%error, db = %db_name, "test database drop failed");
-                }
-                let _ = admin.close().await;
+                cleanup_created_database(&admin_url, &db_name).await;
             });
         })
         .join();
